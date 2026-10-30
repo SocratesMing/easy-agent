@@ -17,11 +17,11 @@ Web 与 Worker 必须使用同一 release tag、同一份配置和 Secret。生�
 
 以 admin Bearer Token 访问：
 
-- `GET /api/knowledge/v1/admin/health`：MySQL、NAS、RAGFlow、Worker 心跳和任务数；
-- `GET /api/knowledge/v1/admin/metrics`：Prometheus 文本指标；
-- `GET /api/knowledge/v1/admin/alerts`：任务积压、死信、RAGFlow/NAS 不可用；
-- `GET /api/knowledge/v1/admin/reconciliation/issues`：MySQL/NAS/RAGFlow 三方差异；
-- `GET /api/knowledge/v1/admin/audits`：人员、权限、原文、检索和问答审计。
+- `GET /agent/knowledge/v1/admin/health`：MySQL、NAS、RAGFlow、Worker 心跳和任务数；
+- `GET /agent/knowledge/v1/admin/metrics`：Prometheus 文本指标；
+- `GET /agent/knowledge/v1/admin/alerts`：任务积压、死信、RAGFlow/NAS 不可用；
+- `GET /agent/knowledge/v1/admin/reconciliation/issues`：MySQL/NAS/RAGFlow 三方差异；
+- `GET /agent/knowledge/v1/admin/audits`：人员、权限、原文、检索和问答审计。
 
 上述运维接口不返回底座地址、密钥、原文内容或内部异常。
 

@@ -43,6 +43,10 @@ _CHECKPOINTER_MAX = 200
 # 早先按 thread 只留最近 2 个 checkpoint，运行刚结束 messages 就重建成空列表，
 # HITL 恢复时模型看不到对话（DA-03 P1 发现）。
 _PERSIST_MAX_THREADS = 3
+# 单会话快照上限：大模型工具返回的 base64/大文件会进 checkpoint，超过业务库
+# 单包上限后每次写入都失败并刷屏。超过上限时跳过持久化（HITL 快照不可用），
+# 但保留进程内 MemorySaver，当前进程内仍可继续运行。
+_PERSIST_MAX_BYTES = 12 * 1024 * 1024
 _CHECKPOINTER_LOCK = threading.Lock()
 _sqlite_cm = None
 _sqlite_saver = None
@@ -359,6 +363,7 @@ class PersistentMemorySaver(MemorySaver):
         super().__init__()
         self._session_id = session_id
         self._db = db
+        self._oversize_warned = False
         self._hydrate()
 
     def _hydrate(self) -> None:
@@ -366,6 +371,14 @@ class PersistentMemorySaver(MemorySaver):
             return
         blob = self._db.load_agent_checkpoint(self._session_id)
         if not blob:
+            return
+        if len(blob) > _PERSIST_MAX_BYTES:
+            logger.warning(
+                "checkpoint 快照超过上限，跳过回放 | session=%s | bytes=%s limit=%s",
+                self._session_id,
+                len(blob),
+                _PERSIST_MAX_BYTES,
+            )
             return
         try:
             payload = pickle.loads(blob)
@@ -432,7 +445,20 @@ class PersistentMemorySaver(MemorySaver):
             if hasattr(self, attr):
                 payload[attr] = self._plain_mapping(getattr(self, attr))
         try:
-            self._db.save_agent_checkpoint(self._session_id, pickle.dumps(payload, protocol=5))
+            blob = pickle.dumps(payload, protocol=5)
+            if len(blob) > _PERSIST_MAX_BYTES:
+                if not self._oversize_warned:
+                    logger.error(
+                        "checkpoint 快照超过上限，跳过持久化 | session=%s | "
+                        "bytes=%s limit=%s；大工具结果（如 PDF base64）不应进入 checkpoint",
+                        self._session_id,
+                        len(blob),
+                        _PERSIST_MAX_BYTES,
+                    )
+                    self._oversize_warned = True
+                return
+            self._db.save_agent_checkpoint(self._session_id, blob)
+            self._oversize_warned = False
         except Exception as exc:  # noqa: BLE001
             logger.warning("持久化 checkpointer 失败 | session=%s | %s", self._session_id, exc)
 

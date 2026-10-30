@@ -76,11 +76,11 @@ _SOURCE_COLUMNS = {
     "record_id": "id",
     "publish_date": "publishDate",
     "batch_id": "batchid",
-    "report_title": "reportTile",
+    "report_title": "reportTitle",
     "report_tag": "reportTag",
     "report_second_source": "reportSecondSource",
 }
-_SOURCE_SELECT = "id, publishDate, batchid, reportTile, reportTag, reportSecondSource"
+_SOURCE_SELECT = "id, publishDate, batchid, reportTitle, reportTag, reportSecondSource"
 # 按 batchid 匹配文件名时尝试的扩展名（表里 batchid 与磁盘文件名相同）
 _FILE_EXTENSIONS = ("pdf", "doc", "docx", "txt", "md", "xls", "xlsx", "csv", "ppt", "pptx")
 

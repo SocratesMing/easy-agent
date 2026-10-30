@@ -1,5 +1,6 @@
 """PersistentMemorySaver 持久化裁剪测试（PERF-03 / DA-03）。"""
 
+import logging
 import tempfile
 
 from deepagents import create_deep_agent
@@ -7,6 +8,7 @@ from deepagents.backends import FilesystemBackend
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
+from easy_agent.persistence import checkpoints as checkpoints_module
 from easy_agent.persistence.checkpoints import _PERSIST_MAX_THREADS, PersistentMemorySaver
 
 
@@ -41,6 +43,36 @@ class _SnapshotStore:
 
     def load_agent_checkpoint(self, session_id):
         return self.blob
+
+
+def test_oversized_snapshot_is_not_replayed(monkeypatch, caplog):
+    monkeypatch.setattr(checkpoints_module, "_PERSIST_MAX_BYTES", 1024)
+    store = _SnapshotStore()
+    store.blob = b"x" * 2048
+
+    with caplog.at_level(logging.WARNING):
+        saver = PersistentMemorySaver("sess-oversize-load", db=store)
+
+    assert not saver.storage
+    assert "跳过回放" in caplog.text
+
+
+def test_oversized_snapshot_skips_persistence_and_warns_once(
+    monkeypatch, caplog
+):
+    """超过单包上限的快照不再反复写库/刷日志（大 PDF base64 场景）。"""
+
+    monkeypatch.setattr(checkpoints_module, "_PERSIST_MAX_BYTES", 1024)
+    store = _SnapshotStore()
+    saver = PersistentMemorySaver("sess-oversize", db=store)
+    saver.storage["thread"]["ns"]["cp"] = (b"", b"", b"x" * 4096)
+
+    with caplog.at_level(logging.ERROR):
+        saver._flush()
+        saver._flush()
+
+    assert store.blob is None
+    assert caplog.text.count("checkpoint 快照超过上限") == 1
 
 
 async def test_messages_survive_pruning_and_reload():

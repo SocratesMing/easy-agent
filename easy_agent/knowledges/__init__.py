@@ -6,7 +6,7 @@ agent_extension / original_tool；运行时层 runtime：lifecycle / worker /
 observability / source_sync；客户端 ragflow（Ragflow v0.26.3 标准 HTTP
 API）；服务与接口层 service / api；脚本 scripts；人员子包 personnel
 （知识库域的人员管理 / Excel 导入 / 用户扩展字段，HTTP 前缀
-``/api/personnel``）。
+``/agent/personnel``）。
 
 ``personnel`` 不在此 import：它依赖 ``knowledges.core``，由 ``app.py`` 显式
 导入（导入即注册默认管理员策略与用户扩展字段读写）。

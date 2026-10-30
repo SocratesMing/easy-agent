@@ -11,7 +11,7 @@ for endpoint in \
   "RAGFlow Web|http://127.0.0.1/" \
   "RAGFlow API|http://127.0.0.1:9380/api/v1/datasets" \
   "Ollama|http://127.0.0.1:11434/api/tags" \
-  "EasyAgent|http://127.0.0.1:8000/api/knowledge/v1/capabilities"
+  "EasyAgent|http://127.0.0.1:8000/agent/knowledge/v1/capabilities"
 do
   name="${endpoint%%|*}"
   url="${endpoint#*|}"

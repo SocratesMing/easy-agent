@@ -15,10 +15,10 @@
 
 ## 管理接口
 
-- `GET /api/knowledge/v1/admin/team-space-managers`：列出当前授权。
-- `PUT /api/knowledge/v1/admin/team-space-managers/{user_id}`：请求体为 `{"enabled": true|false}`。
-- `GET /api/knowledge/v1/bases` 返回 `team_space_management`；对 admin 同时返回可选在职部门，前端据此控制创建入口和部门选择。
-- `POST /api/knowledge/v1/bases` 创建团队库时，admin 传入 `department_id`；非 admin 账号的部门始终以服务端登录信息为准，不允许跨部门指定。
+- `GET /agent/knowledge/v1/admin/team-space-managers`：列出当前授权。
+- `PUT /agent/knowledge/v1/admin/team-space-managers/{user_id}`：请求体为 `{"enabled": true|false}`。
+- `GET /agent/knowledge/v1/bases` 返回 `team_space_management`；对 admin 同时返回可选在职部门，前端据此控制创建入口和部门选择。
+- `POST /agent/knowledge/v1/bases` 创建团队库时，admin 传入 `department_id`；非 admin 账号的部门始终以服务端登录信息为准，不允许跨部门指定。
 
 所有管理接口都使用 JWT、服务端 admin 身份校验和元数据审计，不接受前端传入的部门作为授权依据。
 

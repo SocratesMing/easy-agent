@@ -6,7 +6,7 @@ remain server-side.
 
 ## Boundary rules
 
-- Prefix: `/api/knowledge/v1`.
+- Prefix: `/agent/knowledge/v1`.
 - Browser and Agent tools submit only EasyAgent-local IDs. RAGFlow Dataset,
   Document, Chunk IDs, endpoints, error codes, and parser fields are never public.
 - Every resource response carries backend-computed `allowed_actions`; the frontend

@@ -83,7 +83,7 @@ Environment variables:
 
 - `middleware/auth.py` — JWT (python-jose) + bcrypt. 30-minute token expiry, idle-logout support, and single sign-on: a new login increments `token_version`, invalidating older tokens. `get_current_username()` only accepts a valid `Authorization: Bearer` token (no `X-Username` fallback). Login does not bind to an IP.
 - `db/database.py` — SQLite (default) or MySQL (DBUtils pool); MySQL failures do **not** silently fall back to SQLite. Messages are stored in the `session_messages` row table; `sessions.messages` remains only as a legacy blob fallback for old sessions. Schema migrations run via `db/schema_registry.py` / `_ensure_column()`.
-- `knowledges/` — Knowledge base v2 (RAGFlow service/API/runtime worker). Its `personnel/` subpackage owns knowledge-scoped personnel management and Excel import (`/api/personnel`).
+- `knowledges/` — Knowledge base v2 (RAGFlow service/API/runtime worker). Its `personnel/` subpackage owns knowledge-scoped personnel management and Excel import (`/agent/personnel`).
 - `utils/file_parser.py` — Extracts text from PDF, DOCX, XLSX, PPTX, images (OCR), CSV, code files. Auto-detects encoding.
 - `utils/session_logger.py` — Per-session logging utility.
 - `models/api.py` — Pydantic request/response models for API endpoints.

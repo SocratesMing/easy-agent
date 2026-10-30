@@ -42,6 +42,7 @@ class LegacyHostRoutes:
         "scheduled-tasks",
         "terminal",
         "knowledge",
+        "personnel",
     )
 
     def __init__(self, app):

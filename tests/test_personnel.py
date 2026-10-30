@@ -46,10 +46,17 @@ def _payload(**overrides):
 
 
 def test_only_admin_can_access_personnel(client):
+    response = client.get("/agent/personnel/users")
+    assert response.status_code == 403
+    response = client.post("/agent/personnel/users", json=_payload())
+    assert response.status_code == 403
+
+
+def test_legacy_api_prefix_is_rewritten_to_agent(client):
+    """缓存了旧版前端的浏览器仍可使用 /api/personnel（LegacyHostRoutes 兼容）。"""
+    _as_admin(client)
     response = client.get("/api/personnel/users")
-    assert response.status_code == 403
-    response = client.post("/api/personnel/users", json=_payload())
-    assert response.status_code == 403
+    assert response.status_code == 200
 
 
 def _as_user(username):
@@ -87,9 +94,9 @@ def _create_team_space_manager(db, username):
 def test_team_space_manager_has_full_personnel_access(client, db):
     """白名单账号与 admin 同权：全量列表、增改删任意部门人员、可下模板。"""
     client = _as_admin(client)
-    client.post("/api/personnel/users", json=_payload(username="alice_a"))
+    client.post("/agent/personnel/users", json=_payload(username="alice_a"))
     client.post(
-        "/api/personnel/users",
+        "/agent/personnel/users",
         json=_payload(username="bob_b", department_id="dept-treasury", department_name="司库部", employee_id="E0002"),
     )
 
@@ -97,14 +104,14 @@ def test_team_space_manager_has_full_personnel_access(client, db):
     _as_user("dept_mgr")
 
     # 列表全量：可看到其他部门人员
-    listed = client.get("/api/personnel/users")
+    listed = client.get("/agent/personnel/users")
     assert listed.status_code == 200
     usernames = {item["username"] for item in listed.json()["items"]}
     assert {"alice_a", "bob_b", "dept_mgr"} <= usernames
 
     # 新增其他部门人员
     created = client.post(
-        "/api/personnel/users",
+        "/agent/personnel/users",
         json=_payload(username="new_t", department_id="dept-treasury", department_name="司库部", employee_id="E0003"),
     )
     assert created.status_code == 201, created.text
@@ -120,12 +127,12 @@ def test_team_space_manager_has_full_personnel_access(client, db):
         source="白名单维护",
     )
     update.pop("username")
-    assert client.put(f"/api/personnel/users/{bob_id}", json=update).status_code == 200
+    assert client.put(f"/agent/personnel/users/{bob_id}", json=update).status_code == 200
     new_t = db.get_user_by_username("new_t")
-    assert client.delete(f"/api/personnel/users/{new_t.user_id}").status_code == 204
+    assert client.delete(f"/agent/personnel/users/{new_t.user_id}").status_code == 204
 
     # 模板下载
-    assert client.get("/api/personnel/import-template").status_code == 200
+    assert client.get("/agent/personnel/import-template").status_code == 200
 
 
 def test_team_space_manager_import_allows_all_departments(client, db):
@@ -141,7 +148,7 @@ def test_team_space_manager_import_allows_all_departments(client, db):
         ],
     )
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "白名单导入"},
         files={"file": ("人员.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -158,7 +165,7 @@ def test_team_space_manager_can_manage_team_space_whitelist(client, db):
 
     _create_team_space_manager(db, "dept_mgr")
     _as_user("dept_mgr")
-    client.post("/api/personnel/users", json=_payload(username="alice_a"))
+    client.post("/agent/personnel/users", json=_payload(username="alice_a"))
 
     # knowledge 路由走 Bearer token 鉴权（不吃 get_current_username 覆盖）
     def _auth_headers(username):
@@ -170,30 +177,30 @@ def test_team_space_manager_can_manage_team_space_whitelist(client, db):
         return {"Authorization": f"Bearer {token}"}
 
     headers = _auth_headers("dept_mgr")
-    listed = client.get("/api/knowledge/v1/admin/team-space-managers", headers=headers)
+    listed = client.get("/agent/knowledge/v1/admin/team-space-managers", headers=headers)
     assert listed.status_code == 200, listed.text
     items = listed.json()["items"]
     assert any(item["username"] == "dept_mgr" for item in items)
 
     alice_id = db.get_user_by_username("alice_a").user_id
     granted = client.put(
-        f"/api/knowledge/v1/admin/team-space-managers/{alice_id}",
+        f"/agent/knowledge/v1/admin/team-space-managers/{alice_id}",
         json={"enabled": True},
         headers=headers,
     )
     assert granted.status_code == 200, granted.text
     revoked = client.put(
-        f"/api/knowledge/v1/admin/team-space-managers/{alice_id}",
+        f"/agent/knowledge/v1/admin/team-space-managers/{alice_id}",
         json={"enabled": False},
         headers=headers,
     )
     assert revoked.status_code == 200, revoked.text
 
     # 非白名单普通账号仍 403
-    client.post("/api/personnel/users", json=_payload(username="plain_user", employee_id="E0009"))
+    client.post("/agent/personnel/users", json=_payload(username="plain_user", employee_id="E0009"))
     plain_headers = _auth_headers("plain_user")
     response = client.get(
-        "/api/knowledge/v1/admin/team-space-managers",
+        "/agent/knowledge/v1/admin/team-space-managers",
         headers=plain_headers,
     )
     assert response.status_code == 403
@@ -201,7 +208,7 @@ def test_team_space_manager_can_manage_team_space_whitelist(client, db):
 
 def test_admin_can_create_filter_and_edit_personnel(client, db):
     client = _as_admin(client)
-    created = client.post("/api/personnel/users", json=_payload())
+    created = client.post("/agent/personnel/users", json=_payload())
     assert created.status_code == 201, created.text
     record = created.json()
     assert record["department_id"] == "dept-market"
@@ -209,7 +216,7 @@ def test_admin_can_create_filter_and_edit_personnel(client, db):
     assert db.verify_user_password("zhangsan", "123456") is not None
     assert db.get_user_by_username("zhangsan").organization_id == "dept-market"
 
-    listed = client.get("/api/personnel/users", params={"keyword": "张三"})
+    listed = client.get("/agent/personnel/users", params={"keyword": "张三"})
     assert listed.status_code == 200
     assert listed.json()["total"] == 1
 
@@ -221,7 +228,7 @@ def test_admin_can_create_filter_and_edit_personnel(client, db):
         source="管理员手工调整",
     )
     update.pop("username")
-    edited = client.put(f"/api/personnel/users/{record['user_id']}", json=update)
+    edited = client.put(f"/agent/personnel/users/{record['user_id']}", json=update)
     assert edited.status_code == 200, edited.text
     assert edited.json()["account_status"] == "disabled"
     assert db.get_user_by_username("zhangsan").organization_id == "dept-risk"
@@ -230,7 +237,7 @@ def test_admin_can_create_filter_and_edit_personnel(client, db):
 def test_personnel_username_cannot_collide_in_workspace_path(client):
     client = _as_admin(client)
     response = client.post(
-        "/api/personnel/users",
+        "/agent/personnel/users",
         json=_payload(username="john.doe", employee_id="E-DOT"),
     )
     assert response.status_code == 422
@@ -254,11 +261,11 @@ def test_personnel_list_is_paginated(client, db):
         )
 
     first = client.get(
-        "/api/personnel/users",
+        "/agent/personnel/users",
         params={"keyword": "page_user", "page": 1, "page_size": 2},
     )
     second = client.get(
-        "/api/personnel/users",
+        "/agent/personnel/users",
         params={"keyword": "page_user", "page": 2, "page_size": 2},
     )
     assert first.status_code == 200
@@ -272,7 +279,7 @@ def test_personnel_list_is_paginated(client, db):
 def test_disabled_personnel_cannot_login(auth_client, db):
     client = _as_admin(auth_client)
     created = client.post(
-        "/api/personnel/users", json=_payload(username="disabled_user", account_status="disabled")
+        "/agent/personnel/users", json=_payload(username="disabled_user", account_status="disabled")
     )
     assert created.status_code == 201
     app.dependency_overrides.pop(get_current_username, None)
@@ -288,7 +295,7 @@ def test_disabled_personnel_cannot_login(auth_client, db):
 
 def test_admin_cannot_be_overwritten(client):
     client = _as_admin(client)
-    response = client.post("/api/personnel/users", json=_payload(username="admin"))
+    response = client.post("/agent/personnel/users", json=_payload(username="admin"))
     assert response.status_code == 409
 
 
@@ -303,7 +310,7 @@ def test_excel_import_creates_and_updates_with_frontend_source(client, db):
         ],
     )
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "月度花名册"},
         files={"file": ("人员.xlsx", first, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -322,7 +329,7 @@ def test_excel_import_creates_and_updates_with_frontend_source(client, db):
         [["alice_personnel", "Alice", "dept-c", "部门C", "E1001", "active"]],
     )
     updated = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "HR接口补录"},
         files={"file": ("人员.xlsx", second, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -351,7 +358,7 @@ def test_excel_import_hashes_the_shared_initial_password_once(client, monkeypatc
         ],
     )
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "批量性能测试"},
         files={"file": ("人员.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -369,7 +376,7 @@ def test_excel_validation_is_atomic(client, db):
         ],
     )
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "测试来源"},
         files={"file": ("人员.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -380,14 +387,14 @@ def test_excel_validation_is_atomic(client, db):
 def test_excel_rejects_wrong_format_and_missing_headers(client):
     client = _as_admin(client)
     wrong_type = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "测试"},
         files={"file": ("人员.xls", b"old excel", "application/vnd.ms-excel")},
     )
     assert wrong_type.status_code == 415
 
     corrupt = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "测试"},
         files={"file": ("人员.xlsx", b"not-a-workbook", "application/octet-stream")},
     )
@@ -396,7 +403,7 @@ def test_excel_rejects_wrong_format_and_missing_headers(client):
 
     missing = _xlsx(["账号", "姓名"], [["alice", "爱丽丝"]])
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "测试"},
         files={"file": ("人员.xlsx", missing, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -420,7 +427,7 @@ def test_excel_rejects_concealed_or_formula_accounts(client, unsafe_kind):
     workbook.close()
 
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "安全校验"},
         files={"file": ("人员.xlsx", output.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -430,9 +437,9 @@ def test_excel_rejects_concealed_or_formula_accounts(client, unsafe_kind):
 
 
 def test_template_is_admin_only_and_valid_xlsx(client):
-    assert client.get("/api/personnel/import-template").status_code == 403
+    assert client.get("/agent/personnel/import-template").status_code == 403
     client = _as_admin(client)
-    response = client.get("/api/personnel/import-template")
+    response = client.get("/agent/personnel/import-template")
     assert response.status_code == 200
     assert response.content.startswith(b"PK")
     assert "personnel_import_template.xlsx" in response.headers["content-disposition"]
@@ -452,7 +459,7 @@ def test_structure_excel_import_builds_org_path(client, db):
         ],
     )
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "部门结构导入"},
         files={"file": ("部门结构.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -479,7 +486,7 @@ def test_structure_excel_import_builds_org_path(client, db):
 
 def test_template_has_single_marked_example_row(client):
     client = _as_admin(client)
-    response = client.get("/api/personnel/import-template")
+    response = client.get("/agent/personnel/import-template")
     assert response.status_code == 200
     sheet = load_workbook(BytesIO(response.content)).active
     rows = [tuple(cell.value for cell in row) for row in sheet.iter_rows()]
@@ -497,7 +504,7 @@ def test_structure_excel_skips_template_example_rows(client):
         ],
     )
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "测试"},
         files={"file": ("部门结构.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml")},
     )
@@ -510,7 +517,7 @@ def test_structure_excel_rejects_missing_required_columns(client):
     client = _as_admin(client)
     missing = _xlsx(["姓名", "部门"], [["张三", "金融市场部"]])
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "测试"},
         files={"file": ("部门结构.xlsx", missing, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -519,15 +526,15 @@ def test_structure_excel_rejects_missing_required_columns(client):
 
 
 def test_delete_personnel_requires_admin(client):
-    assert client.delete("/api/personnel/users/whatever").status_code == 403
+    assert client.delete("/agent/personnel/users/whatever").status_code == 403
 
 
 def test_delete_personnel_guards(client, db):
     client = _as_admin(client)
     admin = db.get_user_by_username("admin")
     assert admin is not None
-    assert client.delete(f"/api/personnel/users/{admin.user_id}").status_code == 409
-    assert client.delete("/api/personnel/users/nonexistent-user").status_code == 404
+    assert client.delete(f"/agent/personnel/users/{admin.user_id}").status_code == 409
+    assert client.delete("/agent/personnel/users/nonexistent-user").status_code == 404
 
 
 def _count_rows(db, sql, params):
@@ -542,7 +549,7 @@ def test_delete_personnel_blocked_while_owning_bases_and_cleans_grants(client, d
     from datetime import datetime
 
     client = _as_admin(client)
-    created = client.post("/api/personnel/users", json=_payload(username="to_delete", employee_id="E9999"))
+    created = client.post("/agent/personnel/users", json=_payload(username="to_delete", employee_id="E9999"))
     assert created.status_code == 201, created.text
     user_id = created.json()["user_id"]
     now = datetime.now().isoformat()
@@ -571,7 +578,7 @@ def test_delete_personnel_blocked_while_owning_bases_and_cleans_grants(client, d
         )
 
     # 名下有未删除知识库 → 409，账号与授权保持原样
-    blocked = client.delete(f"/api/personnel/users/{user_id}")
+    blocked = client.delete(f"/agent/personnel/users/{user_id}")
     assert blocked.status_code == 409
     assert "知识库" in str(blocked.json()["detail"])
     assert db.get_user_by_id(user_id) is not None
@@ -580,7 +587,7 @@ def test_delete_personnel_blocked_while_owning_bases_and_cleans_grants(client, d
     with db.get_connection() as connection:
         cursor = connection.cursor()
         db._execute(cursor, "UPDATE knowledge_bases SET status='deleted' WHERE id='base-x'")
-    ok = client.delete(f"/api/personnel/users/{user_id}")
+    ok = client.delete(f"/agent/personnel/users/{user_id}")
     assert ok.status_code == 204
 
     assert db.get_user_by_id(user_id) is None

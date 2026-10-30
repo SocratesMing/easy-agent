@@ -93,7 +93,9 @@ def _bind_scope(db, base_id: str) -> None:
     )
 
 
-def _make_tool(db, tmp_path, monkeypatch) -> KnowledgeOriginalTool:
+def _make_tool(
+    db, tmp_path, monkeypatch, *, ragflow_client=None
+) -> KnowledgeOriginalTool:
     monkeypatch.setattr(original_tool_module, "get_database", lambda: db)
     return KnowledgeOriginalTool(
         username=USERNAME,
@@ -101,6 +103,7 @@ def _make_tool(db, tmp_path, monkeypatch) -> KnowledgeOriginalTool:
         workspace_dir=str(tmp_path),
         knowledge_config=_config(),
         original_store=None,
+        ragflow_client=ragflow_client,
     )
 
 
@@ -157,3 +160,56 @@ def test_list_without_scope_returns_actionable_message(db, tmp_path, monkeypatch
     assert "当前会话未绑定知识库" in result
     assert "选择器" in result
     assert "知识资源不存在" not in result
+
+
+class _FakeRagflowChunks:
+    def __init__(self):
+        self.list_datasets_calls: list[dict] = []
+        self.list_chunks_calls: list[dict] = []
+
+    async def list_datasets(self, **kwargs):
+        self.list_datasets_calls.append(kwargs)
+        return {"datasets": [{"id": "shared-1", "name": "EA_SHARED"}], "total": 1}
+
+    async def list_chunks(
+        self, dataset_id, document_id, *, page=1, page_size=100
+    ):
+        self.list_chunks_calls.append(
+            {
+                "dataset_id": dataset_id,
+                "document_id": document_id,
+                "page": page,
+                "page_size": page_size,
+            }
+        )
+        return {
+            "chunks": [
+                {
+                    "chunk_order_int": 2,
+                    "content_with_weight": "第二段",
+                },
+                {
+                    "chunk_order_int": 1,
+                    "content_with_weight": "第一段",
+                },
+            ],
+            "total": 2,
+        }
+
+
+async def test_extract_returns_parsed_text_in_chunk_order(db, tmp_path, monkeypatch):
+    _create_user(db)
+    _create_session(db)
+    base_id, document_id = _create_base_with_original(db)
+    _bind_scope(db, base_id)
+    KnowledgeRepository(db).update_document(document_id, remote_document_id="rd-1")
+    ragflow = _FakeRagflowChunks()
+    tool = _make_tool(db, tmp_path, monkeypatch, ragflow_client=ragflow)
+
+    result = await tool._arun(action="extract", document_id=document_id)
+
+    assert "文档：研报.pdf" in result
+    assert result.index("第一段") < result.index("第二段")
+    assert ragflow.list_datasets_calls
+    assert ragflow.list_chunks_calls[0]["dataset_id"] == "shared-1"
+    assert ragflow.list_chunks_calls[0]["document_id"] == "rd-1"

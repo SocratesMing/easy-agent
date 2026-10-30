@@ -330,11 +330,11 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="access_knowledge_original",
         source=SOURCE_KNOWLEDGE,
-        description="按权限访问知识库原文（list/metadata/materialize）",
+        description="按权限访问知识库原文（list/metadata/extract/materialize）",
         mutating=True,
         is_hitl=True,
         interrupt_decisions=("approve", "edit", "reject"),
-        # 仅 action=materialize 触发审批（list/metadata 只读，无需审批）。
+        # 仅 action=materialize 触发审批（list/metadata/extract 只读，无需审批）。
         hitl_conditional=True,
         hitl_predicate="is_knowledge_materialize",
         hitl_trigger_note="args.action == 'materialize'",

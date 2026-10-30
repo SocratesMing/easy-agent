@@ -35,7 +35,7 @@ from easy_agent.knowledges.personnel.repository import (
 from easy_agent.knowledges.facade import KnowledgeOperationsRepository
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/personnel", tags=["Personnel"])
+router = APIRouter(prefix="/agent/personnel", tags=["Personnel"])
 
 
 @router.get("/login-policy")

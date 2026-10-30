@@ -589,7 +589,7 @@ async def log_requests(request: Request, call_next):
         return response
     finally:
         duration = time.monotonic() - started
-        if path.startswith(("/api/knowledge/", "/api/personnel")):
+        if path.startswith(("/agent/knowledge/", "/agent/personnel")):
             metrics.observe(request.method, path, status_code, duration)
         if should_audit(path, request.method):
             db = getattr(request.app.state, "db", None)

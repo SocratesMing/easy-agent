@@ -65,9 +65,8 @@ module.exports = defineConfig({
           proxyRes.headers['cache-control'] = 'no-cache'
         },
       },
-      // /api 旧前缀（知识库 /api/knowledge/v1、人员 /api/personnel）后端有
-      // legacy 兼容路由：缓存了旧版前端的浏览器（SPA 旧 JS 用旧前缀）在 dev
-      // server 上会 404，必须一并代理到后端，旧页面才能继续工作。
+      // /api 旧前缀仅用于兼容缓存了旧版前端的浏览器：新前端统一走 /agent，
+      // 后端 LegacyHostRoutes 会把 /api/<prefix> 重写为 /agent/<prefix>。
       '/api': {
         target: PROXY_TARGET,
         changeOrigin: true,

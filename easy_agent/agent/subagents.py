@@ -44,14 +44,15 @@ DEFAULT_SUBAGENTS = [
         "name": "knowledge-researcher",
         "description": (
             "Look up knowledge-base originals with access_knowledge_original "
-            "(list, metadata, materialize). Use when the user wants full documents, "
-            "not RAG snippets."
+            "(list, metadata, extract, materialize). Use when the user wants full "
+            "documents, not RAG snippets."
         ),
         "system_prompt": (
             "Use access_knowledge_original. For list, omit base_id to use the current "
             "session's selected knowledge bases; never invent base IDs, document IDs or "
-            "citations. materialize copies files into /workspace/knowledge-originals and "
-            "needs approval. "
+            "citations. Use extract for PDF/Office text; never read materialized binaries "
+            "with read_file (base64 bloats context). materialize copies files into "
+            "/workspace/knowledge-originals and needs approval. "
             + SAFE_SUBAGENT_RULES
         ),
         "use_tools": ("access_knowledge_original",),

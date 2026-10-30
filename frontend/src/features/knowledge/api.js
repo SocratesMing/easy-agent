@@ -4,7 +4,7 @@ import { readSSE } from '../../api/sse.js'
 
 // Vue 3 基线的 authFetch 已统一附加 Bearer token 并处理 401 登出，
 // 这里直接复用，保留原生 Response 语义（二进制预览 / Range / 错误体）。
-const root = () => `${API_BASE_URL}/api/knowledge/v1`
+const root = () => `${API_BASE_URL}/agent/knowledge/v1`
 
 export async function cancelMessage(sessionId) {
   const response = await authFetch(`${API_BASE_URL}/agent/chat/cancel?session_id=${encodeURIComponent(sessionId)}`, { method: 'POST' })
