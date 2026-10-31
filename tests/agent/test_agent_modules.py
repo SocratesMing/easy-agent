@@ -155,10 +155,24 @@ def test_build_agent_middleware_type_and_order():
     middleware = middleware_mod.build_agent_middleware(config, 7)
     assert [type(item).__name__ for item in middleware] == [
         "TodoListMiddleware",
+        # ToolProgress 必须在 ToolError 之前：先定义=最外层，才能看到
+        # ToolError 转换后的 ToolMessage（否则改不到空结果）。
+        "ToolProgressMiddleware",
         "ToolErrorMiddleware",
         "ModelCallLimitMiddleware",
         "ToolCallLimitMiddleware",
     ]
+
+
+def test_tool_progress_switch_off_from_config():
+    """``tool_progress_enabled: false`` 时构造出关闭态的中间件（一键回旧行为）。"""
+    config = SimpleNamespace(
+        agent=SimpleNamespace(tool_progress_enabled=False),
+        tools=SimpleNamespace(result_log_truncate=321),
+    )
+    middleware = middleware_mod.build_agent_middleware(config, 7)
+    progress = next(m for m in middleware if type(m).__name__ == "ToolProgressMiddleware")
+    assert progress.enabled is False
 
 
 def test_easyagent_build_middleware_delegates(monkeypatch, lightweight_agent):

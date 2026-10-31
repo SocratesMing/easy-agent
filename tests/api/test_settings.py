@@ -164,3 +164,28 @@ def test_mcp_config_expands_environment_placeholders(tmp_path, monkeypatch):
         "MCP_PASSWORD": "test-password",
         "MCP_HOST": "127.0.0.1",
     }
+
+
+def test_knowledge_status_reports_enabled_flag(client):
+    """侧边栏只看 enabled，不带 Ragflow 地址或密钥。"""
+    from easy_agent.app import app
+
+    from easy_agent.knowledges.core.config import KnowledgeConfig
+
+    previous = getattr(app.state, "knowledge_config", None)
+    try:
+        app.state.knowledge_config = KnowledgeConfig(
+            enabled=True, base_url="http://ragflow.local", api_key="test-key"
+        )
+        enabled = client.get("/agent/settings/knowledge")
+        assert enabled.status_code == 200
+        assert enabled.json() == {"enabled": True}
+
+        app.state.knowledge_config = KnowledgeConfig(enabled=False)
+        disabled = client.get("/agent/settings/knowledge")
+        assert disabled.json() == {"enabled": False}
+    finally:
+        if previous is None:
+            delattr(app.state, "knowledge_config")
+        else:
+            app.state.knowledge_config = previous

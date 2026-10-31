@@ -53,6 +53,9 @@ EXPECTED_ROUTES = {
     ("GET", "/agent/public-list"),
     ("POST", "/agent/del"),
     ("GET", "/agent/expert/required-skills"),
+    # cc4b1e9d：新建专家后在工作区列出专家的 md 文档
+    ("GET", "/agent/expert-md"),
+    ("GET", "/agent/session-experts"),
 }
 
 
@@ -102,6 +105,7 @@ def test_to_public_projects_only_public_fields():
         "export_prompt": "用户描述",
         "export_description": "面向债券投研场景",
         "export_skills_names": ["久期分析", "信用研究"],
+        "export_required_skills": ["duration-analysis", "credit-research"],
         "export_features_prompt": ["帮我看这周资金面"],
         "export_file_path": "/tmp/expert_1/v1",
         "agent_status": "active",
@@ -121,6 +125,7 @@ def test_to_public_projects_only_public_fields():
         "export_prompt": "用户描述",
         "export_description": "面向债券投研场景",
         "export_skills_names": ["久期分析", "信用研究"],
+        "export_required_skills": ["duration-analysis", "credit-research"],
         "export_features_prompt": ["帮我看这周资金面"],
         "export_file_path": "/tmp/expert_1/v1",
         "agent_status": "active",
@@ -133,6 +138,7 @@ def test_to_public_projects_only_public_fields():
     # 缺列时回退默认值（列表 -> []、版本 -> 1）
     partial = expert_helpers._to_public({"export_name_cn": "甲"})
     assert partial["export_skills_names"] == []
+    assert partial["export_required_skills"] == []
     assert partial["export_version"] == 1
 
 

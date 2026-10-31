@@ -85,7 +85,7 @@ class SessionRepository:
         委托 ``utils.session.get_owned_session``，保持与现有 API 完全一致的
         错误语义（404 + "会话不存在"，不泄露会话是否存在）。
         """
-        from easy_agent.utils.session import get_owned_session as _get_owned_session
+        from easy_agent.db.session_ownership import get_owned_session as _get_owned_session
 
         return _get_owned_session(self._db, session_id, username)
 

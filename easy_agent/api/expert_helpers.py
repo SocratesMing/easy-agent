@@ -24,9 +24,7 @@ from easy_agent.db.expert_store import (
 )
 from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.agent.model import create_model
-from easy_agent.services import (
-    get_agent_config,
-)
+from easy_agent.services.agent_manager import get_agent_config
 from easy_agent.services.expert_runtime import (  # noqa: F401 - re-export 历史名字
     _as_str_list,
     _current_user_id,
@@ -66,6 +64,8 @@ def _to_public(record: dict) -> dict:
         "export_prompt": record.get("export_prompt", ""),
         "export_description": record.get("export_description", ""),
         "export_skills_names": record.get("export_skills_names", []),
+        # 专家绑定的技能包目录名（对话时按它做技能作用域硬隔离）
+        "export_required_skills": record.get("export_required_skills", []),
         "export_features_prompt": record.get("export_features_prompt", []),
         "export_file_path": record.get("export_file_path", ""),
         "agent_status": record.get("agent_status", ""),

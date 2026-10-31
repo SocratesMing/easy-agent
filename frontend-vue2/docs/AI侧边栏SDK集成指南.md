@@ -591,7 +591,8 @@ SPA 路由切换不会触发页面刷新，需在路由变化时调用 `sidebar.
 | 路径 | 说明 |
 | --- | --- |
 | `src/sdk/index.js` | SDK 入口：Shadow DOM 挂载、鉴权、页面上下文、实例 API |
-| `src/components/AiSidebar.vue` | 侧边栏组件（主站与 SDK 共用，SDK 以 `embedded` 模式使用） |
+| `src/packages/easyAgent/sidebar.js` | 业务模块给 SDK 的专用入口（SDK 只经它引用模块，不引 feature 私有路径） |
+| `src/packages/easyAgent/features/chat/components/AiSidebar.vue` | 侧边栏组件（主站、内网嵌入页面与 SDK 共用，SDK 以 `embedded` 模式使用） |
 | `sdk/` | npm 包模板：`package.json`（版本号在此维护）、`index.d.ts`、`demo.html` |
 | `scripts/build-sdk.mjs` | 构建脚本 |
 | `docs/AI侧边栏SDK集成指南.md` | 本文档，构建时复制为包内 `README.md` |
@@ -616,7 +617,11 @@ npm publish --registry https://npm.example.com/
 - vue-cli lib 模式打包，内联 Vue 2 运行时（`--inline-vue`），宿主无需安装 Vue；
 - 构建后把抽取出的 CSS 以字符串回填进 JS（SDK 运行时注入影子根），因此产物是单文件；
 - SDK 构建中 `highlight.js` 使用官方常用语言子集 `highlight.js/lib/common`，主站不受影响；
-- 主站 `App.vue` 支持 `?session=<会话ID>` 打开指定会话，供「在主站打开」使用。
+- 主站页面（`EasyAgentPage.vue`）支持 `?session=<会话ID>` 打开指定会话，供「在主站打开」使用；
+  嵌入内网宿主时该参数经宿主路由读取（保留其他 query 与 hash）；
+- SDK 的挂载点外层是模块根节点 `.easy-agent-root`（模块的限域重置与主题变量以它为范围），`theme`
+  覆盖同时写在 `:host` 与该根节点上；SDK 自带一份模块副本，与同页的嵌入页面配置、token 互不影响；
+- 401 续期时遇到「其他设备登录 / 被迫下线」不再自动重新登录（避免两端互相挤下线），直接走 `onAuthExpired`。
 
 ### Node 14 兼容
 
@@ -631,9 +636,9 @@ cd frontend-vue2 && npm run build:sdk
 | 方面 | 处理方式 |
 | --- | --- |
 | 构建脚本 | `scripts/build-sdk.mjs` 不使用 `import.meta.dirname`（Node 20.11+）与 `node:` 前缀导入 |
-| 文件图标 | `unplugin-icons` 23 与 `@iconify/utils` 为纯 ESM，Node 14 无法加载；SDK 构建改用 `scripts/iconify-raw-webpack.cjs`，从 `@iconify/json` 生成与原来一致的 SVG 字符串（主站构建不变） |
+| 文件图标 | 不再经 webpack 插件解析：业务模块自带由 `scripts/easy-agent/generate-icons.mjs` 预先生成的 SVG 字符串（`src/packages/easyAgent/assets/icons/`），与原插件输出逐字节一致 |
 | 产物语法 | 依赖全部经 Babel 转译（`transpileDependencies: true`），目标 Chrome 64 / Edge 79 / Firefox 67 / Safari 12，terser 压缩限制为 `ecma: 2018`，产物不含 `?.`、`??` 等 ES2020 语法 |
 
 因此 Node 14 时代的宿主工程（webpack 4 / vue-cli 4，其解析器 acorn 6 最高只识别 ES2019）可以直接 `import EasyAgentSidebar from '@easy-agent/ai-sidebar'` 打包，无需为 SDK 额外配置 Babel。
 
-> 主站（`npm run dev` / `npm run build`）仍需 Node 20：`scripts/run-vite.mjs`、`unplugin-icons` 等依赖要求较新的 Node。
+> 主站构建（`npm run build`）与 SDK 构建在 Node 14.20.0 下均已验证通过（2026-10-30）；单元测试（`npm run test:unit`）需要 Node ≥ 20.11。

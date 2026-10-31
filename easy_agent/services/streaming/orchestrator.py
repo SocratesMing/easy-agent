@@ -85,6 +85,29 @@ from easy_agent.services.streaming.side_effects import (
 
 logger = logging.getLogger("easy_agent.chat_service")
 
+#: 主代理模型调用次数用尽时的对外文案。
+#:
+#: 原始异常文本是 ``Model call limits exceeded: run limit (100/100)``——``run limit``
+#: 对业务方没有任何意义，还容易被当成系统故障。日志里仍保留原始异常与堆栈，
+#: 只有给用户/调用方看的那一句换掉。
+LIMIT_EXCEEDED_MESSAGE = "执行步数用尽，请缩小分析范围或明确数据位置"
+
+try:  # 旧版 langchain 没有该中间件；导入失败时按普通异常处理
+    from langchain.agents.middleware.model_call_limit import (
+        ModelCallLimitExceededError as _ModelCallLimitExceededError,
+    )
+except ImportError:  # pragma: no cover - 依赖版本兜底
+    _ModelCallLimitExceededError = None  # type: ignore[assignment]
+
+
+def friendly_error_message(exc: BaseException) -> str:
+    """超限异常换成可读文案，其余异常原样返回（保留类型与细节，便于排查）。"""
+    if _ModelCallLimitExceededError is not None and isinstance(
+        exc, _ModelCallLimitExceededError
+    ):
+        return LIMIT_EXCEEDED_MESSAGE
+    return str(exc)
+
 
 @dataclass
 class HitlInterruption:
@@ -672,10 +695,10 @@ async def chat_stream_generator(
         for blk in reversed(blocks):
             if blk.get("type") == "tool_call" and blk.get("duration") is None:
                 blk["success"] = False
-                blk["result"] = f"执行中断: {str(e)[:result_log_truncate]}"
+                blk["result"] = f"执行中断: {friendly_error_message(e)[:result_log_truncate]}"
                 blk["duration"] = 0
                 break
-        yield emitter.error(f"处理失败: {str(e)}")
+        yield emitter.error(f"处理失败: {friendly_error_message(e)}")
 
 async def resume_stream_generator(
     db: Database,
@@ -936,4 +959,4 @@ async def resume_stream_generator(
             start_time=start_time,
             with_approval=True,
         )
-        yield emitter.error(f"处理失败: {str(e)}")
+        yield emitter.error(f"处理失败: {friendly_error_message(e)}")

@@ -31,10 +31,11 @@ logger = logging.getLogger("easy_agent.db.schema")
 # 见 init_tables()：版本一致时跳过整轮建表 + 补列 + 建索引探测（MySQL 上这一步
 # 过去要 40+ 次网络往返，多副本部署时每个 pod 启动都要跑一遍，是启动慢的主因）。
 # 10：knowledge_source_sync_items（b65aff4）；11：知识库 batch_id 列（0f79e70）
-# 与表精简（b7bfe69）撞号；12：再退役 3 张空表（edcc851）。
-# 13：合并 rag-1018 与 audit-improvements 后的统一版本号——两侧都用过 11，
-# 必须再 +1，否则任一侧的旧库会命中快速路径、跳过另一侧的变更。
-SCHEMA_VERSION = 13
+# 与表精简（b7bfe69）撞号；12：再退役 3 张空表（edcc851）；
+# 13：再退役 8 张代码不再读写的表（旧 market key、行情数据、旧版知识库模块）。
+# 14：合并 rag-1018 与 audit-improvements：两侧都用过 13，统一再 +1，
+# 否则任一侧的旧库会命中快速路径、跳过另一侧的变更。
+SCHEMA_VERSION = 14
 # utf8mb4 复合主键必须 ≤ 3072 字节：(512 + 191) * 4 = 2812。
 LANGGRAPH_STORE_NS_LEN = 512
 LANGGRAPH_STORE_KEY_LEN = 191
@@ -426,6 +427,9 @@ def _create_langgraph_store_table(db, cursor):
 # 曾经建过、当前路径不再读写的表。升级时删掉，避免继续占空间。
 # fmqt_bloom*：9091087c 删掉彭博业务后留在库里，代码早已不建不读。
 # uploaded_file / user_ip / tool_call_record：更早版本建的表，现在的代码里没有任何引用，现网是空表。
+# market_mcp_api_keys：旧的 market 业务 key 表，key 统一放在 mcp_api_keys 之后不再使用。
+# forex_rates / precious_metals：tests/helpers/download_market_data.py 灌的行情数据，后端不读不写。
+# session_llm 不在这里：本应用从没建过这张表，归属确认之前不删。
 _RETIRED_TABLES = (
     "fmqt_lock",
     "fmqt_bloom",
@@ -436,6 +440,9 @@ _RETIRED_TABLES = (
     "uploaded_file",
     "user_ip",
     "tool_call_record",
+    "market_mcp_api_keys",
+    "forex_rates",
+    "precious_metals",
 )
 
 # 不再创建的索引 (表, 索引)：都是别的索引的前缀，或者没有查询用到。升级时删掉，省掉写入开销。
@@ -484,7 +491,7 @@ def _backfill_message_counts(db, cursor) -> None:
 
 def _create_distributed_lock_table(db, cursor):
     # 分布式锁表：多实例（多 pod）部署下防止同一任务被重复处理，
-    # 见 easy_agent/utils/distributed_lock.py。lock_key 为主键，抢锁即
+    # 见 easy_agent/persistence/distributed_lock.py。lock_key 为主键，抢锁即
     # 「插入行 / 已过期则改写 owner」，插入失败即表示锁被其它实例占用。
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS distributed_locks (
@@ -606,6 +613,10 @@ def _create_expert_tables(db, cursor):
     - ``export_run_file_path`` 按需求「（删除）」不建；
     - ``export_skills_names``：专家技能标签（中文名数组，JSON 字符串），由大模型
       根据用户描述生成 2~3 个；前端卡片最多展示 3 个；
+    - ``export_required_skills``：专家**绑定的技能包目录名**（JSON 字符串数组），
+      创建 / 修改专家时由用户在输入框选定的技能包写入（``save_expert`` 落库）。
+      与 ``export_skills_names``（展示标签）完全不同：这里是真实技能目录名，
+      对话时按它做技能作用域硬隔离，见 ``services/tool_scope.py``；
     - ``export_description``：专家主要功能描述（大模型生成，≤300 字），
       用于卡片与详情页展示；
     - ``tag_id``：分类标签，由大模型在配置的 ``expert_tags`` 候选中选一个，
@@ -626,6 +637,7 @@ def _create_expert_tables(db, cursor):
             export_prompt TEXT,
             export_description TEXT,
             export_skills_names TEXT,
+            export_required_skills TEXT,
             export_features_prompt TEXT,
             export_file_path VARCHAR(1024) DEFAULT '',
             agent_status VARCHAR(32) NOT NULL DEFAULT 'active',
@@ -638,6 +650,8 @@ def _create_expert_tables(db, cursor):
     _create_index(db,
         cursor, "idx_expert_agents_user", "expert_agents", "user_id"
     )
+    # 存量库补列：专家绑定的技能包目录名（JSON 数组），SCHEMA_VERSION=11 起
+    _ensure_column(db, cursor, "expert_agents", "export_required_skills", "TEXT")
 
     # 领域 schema 由各模块在 import 时注册（db.schema_registry），这里统一执行；
     # 依赖方向 db -> schema_registry <- knowledges，避免 db 反向 import 领域模块。

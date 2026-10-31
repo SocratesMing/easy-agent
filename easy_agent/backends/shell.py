@@ -10,7 +10,7 @@ from pathlib import Path
 from deepagents.backends import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 
-from easy_agent.agent.hitl import _is_directory_deletion
+from easy_agent.sandboxing.command_policy import is_directory_deletion
 from easy_agent.sandboxing.landlock import landlock_usable
 from easy_agent.sandboxing.sandbox import bwrap_usable, run_landlocked, run_sandboxed
 
@@ -102,7 +102,7 @@ class PathTranslatingShell(LocalShellBackend):
             logger.debug(
                 "execute path translation: %s → %s", command[:80], translated[:80]
             )
-        if _is_directory_deletion(translated):
+        if is_directory_deletion(translated):
             logger.warning(f"[execute] 拒绝目录删除命令: {translated[:120]}")
             return ExecuteResponse(
                 output="Error: 不允许删除目录/文件夹。项目根目录和 workspace 下的文件夹受保护，"

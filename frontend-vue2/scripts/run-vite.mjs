@@ -80,9 +80,13 @@ function printBanner() {
 
 printBanner()
 
+// vue-cli 只在 mode 为 production 时默认 NODE_ENV=production。这里的 mode 是 prod / test / win，
+// 不显式设置的话构建会按 development 出包（不压缩、模块用 eval 包裹、CSS 打进 JS），
+// 和 build-sdk.mjs 一样在构建时固定为 production
+const env = command === 'build' ? { ...process.env, NODE_ENV: 'production' } : process.env
 const result = spawnSync(process.execPath, [cliPath, ...args], {
   stdio: 'inherit',
-  env: process.env,
+  env,
 })
 
 process.exit(result.status ?? 0)

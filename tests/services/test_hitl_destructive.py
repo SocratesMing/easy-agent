@@ -7,10 +7,10 @@ from types import SimpleNamespace
 from easy_agent.agent.hitl import (
     EXECUTE_HITL_TOOL_DESCRIPTION,
     _is_destructive_command,
-    _is_directory_deletion,
     _is_knowledge_materialize,
     looks_like_mutating_tool,
 )
+from easy_agent.sandboxing.command_policy import is_directory_deletion
 
 
 def test_execute_description_mentions_sandbox():
@@ -22,7 +22,7 @@ def test_execute_description_mentions_sandbox():
 def test_file_rm_is_destructive_dir_rm_is_not():
     req = SimpleNamespace(tool_call={"args": {"command": "rm /workspace/a.txt"}})
     assert _is_destructive_command(req) is True
-    assert _is_directory_deletion("rm -r /workspace/dir") is True
+    assert is_directory_deletion("rm -r /workspace/dir") is True
     req_dir = SimpleNamespace(tool_call={"args": {"command": "rm -r /workspace/dir"}})
     assert _is_destructive_command(req_dir) is False
 
@@ -99,7 +99,7 @@ def test_build_interrupt_config_keeps_execute_conditional_for_directory_deletion
     assert when(file_req) is True
     # 目录删除不进 HITL，由 _PathTranslatingShell.execute 直接拒绝（策略层）。
     assert when(dir_req) is False
-    assert _is_directory_deletion(dir_req.tool_call["args"]["command"]) is True
+    assert is_directory_deletion(dir_req.tool_call["args"]["command"]) is True
 
 
 def test_build_interrupt_config_uninjected_tools_absent():

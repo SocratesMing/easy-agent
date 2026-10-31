@@ -60,7 +60,7 @@ def env(db, monkeypatch, tmp_path):
     monkeypatch.setattr(
         Config,
         "get_user_workspace_dir",
-        staticmethod(lambda username: tmp_path / "users" / username),
+        staticmethod(lambda username, config=None: tmp_path / "users" / username),
     )
     monkeypatch.setattr(writer, "get_database", lambda: db)
     monkeypatch.setattr(
@@ -365,8 +365,7 @@ def test_result_text_hides_server_paths(env):
 def test_agent_manager_injects_save_expert(client, monkeypatch):
     """会话 Agent 应注入 save_expert，且工具描述携带配置里的分类标签候选。
 
-    DA-13：save_expert 由 expert-creator 技能带出，交给 SkillsMiddleware(tools=...)，
-    不在 agent 的工具列表里。
+    save_expert 是产品级入口，非专家会话常驻，不交给 SkillsMiddleware 门控。
     """
     import easy_agent.agent.core as agent_mod
     import easy_agent.services.agent_manager as am
@@ -392,9 +391,7 @@ def test_agent_manager_injects_save_expert(client, monkeypatch):
         )
     )
 
-    assert "save_expert" not in {getattr(t, "name", "") for t in (captured.get("tools") or [])}
-    # tools 是 resolver（D4：兼容 MCP 前缀），按技能里写的名字取工具
-    tools = {t.name: t for t in recorded[-1]["tools"]("save_expert", None)}
+    tools = {getattr(t, "name", ""): t for t in (captured.get("tools") or [])}
     assert "save_expert" in tools
     assert "credit_research: 信用研究" in tools["save_expert"].description
     assert tools["save_expert"].tag_options == TAG_OPTIONS
@@ -448,6 +445,19 @@ def test_update_uses_bound_expert_id_without_args(env):
     record = ExpertStore(env.db).get(expert_id)
     assert record["export_name_cn"] == "信用债投研专家V2"
     assert record["export_version"] == 2
+
+
+def test_update_sees_a_target_bound_after_the_tool_was_built(env):
+    """用户点「编辑」时会话 Agent 可能早已建好：之后才绑定的待修改专家也要生效。"""
+    expert_id = _expert_id_from(_create(_make_tool(), name_cn="信用债投研专家"))
+    shared: dict = {}
+    tool = _make_tool(edit_targets=shared)
+    shared["s1"] = expert_id
+
+    out = _call(tool, action="update", name_cn="信用债投研专家V2", **FAKE_CONFIG)
+
+    assert "修改成功" in out
+    assert ExpertStore(env.db).get(expert_id)["export_name_cn"] == "信用债投研专家V2"
 
 
 def test_update_rejects_id_mismatch_with_bound_target(env):
@@ -524,9 +534,8 @@ def _stub_skills_middleware(monkeypatch, recorded: list):
     monkeypatch.setattr(agent_mod, "SkillsMiddleware", _record)
 
 
-def test_agent_manager_save_expert_is_carried_by_expert_creator_skill(client, monkeypatch):
-    """DA-13：save_expert 不进 agent 工具列表，交给 SkillsMiddleware（expert-creator 的
-    include_tools 带出）；专家会话不提供。"""
+def test_agent_manager_keeps_save_expert_out_of_skill_gating(client, monkeypatch):
+    """save_expert 是产品级入口：非专家会话常驻，不再交给 SkillsMiddleware 门控；专家会话不提供。"""
     import easy_agent.services.agent_manager as am
     from easy_agent.agent.graph_cache import clear_agent_graph_cache
 
@@ -544,11 +553,13 @@ def test_agent_manager_save_expert_is_carried_by_expert_creator_skill(client, mo
             "sess-gated-general", username="testuser", enable_hitl=False
         )
     )
-    assert "save_expert" not in _tool_names(captured[-1])
-    assert [t.name for t in recorded[-1]["tools"]("save_expert", None)] == ["save_expert"]
-    assert recorded[-1]["sources"][-1] == "/user-skills/"
+    assert "save_expert" in _tool_names(captured[-1])
+    # 公共 expert-creator 仍声明 include_tools: save_expert，但它是例外清单成员，
+    # 不会被交给任何 SkillsMiddleware（否则旧副本场景下又变成永不披露）
+    assert all(
+        [t.name for t in kw["tools"]("save_expert", None)] == [] for kw in recorded
+    )
 
-    built = len(recorded)
     asyncio.run(
         am.get_or_create_agent_for_session(
             "sess-gated-expert",
@@ -558,8 +569,6 @@ def test_agent_manager_save_expert_is_carried_by_expert_creator_skill(client, mo
         )
     )
     assert "save_expert" not in _tool_names(captured[-1])
-    # 专家会话没有可带出的工具：不替换框架默认的 SkillsMiddleware
-    assert len(recorded) == built
 
 
 def test_agent_manager_reuses_agent_across_turns(client, monkeypatch):
@@ -598,3 +607,102 @@ def test_session_edit_target_bind_override_and_clear(client):
     # 空值不写入
     am.set_session_edit_target("sess-edit-bind2", "  ")
     assert am.get_session_edit_target("sess-edit-bind2") == ""
+
+
+# ── 12. 专家绑定技能包（export_required_skills）────────────────────────
+
+
+def _user_skill(env, name: str, *, description: str = "demo") -> None:
+    """在（已重定向的）用户技能库里造一个技能包。"""
+    root = env.tmp / "users" / "testuser" / "skills"
+    (root / name).mkdir(parents=True, exist_ok=True)
+    (root / name / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\nbody of {name}\n",
+        encoding="utf-8",
+    )
+
+
+def test_create_binds_selected_skills(env):
+    """创建专家时，输入框选中的技能包落进 export_required_skills；元技能不落库。"""
+    _user_skill(env, "g7-rates-research")
+    _user_skill(env, "docx")
+
+    out = _create(_make_tool(turn_skills={"s1": ["expert-creator", "g7-rates-research", "docx"]}))
+    assert "绑定技能包" in out
+    assert "g7-rates-research" in out
+    assert "expert-creator" not in out
+
+    record = ExpertStore(env.db).get(_expert_id_from(out))
+    assert record["export_required_skills"] == ["g7-rates-research", "docx"]
+
+
+def test_create_without_selection_binds_nothing(env):
+    """没选技能包 = 不绑定（对话时技能库全量可见）。"""
+    out = _create(_make_tool())
+    record = ExpertStore(env.db).get(_expert_id_from(out))
+
+    assert record["export_required_skills"] == []
+    assert "未绑定技能包" in out
+
+
+def test_update_replaces_skills_and_keeps_when_not_selected(env):
+    """修改专家：本轮选了就整份替换；没选则沿用原绑定。"""
+    _user_skill(env, "g7-rates-research")
+    _user_skill(env, "docx")
+
+    tool = _make_tool(turn_skills={"s1": ["g7-rates-research"]})
+    expert_id = _expert_id_from(_create(tool))
+    assert ExpertStore(env.db).get(expert_id)["export_required_skills"] == ["g7-rates-research"]
+
+    # 没选技能包的修改：保留原绑定（避免"只想改描述"把技能清空）
+    tool_no_skill = _make_tool()
+    _call(tool_no_skill, action="update", expert_agent_id=expert_id, **FAKE_CONFIG)
+    assert ExpertStore(env.db).get(expert_id)["export_required_skills"] == ["g7-rates-research"]
+
+    # 重新选择：整份替换
+    tool_new = _make_tool(turn_skills={"s1": ["docx"]})
+    _call(tool_new, action="update", expert_agent_id=expert_id, **FAKE_CONFIG)
+    assert ExpertStore(env.db).get(expert_id)["export_required_skills"] == ["docx"]
+
+
+def test_tool_reads_and_clears_the_shared_turn_skills(env):
+    """会话 Agent 会复用：工具装配之后才选的技能也要看得到，保存后清掉的是共享暂存。"""
+    _user_skill(env, "docx")
+    shared: dict = {}
+    tool = _make_tool(turn_skills=shared)
+    shared["s1"] = ["docx"]  # chat.py 在后面的轮次写入
+
+    out = _create(tool)
+
+    assert ExpertStore(env.db).get(_expert_id_from(out))["export_required_skills"] == ["docx"]
+    assert "s1" not in shared  # 不会黏到下一次创建
+
+
+def test_registry_hands_the_tool_the_shared_tables_even_when_empty():
+    """装配根把同一张表交给工具：空表也不能换成新字典，否则之后的写入工具看不到。"""
+    from easy_agent.tools import registry
+
+    edit_targets: dict = {}
+    turn_skills: dict = {}
+    ctx = registry.ToolBuildContext(
+        config=None,
+        username="testuser",
+        session_id="s1",
+        edit_targets=edit_targets,
+        turn_skills=turn_skills,
+        factories={"save_expert": writer.create_save_expert_tool},
+    )
+
+    tool = registry._build_save_expert_tool(ctx)
+
+    assert tool.edit_targets is edit_targets
+    assert tool.turn_skills is turn_skills
+
+
+def test_create_drops_missing_skill(env):
+    """选中的技能包已被删除 → 不写入专家绑定（记 WARNING）。"""
+    _user_skill(env, "docx")
+
+    out = _create(_make_tool(turn_skills={"s1": ["deleted-skill", "docx"]}))
+
+    assert ExpertStore(env.db).get(_expert_id_from(out))["export_required_skills"] == ["docx"]

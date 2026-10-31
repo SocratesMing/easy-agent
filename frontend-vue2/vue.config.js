@@ -22,12 +22,8 @@ const PROXY_TARGET =
 // AI 侧边栏 SDK 构建（scripts/build-sdk.mjs 设置）：lib 模式。
 const IS_SDK_BUILD = process.env.EASY_SDK_BUILD === '1'
 
-// Vue 2 基线（含 SDK）以 Node 14 构建：unplugin-icons 23 为纯 ESM（Node 14 无法 require），
-// `~icons/*` 统一走等价的 CJS 实现
-function iconsPlugin() {
-  const { IconifyRawPlugin } = require('./scripts/iconify-raw-webpack.cjs')
-  return new IconifyRawPlugin()
-}
+// 图标不再经 webpack 插件解析：业务模块自带生成好的 SVG（src/packages/easyAgent/assets/icons/，
+// 由 scripts/easy-agent/generate-icons.mjs 生成），宿主无需复制本文件的任何构建配置。
 
 module.exports = defineConfig({
   // SDK 的 common.js 会被宿主再次打包：依赖全部转译，避免 ?. / ?? 等语法让 webpack 4 宿主解析失败
@@ -93,9 +89,21 @@ module.exports = defineConfig({
     },
   },
 
+  chainWebpack: (config) => {
+    // 字体一律输出成单独文件：默认 8 KB 以下会以 base64 内联进 CSS，KaTeX 数学字体的
+    // woff2 / woff / ttf 三种格式都被内联（约 103 KB），每次首屏都要下载。单独文件只在页面
+    // 真正用到该字体时才下载，而且浏览器只取 @font-face 里第一种支持的格式。
+    // SDK 构建不改：单文件交付，见下面的 LimitChunkCountPlugin
+    if (!IS_SDK_BUILD) config.module.rule('fonts').set('type', 'asset/resource')
+  },
+
   configureWebpack: {
     // SDK 体积：全量 highlight.js（190+ 语言）换成官方常用语言子集，压缩后少约 700 KB
     resolve: IS_SDK_BUILD ? { alias: { 'highlight.js$': 'highlight.js/lib/common' } } : {},
-    plugins: [iconsPlugin()],
+    plugins: [
+      // SDK 必须单文件交付（CSS 由 build-sdk.mjs 回填进 JS）：动态 import() 一律并回主文件，
+      // 否则会拆出 *.<id>.js 异步分包，宿主漏部署时运行期加载失败
+      ...(IS_SDK_BUILD ? [new (require('webpack').optimize.LimitChunkCountPlugin)({ maxChunks: 1 })] : []),
+    ],
   },
 })

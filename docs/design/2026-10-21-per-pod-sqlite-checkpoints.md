@@ -2,6 +2,7 @@
 
 - 日期：2026-10-21
 - 状态：已实施（2026-10-21，尚未提交）。§11 的待确认项按推荐处理：清单示例用 ingress-nginx、前端与 API 同源、接受 pod 重建时等待中的审批作废、多副本时上传改为 `EASY_UPLOAD_BACKEND=store`。实施时另修了一处：`langgraph-checkpoint-sqlite` 原在可选依赖 `sqlite-saver` 里，镜像（`uv export --extra docs`）和 CI 都没装，官方 SQLite saver 导入失败、静默回退到业务库快照；已挪进主依赖
+- 更新（2026-10-29）：路径改到 config.yaml 的 `checkpoint.sqlite_path`（`config-example.yaml` 示例 `${CHECKPOINT_DIR:-/qts/checkpoint}/{pod}.db`）。YAML 没配时用旧环境变量 `EASY_CHECKPOINT_SQLITE_PATH`，再没有默认 `/qts/checkpoint/{pod}.db`；`auto` 不再因为业务库是 MySQL、没配路径而回退业务库快照。k8s 清单改为把 pod 本地的 emptyDir 挂到 `/qts/checkpoint`。下文的 `EASY_CHECKPOINT_SQLITE_PATH` / `data/checkpoints/{pod}.db` 是当时的写法
 - 范围：`EASY_CHECKPOINT_SQLITE_PATH` 支持按 pod 名区分（`{pod}` 占位符）；生产多副本的启动校验；审批恢复请求落到别的 pod 时的处理；删除会话时清理所有 pod 上的 checkpoint；k8s 清单与 Ingress 粘性配置。不在范围：把审批请求转发到所在的 pod（§10）、前端改动
 - 相关：`docs/design/2026-10-18-multi-replica-target.md`（多副本目标态，其中以 Postgres 为前提的部分已暂缓）；`easy_agent/persistence/checkpoints.py`；`deploy/k8s/agent-deployment.yaml`
 - 数据：2026-10-21，HEAD `eddd9be`

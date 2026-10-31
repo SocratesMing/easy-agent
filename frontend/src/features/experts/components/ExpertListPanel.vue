@@ -15,7 +15,8 @@
     （export_skills_names，最多 3 个）/ 底部 版本·更新时间·分类
   - 点「召唤」/ 点示例问题 → emit('use', item, prompt?)，由 App.vue 挂载专家胶囊
     （带 prompt 时回填输入框）并走 /agent/chat/stream（带 expert_agent_id）
-  - 点卡片 → 专家详情弹窗（功能描述[逐条换行] / 技能标签 / 专家帮你做 / 版本与 ID）
+  - 点卡片 → 专家详情弹窗（宽版三标签页：专家设定 MD[只读渲染/原文] / 定义提示词
+    [export_prompt 原文] / 概要信息[功能描述·绑定技能包·专家帮你做·版本与 ID]）
 
   新建 / 编辑专家（与「添加技能」同一套跳转，见 SkillListPanel.handleCreateSkill）：
   - 「新建专家」→ 确保 expert-creator 技能已安装 → 草稿写入 sessionStorage
@@ -24,7 +25,6 @@
     `emit('create-expert')`，由 App 新开会话；ChatInput 挂载时恢复草稿与预选技能；
   - 卡片「编辑」→ 同上，但预填的是**当前专家参数 + 专家 ID** 的修改模板 →
     `emit('edit-expert')`，由 App 决定「当前窗口是新会话就带入、已有对话则新开会话」。
-  原先的创建/编辑弹窗已移除（后端 POST /agent/add、/agent/update 接口保留）。
 
   数据与后端接口（easy_agent/api/expert.py）：
   GET /agent/public-list（公共专家目录，字段与 /agent/list 一致，另带 scope="public"）
@@ -219,11 +219,8 @@
       </div>
     </div>
 
-    <!-- 创建 / 编辑弹窗已移除：新建与编辑都改到对话框里由 Agent 完成（见 handleCreateExpert /
-         handleEditExpert）。后端 POST /agent/add、POST /agent/update 接口保留，供其它调用方使用。 -->
-
     <!-- 专家详情弹窗：点卡片打开；右上角 × 或点击遮罩（弹窗外的灰色区域）均可关闭。
-         注意：新增/修改弹窗保持「仅 × 与取消可关」的防误触约定，不加遮罩点击。 -->
+         新建 / 编辑不在本面板：都改到对话框里由 Agent 完成（handleCreateExpert / handleEditExpert）。 -->
     <div v-if="detailItem" class="modal-mask" @click.self="closeDetail">
       <div class="modal detail-modal" role="dialog" aria-modal="true" aria-label="专家详情">
         <button class="modal-close detail-close" aria-label="关闭详情" @click="closeDetail">
@@ -240,6 +237,11 @@
               <span class="detail-name" :title="detailItem.export_name_cn">{{ detailItem.export_name_cn }}</span>
               <span v-if="detailItem.export_name_en" class="detail-name-en">| {{ detailItem.export_name_en }}</span>
             </div>
+            <div v-if="skillTagsOf(detailItem).length" class="detail-tags detail-head-tags">
+              <span v-for="tag in skillTagsOf(detailItem)" :key="tag" class="skill-tag">{{ tag }}</span>
+            </div>
+          </div>
+          <div class="detail-head-actions">
             <button
               class="summon-btn"
               :disabled="detailItem.agent_status !== 'active'"
@@ -251,42 +253,105 @@
           </div>
         </div>
 
+        <!-- 三个标签页（默认「概要信息」）：概要 / 逻辑定义 / 定义提示词。
+             全部只读；「定义提示词」仅本人创建的专家才有（公共预置专家由发行包提供）。 -->
+        <div class="detail-tabs" role="tablist">
+          <button
+            class="detail-tab"
+            :class="{ active: detailTab === 'info' }"
+            role="tab"
+            :aria-selected="detailTab === 'info'"
+            @click="detailTab = 'info'"
+          >概要信息</button>
+          <button
+            class="detail-tab"
+            :class="{ active: detailTab === 'md' }"
+            role="tab"
+            :aria-selected="detailTab === 'md'"
+            @click="detailTab = 'md'"
+          >专家逻辑定义</button>
+          <button
+            v-if="showPromptTab"
+            class="detail-tab"
+            :class="{ active: detailTab === 'prompt' }"
+            role="tab"
+            :aria-selected="detailTab === 'prompt'"
+            @click="detailTab = 'prompt'"
+          >定义提示词</button>
+          <span class="detail-tabs-hint">只读 · 不可编辑</span>
+        </div>
+
         <div class="detail-body">
-          <!-- 功能描述：若大模型给的是一条一条的，则逐行展示（见 descriptionLines） -->
-          <div class="detail-desc-block">
-            <p v-for="(line, idx) in descriptionLines(detailItem)" :key="idx" class="detail-desc">
-              {{ line }}
-            </p>
+          <!-- 专家逻辑定义：运行时注入的系统人设原文（frontmatter + 角色设定） -->
+          <div v-if="detailTab === 'md'" class="detail-md-pane">
+            <div class="detail-md-bar">
+              <span class="detail-md-file">{{ detailMd.fileName || '专家提示词.md' }}</span>
+              <button
+                v-if="detailMd.content"
+                class="detail-md-raw-btn"
+                @click="detailMdRaw = !detailMdRaw"
+              >{{ detailMdRaw ? '查看渲染效果' : '查看原文' }}</button>
+            </div>
+            <div v-if="detailMd.loading" class="detail-md-state">正在加载专家提示词…</div>
+            <div v-else-if="detailMd.error" class="detail-md-state is-error">{{ detailMd.error }}</div>
+            <pre v-else-if="detailMdRaw" class="detail-md-code">{{ detailMd.content }}</pre>
+            <div v-else class="detail-md-render markdown-body" v-html="detailMdHtml"></div>
           </div>
 
-          <div v-if="skillTagsOf(detailItem).length" class="detail-tags">
-            <span v-for="tag in skillTagsOf(detailItem)" :key="tag" class="skill-tag">{{ tag }}</span>
+          <!-- 定义提示词：创建时用户输入的原始描述（export_prompt，未加工）。
+               公共预置专家没有这一项（tab 也已隐藏），条件里再兜一层防止残留状态。 -->
+          <div v-else-if="detailTab === 'prompt' && showPromptTab" class="detail-prompt-pane">
+            <p class="detail-pane-hint">创建该专家时你输入的原始描述（原文，未经模型加工）</p>
+            <pre v-if="detailItem.export_prompt" class="detail-prompt-text">{{ detailItem.export_prompt }}</pre>
+            <p v-else class="detail-pane-empty">该专家未记录创建时的输入。</p>
           </div>
 
-          <div v-if="featuresOf(detailItem).length" class="detail-section">
-            <h4 class="detail-section-title">
-              <span class="section-icon" aria-hidden="true">💡</span> 专家帮你做
-            </h4>
-            <button
-              v-for="(f, idx) in featuresOf(detailItem)"
-              :key="idx"
-              class="feature-row"
-              :title="'召唤专家并填入该问题'"
-              @click="summonWithPrompt(detailItem, f)"
-            >
-              <span class="feature-text">“{{ f }}”</span>
-              <svg class="feature-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-                <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-              </svg>
-            </button>
-          </div>
+          <!-- 概要信息：功能描述 / 绑定技能包 / 示例问题 / 版本与 ID -->
+          <div v-else class="detail-info-pane">
+            <!-- 功能描述：若大模型给的是一条一条的，则逐行展示（见 descriptionLines） -->
+            <div class="detail-desc-block">
+              <p v-for="(line, idx) in descriptionLines(detailItem)" :key="idx" class="detail-desc">
+                {{ line }}
+              </p>
+            </div>
 
-          <div class="detail-section">
-            <h4 class="detail-section-title">
-              <span class="section-icon" aria-hidden="true">⋮⋮</span> 更多
-            </h4>
-            <div class="more-row">版本: v{{ detailVersion(detailItem) }}</div>
-            <div class="more-row">ID: {{ detailItem.export_name_en || detailItem.export_agent_id }}</div>
+            <!-- 绑定技能包（export_required_skills）：真实技能目录名，对话时只挂这些。
+                 与卡片上的「技能标签」（展示用中文短标签）语义不同，故单独一段。 -->
+            <div v-if="requiredSkillsOf(detailItem).length" class="detail-section">
+              <h4 class="detail-section-title">
+                <span class="section-icon" aria-hidden="true">🔒</span> 绑定技能包
+              </h4>
+              <div class="detail-tags detail-skill-list">
+                <span v-for="name in requiredSkillsOf(detailItem)" :key="name" class="skill-tag">{{ name }}</span>
+              </div>
+              <div class="detail-skills-hint">该专家对话时优先使用以上技能包</div>
+            </div>
+
+            <div v-if="featuresOf(detailItem).length" class="detail-section">
+              <h4 class="detail-section-title">
+                <span class="section-icon" aria-hidden="true">💡</span> 专家帮你做
+              </h4>
+              <button
+                v-for="(f, idx) in featuresOf(detailItem)"
+                :key="idx"
+                class="feature-row"
+                :title="'召唤专家并填入该问题'"
+                @click="summonWithPrompt(detailItem, f)"
+              >
+                <span class="feature-text">“{{ f }}”</span>
+                <svg class="feature-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+                </svg>
+              </button>
+            </div>
+
+            <div class="detail-section">
+              <h4 class="detail-section-title">
+                <span class="section-icon" aria-hidden="true">⋮⋮</span> 更多
+              </h4>
+              <div class="more-row">版本: v{{ detailVersion(detailItem) }}</div>
+              <div class="more-row">ID: {{ detailItem.export_name_en || detailItem.export_agent_id }}</div>
+            </div>
           </div>
         </div>
       </div>
@@ -302,7 +367,13 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { deleteExpert, listExperts, listPublicExperts } from '../../../api/expert.js'
+import { deleteExpert, getExpertMd, listExperts, listPublicExperts } from '../../../api/expert.js'
+import {
+  createMarkdownRenderer,
+  escapeHtml,
+  renderMarkdown,
+  setupMarkedExtensions,
+} from '../../../markdownSetup.js'
 import { expertAvatarChar, expertAvatarClass } from '../../../utils/expertAvatar.js'
 import { addSkillToUser, getUserSkills } from '../../../api/skills.js'
 
@@ -343,30 +414,25 @@ const preparing = ref(false)
 /**
  * 把提示词模板与技能标签写入 sessionStorage（ChatInput 挂载时恢复）。
  *
- * `skill` 为技能列表里的真实记录——待选标签的显示名取它的 `name`（而非目录名），
- * 与 SkillListPanel.handleCreateSkill 的写法保持一致。
- */
-/**
- * 把提示词模板与技能标签写入 sessionStorage（ChatInput 挂载时恢复）。
- *
  * `skill` 为技能列表里的真实记录。`insert_token: false` 告诉 ChatInput
  * **不要**往输入框插 `/expert-creator` 标签——草稿开头的
  * 「用「expert-creator」技能帮我创建/修改专家：」已经点名了技能，ChatInput
  * 只把该技能记为预选，发送时随 skills 字段交给后端激活。
  */
-function writeExpertDraft(text, skill) {
+function writeExpertDraft(text, skills) {
+  const list = (Array.isArray(skills) ? skills : [skills]).filter(Boolean)
   try {
     sessionStorage.setItem(DRAFT_KEY, text)
-    sessionStorage.setItem(
-      PENDING_SKILL_KEY,
-      JSON.stringify({
-        dir_name: CREATE_EXPERT_SKILL_DIR,
-        name: skill?.name || CREATE_EXPERT_SKILL_DIR,
+    const payload = {
+      skills: list.map((skill) => ({
+        dir_name: skill?.dir_name || skill?.name || CREATE_EXPERT_SKILL_DIR,
+        name: skill?.name || skill?.dir_name || CREATE_EXPERT_SKILL_DIR,
         icon: skill?.icon || '',
         category_id: skill?.category_id || 'default',
         insert_token: false,
-      })
-    )
+      })),
+    }
+    sessionStorage.setItem(PENDING_SKILL_KEY, JSON.stringify(payload))
   } catch (_) { /* 隐私模式等场景忽略 */ }
 }
 
@@ -410,7 +476,7 @@ async function handleCreateExpert() {
   preparing.value = true
   try {
     const skill = await ensureExpertCreatorSkill()
-    writeExpertDraft(CREATE_LEAD + '\n' + CREATE_TEMPLATE.replace('{name}', 'XX'), skill)
+    writeExpertDraft(CREATE_LEAD + '\n' + CREATE_TEMPLATE.replace('{name}', 'XX'), [skill])
     emit('create-expert')
   } finally {
     preparing.value = false
@@ -426,7 +492,11 @@ async function handleEditExpert(item) {
   preparing.value = true
   try {
     const skill = await ensureExpertCreatorSkill()
-    writeExpertDraft(buildEditTemplate(item), skill)
+    // 编辑时的技能包：expert-creator（造专家用，不落库）+ 该专家已绑定的技能包，
+    // 都以「已选胶囊」形式回填——用户可增删，发送时随 skills 字段交给后端，
+    // 保存时由 save_expert 写入 export_required_skills。
+    const bound = requiredSkillsOf(item).map((dir) => ({ dir_name: dir, name: dir }))
+    writeExpertDraft(buildEditTemplate(item), [skill, ...bound])
     // 待修改专家绑定：ID 不进消息正文，由 ChatInput 消费后随请求的
     // pending_expert_id 字段上行（后端做归属校验，只接受本人创建的专家）
     try {
@@ -448,6 +518,7 @@ async function handleEditExpert(item) {
 function buildEditTemplate(item) {
   const name = String(item.export_name_cn || '').trim()
   const tags = skillTagsOf(item).join('、')
+  const packages = requiredSkillsOf(item).join('、')
   const desc = String(item.export_description || '').trim() || '（暂无）'
   // 注意：**不要把专家 ID 写进模板**——ID 由系统经 pending_expert_id 字段绑定到
   // 会话（见 handleEditExpert），消息体里出现 ID 可被用户任意修改。
@@ -456,8 +527,10 @@ function buildEditTemplate(item) {
     `【专家名称】${name}\n` +
     `【现有功能描述】${desc}\n` +
     `【现有技能标签】${tags || '（暂无）'}\n` +
+    `【现有绑定技能包】${packages || '（未绑定 → 技能库全量可见）'}\n` +
     `【原始需求】${clip(item.export_prompt, 800) || '（未记录）'}\n` +
-    '\n【我要修改的地方】请在这里补充要调整的内容（例如：更侧重城投债、输出必须标注数据来源）'
+    '\n【我要修改的地方】请在这里补充要调整的内容（例如：更侧重城投债、输出必须标注数据来源）\n' +
+    '（如需调整技能包，直接在输入框上方的技能胶囊里增删即可）'
   )
 }
 
@@ -486,6 +559,44 @@ const tagFilter = ref('all')
 const toast = ref({ show: false, message: '', type: 'success' })
 /** 详情弹窗当前展示的专家（null = 关闭） */
 const detailItem = ref(null)
+/** 详情弹窗当前标签页：info=概要信息（默认）/ md=专家逻辑定义 / prompt=定义提示词 */
+const detailTab = ref('info')
+/** 详情弹窗的专家提示词 MD（只读，按 expert_id 现取） */
+const detailMd = ref({ loading: false, content: '', fileName: '', error: '' })
+/** MD 是否以「原文」形式展示（默认渲染后阅读） */
+const detailMdRaw = ref(false)
+
+// KaTeX / emoji 扩展注册（幂等）：专家 MD 里的公式与短代码要能正常渲染
+setupMarkedExtensions()
+
+/**
+ * 专家提示词 MD 的渲染器：代码块只保留 ``<pre class="hljs">``，不套「语言 + 复制」头
+ * ——详情弹窗是只读速览，带上复制按钮反而像可编辑区域（与技能详情保持一致）。
+ */
+const expertMdRenderer = createMarkdownRenderer({ externalLinks: false })
+expertMdRenderer.code = function (token) {
+  const code = typeof token === 'object' ? (token.text || token.raw || '') : String(token || '')
+  return `<pre class="hljs"><code>${escapeHtml(code)}</code></pre>`
+}
+
+/** 专家提示词 MD 的渲染结果（详情弹窗「专家逻辑定义」标签页） */
+/**
+ * 去掉 MD 头部的 YAML frontmatter（``---`` 包起来的参数头）。
+ * 它是发行包元数据，直接交给 marked 会被尾部 ``---`` 当成 setext 标题下划线，
+ * 整块渲染成一个超大粗标题（比弹窗标题还大）。原文视图仍完整展示。
+ */
+function stripFrontmatter(md) {
+  return String(md || '').replace(/^---\r?\n[\s\S]*?\r?\n---[ \t]*\r?\n?/, '')
+}
+
+const detailMdHtml = computed(() => {
+  const content = stripFrontmatter(detailMd.value.content)
+  if (!content.trim()) return ''
+  return renderMarkdown(content, expertMdRenderer)
+})
+
+/** 「定义提示词」只对本人创建的专家有意义；公共预置专家由发行包提供，不展示该 tab */
+const showPromptTab = computed(() => !!detailItem.value && !isPublic(detailItem.value))
 
 /** chips 数据源：后端下发的标签候选；缺失时回退为「从现有专家里聚合」 */
 const tagChips = computed(() => {
@@ -616,6 +727,20 @@ function skillTagsOf(item) {
   return []
 }
 
+/** 绑定技能包：export_required_skills（真实技能目录名，对话时的技能作用域） */
+function requiredSkillsOf(item) {
+  const raw = item?.export_required_skills
+  if (Array.isArray(raw)) return raw.map((n) => String(n).trim()).filter(Boolean)
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed.map((n) => String(n).trim()).filter(Boolean)
+    } catch (_) { /* 旧数据不是 JSON，按单值处理 */ }
+    return [raw.trim()]
+  }
+  return []
+}
+
 /** features_prompt（「专家帮你做」示例问题）规整 */
 function featuresOf(item) {
   const raw = item?.export_features_prompt
@@ -629,12 +754,47 @@ function detailVersion(item) {
   return `${Number.isFinite(v) ? v : 1}.0.0`
 }
 
+/**
+ * 打开专家详情：默认落在「专家设定 MD」页，同时按需拉取提示词正文。
+ * 详情弹窗是只读视图——MD 与提示词都没有编辑入口。
+ */
 function openDetail(item) {
   detailItem.value = item
+  detailTab.value = 'info'
+  detailMdRaw.value = false
+  loadDetailMd(item)
+}
+
+/** 拉取该专家的提示词 MD（我的专家取 active 版本，公共专家取预置文件） */
+async function loadDetailMd(item) {
+  const expertId = item && item.export_agent_id
+  if (!expertId) return
+  detailMd.value = { loading: true, content: '', fileName: '', error: '' }
+  try {
+    const data = await getExpertMd(expertId)
+    // 弹窗已切到别的专家：丢弃旧响应
+    if (!detailItem.value || detailItem.value.export_agent_id !== expertId) return
+    detailMd.value = {
+      loading: false,
+      content: (data && data.content) || '',
+      fileName: (data && data.file_name) || '',
+      error: '',
+    }
+  } catch (e) {
+    if (!detailItem.value || detailItem.value.export_agent_id !== expertId) return
+    detailMd.value = {
+      loading: false,
+      content: '',
+      fileName: '',
+      error: (e && e.message) || '获取专家提示词失败',
+    }
+  }
 }
 
 function closeDetail() {
   detailItem.value = null
+  detailMd.value = { loading: false, content: '', fileName: '', error: '' }
+  detailMdRaw.value = false
 }
 
 /** 「召唤」：把专家挂到当前会话（同原「使用」，仅文案变化） */
@@ -1100,9 +1260,9 @@ onMounted(refresh)
   font-weight: 600;
 }
 
-/* 头像配色已收敛到全局 .ea-0 ~ .ea-7（style.css + utils/expertAvatar.js）：
+/* 头像配色统一用全局 .ea-0 ~ .ea-7（style.css + utils/expertAvatar.js）：
    按 export_agent_id 稳定取档，与 + 号下拉 / 胶囊 / 回答面板标识同色。
-   原先按网格序号取色的 av-p0..av-p5 已移除，避免两套色板并存。 */
+   不要再按网格序号另造一套色板。 */
 
 .expert-card-body {
   flex: 1;
@@ -1344,10 +1504,10 @@ onMounted(refresh)
 /* ── 专家详情弹窗 ── */
 .detail-modal {
   position: relative;
-  /* 需求：最小宽度 700px；窄屏时以 94vw 封顶避免溢出 */
-  width: 700px;
-  min-width: min(700px, 94vw);
-  max-width: 94vw;
+  /* 详情需要读整份专家提示词 MD：宽版（960px），窄屏以 96vw 封顶避免溢出 */
+  width: 960px;
+  min-width: min(960px, 96vw);
+  max-width: 96vw;
 }
 
 .detail-close {
@@ -1385,6 +1545,56 @@ onMounted(refresh)
   align-items: flex-start;
   gap: 8px;
   padding-right: 24px;
+}
+
+/* 召唤按钮靠右，与标题行同一水平线（宽版弹窗空间足够） */
+.detail-head-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding-right: 24px;
+}
+
+.detail-head-tags {
+  margin-top: 2px;
+}
+
+/* ── 详情标签页（设定 MD / 定义提示词 / 概要） ── */
+.detail-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 12px 20px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.detail-tab {
+  padding: 8px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.detail-tab:hover {
+  color: var(--text-primary);
+}
+
+.detail-tab.active {
+  color: var(--text-primary);
+  font-weight: 600;
+  border-bottom-color: var(--text-primary);
+}
+
+.detail-tabs-hint {
+  margin-left: auto;
+  padding-bottom: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 .detail-name-row {
@@ -1443,6 +1653,193 @@ onMounted(refresh)
   gap: 14px;
 }
 
+/* ── 专家设定 MD（只读渲染 / 原文切换） ── */
+.detail-md-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.detail-md-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.detail-md-file {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+  padding: 3px 8px;
+}
+
+.detail-md-raw-btn {
+  border: none;
+  background: transparent;
+  color: var(--accent-color);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.detail-md-state {
+  padding: 28px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.detail-md-state.is-error {
+  color: #d4380d;
+}
+
+.detail-md-code,
+.detail-prompt-text {
+  margin: 0;
+  max-height: 52vh;
+  overflow: auto;
+  padding: 14px 16px;
+  background: var(--bg-tertiary);
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-primary);
+}
+
+.detail-md-render {
+  max-height: 52vh;
+  overflow: auto;
+  padding: 16px 18px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  /* 阅读区字号小于弹窗正文（13.5px）：MD 自带标题层级，整体再小一档才不喧宾夺主 */
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--text-primary);
+}
+
+/* v-html 内容不受 scoped 约束，必须用深度选择器 */
+.detail-md-render :deep(h1),
+.detail-md-render :deep(h2),
+.detail-md-render :deep(h3),
+.detail-md-render :deep(h4) {
+  margin: 14px 0 6px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* 标题字号必须小于弹窗标题（17px）与 tab（13px 加粗），否则「专家名」反而比正文标题小 */
+.detail-md-render :deep(h1) { font-size: 14.5px; }
+.detail-md-render :deep(h2) { font-size: 13.5px; }
+.detail-md-render :deep(h3) { font-size: 13px; }
+.detail-md-render :deep(h4) { font-size: 12.5px; }
+
+.detail-md-render :deep(h1:first-child),
+.detail-md-render :deep(h2:first-child),
+.detail-md-render :deep(h3:first-child) {
+  margin-top: 0;
+}
+
+.detail-md-render :deep(p),
+.detail-md-render :deep(ul),
+.detail-md-render :deep(ol),
+.detail-md-render :deep(blockquote),
+.detail-md-render :deep(table) {
+  margin: 0 0 10px;
+}
+
+.detail-md-render :deep(ul),
+.detail-md-render :deep(ol) {
+  padding-left: 22px;
+}
+
+.detail-md-render :deep(li) {
+  margin: 3px 0;
+}
+
+.detail-md-render :deep(code) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.detail-md-render :deep(pre) {
+  margin: 0 0 10px;
+  padding: 12px 14px;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  overflow: auto;
+}
+
+.detail-md-render :deep(pre code) {
+  background: transparent;
+  padding: 0;
+}
+
+.detail-md-render :deep(blockquote) {
+  padding: 6px 12px;
+  border-left: 3px solid var(--border-color);
+  color: var(--text-secondary);
+}
+
+.detail-md-render :deep(table) {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.detail-md-render :deep(th),
+.detail-md-render :deep(td) {
+  border: 1px solid var(--border-color);
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+
+.detail-md-render :deep(hr) {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 14px 0;
+}
+
+.detail-md-render :deep(a) {
+  color: var(--accent-color);
+}
+
+/* ── 定义提示词（export_prompt 原文） ── */
+.detail-prompt-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.detail-pane-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.detail-pane-empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* 概要信息各区段（描述 / 绑定技能包 / 专家帮你做 / 版本）之间留出呼吸感，
+   原先靠各段自带的 8px margin 拼凑，第一段描述几乎贴着「绑定技能包」标题 */
+.detail-info-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
 .detail-desc-block {
   display: flex;
   flex-direction: column;
@@ -1452,7 +1849,7 @@ onMounted(refresh)
 .detail-desc {
   margin: 0;
   font-size: 13.5px;
-  line-height: 1.6;
+  line-height: 1.7;
   color: var(--text-primary);
   overflow-wrap: anywhere;
 }
@@ -1460,8 +1857,25 @@ onMounted(refresh)
 .detail-tags {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
+}
+
+/* 绑定技能包里的技能名：用真实目录名，比卡片上的短标签更长，字号随即放大一档 */
+.detail-skill-list .skill-tag {
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  max-width: 220px;
+  color: var(--text-primary);
+}
+
+/* 技能包说明：纯文字小注（此前与技能 chip 同为灰底块，视觉上和列表混成一片） */
+.detail-skills-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
 }
 
 .detail-section-title {
@@ -1645,4 +2059,30 @@ html[data-theme="dark"] .expert-panel {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+/* ── 旧浏览器兜底：color-mix() 需要 Chromium 111+ ─────────────────────
+   Edge 92 / Chrome ≤ 110 会把 `background: color-mix(...)` 整条丢弃，hover 时
+   底色退回透明、文字仍是 #fff，按钮看起来"变白消失"（新建专家 / 我的专家 / 召唤）。
+   这里用「基色 + 叠一层黑」复现 color-mix(基色 84%~86%, #000)：sRGB 下叠 α 黑
+   与 color-mix(基色 (1-α), #000) 完全等价，所以浅色/暗色主题都不用分别写死颜色。
+   新浏览器 @supports 判定为真，整块跳过，视觉零变化。 */
+@supports not (background: color-mix(in srgb, #000 10%, #fff)) {
+  /* 主色按钮（新建专家 / 我的专家）：复现 color-mix(主色 84%, #000) */
+  .action-btn-primary:hover:not(:disabled) {
+    background-color: var(--accent-color);
+    background-image: linear-gradient(rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0.16));
+  }
+
+  /* 召唤按钮：复现 color-mix(--xcard-primary-bg 86%, #000)；
+     该基色在暗色主题下接近白色，所以不能用主色兜底 */
+  .use-btn:hover:not(:disabled) {
+    background-color: var(--xcard-primary-bg);
+    background-image: linear-gradient(rgba(0, 0, 0, 0.14), rgba(0, 0, 0, 0.14));
+  }
+
+  /* 分类 chip 选中态同样用了 color-mix(主色 12%, transparent)，失效后底色全无 */
+  .chip.active {
+    background-color: var(--bg-tertiary);
+  }
+}
+
 </style>

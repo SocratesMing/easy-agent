@@ -4,11 +4,13 @@ from types import SimpleNamespace
 
 from easy_agent.agent import EasyAgent
 from easy_agent.agent.hitl import (
+    DEFAULT_APPROVAL_TOOLS,
     EXECUTE_HITL_TOOL_DESCRIPTION,
     HITL_WHEN_PREDICATES,
     _is_destructive_command,
     _is_knowledge_materialize,
     build_interrupt_config,
+    hitl_enabled,
 )
 from easy_agent.tools import registry
 from easy_agent.tools.registry import SOURCE_EXPERT, ToolSpec
@@ -127,10 +129,11 @@ def test_build_interrupt_config_ignores_non_mutating_unknown_tools():
     assert set(cfg) == {"execute", "delete"}
 
 
-def test_build_interrupt_config_keeps_legacy_read_uploaded_file_heuristic():
-    """行为等价：read_uploaded_file 名字含 upload，改造前已被启发式纳入审批。"""
-    cfg = build_interrupt_config(["read_uploaded_file"])
-    assert cfg["read_uploaded_file"]["allowed_decisions"] == ["approve", "edit", "reject"]
+def test_read_uploaded_file_needs_approval_only_when_listed():
+    """应用工具只看审批名单：read_uploaded_file 名字含 upload，以前被名字启发式误拦。"""
+    assert "read_uploaded_file" not in build_interrupt_config(["read_uploaded_file"])
+    cfg = build_interrupt_config(["read_uploaded_file"], approval_tools=["read_uploaded_file"])
+    assert cfg == {"read_uploaded_file": {"allowed_decisions": ["approve", "edit", "reject"]}}
 
 
 def test_build_interrupt_config_disabled_returns_none():
@@ -186,7 +189,64 @@ def test_agent_interrupt_config_changes_with_tool_set():
     )
 
     assert base == {"execute", "delete"}
-    assert with_creator == {"execute", "delete", "save_expert", "read_uploaded_file"}
+    assert with_creator == {"execute", "delete", "save_expert"}
+
+
+# ── config.yaml 的 hitl 段：总开关 + 审批名单 ───────────────────────────
+
+
+def test_default_approval_list_is_every_registry_hitl_tool():
+    assert DEFAULT_APPROVAL_TOOLS == (
+        "execute",
+        "delete",
+        "save_expert",
+        "create_scheduled_task",
+        "access_knowledge_original",
+    )
+
+
+def test_configured_list_replaces_the_default():
+    cfg = build_interrupt_config(
+        [_tool("save_expert"), _tool("create_scheduled_task")], approval_tools=["save_expert"]
+    )
+    assert list(cfg) == ["save_expert"]
+
+
+def test_listed_tools_keep_their_registry_conditions():
+    cfg = build_interrupt_config(
+        [_tool("access_knowledge_original")],
+        approval_tools=["access_knowledge_original", "execute"],
+    )
+    assert list(cfg) == ["access_knowledge_original", "execute"]
+    assert cfg["execute"]["when"] is _is_destructive_command
+    assert cfg["access_knowledge_original"]["when"] is _is_knowledge_materialize
+
+
+def test_listed_builtin_without_a_registry_rule_is_always_approved():
+    cfg = build_interrupt_config([], approval_tools=["write_file", "delete"])
+    assert cfg == {
+        "write_file": {"allowed_decisions": ["approve", "edit", "reject"]},
+        "delete": {"allowed_decisions": ["approve", "reject"]},
+    }
+
+
+def test_listed_names_that_are_not_injected_are_skipped():
+    assert build_interrupt_config([], approval_tools=["save_expert", "no_such_tool"]) == {}
+
+
+def test_agent_uses_the_configured_approval_list():
+    agent = _agent([_tool("save_expert"), _tool("create_scheduled_task")])
+    agent.config = SimpleNamespace(hitl=SimpleNamespace(tools=["create_scheduled_task"]))
+    assert list(agent._build_interrupt_config()) == ["create_scheduled_task"]
+
+
+def test_hitl_enabled_needs_both_the_caller_and_the_config():
+    on = SimpleNamespace(hitl=SimpleNamespace(enabled=True))
+    off = SimpleNamespace(hitl=SimpleNamespace(enabled=False))
+    assert hitl_enabled(on) is True
+    assert hitl_enabled(on, False) is False  # 定时任务
+    assert hitl_enabled(off) is False
+    assert hitl_enabled(SimpleNamespace()) is True  # 没有 hitl 段
 
 
 # ── DA-09：MCP annotations 决定是否审批，名字启发式只做兜底 ──────────────
@@ -262,3 +322,19 @@ def test_annotations_survive_the_mcp_evidence_wrapper():
 
     wrapped = wrap_mcp_tool(_mcp_tool("delete_note", readOnlyHint=True), server="notes")
     assert "delete_note" not in build_interrupt_config([wrapped])
+
+
+def test_listed_mcp_tool_matches_its_name_without_the_server_prefix():
+    tool = _mcp_tool("crm__close_ticket", readOnlyHint=True)
+    tool.metadata["mcp_original_name"] = "close_ticket"
+    cfg = build_interrupt_config([tool], approval_tools=["close_ticket"])
+    # 名单优先于服务端的只读标注
+    assert cfg == {"crm__close_ticket": {"allowed_decisions": ["approve", "edit", "reject"]}}
+
+
+def test_unlisted_mcp_tools_still_use_annotations_and_names():
+    cfg = build_interrupt_config(
+        [_mcp_tool("delete_note"), _mcp_tool("list_notes"), _tool("read_uploaded_file")],
+        approval_tools=[],
+    )
+    assert list(cfg) == ["delete_note"]

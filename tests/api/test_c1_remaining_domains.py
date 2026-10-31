@@ -30,13 +30,15 @@ from easy_agent.middleware.auth import (
 API_DIR = Path(__file__).resolve().parents[2] / "easy_agent" / "api"
 
 DOMAINS = {
-    "files.py": ("get_file_repository", "FileRepository", 6),
+    # 资产页下线时 list_files 一并删除（e59c5a6d），6 → 5
+    "files.py": ("get_file_repository", "FileRepository", 5),
     "scheduled_tasks.py": (
         "get_scheduled_task_repository",
         "ScheduledTaskRepository",
         7,
     ),
-    "expert.py": ("get_expert_repository", "ExpertRepository", 4),
+    # 专家工作区新增 /agent/expert-md、/agent/session-experts（cc4b1e9d），4 → 6
+    "expert.py": ("get_expert_repository", "ExpertRepository", 6),
     "chat.py": ("get_chat_repository", "ChatRepository", 2),
     "chat_live.py": ("get_chat_repository", "ChatRepository", 2),
     "sessions.py": ("get_session_repository", "SessionRepository", 10),

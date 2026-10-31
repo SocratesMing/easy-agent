@@ -62,7 +62,7 @@ async def test_shutdown_clears_legacy_session_cache():
 
 
 def test_relative_sqlite_path_is_resolved_against_project_root():
-    resolved = ck.resolve_sqlite_path(ck.DEFAULT_SQLITE_PATH)
+    resolved = ck.resolve_sqlite_path("data/checkpoints.db")
     assert resolved.is_absolute()
     assert resolved.name == "checkpoints.db"
     assert resolved.parent.name == "data"

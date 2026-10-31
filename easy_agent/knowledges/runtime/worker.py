@@ -46,7 +46,7 @@ class KnowledgeParsePollWorker:
         # 多副本 leader 选举：同一轮只允许一个副本真正调用 Ragflow。
         # 未启用分布式锁时 LockHandle.acquired 恒 True（单实例行为不变）。
         if lock_provider is None:
-            from easy_agent.utils.distributed_lock import get_distributed_lock
+            from easy_agent.persistence.distributed_lock import get_distributed_lock
 
             lock_provider = get_distributed_lock
         self._lock_provider = lock_provider

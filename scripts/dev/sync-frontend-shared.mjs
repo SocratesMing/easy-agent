@@ -4,21 +4,23 @@
  *
  * 为什么是"复制"而不是软链/包引用：两套前端的构建器（webpack 5 / Vite）根目录不同，
  * 共享代码里的 `marked` 等裸依赖必须能按各自的 node_modules 解析；放进各自 src 下
- * 最省事也最稳。复制带来的漂移由 `src/utils/structure.test.js` 的哈希比对兜住。
+ * 最省事也最稳。复制带来的漂移由 `--check`（frontend-vue2 的 npm run check:easy-agent 会调用）
+ * 与两侧 structure.test.js 兜住。
  *
  * 用法：
- *   node scripts/sync-frontend-shared.mjs           # 写入
- *   node scripts/sync-frontend-shared.mjs --check   # 只校验，不一致退出码 1
+ *   node scripts/dev/sync-frontend-shared.mjs           # 写入
+ *   node scripts/dev/sync-frontend-shared.mjs --check   # 只校验，不一致退出码 1
  */
 
-import { readdir, readFile, writeFile, mkdir } from 'node:fs/promises'
+import { readdir, readFile, writeFile, mkdir, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const sourceRoot = path.join(repoRoot, 'frontend-shared')
 const targets = [
-  path.join(repoRoot, 'frontend-vue2/src/shared'),
+  // Vue2 基线的共享代码属于受管业务模块（随模块整体同步到内网宿主，宿主不再需要 frontend-shared/）
+  path.join(repoRoot, 'frontend-vue2/src/packages/easyAgent/shared'),
   path.join(repoRoot, 'frontend/src/shared'),
 ]
 
@@ -43,10 +45,38 @@ async function collect(dir, prefix = '') {
   return files
 }
 
+/** 目标目录里带生成头、但源文件已删除的副本（源文件删掉后副本不会自己消失） */
+async function findOrphans(targetRoot, sourceFiles) {
+  let copies = []
+  try {
+    copies = await collect(targetRoot)
+  } catch {
+    return []
+  }
+  const orphans = []
+  for (const rel of copies) {
+    if (sourceFiles.includes(rel)) continue
+    const head = (await readFile(path.join(targetRoot, rel), 'utf8')).split('\n', 2).join('\n')
+    if (head === BANNER.replace('{rel}', rel).split('\n', 2).join('\n')) orphans.push(path.join(targetRoot, rel))
+  }
+  return orphans
+}
+
 async function main() {
   const checkOnly = process.argv.includes('--check')
   const files = await collect(sourceRoot)
   const problems = []
+
+  for (const targetRoot of targets) {
+    for (const orphan of await findOrphans(targetRoot, files)) {
+      if (checkOnly) {
+        problems.push(`${path.relative(repoRoot, orphan)}（源文件已删除，副本残留）`)
+        continue
+      }
+      await unlink(orphan)
+      console.log(`removed orphan: ${path.relative(repoRoot, orphan)}`)
+    }
+  }
 
   for (const rel of files) {
     const source = await readFile(path.join(sourceRoot, rel), 'utf8')

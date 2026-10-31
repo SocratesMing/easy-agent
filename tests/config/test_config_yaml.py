@@ -191,6 +191,119 @@ distributed_lock:
     assert config.distributed_lock.renew_interval_seconds == 100
 
 
+def test_config_checkpoint_sqlite_path_keeps_the_pod_placeholder(tmp_path, monkeypatch):
+    """checkpoint 段：${CHECKPOINT_DIR:-...} 照常展开，{pod} 原样留给启动时换成实例名。"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+model: test-model
+models:
+  test-model:
+    provider: test-provider
+    api_key: "sk-test"
+checkpoint:
+  sqlite_path: "${CHECKPOINT_DIR:-/qts/checkpoint}/{pod}.db"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("CHECKPOINT_DIR", raising=False)
+    assert Config.from_yaml(config_path).checkpoint.sqlite_path == "/qts/checkpoint/{pod}.db"
+
+    # 本机开发通过 .env.dev 换目录
+    monkeypatch.setenv("CHECKPOINT_DIR", "data/checkpoints")
+    assert Config.from_yaml(config_path).checkpoint.sqlite_path == "data/checkpoints/{pod}.db"
+
+
+def test_config_checkpoint_path_is_empty_when_section_missing(tmp_path):
+    """没有 checkpoint 段时为空：由 persistence.checkpoints 用旧环境变量或默认路径。"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+model: test-model
+models:
+  test-model:
+    provider: test-provider
+    api_key: "sk-test"
+""",
+        encoding="utf-8",
+    )
+
+    assert Config.from_yaml(config_path).checkpoint.sqlite_path == ""
+
+
+def test_config_example_checkpoint_path_matches_the_default(monkeypatch):
+    """config-example 的示例展开后就是代码里的默认路径（整份模板要模型 key 才能加载，只展开这一项）。"""
+    import yaml
+
+    from easy_agent.bootstrap.config_validation import _expand_env
+    from easy_agent.persistence.checkpoints import DEFAULT_SQLITE_PATH
+    from easy_agent.utils.paths import PROJECT_ROOT
+
+    monkeypatch.delenv("CHECKPOINT_DIR", raising=False)
+    example = PROJECT_ROOT / "easy_agent" / "config" / "config-example.yaml"
+    raw = yaml.safe_load(example.read_text(encoding="utf-8"))["checkpoint"]["sqlite_path"]
+
+    assert _expand_env(raw, set()) == DEFAULT_SQLITE_PATH
+
+
+def test_config_hitl_section_is_parsed(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+model: test-model
+models:
+  test-model:
+    provider: test-provider
+    api_key: "sk-test"
+hitl:
+  enabled: false
+  tools:
+    - execute
+    - crm_close_ticket
+""",
+        encoding="utf-8",
+    )
+
+    config = Config.from_yaml(config_path)
+
+    assert config.hitl.enabled is False
+    assert config.hitl.tools == ["execute", "crm_close_ticket"]
+
+
+def test_config_hitl_defaults_when_section_missing(tmp_path):
+    """没有 hitl 段：开启审批，名单为空值（由 agent.hitl 用默认名单）。"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+model: test-model
+models:
+  test-model:
+    provider: test-provider
+    api_key: "sk-test"
+""",
+        encoding="utf-8",
+    )
+
+    config = Config.from_yaml(config_path)
+
+    assert config.hitl.enabled is True
+    assert config.hitl.tools is None
+
+
+def test_config_example_hitl_tools_match_the_default():
+    """config-example 列出的审批名单就是代码里的默认名单。"""
+    import yaml
+
+    from easy_agent.agent.hitl import DEFAULT_APPROVAL_TOOLS
+    from easy_agent.utils.paths import PROJECT_ROOT
+
+    example = PROJECT_ROOT / "easy_agent" / "config" / "config-example.yaml"
+    hitl = yaml.safe_load(example.read_text(encoding="utf-8"))["hitl"]
+
+    assert hitl["enabled"] is True
+    assert tuple(hitl["tools"]) == DEFAULT_APPROVAL_TOOLS
+
+
 def test_config_distributed_lock_disabled_when_section_missing(tmp_path):
     """未配置 distributed_lock 段时默认关闭（多实例部署需显式开启）。"""
     config_path = tmp_path / "config.yaml"

@@ -7,7 +7,10 @@ import pytest
 from easy_agent.agent import EasyAgent
 from easy_agent.bootstrap.config import Config
 from easy_agent.services import agent_manager
-from easy_agent.tools.web_search import PROVIDER_TAVILY, WEB_SEARCH_SYSTEM_PROMPT
+from easy_agent.tools.registry import require_tool_spec
+from easy_agent.tools.web_search import PROVIDER_TAVILY
+
+WEB_SEARCH_SYSTEM_PROMPT = require_tool_spec("web_search").prompt_note
 
 
 @pytest.fixture

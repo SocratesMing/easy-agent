@@ -153,7 +153,7 @@ async def _run_daily_report_task(real_agent, db, monkeypatch):
     import easy_agent.services.scheduler as sched
     from easy_agent.bootstrap.config import DistributedLockConfig
     from easy_agent.models.db import ScheduledTaskModel
-    from easy_agent.utils.distributed_lock import DistributedLock
+    from easy_agent.persistence.distributed_lock import DistributedLock
 
     agent = real_agent([AIMessage(content="report ready")], max_steps=5, session_id="sched-s1")
 

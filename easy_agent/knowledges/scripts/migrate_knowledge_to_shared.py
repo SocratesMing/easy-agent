@@ -33,6 +33,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from easy_agent.bootstrap.initialization import initialize_runtime  # noqa: E402
 from easy_agent.db.database import Database, init_database  # noqa: E402
 from easy_agent.knowledges.core.config import KnowledgeConfig  # noqa: E402
 from easy_agent.knowledges.core.models import DocumentStatus  # noqa: E402
@@ -44,7 +45,6 @@ from easy_agent.knowledges.service import (  # noqa: E402
     PARSER_CONFIG,
     KnowledgeService,
 )
-from easy_agent.utils.env_loader import load_project_env  # noqa: E402
 
 # 本地文档列表分页大小（repository.list_documents 无上限约束，取宽裕值）
 _PAGE_SIZE = 200
@@ -206,15 +206,24 @@ async def _migrate_document(
 
 
 async def run(args: argparse.Namespace) -> int:
-    # 与后端启动一致：standalone 运行时先注入 .env.{AGENT_ENV}，
-    # 否则 KnowledgeConfig 拿不到 RAGFLOW_BASE_URL / RAGFLOW_API_KEY
-    load_project_env()
+    # 与后端启动一致：standalone 运行时先注入 .env.{AGENT_ENV} 并加载主配置，
+    # 否则 KnowledgeConfig 拿不到 RAGFLOW_BASE_URL / RAGFLOW_API_KEY，
+    # 业务库也不会按 database 段连接
+    app_config = initialize_runtime().config
+    if app_config is None:
+        print("ERROR: 配置未加载，无法迁移", file=sys.stderr)
+        return 2
     config = KnowledgeConfig.load()
     if not config.enabled:
         print("知识库模块未启用（knowledge.enabled=false），退出")
         return 2
 
-    db = init_database()
+    # 知识库建表函数和默认管理员策略在 import 时注册进 db（应用启动时由 app.py 导入）。
+    # 前者随上面的 easy_agent.knowledges 导入已注册，后者要导入 personnel，
+    # 否则 init_database 最后报「默认管理员策略未注册」。
+    import easy_agent.knowledges.personnel  # noqa: F401
+
+    db = init_database(app_config.database.model_dump())
     repository = KnowledgeRepository(db)
     ragflow = RagflowClient(config.base_url, config.api_key.get_secret_value())
     store = LocalOriginalStore()

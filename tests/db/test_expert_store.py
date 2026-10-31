@@ -67,6 +67,7 @@ def test_expert_agents_columns(db):
         "export_prompt",
         "export_description",
         "export_skills_names",
+        "export_required_skills",
         "export_features_prompt",
         "export_file_path",
         "agent_status",
@@ -122,6 +123,27 @@ def test_json_fields_roundtrip(db):
     assert record["export_features_prompt"] == ["帮我选股", "帮我做因子分析"]
     assert record["export_skills_names"] == []
     assert record["export_description"] == "面向量化投研场景，完成因子挖掘与回测验证。"
+
+
+def test_required_skills_json_roundtrip(db):
+    """专家绑定的技能包（export_required_skills）按 JSON 数组读写。"""
+    store = ExpertStore(db)
+    _make(store, export_required_skills=["g7-rates-research", "docx"])
+    with db.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT export_required_skills FROM expert_agents WHERE export_agent_id=?",
+            ("expert_a_00000001",),
+        )
+        raw = cur.fetchone()[0]
+    assert isinstance(raw, str)  # 库里是 JSON 字符串
+
+    record = store.get("expert_a_00000001")
+    assert record["export_required_skills"] == ["g7-rates-research", "docx"]
+
+    # 白名单允许更新（含清空 = 不绑定技能包）
+    store.update_fields("expert_a_00000001", {"export_required_skills": []})
+    assert store.get("expert_a_00000001")["export_required_skills"] == []
 
 
 def test_json_field_bad_data_degrades_to_empty_list(db):

@@ -37,6 +37,19 @@ select {
   font-family: 'Microsoft YaHei', '微软雅黑', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 
+/* Win10 Chrome 在 Tailwind preflight 的 -webkit-appearance:button 下忽略按钮内部的
+   flex 居中，图标贴着正文 1.6 行高的上沿。只改输入框底栏按钮。 */
+.input-actions .plus-btn,
+.input-actions .web-search-btn,
+.input-actions .model-btn,
+.input-actions .send-btn,
+.input-actions .stop-btn,
+.input-actions .expert-chip-clear {
+  -webkit-appearance: none;
+  appearance: none;
+  line-height: 1;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

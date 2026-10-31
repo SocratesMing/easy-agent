@@ -422,51 +422,6 @@ def _atomic_write(target: Path, content: bytes) -> None:
             pass
 
 
-def list_stored_uploads(username: str) -> list[dict]:
-    """列出某用户名下的上传对象（资产页 store 模式）。
-
-    返回 ``[{saved_name, size, created_at}]``；size 按 StoreBackend value 的
-    真实 content 计算（base64 长度不能直接当文件大小）。
-    """
-    safe = safe_username(username)
-    try:
-        store = get_agent_store()
-    except Exception as exc:  # noqa: BLE001
-        raise UploadStoreUnavailable(f"无法获取 LangGraph Store: {exc}") from exc
-    if store is None:
-        raise UploadStoreUnavailable("LangGraph Store 未初始化")
-    try:
-        items = store.search((UPLOADS_ROOT, safe))
-    except Exception as exc:  # noqa: BLE001
-        raise UploadStorageError(f"列举上传对象失败: {exc}") from exc
-    result: list[dict] = []
-    for item in items:
-        try:
-            value = item.value or {}
-            name = str(item.key).lstrip("/")
-            encoding = str(value.get("encoding") or "utf-8")
-            content = value.get("content")
-            if content is None:
-                continue
-            if encoding == "base64":
-                import base64
-
-                size = len(base64.b64decode(str(content)))
-            else:
-                size = len(str(content).encode("utf-8"))
-            result.append(
-                {
-                    "saved_name": name,
-                    "size": size,
-                    "created_at": str(value.get("created_at") or item.created_at or ""),
-                    "file_path": build_store_uri(safe, name),
-                }
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("跳过无法解析的上传对象 %s: %s", getattr(item, "key", "?"), exc)
-    return result
-
-
 def delete_stored_upload(path: str, username: str = "") -> bool:
     """删除 Store 对象与本地缓存（尽力而为）。
 

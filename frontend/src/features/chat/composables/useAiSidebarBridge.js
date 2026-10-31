@@ -26,7 +26,6 @@ export function useAiSidebarBridge(app) {
   }
 
   const aiPageContext = computed(() => buildPageContext({
-    showAssets: panels.showAssets.value,
     showSkillCenter: panels.showSkillCenter.value,
     showScheduledTasks: panels.showScheduledTasks.value,
     showSettingsPanel: panels.showSettingsPanel.value,
@@ -44,7 +43,7 @@ export function useAiSidebarBridge(app) {
 
   async function handleOpenSessionInMain(sessionId) {
     if (!sessionId) return
-    const onChatPage = !panels.showAssets.value && !panels.showSkillCenter.value && !panels.showScheduledTasks.value
+    const onChatPage = !panels.showSkillCenter.value && !panels.showScheduledTasks.value
     if (sessionId === currentSessionId.value && onChatPage) return
     await handleSelectSession(sessionId)
   }

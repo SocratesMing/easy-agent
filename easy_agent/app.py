@@ -49,13 +49,13 @@ from easy_agent.knowledges.personnel import router as personnel_router
 from easy_agent.agent.model import create_model
 from easy_agent.models.api import HealthResponse
 from easy_agent.utils.paths import PROJECT_ROOT
-from easy_agent.services import (
+from easy_agent.services.agent_manager import (
     drain_stream_tasks,
-    flush_all_stream_events,
     get_agent_config,
     init_agent_config,
 )
-from easy_agent.services import (
+from easy_agent.services.stream_events import flush_all_stream_events
+from easy_agent.services.scheduler import (
     init_scheduler,
     reload_all_tasks,
     shutdown_scheduler,
@@ -349,8 +349,8 @@ def _log_public_experts() -> None:
         logger.warning(f"⚠️ 公共专家目录扫描失败: {type(exc).__name__}: {exc}")
 
 
-async def _start_checkpointing(agent_env: str) -> None:
-    """FW-09：默认官方 checkpointer（auto：sqlite → legacy）。
+async def _start_checkpointing(agent_env: str, config) -> None:
+    """FW-09：默认官方 SQLite checkpointer，文件路径取 config.yaml 的 checkpoint.sqlite_path。
 
     两种后端都不能跨副本共享，prod 多副本在启动期 fail-fast（可用
     EASY_ALLOW_LEGACY_CHECKPOINTER=1 显式豁免），配置错误不再被静默吞掉。
@@ -362,7 +362,9 @@ async def _start_checkpointing(agent_env: str) -> None:
     )
 
     try:
-        checkpoint_backend = await start_checkpoint_backend(agent_env=agent_env)
+        checkpoint_backend = await start_checkpoint_backend(
+            sqlite_path=config.checkpoint.sqlite_path, agent_env=agent_env
+        )
         logger.info(f"✅ HITL checkpointer 后端: {checkpoint_backend}")
     except CheckpointDeploymentError:
         raise
@@ -443,6 +445,19 @@ async def lifespan(app: FastAPI):
         runtime_initialization.log_files,
     )
 
+    # 沙箱自检：bwrap / Landlock 的探测结论在启动期就落到日志里，而不是等第一次
+    # execute 才发现落进 fail-closed。探测结果有缓存，后续 shell 后端复用同一结论。
+    # EASY_SANDBOX_STRICT=1 时沙箱不可用直接拒绝启动（放在 DB 初始化之前，避免
+    # fail-fast 时留下未关闭的连接池）。
+    from easy_agent.sandboxing.sandbox import log_sandbox_startup_report
+
+    log_sandbox_startup_report(
+        sandbox_enabled=bool(
+            getattr(getattr(config, "agent", None), "sandbox_enabled", True)
+        ),
+        strict=env_bool("EASY_SANDBOX_STRICT"),
+    )
+
     # 知识库：配置里没有 knowledge 段时按默认配置（未启用）加载，不起 worker
     await startup_knowledge(app, config_path)
 
@@ -474,7 +489,7 @@ async def lifespan(app: FastAPI):
 
         _register_execute_profiles(config)
         _log_public_experts()
-        await _start_checkpointing(agent_env)
+        await _start_checkpointing(agent_env, config)
 
         # LangGraph Store 是业务库 SqlStore，首次使用时绑定业务库；先丢掉同一进程里
         # 之前缓存的实例（测试会在一个进程里换着业务库多次启动应用）
@@ -517,18 +532,6 @@ app = FastAPI(
     redoc_url="/docs",
 )
 
-# 跨域访问（CORS）：
-#   - 默认放行所有来源（"*"），兼容开发期跨域直连与同 pod 部署；
-#   - 生产环境如需收紧，设置环境变量 EASY_CORS_ALLOW_ORIGINS 为逗号分隔的可信域名，
-#     例如 "https://app.example.com,https://admin.example.com"。
-_cors_origins = runtime_initialization.environment.cors_allow_origins
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=_cors_origins != ["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(MetricsMiddleware)
 
@@ -713,6 +716,21 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 app.include_router(chat_router)
 app.add_middleware(LegacyHostRoutes)
+
+# 跨域访问（CORS）：
+#   - 默认放行所有来源（"*"），兼容开发期跨域直连与同 pod 部署；
+#   - 生产环境如需收紧，设置环境变量 EASY_CORS_ALLOW_ORIGINS 为逗号分隔的可信域名，
+#     例如 "https://app.example.com,https://admin.example.com"。
+# 必须最后注册（最外层）：限流 429 等由内层中间件直接返回的响应也要带 CORS 头，
+# 否则跨域页面（AI 侧边栏 SDK）只看到 CORS 报错；预检请求也在这里应答，不计入限流。
+_cors_origins = runtime_initialization.environment.cors_allow_origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_origins != ["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(sessions_router)
 app.include_router(files_router)
 app.include_router(auth_router)

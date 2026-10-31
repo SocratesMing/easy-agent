@@ -17,7 +17,7 @@
 | `agent/core.py` | `EasyAgent` 封装 `create_deep_agent`（skills/memory/permissions/interrupt_on/subagents/checkpointer/store）；backend 装配、HITL 中断配置、子代理 specs |
 | `backends/shell.py` | `LocalShellBackend` + 虚拟路径翻译 + bwrap/Landlock/fail-closed 策略 |
 | `sandboxing/sandbox.py` / `landlock.py` / `fs_safety.py` | 命令沙箱、Landlock 降级、外部目录挂载安全校验 |
-| `agent/hitl.py` | 破坏性命令识别、execute 工具描述、HITL 默认工具 |
+| `agent/hitl.py` | 破坏性命令识别、execute 工具描述、按 config.yaml 的 `hitl` 段构造 `interrupt_on` |
 | `persistence/checkpoints.py` | 官方 `AsyncSqliteSaver` 与自研 `PersistentMemorySaver`（裁剪后写业务库） |
 | `persistence/stores.py` | 自研 LangGraph `BaseStore`（SQLite/MySQL） |
 | `agent/summarization.py` | 建图期替换官方摘要工厂 + 缺失降级护栏 |
@@ -49,7 +49,7 @@
 ### Agent 工具与沙箱
 - 文件工具走 CompositeBackend 路由（`/workspace/`、`/user-skills/`、`/skills/builtin/`（只读）、`/memories/`、外部目录）；没命中路由的路径与框架产物（`/.agent/...`：大工具结果、对话历史）落在工作区之外的会话隐藏目录 `workspace/{user}/.agent/{session_id}/`，删除会话时一并删除（DA-04）。共享编译图用两层真实 `CompositeBackend`（`backends/context.py`）按运行期 `SessionContext` 路由（DA-05）。
 - `execute` 默认经 bwrap；不可用降级 Landlock；都不可用 fail-closed（127）。
-- HITL：删除类命令/专家保存/定时任务/知识原文 materialize 等触发审批。
+- HITL：config.yaml 的 `hitl` 段配置，`enabled` 总开关（关掉后对话和定时任务一样不审批），`tools` 审批名单（默认 execute 删除类命令 / delete / save_expert / create_scheduled_task / access_knowledge_original 的 materialize）；名单外的 MCP 工具按服务端标注 / 名字兜底。
 - 子代理（office-writer / knowledge-researcher）显式声明与主代理相同的技能源（`/skills/builtin/`、`/user-skills/`）+ 异常兜底 middleware。
 
 ### 技能
@@ -58,17 +58,19 @@
 - 用户技能：`workspace/{username}/skills/` → 虚拟路径 `/user-skills/`。
 - 公共技能只读共享（DA-13 S2）：技能中心「添加」只在 `workspace/{username}/builtin-skills.json` 里记一条（`agent/builtin_skills.py`），不再复制；agent 经 `/skills/builtin/` 直接读 canonical 目录，只看得到该用户已添加且启用的（视图 backend `backends/builtin_skills.py`），写入一律拒绝（backend 与 deny write 规则两层）；execute 沙箱 bwrap 只读挂载已启用的那几个，Landlock 把整个 canonical 目录设为只读。
 - 技能源固定为 `["/skills/builtin/", "/user-skills/"]`，同名时用户技能覆盖公共技能（fork 即复制到用户技能后修改）。S2 之前复制进用户目录、与公共版本一致的副本在第一次访问时删除并记入清单，改过的保留为用户技能；`scripts/skills/migrate_builtin_skills.py` 可一次性预览 / 执行全部用户的迁移。
-- 输入框选中的技能经 `pinned_skills` 加载（DA-13 S1）。`save_expert` 由 expert-creator 的 `metadata.include_tools` 带出：建图时交给替换默认项的 `SkillsMiddleware(tools=...)`，模型读到或 pin 了该技能才绑定，专家会话不提供。
+- 输入框选中的技能经 `pinned_skills` 加载（DA-13 S1）。`save_expert` 是非专家会话常驻的产品级工具，**不参与技能门控**（`agent/core.py` 的 `_ALWAYS_AVAILABLE_TOOLS`）：S2 之前复制进用户目录、被改过而保留下来的旧 `expert-creator` 没有 `metadata.include_tools`，若交给门控会永不披露，创建专家直接失败。技能带出工具的能力（`metadata.include_tools` + `SkillsMiddleware(tools=...)`）对其他工具照常生效。
 
 ### 数据库
 - SQLite（单机开发，启用 WAL/busy_timeout/synchronous=NORMAL）或 MySQL（多副本生产，代码禁止静默降级）。
 - 会话消息行表 `session_messages`；`sessions.messages` 为 legacy 大字段（仅历史会话回退读取）。
 - 领域 schema 通过 `db/schema_registry.py` 注册，`Database.init_tables()` 统一执行。
-- LangGraph checkpointer：`EASY_CHECKPOINT_BACKEND=auto` 时配了 `EASY_CHECKPOINT_SQLITE_PATH` 或业务库为 SQLite 就用官方 `AsyncSqliteSaver`（默认 `data/checkpoints.db`，相对路径按仓库根解析，`synchronous=NORMAL`），业务库为 MySQL 且没配 SQLite 路径时回退 `PersistentMemorySaver`（进程内，不写业务库，重启后审批状态不在；只按 thread 数裁剪，最多 3 个 thread；thread 内 checkpoint 全部保留，`messages` 是增量存储）；删除会话时一并删除它在官方 saver 里的 thread，定时任务每次运行结束后删除自己的 thread（DA-03 P0）。Postgres checkpointer / Store 已移除（2026-10-21，生产只有 MySQL），LangGraph Store 固定为业务库 `SqlStore`。多副本时每个 pod 用自己的 SQLite 文件：`EASY_CHECKPOINT_SQLITE_PATH` 里的 `{pod}` 启动时换成实例名，`EASY_STICKY_SESSIONS=1` 确认 Ingress 已配 cookie 粘性会话，每个 pod 一个 worker；其余多副本组合启动时 fail-fast，这种模式下 SQLite 打不开也不回退进程内 checkpointer。审批记下所在实例（`pending_approval.instance`），恢复请求落到别的 pod、或本 pod 找不到这条审批的 checkpoint 时返回 409；删除会话后，其余 pod 由后台对账（`EASY_CHECKPOINT_GC_INTERVAL`，默认 600 秒）补删「会话已不存在」的 thread（`docs/design/2026-10-21-per-pod-sqlite-checkpoints.md`）。
+- LangGraph checkpointer：默认（`EASY_CHECKPOINT_BACKEND=auto`）用官方 `AsyncSqliteSaver`，文件路径取 config.yaml 的 `checkpoint.sqlite_path`（没配时用旧环境变量 `EASY_CHECKPOINT_SQLITE_PATH`，再没有是 `/qts/checkpoint/{pod}.db`；相对路径按仓库根解析，`synchronous=NORMAL`）；显式 `EASY_CHECKPOINT_BACKEND=legacy`，或单 pod 时 SQLite 打不开，才用 `PersistentMemorySaver`（进程内，不写业务库，重启后审批状态不在；只按 thread 数裁剪，最多 3 个 thread；thread 内 checkpoint 全部保留，`messages` 是增量存储）；删除会话时一并删除它在官方 saver 里的 thread，定时任务每次运行结束后删除自己的 thread（DA-03 P0）。Postgres checkpointer / Store 已移除（2026-10-21，生产只有 MySQL），LangGraph Store 固定为业务库 `SqlStore`。多副本时每个 pod 用自己的 SQLite 文件：路径里的 `{pod}`（默认路径已带）启动时换成实例名，`EASY_STICKY_SESSIONS=1` 确认 Ingress 已配 cookie 粘性会话，每个 pod 一个 worker；其余多副本组合启动时 fail-fast，这种模式下 SQLite 打不开也不回退进程内 checkpointer。审批记下所在实例（`pending_approval.instance`），恢复请求落到别的 pod、或本 pod 找不到这条审批的 checkpoint 时返回 409；删除会话后，其余 pod 由后台对账（`EASY_CHECKPOINT_GC_INTERVAL`，默认 600 秒）补删「会话已不存在」的 thread（`docs/design/2026-10-21-per-pod-sqlite-checkpoints.md`）。
 
 ## 4. 前端
 
-- `frontend-vue2/`：Vue 2.7 + Element UI（后端 `app.py` 与 Dockerfile 当前托管/构建的基线）。
+- `frontend-vue2/`：Vue 2.7 + Element UI（后端 `app.py` 与 Dockerfile 当前托管/构建的基线）。业务代码在受管模块
+  `frontend-vue2/src/packages/easyAgent/`：外网独立应用、内网 Vue 2 宿主的路由页面与 AI 侧边栏 SDK 共用，内网按迁移包整体
+  同步该目录（`npm run check:easy-agent` / `export:easy-agent`，见 `frontend-vue2/integration/README.md`）。
 - `frontend/`：Vue 3.5 + Vite（并行维护的第二基线）。
 - 两者都**不是** `npm run dev` 自动代理到 8080 的旧 CLI 结构（已改为 Vite 脚本）；构建命令见各自 `package.json`。
 - 无路由/状态库（Vue2 侧）：视图由 `App.vue` 布尔开关切换；**SSE 解析已统一**为各基线的 `src/api/sse.js`（唯一 `readSSE`），chat/expert/knowledge 只注册回调（审计项 ARCH-05 第一步完成）。
@@ -80,7 +82,7 @@
 | 目录 | 内容 |
 | --- | --- |
 | `scripts/quality/` | import SCC、双写冻结、配置 schema/裸 env、多副本门禁 |
-| `scripts/db/` | `migrate_db`、SQLite→MySQL、MCP key |
+| `scripts/db/` | `migrate_db`、SQLite→MySQL、checkpoint 清理 |
 | `scripts/deps/` | 离线后端/前端依赖下载、wheel 落盘 |
 | `scripts/release/` | 发布预检、变更导出 |
 | `scripts/docs/` | API 文档生成 |

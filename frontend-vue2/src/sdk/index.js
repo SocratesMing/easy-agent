@@ -9,16 +9,23 @@
  * 用法与配置项：docs/AI侧边栏SDK集成指南.md
  */
 import Vue from 'vue'
-import '../style.css'
-import AiSidebar from '../features/chat/components/AiSidebar.vue'
-import tipDirective from '../directives/tip.js'
-import { chatStore } from '../features/chat/store/chatStore.js'
-import request, { configureRequest, storeAuth, clearAuth, getStoredToken } from '../utils/request.js'
-import { passwordlessLogin } from '../api/auth.js'
-import { getUserProfile } from '../api/files.js'
-import { getModels } from '../api/settings.js'
-import { setExternalPageContext } from '../utils/pageContext.js'
-import { DEFAULT_COLORS } from '../theme.js'
+// 复用业务模块的同一份实现（packages/easyAgent），经其 SDK 专用入口引用，不直接引 feature 私有文件
+import {
+  AiSidebar,
+  DEFAULT_COLORS,
+  THEME_ROOT_CLASS,
+  chatStore,
+  clearAuth,
+  configureRequest,
+  getModels,
+  getStoredToken,
+  getUserProfile,
+  passwordlessLogin,
+  request,
+  setExternalPageContext,
+  storeAuth,
+  themeStyle,
+} from '../packages/easyAgent/sidebar.js'
 
 // 以下占位符由 scripts/build-sdk.mjs 在构建后替换为真实内容
 const CSS_TEXT = '__EASY_AGENT_SDK_CSS__'
@@ -35,9 +42,9 @@ const DEFAULT_Z_INDEX = 3000
 // <script> 方式加载时记录脚本地址，用于解析字体等静态资源（打包器引入时为空）
 const scriptSrc = (typeof document !== 'undefined' && document.currentScript && document.currentScript.src) || ''
 
+// SDK 自带的 Vue 运行时（--inline-vue），与宿主页面的 Vue 互不影响；v-tip 等由业务组件局部注册
 Vue.config.productionTip = false
 Vue.config.devtools = false
-Vue.directive('tip', tipDirective)
 
 // chatStore 等共享状态是模块级单例，同一页面只允许一个侧边栏实例
 let current = null
@@ -151,8 +158,17 @@ export function init(options = {}) {
   const styleEl = document.createElement('style')
   styleEl.textContent = hostCss(options.theme) + (CSS_TEXT.startsWith('__EASY_AGENT') ? '' : CSS_TEXT)
   shadow.appendChild(styleEl)
+  // 模块根节点：模块的限域重置 / 主题变量以 .easy-agent-root 为范围；theme 覆盖同时写在
+  // :host（影子根继承）与根节点（盖过模块默认值）上。Vue 2 的 $mount 会替换挂载点本身，
+  // 所以根节点是挂载点外面的一层
+  const rootEl = document.createElement('div')
+  rootEl.className = THEME_ROOT_CLASS
+  rootEl.setAttribute('data-theme', 'light')
+  const themeOverrides = themeStyle(options.theme)
+  Object.keys(themeOverrides).forEach((token) => rootEl.style.setProperty(token, themeOverrides[token]))
   const mountEl = document.createElement('div')
-  shadow.appendChild(mountEl)
+  rootEl.appendChild(mountEl)
+  shadow.appendChild(rootEl)
   injectFonts(options.assetsBaseURL)
 
   const state = Vue.observable({ ready: false, pageContext: null })

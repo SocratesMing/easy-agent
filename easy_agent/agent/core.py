@@ -51,9 +51,10 @@ from easy_agent.agent.subagents import DEFAULT_SUBAGENTS, apply_skill_gated_tool
 from easy_agent.agent.summarization import build_summarization_middleware
 from easy_agent.agent.memory import SessionMemoryMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
-from easy_agent.tools.registry import skill_gated_tool_names
+from easy_agent.tools.registry import require_tool_spec, skill_gated_tool_names
 from easy_agent.agent import builtin_skills
 from easy_agent.agent.skills import declared_include_tools, skill_tool_resolver
+from easy_agent.utils.mcp_content import parse_mcp_content
 from easy_agent.utils.mcp_tool_names import resolve_tool_names
 from easy_agent.agent.builtin_skills import BUILTIN_VIRTUAL_ROOT
 from easy_agent.bootstrap.logger import AgentLogger
@@ -63,11 +64,13 @@ from easy_agent.agent.model import (
     is_internal_model_call,
 )
 from easy_agent.security.prompt_guard import assemble_system_prompt
-from easy_agent.tools.web_search import WEB_SEARCH_SYSTEM_PROMPT
 from easy_agent.utils.prompt_probe import describe_prompt, prompt_fingerprint
 
 
 logger = logging.getLogger(__name__)
+
+# 联网搜索开启时追加到系统提示词的行为约束（登记在工具注册表的 web_search 条目上）
+WEB_SEARCH_SYSTEM_PROMPT = require_tool_spec("web_search").prompt_note
 
 
 def _deepagents_version() -> str:
@@ -93,6 +96,18 @@ def framework_patch_status() -> dict[str, bool]:
 #: 谓词实现与绑定都在 ``hitl``（FW-12）；这里保留别名供既有自检/测试导入，
 #: 两边不一致时启动期日志会报错（测试也会失败）。
 _HITL_WHEN_PREDICATES = HITL_WHEN_PREDICATES
+
+
+#: 不参与技能门控的工具（DA-13 的例外清单）：这些是产品级入口，可用性不能取决于
+#: 用户手里那份 SKILL.md 的 frontmatter 写成什么样。
+#:
+#: ``save_expert`` 曾经完全靠 expert-creator 的 ``metadata.include_tools`` 带出，
+#: 但 S2 之前「添加技能」是整份复制到用户目录的：这些副本的 frontmatter 没有该字段，
+#: ``_find_skill_reads`` 因此认不出「读过这个技能」，工具永远不披露，模型只能回答
+#: 「本轮未注入 save_expert」，创建专家直接失败。公共版本再正确也救不了旧副本
+#: （同名时用户副本覆盖公共版本），而且这里扫 canonical 目录还会把它重新算进
+#: ``declared_include_tools``，所以必须显式排除，不能只靠注册表去掉 ``skill_gated``。
+_ALWAYS_AVAILABLE_TOOLS = frozenset({"save_expert"})
 
 
 _patch_status_logged = False
@@ -194,6 +209,11 @@ class EasyAgent(AgentWorkspaceMixin):
 
     EXECUTE_HITL_TOOL_DESCRIPTION = EXECUTE_HITL_TOOL_DESCRIPTION
 
+    #: 技能作用域（专家技能硬隔离）：``None`` = 全量可见（改造前行为）。
+    #: 类级默认值让「不走 __init__」的构造路径（测试里的 ``EasyAgent.__new__``、
+    #: 反序列化恢复）也能安全读到该字段，见 ``services/tool_scope.py``。
+    skill_whitelist: list[str] | None = None
+
     def __init__(
         self,
         config: Config,
@@ -209,6 +229,7 @@ class EasyAgent(AgentWorkspaceMixin):
        model_name: str | None = None,
         enable_web_search: bool = False,
         system_prompt_extra: str = "",
+        skill_whitelist: list[str] | None = None,
    ):
         """初始化 EasyAgent 实例，配置工作区隔离和运行时上下文。
 
@@ -230,10 +251,19 @@ class EasyAgent(AgentWorkspaceMixin):
             enable_web_search: 是否开启联网搜索。为 True 时在系统提示词中加入
                 联网搜索行为约束（web_search 工具本身由 agent_manager 注入，
                 仅在 web_search 配置了 api_key 时才为 True）。
+            skill_whitelist: 技能作用域（专家技能硬隔离）。``None``（默认）= 全量可见，
+                与改造前逐字一致；``[]`` = 显式无技能；非空 = 只有这些技能目录进技能
+                清单、且其内容可读（``backends/scoped_skills.py``）。
         """
         self.config = config
         self.username = username
         self.session_id = session_id
+        # 技能作用域：None = 全量；[] = 无技能；[names] = 白名单
+        self.skill_whitelist = (
+            None
+            if skill_whitelist is None
+            else [str(name).strip() for name in skill_whitelist if str(name).strip()]
+        )
         # 日志用的短前缀（取 sid 末 5 位），与 chat_service 等模块保持一致。
         self.sid = (session_id or "new")[-5:]
         self.skills_root = skills_root
@@ -410,6 +440,10 @@ class EasyAgent(AgentWorkspaceMixin):
             workspace_name=self.workspace_name,
             builtin_skills_dir=str(self.builtin_skills_dir or ""),
             builtin_skills=tuple(self.builtin_skills),
+            # 技能作用域随运行期 context 走：同一张编译图可以服务不同专家的不同白名单
+            skill_whitelist=(
+                None if self.skill_whitelist is None else tuple(self.skill_whitelist)
+            ),
         )
 
     def _build_interrupt_config(self):
@@ -418,16 +452,19 @@ class EasyAgent(AgentWorkspaceMixin):
         改造前无论工具是否注入，都会把 ``execute`` / ``save_expert`` /
         ``create_scheduled_task`` / ``access_knowledge_original`` 以及 MCP 写工具
         写进 ``interrupt_on``；未注入的名字会被 DeepAgents 静默忽略（T1-14）。
-        现在交给 :func:`easy_agent.agent.hitl.build_interrupt_config` 过滤：注册表只提供
-        声明（决策 / 条件谓词 / 顺序），是否进入配置取决于本会话实际工具集。
+        现在交给 :func:`easy_agent.agent.hitl.build_interrupt_config` 过滤：审批名单取
+        config.yaml 的 ``hitl.tools``（不配时是注册表的全部 HITL 工具），注册表提供决策和
+        条件谓词，是否进入配置取决于本会话实际工具集。
 
         ``self.mcp_tools`` 实际承载「MCP + 应用注入工具」全集（历史命名），
         因此这里直接把它作为实际工具来源；``execute`` 等框架内置工具由
         ``build_interrupt_config`` 内部补入。
         """
+        hitl = getattr(getattr(self, "config", None), "hitl", None)
         return build_interrupt_config(
             getattr(self, "mcp_tools", None) or [],
             enable_hitl=bool(getattr(self, "enable_hitl", True)),
+            approval_tools=getattr(hitl, "tools", None),
             sid=getattr(self, "sid", ""),
         )
 
@@ -576,13 +613,15 @@ class EasyAgent(AgentWorkspaceMixin):
                 )
 
             main_middleware = [*middleware, summarization(render_turn=True)]
-            # DA-13：由技能带出的工具（save_expert）不进 agent 工具列表，交给同名替换默认项的
+            # DA-13：由技能带出的工具不进 agent 工具列表，交给同名替换默认项的
             # SkillsMiddleware，模型读到 / pin 了在 include_tools 里声明它的技能后才出现
             # DA-13：注册表里标记为 skill_gated 的工具 + 任意 SKILL.md 通过
             # metadata.include_tools 声明的工具（官方约定为空格分隔字符串）
-            gated_names = set(skill_gated_tool_names()) | declared_include_tools(
-                [self.builtin_skills_dir, self.user_skills_dir]
-            )
+            # 例外：_ALWAYS_AVAILABLE_TOOLS 常驻，旧版技能副本的声明缺失不会把它们锁死
+            gated_names = (
+                set(skill_gated_tool_names())
+                | declared_include_tools([self.builtin_skills_dir, self.user_skills_dir])
+            ) - _ALWAYS_AVAILABLE_TOOLS
             # D4：开启 MCP 前缀后，技能里写的仍是原始工具名，这里按后缀唯一匹配解析
             gated_resolved, gated_unresolved = resolve_tool_names(
                 gated_names, [getattr(t, "name", "") for t in graph_tools]
@@ -734,6 +773,12 @@ class EasyAgent(AgentWorkspaceMixin):
                 workspace_name=getattr(self, "workspace_name", "") or "",
                 builtin_skills_dir=str(getattr(self, "builtin_skills_dir", "") or ""),
                 builtin_skills=tuple(getattr(self, "builtin_skills", ()) or ()),
+                # 兼容旧调用（EasyAgent.__new__ 构造）时同样带上作用域默认值
+                skill_whitelist=(
+                    None
+                    if getattr(self, "skill_whitelist", None) is None
+                    else tuple(getattr(self, "skill_whitelist", ()) or ())
+                ),
             )
         return _build_backend_for_context(
             self.config,
@@ -831,10 +876,8 @@ class EasyAgent(AgentWorkspaceMixin):
                                     pass
 
                 elif isinstance(chunk, ToolMessage):
-                    from easy_agent.services.mcp import _parse_mcp_content
-
                     tool_name = getattr(chunk, "name", "") or ""
-                    result = _parse_mcp_content(chunk.content) if chunk.content else ""
+                    result = parse_mcp_content(chunk.content) if chunk.content else ""
                     truncate_len = getattr(
                         self.config.tools, "result_log_truncate", 200
                     )

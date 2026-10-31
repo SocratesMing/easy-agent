@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "description": "分层方向门禁（docs/design/2026-10-20-services-subpackages-and-layering.md §5、§6.1）：层号按模块前缀指定，最长前缀优先；同层可以互相导入，下层不得导入上层，函数内导入和 TYPE_CHECKING 导入同样计入。包入口门禁（§6.2）：包的 __init__.py 不导入项目内的模块，init_allow 里的包除外，新建的包一律不带导入。allow 和 init_allow 都只减不增，每条写明原因。",
+  "layers": {
+    "easy_agent": 6,
+    "easy_agent.app": 6,
+    "easy_agent.api": 5,
+    "easy_agent.middleware": 5,
+    "easy_agent.services": 4,
+    "easy_agent.tools": 4,
+    "easy_agent.knowledges": 4,
+    "easy_agent.agent": 3,
+    "easy_agent.backends": 2,
+    "easy_agent.tools.registry": 2,
+    "easy_agent.db": 1,
+    "easy_agent.persistence": 1,
+    "easy_agent.sandboxing": 1,
+    "easy_agent.utils": 0,
+    "easy_agent.bootstrap": 0,
+    "easy_agent.security": 0,
+    "easy_agent.models": 0
+  },
+  "allow": [
+    {
+      "from": "easy_agent.knowledges.personnel.api",
+      "to": "easy_agent.middleware",
+      "reason": "知识库纵向切片自带路由，用 middleware 的鉴权依赖；知识库内部分层另行设计（设计文档 §9 #7、§13 决策 4）"
+    }
+  ],
+  "init_allow": [
+    {"package": "easy_agent.agent", "reason": "对外门面（EasyAgent 等），使用方都在 L3 及以上（§6.2）"},
+    {"package": "easy_agent.api", "reason": "路由汇总，供 app.py 注册（§6.2）"},
+    {"package": "easy_agent.backends", "reason": "只导入本包内的模块，逐个评估（§6.2）"},
+    {"package": "easy_agent.bootstrap.initialization", "reason": "只导入本包内的模块，逐个评估（§6.2）"},
+    {"package": "easy_agent.db", "reason": "只导入本包内的模块，逐个评估（§6.2）"},
+    {"package": "easy_agent.db.repositories", "reason": "只导入本包内的模块，逐个评估（§6.2）"},
+    {"package": "easy_agent.middleware", "reason": "只导入本包内的模块，逐个评估（§6.2）"},
+    {"package": "easy_agent.models", "reason": "只导入本包内的模块，逐个评估（§6.2）"},
+    {"package": "easy_agent.knowledges", "reason": "知识库不在本方案范围（§6.2、§13 决策 4）"},
+    {"package": "easy_agent.knowledges.personnel", "reason": "知识库不在本方案范围（§6.2、§13 决策 4）"},
+    {"package": "easy_agent.knowledges.ragflow", "reason": "知识库不在本方案范围（§6.2、§13 决策 4）"},
+    {"package": "easy_agent.skills.docx.scripts.office.validators", "reason": "打包的技能脚本，是 skills/ 的副本（sync_skills.py --check 保证一致），不属于应用分层"},
+    {"package": "easy_agent.skills.pptx.scripts.office.validators", "reason": "打包的技能脚本，是 skills/ 的副本（sync_skills.py --check 保证一致），不属于应用分层"},
+    {"package": "easy_agent.skills.xlsx.scripts.office.validators", "reason": "打包的技能脚本，是 skills/ 的副本（sync_skills.py --check 保证一致），不属于应用分层"}
+  ]
+}

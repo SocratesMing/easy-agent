@@ -6,8 +6,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
+
+#: 会话流锁的租期（秒）：持有者崩溃后最多这么久，别的实例就能接管
+STREAM_TTL_SECONDS = 30 * 60
 
 
 def get_session_runtime(db, session_id: str) -> dict | None:
@@ -89,6 +92,22 @@ def renew_session_stream(
             (until_iso, now_iso, session_id, owner),
         )
         return cursor.rowcount > 0
+
+
+def renew_stream_lease(
+    db, session_id: str, owner: str, *, ttl_seconds: int = STREAM_TTL_SECONDS
+) -> bool:
+    """为 ``owner`` 持有的流锁续约一个租期；owner 已变化时返回 False（锁被接管）。
+
+    services 层的 ``session_runtime.renew_stream`` 和仓储的 ``renew_stream`` 心跳都走这里。
+    """
+    now = datetime.now(UTC)
+    return db.renew_session_stream(
+        session_id,
+        owner,
+        (now + timedelta(seconds=ttl_seconds)).isoformat(timespec="seconds"),
+        now.isoformat(timespec="seconds"),
+    )
 
 
 

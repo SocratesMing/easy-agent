@@ -24,20 +24,21 @@ from easy_agent.knowledges.facade import (
     is_knowledge_panel_title,
     prepare_knowledge_chat,
 )
-from easy_agent.services import (
-    resume_stream_generator,
+from easy_agent.services.streaming.orchestrator import resume_stream_generator
+from easy_agent.services.agent_manager import (
     get_or_create_agent_for_session,
     get_session_expert,
     remove_session_agent,
     is_session_streaming,
     cancel_stream_task,
 )
-from easy_agent.services import expert_runtime, skill_provision
+from easy_agent.services import expert_runtime, skill_provision, tool_scope
 # 流锁、待修改专家要写库：用异步版本，写库放进线程，不占事件循环
 from easy_agent.services.agent_manager import (
     aregister_stream_task,
     aset_session_edit_target,
     aunregister_stream_task,
+    set_session_turn_skills,
 )
 from easy_agent.services import skill_library
 from easy_agent.services import session_uploads as file_context
@@ -71,10 +72,8 @@ from easy_agent.api.chat_live import (  # noqa: F401 - 兼容旧导入路径
     chat_stream_status,
     router as chat_live_router,
 )
-from easy_agent.utils import (
-    parse_file_content,
-    SessionLogger,
-)
+from easy_agent.utils.file_parser import parse_file_content
+from easy_agent.utils.session_logger import SessionLogger
 from easy_agent.utils.prompt_probe import describe_prompt
 from easy_agent.api.sessions import generate_workspace_name
 from easy_agent.knowledges.chat.host_port import (
@@ -83,7 +82,10 @@ from easy_agent.knowledges.chat.host_port import (
 from easy_agent.services.streaming.orchestrator import (
     chat_stream_generator as _host_chat_stream_generator,
 )
-from easy_agent.services import get_agent_config as _get_agent_config
+from easy_agent.services.streaming.orchestrator import (
+    friendly_error_message as _friendly_error_message,
+)
+from easy_agent.services.agent_manager import get_agent_config as _get_agent_config
 from easy_agent.services.session_thread import (
     StaleApprovalError,
     abandon_pending_approval,
@@ -505,7 +507,7 @@ async def _drive_stream(
         logger.error(f"[{sid}] 后台流式任务异常: {type(e).__name__}: {e}")
         run_status = "failed"
         run_error = f"{type(e).__name__}: {e}"
-        hub.broadcast(emitter.error(f"处理失败: {e}"))
+        hub.broadcast(emitter.error(f"处理失败: {_friendly_error_message(e)}"))
     finally:
         await _stop_heartbeat(heartbeat)
         if run_id is not None and db is not None:
@@ -621,6 +623,7 @@ async def chat_stream(
     expert_id = ""
     expert_prompt = ""
     skill_notice = ""
+    expert_skills: list[str] = []
     if request.expert_agent_id:
         # 我的专家（数据库）优先，公共专家（目录）兜底；读取失败降级为通用 Agent
         expert_id, expert_prompt, _expert_source = expert_runtime.load_expert_prompt(
@@ -634,6 +637,35 @@ async def chat_stream(
         # 让模型如实说明「技能未就绪」，而不是虚构技能产物。
         skill_report = skill_provision.provision_expert_skills(username, expert_id)
         skill_notice = skill_provision.build_skill_runtime_notice(skill_report)
+        # 专家绑定的技能包：自建专家取库字段 export_required_skills，公共专家取
+        # config.yaml 的 required_skills（同一入口，见 skill_provision.required_skills_of）
+        expert_skills = list(skill_report.get("required") or [])
+        logger.info(
+            f"[{sid}] 🧩 专家技能包声明 | expert={expert_id or '(无)'} | 来源={_expert_source or '(无)'} | "
+            f"声明={expert_skills or '（未绑定 → 技能库全量可见）'} | "
+            f"本轮可用={skill_report.get('existing') or []} | 本次补装={skill_report.get('installed') or []} | "
+            f"未就绪={[(i.get('skill'), i.get('reason')) for i in (skill_report.get('skipped') or [])] or '无'}"
+        )
+
+    # 技能作用域（专家技能硬隔离）：专家绑定了技能包时，只挂「专家技能包 ∪ 本轮另选」；
+    # 专家没绑定则保持全量可见（= 改造前行为）。见 services/tool_scope.py。
+    scope = tool_scope.resolve_tool_scope(
+        username,
+        expert_skills=expert_skills,
+        turn_skills=turn.dirs,
+        expert_id=expert_id,
+        sid=sid,
+        enabled=tool_scope.tool_scope_enabled((_get_agent_config() or {}).get("config")),
+    )
+    logger.info(f"[{sid}] 🎛️ 本轮技能作用域 | {scope.describe()}")
+    # 本轮技能暂存：save_expert 在创建 / 修改专家时据此落库 export_required_skills
+    # （技能胶囊只在请求体里，工具侧看不到）。非空才覆盖，见 set_session_turn_skills。
+    cached_turn_skills = set_session_turn_skills(session_id, turn.dirs)
+    if turn.dirs:
+        logger.info(
+            f"[{sid}] 🧩 本轮技能已暂存（供保存专家使用）| 选中={turn.dirs} | "
+            f"会话暂存={cached_turn_skills}"
+        )
 
     gate = await expert_runtime.relevance_gate(
         expert_repo,
@@ -774,6 +806,11 @@ async def chat_stream(
         system_prompt_extra=system_prompt_extra,
         enable_web_search=request.enable_web_search,
         expert_agent_id=expert_id or None,
+        # 技能作用域：None = 全量可见（未绑定技能包的专家 / 通用对话），
+        # 非 None = 只挂这些技能目录（专家技能包 ∪ 本轮另选）
+        skill_whitelist=(
+            None if scope.skill_whitelist is None else list(scope.skill_whitelist)
+        ),
     )
 
     # Phase 2B：把本轮 run 持久化（owner + lease）。登记失败只记日志，

@@ -39,6 +39,7 @@ retry:
 
 # ===== Agent =====
 max_steps: ${MAX_STEPS:-100}                      # 单轮最大执行步数
+tool_progress_enabled: ${TOOL_PROGRESS_ENABLED:-true}  # 工具空结果终止提示 + 原地打转提醒（只改结果文本，不改工具行为）
 workspace_dir: "${WORKSPACE_DIR:-/qts/workspace}" # 工作区根目录，实际按用户/会话隔离
 memories_dir: "${MEMORIES_DIR:-/qts/memories}"    # 长期记忆根目录，实际 {memories_dir}/{username}/AGENTS.md
 sessions_dir: "${SESSIONS_DIR:-/qts/sessions}"    # 会话数据目录，实际 {sessions_dir}/{username}/{session_id}.json
@@ -129,6 +130,14 @@ database:
     read_timeout: 30                      # 读超时（秒）
     write_timeout: 30                     # 写超时（秒）
 
+# ===== HITL 审批 checkpoint =====
+checkpoint:
+  # 人工审批断点的 SQLite 文件（官方 AsyncSqliteSaver）。{pod} 启动时换成 pod 名
+  # （EASY_POD_NAME → POD_NAME → HOSTNAME），每个 pod 一个文件；相对路径按项目根解析。
+  # 不配置时默认 /qts/checkpoint/{pod}.db。要放 pod 本地盘，不能放 NAS 等网络盘（SQLite WAL 不能跨主机）。
+  # 本机开发可在 .env.dev 里设 CHECKPOINT_DIR=data/checkpoints。
+  sqlite_path: "${CHECKPOINT_DIR:-/qts/checkpoint}/{pod}.db"
+
 # ===== 人员账号 =====
 personnel:
   self_registration_enabled: false   # 自助注册：true 时登录页显示注册入口
@@ -147,6 +156,18 @@ skill_write: ${SKILL_WRITE:-new-only}  # 技能库写权限：new-only（只可�
 interrupt_sensitive_writes: true       # /memories/**、/user-skills/** 的写入是否走人工审批（需 checkpointer）
 denied_dirs: []                        # 禁读写的虚拟路径；字符串 = 读+写，{path, operations} = 仅指定操作
 
+# ===== 人工审批（HITL）=====
+hitl:
+  enabled: true                  # false：对话里也不审批（和定时任务一样），也不提供创建定时任务的工具
+  # 执行这些工具前要人工审批；不写 tools 时就是下面这份默认名单
+  tools:
+    - execute                    # 只拦删除类命令（rm / unlink / shred 等），删目录直接拒绝
+    - delete                     # 删除文件
+    - save_expert                # 新建 / 修改专家
+    - create_scheduled_task      # 创建定时任务
+    - access_knowledge_original  # 只拦 action=materialize（把知识库原文取到工作区）
+  # MCP 工具写工具名即可（带不带服务前缀都行）；没列出的 MCP 工具仍按服务端标注 / 名字自动判断
+
 # ===== 专家 =====
 expert:
   guardrail_enabled: true            # 在专家提示词末尾追加职责边界
@@ -154,6 +175,7 @@ expert:
   relevance_strict: false            # true = 部分相关也整条拒答；false = 放行只答相关部分
   relevance_disable_thinking: true   # 预检调用关闭思考模式
   auto_install_required_skills: true # 用预置专家时自动「添加」其 required_skills 声明的公共技能（不复制技能包）
+  tool_scope_enabled: true           # 专家选定技能包时做硬隔离：只挂这些技能 + 本轮另选的技能；未选=全量可见
 
 # ===== 专家分类标签（tag_id 落库，tag_name 展示）=====
 expert_tags:

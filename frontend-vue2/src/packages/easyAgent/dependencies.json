@@ -1,0 +1,228 @@
+{
+  "schemaVersion": 1,
+  "note": "自动生成（npm run deps:easy-agent），请勿手改；宿主现状对照见 integration/README.md「依赖」",
+  "runtime": {
+    "axios": {
+      "range": "^1.7.9",
+      "locked": "1.20.0",
+      "license": null,
+      "nodeEngines": null,
+      "declaredIn": "dependencies",
+      "specifiers": [
+        "axios"
+      ],
+      "usedBy": [
+        "utils/request.js"
+      ]
+    },
+    "docx-preview": {
+      "range": "^0.3.7",
+      "locked": "0.3.7",
+      "license": null,
+      "nodeEngines": null,
+      "declaredIn": "dependencies",
+      "specifiers": [
+        "docx-preview"
+      ],
+      "usedBy": [
+        "shared/preview/DocxPreview.vue"
+      ]
+    },
+    "element-ui": {
+      "range": "^2.15.14",
+      "locked": "2.15.14",
+      "license": null,
+      "nodeEngines": null,
+      "declaredIn": "dependencies",
+      "specifiers": [
+        "element-ui/lib/button",
+        "element-ui/lib/dialog",
+        "element-ui/lib/message-box"
+      ],
+      "usedBy": [
+        "features/personnel/components/UserManagementPanel.vue",
+        "features/settings/components/SettingsPanel.vue",
+        "shared/components/ConfirmDialog.vue"
+      ]
+    },
+    "exceljs": {
+      "range": "^3.4.0",
+      "locked": "3.10.0",
+      "license": null,
+      "nodeEngines": ">=8.3.0",
+      "declaredIn": "dependencies",
+      "specifiers": [
+        "exceljs"
+      ],
+      "usedBy": [
+        "shared/preview/ExcelPreview.vue"
+      ]
+    },
+    "gemoji": {
+      "range": "^8.1.0",
+      "locked": "8.1.0",
+      "license": null,
+      "nodeEngines": null,
+      "declaredIn": "dependencies",
+      "specifiers": [
+        "gemoji"
+      ],
+      "usedBy": [
+        "shared/markdown/index.js"
+      ]
+    },
+    "highlight.js": {
+      "range": "^11.11.1",
+      "locked": "11.12.0",
+      "license": null,
+      "nodeEngines": ">=12.0.0",
+      "declaredIn": "dependencies",
+      "specifiers": [
+        "highlight.js/lib/core",
+        "highlight.js/lib/languages/bash",
+        "highlight.js/lib/languages/c",
+        "highlight.js/lib/languages/cpp",
+        "highlight.js/lib/languages/csharp",
+        "highlight.js/lib/languages/css",
+        "highlight.js/lib/languages/diff",
+        "highlight.js/lib/languages/dockerfile",
+        "highlight.js/lib/languages/go",
+        "highlight.js/lib/languages/ini",
+        "highlight.js/lib/languages/java",
+        "highlight.js/lib/languages/javascript",
+        "highlight.js/lib/languages/json",
+        "highlight.js/lib/languages/markdown",
+        "highlight.js/lib/languages/python",
+        "highlight.js/lib/languages/rust",
+        "highlight.js/lib/languages/scss",
+        "highlight.js/lib/languages/shell",
+        "highlight.js/lib/languages/sql",
+        "highlight.js/lib/languages/typescript",
+        "highlight.js/lib/languages/xml",
+        "highlight.js/lib/languages/yaml"
+      ],
+      "usedBy": [
+        "shared/markdown/hljs.js"
+      ]
+    },
+    "katex": {
+      "range": "^0.16.47",
+      "locked": "0.16.47",
+      "license": null,
+      "nodeEngines": null,
+      "declaredIn": "dependencies",
+      "specifiers": [
+        "katex/dist/katex.min.css"
+      ],
+      "usedBy": [
+        "markdownSetup.js"
+      ]
+    },
+    "marked": {
+      "range": "^17.0.6",
+      "locked": "17.0.6",
+      "license": "MIT",
+      "nodeEngines": ">= 20",
+      "declaredIn": "dependencies",
+      "specifiers": [
+        "marked"
+      ],
+      "usedBy": [
+        "shared/markdown/index.js"
+      ]
+    },
+    "marked-emoji": {
+      "range": "^2.0.3",
+      "locked": "2.0.3",
+      "license": null,
+      "nodeEngines": null,
+      "declaredIn": "dependencies",
+      "specifiers": [
+        "marked-emoji"
+      ],
+      "usedBy": [
+        "shared/markdown/index.js"
+      ]
+    },
+    "marked-katex-extension": {
+      "range": "^5.1.10",
+      "locked": "5.1.13",
+      "license": null,
+      "nodeEngines": null,
+      "declaredIn": "dependencies",
+      "specifiers": [
+        "marked-katex-extension"
+      ],
+      "usedBy": [
+        "shared/markdown/index.js"
+      ]
+    },
+    "monaco-editor": {
+      "range": "^0.53.0",
+      "locked": "0.53.0",
+      "license": null,
+      "nodeEngines": null,
+      "declaredIn": "dependencies",
+      "specifiers": [
+        "monaco-editor/esm/vs/editor/editor.api",
+        "monaco-editor/esm/vs/editor/editor.worker.js",
+        "monaco-editor/esm/vs/language/json/json.worker.js",
+        "monaco-editor/esm/vs/language/json/monaco.contribution"
+      ],
+      "usedBy": [
+        "features/connectors/components/McpConfigEditorPanel.vue"
+      ]
+    },
+    "vue": {
+      "range": "^2.7.16",
+      "locked": "2.7.16",
+      "license": null,
+      "nodeEngines": null,
+      "declaredIn": "dependencies",
+      "specifiers": [
+        "vue"
+      ],
+      "usedBy": [
+        "EasyAgentPage.vue",
+        "features/chat/store/chatStore.js",
+        "features/knowledge/KnowledgeScopeSelector.vue",
+        "features/knowledge/KnowledgeWorkbench.vue",
+        "features/personnel/PersonnelManagement.vue",
+        "features/skills/store/skillDirectoryStore.js",
+        "runtime/config.js",
+        "utils/hitlApproval.js",
+        "utils/pageContext.js",
+        "utils/reactiveSet.js"
+      ]
+    },
+    "xlsx": {
+      "range": "^0.18.5",
+      "locked": "0.18.5",
+      "license": null,
+      "nodeEngines": ">=0.8",
+      "declaredIn": "dependencies",
+      "specifiers": [
+        "xlsx"
+      ],
+      "usedBy": [
+        "shared/preview/FilePreview.vue"
+      ]
+    }
+  },
+  "build": {
+    "vue": "Vue 2.7.x：组件用到 2.7 内置 Composition API（从 vue 导入 ref / computed / onMounted 等），不支持 Vue 2.6",
+    "sfc": "vue-loader ≥ 15.10 且使用 vue@2.7 自带的 vue/compiler-sfc（Vue CLI 5 默认）；宿主不再需要 vue-template-compiler",
+    "webpack": "webpack 5：Monaco 编辑器用 new Worker(new URL(..., import.meta.url)) 输出 worker chunk；动态 import() 输出懒加载 chunk",
+    "css": "能处理 .vue <style scoped>、.css 导入与 url() 引用的字体（Vue CLI 默认 css-loader / postcss 即可）",
+    "babel": "模块源码需经宿主 babel-loader 转译（src 内文件默认会转译）；依赖包中的现代语法按宿主 browserslist 决定是否 transpileDependencies",
+    "assets": "无需额外 loader / 插件：图标是模块内生成的 JS 字符串（不再依赖 ~icons 与 @iconify/json）"
+  },
+  "externalTooling": {
+    "@iconify/json": "生成 assets/icons/*.js（npm run icons:easy-agent）",
+    "unplugin-icons": "历史遗留的开发依赖，模块与构建均不再使用",
+    "@vue/cli-service": "外网独立应用与 SDK 的构建工具（宿主用自己的构建链）",
+    "@vue/cli-plugin-babel": "外网构建工具",
+    "autoprefixer": "外网构建工具",
+    "postcss": "外网构建工具"
+  }
+}

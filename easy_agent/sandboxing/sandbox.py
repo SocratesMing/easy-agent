@@ -150,6 +150,10 @@ def _sandbox_path(venv: str | None) -> str:
 
 
 _bwrap_usable: bool | None = None
+# 最近一次探测的细节（路径 / 失败原因），供启动期自检复用：探测本身仍然只做一次，
+# 之后 shell 后端直接命中 _bwrap_usable 缓存，与启动日志的结论必然一致。
+_bwrap_probe_path: str | None = None
+_bwrap_probe_reason: str = ""
 
 
 def _venv_prefix() -> str | None:
@@ -176,14 +180,17 @@ def bwrap_usable() -> bool:
 
     The result is cached after the first probe.
     """
-    global _bwrap_usable
+    global _bwrap_usable, _bwrap_probe_path, _bwrap_probe_reason
     if sys.platform != "linux" and not sys.platform.startswith("linux"):
+        _bwrap_probe_reason = f"非 Linux 平台（{sys.platform}）"
         return False
     if _bwrap_usable is not None:
         return _bwrap_usable
     bwrap = shutil.which("bwrap")
+    _bwrap_probe_path = bwrap
     if not bwrap:
         _bwrap_usable = False
+        _bwrap_probe_reason = "PATH 中找不到 bwrap（未安装）"
         logger.info("[sandbox] bwrap 未安装，shell 命令降级为路径白名单检测")
         return False
     argv: list[str] = [
@@ -202,6 +209,7 @@ def bwrap_usable() -> bool:
         _bwrap_usable = False
         reason = str(exc)
     if not _bwrap_usable:
+        _bwrap_probe_reason = reason or "未知原因"
         logger.warning(
             "[sandbox] bwrap 不可用（%s），shell 命令降级为 Landlock 隔离。"
             "容器内启用 bwrap 需 --security-opt seccomp=unconfined、"
@@ -209,6 +217,158 @@ def bwrap_usable() -> bool:
             reason or "未知原因",
         )
     return _bwrap_usable
+
+
+def _bwrap_version(path: str | None) -> str | None:
+    """Return the ``bwrap --version`` line for *path*, or ``None`` if unknown."""
+    if not path:
+        return None
+    try:
+        proc = subprocess.run(
+            [path, "--version"], capture_output=True, text=True, timeout=5
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    text = (proc.stdout or proc.stderr or "").strip().splitlines()
+    return text[0] if text else None
+
+
+def _sandbox_hints(bwrap_path: str | None, reason: str) -> list[str]:
+    """Actionable hints for a failed/failing sandbox probe (for startup logs)."""
+    if not bwrap_path:
+        return [
+            "容器内没有 bwrap：确认运行的是新构建的镜像"
+            "（docker compose up -d --build，未带 --build 会复用旧镜像）",
+            "镜像已内置离线编译的 bwrap，位于 /usr/local/bin/bwrap；"
+            "若服务进程的 PATH 不含该目录，用它兜底或调整 PATH",
+        ]
+    hints: list[str] = []
+    low = reason.lower()
+    if "namespace" in low or "operation not permitted" in low or "permission denied" in low:
+        hints += [
+            "宿主启用了非特权 user namespace 限制："
+            "sysctl -w user.max_user_namespaces=15000（写入 /etc/sysctl.d 持久化）",
+            "容器启动参数需带 --security-opt seccomp=unconfined "
+            "apparmor=unconfined systempaths=unconfined；"
+            "改完 compose 需 docker compose up -d 重建容器（restart 不生效）",
+        ]
+    hints.append(
+        "若暂时无法开放 namespace，可在宿主编译并给 bwrap 加 setuid 位，"
+        "同时以 --cap-add SYS_ADMIN 运行容器"
+    )
+    hints.append(
+        "仅在可信单用户环境可设 agent.sandbox_enabled=false 直接执行（不隔离），"
+        "不要在生产开启"
+    )
+    return hints
+
+
+def sandbox_report(*, sandbox_enabled: bool = True) -> dict[str, object]:
+    """Summarise the sandbox decision: ``bwrap`` / ``landlock`` / ``fail-closed``.
+
+    Triggers the (cached) probes on first call, so calling it at startup makes the
+    later shell-backend construction reuse the very same verdict — the startup log
+    and the runtime behaviour can never disagree.
+    """
+    report: dict[str, object] = {
+        "platform": sys.platform,
+        "sandbox_enabled": sandbox_enabled,
+    }
+    try:
+        uname = os.uname()
+        report["kernel"] = uname.release
+        report["arch"] = uname.machine
+    except Exception:  # noqa: BLE001 - not available on non-POSIX platforms
+        report["kernel"] = None
+        report["arch"] = None
+
+    if not sandbox_enabled:
+        report.update(
+            mode="disabled",
+            bwrap_path=None,
+            bwrap_version=None,
+            bwrap_ok=False,
+            bwrap_reason="agent.sandbox_enabled=false",
+            landlock_ok=False,
+            hints=[],
+        )
+        return report
+
+    bwrap_ok = bwrap_usable()
+    from easy_agent.sandboxing.landlock import landlock_usable
+
+    landlock_ok = landlock_usable()
+    if bwrap_ok:
+        mode = "bwrap"
+    elif landlock_ok:
+        mode = "landlock"
+    else:
+        mode = "fail-closed"
+    report.update(
+        mode=mode,
+        bwrap_path=_bwrap_probe_path,
+        bwrap_version=_bwrap_version(_bwrap_probe_path),
+        bwrap_ok=bwrap_ok,
+        bwrap_reason=_bwrap_probe_reason,
+        landlock_ok=landlock_ok,
+        hints=(
+            []
+            if mode != "fail-closed"
+            else _sandbox_hints(_bwrap_probe_path, _bwrap_probe_reason)
+        ),
+    )
+    return report
+
+
+def log_sandbox_startup_report(
+    *, sandbox_enabled: bool = True, strict: bool = False
+) -> dict[str, object]:
+    """Log the sandbox verdict once at startup and return the report.
+
+    *strict* turns an unusable sandbox into a hard startup failure, so a host that
+    cannot isolate shell commands never starts serving (fail-closed at boot rather
+    than at the first ``execute`` call). Disabled sandboxes are always only warned
+    about — they are a deliberate configuration choice, not a probe failure.
+    """
+    report = sandbox_report(sandbox_enabled=sandbox_enabled)
+    mode = report["mode"]
+    kernel = report.get("kernel") or "?"
+    arch = report.get("arch") or "?"
+    logger.info(
+        "[沙箱自检] 平台: %s %s (%s)", report["platform"], kernel, arch
+    )
+    if mode == "bwrap":
+        logger.info(
+            "[沙箱自检] ✅ bwrap 沙箱隔离可用: %s (%s)",
+            report["bwrap_path"],
+            report["bwrap_version"] or "版本未知",
+        )
+    elif mode == "landlock":
+        logger.warning(
+            "[沙箱自检] ⚠️ bwrap 不可用（%s），已降级为 Landlock 隔离："
+            "文件系统受限但无法隔离进程/网络",
+            report["bwrap_reason"] or "未知原因",
+        )
+    elif mode == "fail-closed":
+        logger.error(
+            "[沙箱自检] ❌ bwrap 与 Landlock 均不可用（%s），"
+            "agent 的 shell 命令将被拒绝执行（fail-closed）",
+            report["bwrap_reason"] or "未知原因",
+        )
+        for hint in report["hints"] or []:  # type: ignore[union-attr]
+            logger.error("[沙箱自检] 修复建议: %s", hint)
+        if strict:
+            raise RuntimeError(
+                "沙箱自检失败：bwrap 与 Landlock 均不可用，且 EASY_SANDBOX_STRICT=1。"
+                f"原因：{report['bwrap_reason'] or '未知原因'}。"
+                "修复后重试，或设 agent.sandbox_enabled=false（不隔离，仅限可信环境）。"
+            )
+    else:
+        logger.warning(
+            "[沙箱自检] ⚠️ agent.sandbox_enabled=false，shell 命令将在宿主直接执行，"
+            "没有任何沙箱隔离"
+        )
+    return report
 
 
 def run_sandboxed(

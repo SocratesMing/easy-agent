@@ -12,7 +12,7 @@ import pytest
 from fastapi import HTTPException
 
 from easy_agent.models.db import SessionModel
-from easy_agent.utils.session import get_owned_session
+from easy_agent.db.session_ownership import get_owned_session
 
 
 def _make_session(session_id: str, username: str) -> SessionModel:
@@ -136,16 +136,6 @@ async def test_get_session_generated_files_denies_cross_user(two_user_sessions):
     with pytest.raises(HTTPException) as exc:
         await get_session_generated_files(
             "sess-A", db=two_user_sessions, username="userB"
-        )
-    assert exc.value.status_code == 404
-
-
-async def test_list_files_denies_cross_user(two_user_sessions):
-    from easy_agent.api.files import list_files
-
-    with pytest.raises(HTTPException) as exc:
-        await list_files(
-            db=two_user_sessions, username="userB", session_id="sess-A"
         )
     assert exc.value.status_code == 404
 

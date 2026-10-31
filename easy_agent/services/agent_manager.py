@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from easy_agent.agent import EasyAgent
 from easy_agent.agent.graph_cache import clear_agent_graph_cache, get_agent_graph_cache
+from easy_agent.agent.hitl import hitl_enabled
 from easy_agent.bootstrap.config import Config
 from easy_agent.db import get_database
 from easy_agent.bootstrap.runtime_config import (
@@ -47,6 +48,21 @@ _session_stream_tasks: dict[str, asyncio.Task[None]] = {}
 # 修改专家时 save_expert 工具以这里的值为准——**用户消息里不再携带专家 ID**，
 # 防止消息体被任意篡改。新绑定覆盖旧绑定，保留至会话结束（remove_session_agent 清除）。
 _session_edit_targets: dict[str, str] = {}
+
+# 会话 → 本次生效的技能作用域白名单（``None`` = 全量可见）。
+# 与 _session_expert 同性质：进程内缓存，随 Agent 一起创建/清理。
+# 作用域**变化必须驱逐 Agent**：技能清单在 Agent 构造时注入，缓存命中会一直用旧作用域。
+_session_skill_scope: dict[str, tuple[str, ...] | None] = {}
+
+# 会话 → 本轮用户在输入框选中的技能目录名（``save_expert`` 创建/修改专家时落库为
+# 专家的 ``export_required_skills``）。写入方：``api/chat.py``（每轮请求的 skills 字段）；
+# 读取方：``tools/expert_writer.py``（同一轮内保存专家）。会话结束 / Agent 驱逐时清理。
+_session_turn_skills: dict[str, list[str]] = {}
+
+#: ``get_or_create_agent_for_session(skill_whitelist=...)`` 的「未指定」哨兵：
+#: 传 None 表示「显式全量可见」，不传才表示「沿用该会话上次的作用域」（HITL 恢复等
+#: 不带本轮选择的路径），两者语义不同，不能用同一个 None 表示。
+_SCOPE_UNSPECIFIED = object()
 
 _agent_config: dict = None
 _llm_instance = None
@@ -131,6 +147,8 @@ def _evict_agent_cache(keep_session_id: str) -> None:
             _session_expert,
             _session_connectors,
             _session_edit_targets,
+            _session_skill_scope,
+            _session_turn_skills,
         ):
             side.pop(victim, None)
         lock = _session_create_locks.get(victim)
@@ -178,10 +196,11 @@ def _tool_factories() -> dict[str, Callable[..., Any]]:
 
 async def get_or_create_agent_for_session(
     session_id: str, username: str = "default", workspace_name: str = "",
-   enable_hitl: bool = True, model_name: str | None = None,
+    enable_hitl: bool = True, model_name: str | None = None,
     enable_web_search: bool | None = None,
     system_prompt_extra: str = "",
     expert_agent_id: str | None = None,
+    skill_whitelist: list[str] | None | object = _SCOPE_UNSPECIFIED,
 ) -> EasyAgent:
     """获取（或创建）会话 Agent。
 
@@ -195,13 +214,19 @@ async def get_or_create_agent_for_session(
     「专家变更 -> 驱逐缓存」，确保同一会话在专家之间、专家与通用之间来回切换都能
     立即生效。不传该参数时行为与引入本参数前**逐字一致**。
 
+    ``skill_whitelist`` 为本轮技能作用域（专家技能硬隔离，见 ``services/tool_scope.py``）：
+    ``None`` = 显式全量可见；``[]`` = 一个技能都不可用；非空 = 只有这些目录可见。
+    **不传**（哨兵 ``_SCOPE_UNSPECIFIED``）表示「沿用该会话上次生效的作用域」——
+    HITL 审批恢复这类不带本轮选择的路径靠它避免把专家会话重建回通用 Agent。
+    作用域变化会驱逐缓存：技能清单在 Agent 构造时注入，缓存命中会一直用旧清单。
+
     连接器不再随每轮消息提交：本函数只读 ``_session_connectors`` 里该会话已记录的
     启用集合（写入与「驱逐缓存 Agent」由 ``set_session_connectors`` 负责，见
     ``api/connectors.py`` 的 ``/agent/connectors/session``）。
 
-    ``save_expert``（DA-13）：非专家会话都注入，但它由 expert-creator 技能带出（模型读到或
-    pin 了该技能才出现，见 ``tools/registry.py`` 的 ``skill_gated``），不再随本轮选中的技能
-    驱逐重建 Agent；专家会话不提供，防止领域专家被借来创建 / 修改别的专家。
+    ``save_expert``（DA-13）：非专家会话都注入，且不参与技能门控——产品级入口不能依赖
+    技能 frontmatter 的写法（见 ``agent/core.py`` 的 ``_ALWAYS_AVAILABLE_TOOLS``）；也不再
+    随本轮选中的技能驱逐重建 Agent。专家会话不提供，防止领域专家被借来创建 / 修改别的专家。
     """
     async with _create_lock(session_id):
         return await _get_or_create_agent_unlocked(
@@ -213,6 +238,7 @@ async def get_or_create_agent_for_session(
             enable_web_search=enable_web_search,
             system_prompt_extra=system_prompt_extra,
             expert_agent_id=expert_agent_id,
+            skill_whitelist=skill_whitelist,
         )
 
 
@@ -222,6 +248,7 @@ async def _get_or_create_agent_unlocked(
     enable_web_search: bool | None = None,
     system_prompt_extra: str = "",
     expert_agent_id: str | None = None,
+    skill_whitelist: list[str] | None | object = _SCOPE_UNSPECIFIED,
 ) -> EasyAgent:
     global _session_agents, _session_expert, _session_connectors, _agent_config
 
@@ -229,9 +256,26 @@ async def _get_or_create_agent_unlocked(
         raise RuntimeError("Agent 配置未初始化")
 
     config = _agent_config["config"]
+    # config.yaml 的 hitl.enabled=false 时对话也不审批（工具装配和 EasyAgent 都看这个值）
+    enable_hitl = hitl_enabled(config, enable_hitl)
     effective_model = model_name or config.active_model
     # None 与 "" 等价：都表示「本次请求不挂专家（通用 Agent）」
     expert_key = expert_agent_id or ""
+
+    # 技能作用域：显式传入的优先并按会话记住；未指定（HITL 恢复等）沿用上次，
+    # 都没有则全量可见（= 改造前行为）。
+    scope_specified = skill_whitelist is not _SCOPE_UNSPECIFIED
+    if scope_specified:
+        current_scope = (
+            None
+            if skill_whitelist is None
+            else tuple(
+                str(name).strip() for name in skill_whitelist if str(name).strip()
+            )
+        )
+        _session_skill_scope[session_id] = current_scope
+    else:
+        current_scope = _session_skill_scope.get(session_id)
 
     # 本会话启用的连接器（mcp.json server 名，由输入框「+」面板的会话级开关写入）。
     # key 不存在 = 尚未设置 → None = 注入全部启用连接器；空元组 = 全部关闭 → []。
@@ -273,10 +317,16 @@ async def _get_or_create_agent_unlocked(
         # 连接器变更的驱逐不在这里：会话级开关（set_session_connectors）写入时
         # 就已直接驱逐过该会话的缓存 Agent。
         expert_changed = expert_key != _session_expert.get(session_id, "")
+        # 技能作用域变化同样必须驱逐：技能清单在 Agent 构造时注入，缓存命中会一直
+        # 沿用旧清单（专家 A 的白名单黏在专家 B 上 = 隔离失效）。
+        cached_scope = getattr(cached, "skill_whitelist", None)
+        cached_scope_key = None if cached_scope is None else tuple(cached_scope)
+        scope_changed = cached_scope_key != current_scope
         if (
             effective_model != getattr(cached, "model_name", None)
             or not search_matches
             or expert_changed
+            or scope_changed
         ):
             logger.info(
                 f"[{session_id[-5:]}] Agent 参数变化 | "
@@ -284,6 +334,7 @@ async def _get_or_create_agent_unlocked(
                 f"web_search: {cached_web_search} -> {web_search_enabled} | "
                 f"expert: {_session_expert.get(session_id, '') or '(通用)'} -> "
                 f"{expert_key or '(通用)'} | "
+                f"skill_scope: {cached_scope_key or '全量'} -> {current_scope or '全量'} | "
                 f"connectors: {only_connectors if only_connectors is not None else '(全部)'} | "
                 f"驱逐旧 Agent 重建 | "
                 f"{describe_prompt('本轮 extra', system_prompt_extra)} | "
@@ -386,6 +437,7 @@ async def _get_or_create_agent_unlocked(
             expert_session=bool(expert_key),
             web_search_tool=web_search_tool,
             edit_targets=_session_edit_targets,
+            turn_skills=_session_turn_skills,
             factories=_tool_factories(),
         ),
     )
@@ -403,6 +455,8 @@ async def _get_or_create_agent_unlocked(
        model_name=model_name,
         enable_web_search=web_search_enabled,
         system_prompt_extra=system_prompt_extra,
+        # 技能作用域（专家技能硬隔离）：None = 全量，非 None = 只挂这些技能目录
+        skill_whitelist=None if current_scope is None else list(current_scope),
    )
     _session_agents[session_id] = agent
     _touch_agent_cache(session_id)
@@ -412,6 +466,7 @@ async def _get_or_create_agent_unlocked(
         f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir} | "
         f"model: {agent.model_name} | mcp_tools: {len(tools)} | "
         f"expert: {expert_key or '(通用)'} | "
+        f"skill_scope: {list(current_scope) if current_scope is not None else '全量'} | "
         f"{describe_prompt('本轮 extra', system_prompt_extra)} | "
         f"{describe_prompt('终稿 system_prompt', getattr(agent, 'system_prompt', ''))}"
     )
@@ -452,6 +507,9 @@ def remove_session_agent(session_id: str):
     # 专家记录一并清除：否则下次请求会因 expert_key 与残留值相同而误判「未变更」，
     # 跳过本应发生的重建。清除后「未变更」的判定自动退化为「与 ""（通用）相同」。
     _session_expert.pop(session_id, None)
+    # 技能作用域 / 本轮技能同生共死：缓存 Agent 没了，旧白名单不能再黏在下一轮请求上
+    _session_skill_scope.pop(session_id, None)
+    _session_turn_skills.pop(session_id, None)
     # 待修改专家绑定随会话 Agent 一起失效：绑定语义是「本会话内点编辑带来的」，
     # 会话 Agent 没了绑定也没意义；下一次点编辑会重新写入。
     _session_edit_targets.pop(session_id, None)
@@ -461,6 +519,23 @@ def remove_session_agent(session_id: str):
     if session_id in _session_agents:
         del _session_agents[session_id]
         logger.info(f"[{session_id[-5:]}] Agent 缓存已清除")
+
+
+def set_session_turn_skills(session_id: str, dirs: list[str] | None) -> list[str]:
+    """记录「本轮用户在输入框选中的技能目录名」，供同轮 ``save_expert`` 落库。
+
+    创建 / 修改专家走的是对话式流程（expert-creator 技能 + ``save_expert`` 工具），
+    用户在输入框选的技能包只进聊天请求的 ``skills`` 字段——工具侧看不到请求体，
+    因此由 ``api/chat.py`` 在这里暂存一份（与 ``_session_edit_targets`` 同性质）。
+
+    规则：**非空才覆盖**，空值保留上一次——创建流程可能跨多轮（Agent 先追问再保存），
+    用户每轮都会重新带上胶囊，此时不该因为中间某一轮没带胶囊就把选择清空。
+    Returns: 本次会话当前生效的技能目录名（便于调用方打日志）。
+    """
+    cleaned = [str(name).strip() for name in (dirs or []) if str(name).strip()]
+    if cleaned and session_id:
+        _session_turn_skills[session_id] = cleaned
+    return list(_session_turn_skills.get(session_id) or [])
 
 
 def set_session_edit_target(session_id: str, expert_agent_id: str) -> None:

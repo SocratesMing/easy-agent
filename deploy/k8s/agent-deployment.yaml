@@ -2,8 +2,9 @@
 # storage, and the sticky-session Ingress in agent-ingress.yaml.
 #
 # HITL checkpoints use the official SQLite saver with one file per pod:
-# data/checkpoints/{pod}.db on the pod's local `data` volume, where {pod} becomes
-# EASY_POD_NAME at startup. A pending approval can only be resumed on the pod that
+# /qts/checkpoint/{pod}.db (the default of checkpoint.sqlite_path in config.yaml) on the
+# pod's local `checkpoint` volume, where {pod} becomes EASY_POD_NAME at startup.
+# A pending approval can only be resumed on the pod that
 # recorded it, so the Ingress pins each browser to one pod with a cookie; requests that
 # land on another pod get a 409 asking the user to resend. Deleting a session removes
 # its checkpoints on the pod that handles the request; the other pods clean up their
@@ -22,10 +23,9 @@ data:
   EASY_REPLICA_COUNT: "2"
   EASY_TRUST_PROXY: "1"
   EASY_SKIP_LLM_PROBE: "1"
+  # The checkpoint file path is checkpoint.sqlite_path in config.yaml; it defaults to
+  # /qts/checkpoint/{pod}.db, the pod-local `checkpoint` volume below.
   EASY_CHECKPOINT_BACKEND: "auto"
-  # One file per pod, resolved against the repo root (/app), i.e. the local `data`
-  # volume below. {pod} is replaced with EASY_POD_NAME.
-  EASY_CHECKPOINT_SQLITE_PATH: "data/checkpoints/{pod}.db"
   # Confirms the Ingress pins each browser to one pod (agent-ingress.yaml). Without it,
   # prod refuses to start with more than one replica.
   EASY_STICKY_SESSIONS: "1"
@@ -79,7 +79,7 @@ spec:
             - secretRef:
                 name: easy-agent-secrets
           env:
-            # Instance name for {pod} in EASY_CHECKPOINT_SQLITE_PATH and for pending approvals.
+            # Instance name for {pod} in the checkpoint path and for pending approvals.
             - name: EASY_POD_NAME
               valueFrom:
                 fieldRef:
@@ -109,6 +109,8 @@ spec:
               subPath: memories
             - name: data
               mountPath: /app/data
+            - name: checkpoint
+              mountPath: /qts/checkpoint
           livenessProbe:
             httpGet:
               path: /api/live
@@ -125,10 +127,13 @@ spec:
         - name: shared
           persistentVolumeClaim:
             claimName: easy-agent-workspace
+        # Pod-local scratch space for the repo's data/ directory.
+        - name: data
+          emptyDir: {}
         # Pod-local, not the NAS: holds this pod's SQLite checkpoint file. emptyDir
         # survives container restarts but is wiped when the pod is replaced; approvals
         # still pending on that pod are then void and the user resends the message.
-        - name: data
+        - name: checkpoint
           emptyDir: {}
 ---
 apiVersion: v1

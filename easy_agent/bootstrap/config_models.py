@@ -134,6 +134,13 @@ class AgentConfig(BaseModel):
     """Agent configuration"""
 
     max_steps: int = 50
+    tool_progress_enabled: bool = True
+    """工具进度提示（空结果终止信号 + 原地打转提醒）。
+
+    ``ls``/``glob``/``grep`` 查不到东西时框架返回的是正常结果，模型拿不到「该停」
+    的信号，容易在错误路径上反复重试直到把 ``max_steps`` 烧完。开启后给这类空结果
+    补一句终止提示，并对「同工具 + 同参数连续重复」点名次数。只改工具结果文本，
+    不改工具行为；出问题可置 false 一键回到旧行为。"""
     workspace_dir: str = "./workspace"
     memories_dir: str = "./memories"
     sessions_dir: str = "./sessions"
@@ -308,6 +315,28 @@ class DistributedLockConfig(BaseModel):
     """长任务的续约间隔（秒），实际取 min(本值, ttl/3)，须小于 ttl_seconds。"""
     retry_interval_seconds: float = 1.0
     """``acquire(wait_seconds>0)`` 等待抢锁时的轮询间隔（秒）。"""
+
+
+class CheckpointConfig(BaseModel):
+    """HITL 人工审批的 checkpoint（config.yaml 的 ``checkpoint`` 段，官方 AsyncSqliteSaver）。"""
+
+    sqlite_path: str = ""
+    """SQLite 文件路径，``{pod}`` 启动时换成实例名（``EASY_POD_NAME`` → ``POD_NAME`` →
+    ``HOSTNAME``），每个 pod 一个文件；相对路径按项目根解析。留空时用旧环境变量
+    ``EASY_CHECKPOINT_SQLITE_PATH``，也没有时默认 ``/qts/checkpoint/{pod}.db``
+    （见 ``persistence/checkpoints.py``）。"""
+
+
+class HitlConfig(BaseModel):
+    """人工审批（config.yaml 的 ``hitl`` 段）。"""
+
+    enabled: bool = True
+    """关闭后对话里也不审批，和定时任务一样：工具审批、``interrupt_sensitive_writes`` 的写入审批
+    都不生效，也不提供 ``create_scheduled_task``（建定时任务必须有人确认）。"""
+    tools: list[str] | None = None
+    """执行前要人工审批的工具名；不配时用内置名单 ``agent.hitl.DEFAULT_APPROVAL_TOOLS``。
+    ``execute`` 只拦删除类命令、``access_knowledge_original`` 只拦 materialize；MCP 工具写名字即可
+    （带不带服务前缀都行），没列出的 MCP 工具仍按服务端标注 / 名字自动判断（见 ``agent/hitl.py``）。"""
 
 
 class PersonnelConfig(BaseModel):

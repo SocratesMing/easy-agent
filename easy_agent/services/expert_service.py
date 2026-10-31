@@ -722,6 +722,39 @@ def load_active_prompt(
     return "", version, str(version_dir)
 
 
+def load_active_prompt_file(
+    username: str, expert_agent_id: str
+) -> tuple[str, str, int]:
+    """读取当前生效版本提示词文件的**文件名与正文**（前端只读预览用）。
+
+    ``load_active_prompt`` 只回正文与版本目录，拿不到「这个 MD 叫什么名字」；
+    专家详情弹窗与工作区条目都要显示文件名（如 ``g7-rates-bond-researcher.md``），
+    故单独提供本函数。
+
+    Returns:
+        ``(file_name, content, version)``。文件不存在或读取失败时前两项为 ``""``，
+        ``version`` 仍回当前生效版本号（0 = 没有可读版本）。
+    """
+    version = read_active_version(username, expert_agent_id)
+    if version <= 0:
+        return "", "", 0
+    version_dir = get_version_dir(username, expert_agent_id, version)
+    prompt_path = _find_prompt_file(version_dir)
+    if prompt_path is None or not prompt_path.is_file():
+        logger.warning(
+            "专家提示词文件不存在 | user=%s | expert=%s | dir=%s",
+            username,
+            expert_agent_id,
+            version_dir,
+        )
+        return "", "", version
+    try:
+        return prompt_path.name, prompt_path.read_text(encoding="utf-8"), version
+    except OSError as exc:  # noqa: BLE001 - 读不到不阻断接口，交调用方降级
+        logger.warning("读取专家提示词文件失败: %s", exc)
+        return "", "", version
+
+
 # ── 清理 ──────────────────────────────────────────────────────────────
 
 def cleanup_old_versions(

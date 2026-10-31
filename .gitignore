@@ -93,3 +93,7 @@ offline_deps/
 
 # 部署打包产物（本地分发用）
 easy-agent-portable.zip
+
+# Claude Code 本地配置与 worktree（含完整工作区副本，体积大，勿提交）
+/.claude/worktrees/
+/.claude/settings.local.json

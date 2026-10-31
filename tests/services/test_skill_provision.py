@@ -59,7 +59,10 @@ def _make_skill(root: Path, name: str, display_name: str | None = None) -> Path:
 
 
 def _declare(monkeypatch, skills: list[str]) -> None:
-    monkeypatch.setattr(S, "required_skills_of", lambda expert_id: list(skills))
+    # required_skills_of(expert_id, username) 第二参用于自建专家库查找
+    monkeypatch.setattr(
+        S, "required_skills_of", lambda expert_id, username="": list(skills)
+    )
 
 
 def _store(env) -> dict:

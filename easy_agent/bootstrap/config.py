@@ -19,10 +19,12 @@ from easy_agent.bootstrap.config_models import (  # noqa: F401 - 兼容重导出
     DEFAULT_APP_WELCOME_TITLE,
     DEFAULT_WEB_SEARCH_API_URLS,
     AgentConfig,
+    CheckpointConfig,
     DatabaseConfig,
     DistributedLockConfig,
     ExpertTag,
     FileContextConfig,
+    HitlConfig,
     LLMConfig,
     MCPToolConfig,
     MySQLConfig,
@@ -69,6 +71,7 @@ _EXPERT_SECTION_KEYS = {
     "expert_relevance_strict": "relevance_strict",
     "expert_relevance_disable_thinking": "relevance_disable_thinking",
     "expert_auto_install_required_skills": "auto_install_required_skills",
+    "expert_tool_scope_enabled": "tool_scope_enabled",
 }
 
 
@@ -84,6 +87,8 @@ class Config(BaseModel):
         default_factory=DistributedLockConfig
     )
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)
+    hitl: HitlConfig = Field(default_factory=HitlConfig)
     personnel: PersonnelConfig = Field(default_factory=PersonnelConfig)
     upload_limits: UploadLimitsConfig = Field(default_factory=UploadLimitsConfig)
     file_context: FileContextConfig = Field(default_factory=FileContextConfig)
@@ -126,6 +131,17 @@ class Config(BaseModel):
     注意本开关只做**登记**：公共技能包本体始终在 ``tools.skills_dir`` 下，不会复制
     进用户目录（DA-13 S2）。技能包缺失时只提示、不阻断对话，见
     ``services/skill_provision.py``。"""
+
+    expert_tool_scope_enabled: bool = True
+    """专家会话是否按「专家选定的技能包」做**硬隔离**（默认开启）。
+
+    开启时：专家声明了技能包（自建专家 ``export_required_skills`` / 公共专家
+    ``config.yaml`` 的 ``required_skills``）就只挂载这些技能 + 本轮用户在输入框
+    另选的技能，其余技能既不进技能清单、也读不到；专家**未声明**技能包时保持
+    改造前的全量可见（= 不选即全部可用）。
+
+    关闭后一律全量挂载，等价于改造前行为，用于线上出问题时的快速回退
+    （不需要回滚代码）。见 ``services/tool_scope.py``。"""
 
     app_welcome_title: str = DEFAULT_APP_WELCOME_TITLE
 
@@ -269,6 +285,8 @@ class Config(BaseModel):
                 # 这几段写成非键值映射时按默认值处理
                 "web_search": _get_section(data, "web_search") or {},
                 "distributed_lock": _get_section(data, "distributed_lock") or {},
+                "checkpoint": _get_section(data, "checkpoint") or {},
+                "hitl": _get_section(data, "hitl") or {},
                 "file_context": _get_section(data, "file_context") or {},
                 "upload_limits": cls._parse_upload_limits(data),
                 "models": models,

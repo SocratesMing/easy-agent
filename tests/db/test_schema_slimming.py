@@ -1,7 +1,9 @@
-"""表与索引精简（schema 11）：全新库只建在用的表；老库升级时删掉退役的表和索引，数据先搬走。"""
+"""表与索引精简（schema 11 起）：全新库只建在用的表；老库升级时删掉退役的表和索引，数据先搬走。"""
 
 import json
 import sqlite3
+
+import pytest
 
 import easy_agent.knowledges.core.schema  # noqa: F401 - 注册知识库建表（应用启动时同样会 import）
 from easy_agent.db import migrations as mig
@@ -47,9 +49,17 @@ RETIRED_TABLES = {
     "uploaded_file",
     "user_ip",
     "tool_call_record",
+    "market_mcp_api_keys",
+    "forex_rates",
+    "precious_metals",
     "schema_migrations",
     "knowledge_original_access_audit",
     "knowledge_team_space_viewers",
+    "knowledge_alerts",
+    "knowledge_reconciliation_runs",
+    "knowledge_reconciliation_issues",
+    "knowledge_runtime_heartbeats",
+    "knowledge_schema_migrations",
 }
 RETIRED_INDEXES = {
     "idx_updated_at": ("sessions", "updated_at"),
@@ -88,12 +98,14 @@ def test_fresh_database_creates_only_the_tables_in_use(tmp_path):
     assert not _names(path, "index") & set(RETIRED_INDEXES)
 
 
-def _make_old_database(path):
-    """模拟 schema 10 的库：退役的表 / 索引还在，迁移账本在旧表里，原文访问审计有一行。"""
+def _make_old_database(path, version=10):
+    """模拟老版本的库：退役的表 / 索引还在，迁移账本在旧表里，原文访问审计有一行。"""
     _init(path)
     con = sqlite3.connect(path)
     with con:
-        con.execute("UPDATE schema_meta SET meta_value='10' WHERE meta_key='schema_version'")
+        con.execute(
+            "UPDATE schema_meta SET meta_value=? WHERE meta_key='schema_version'", (str(version),)
+        )
         con.execute("DELETE FROM schema_meta WHERE meta_key LIKE 'migration:%'")
         con.execute(
             "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, "
@@ -134,9 +146,11 @@ def _make_old_database(path):
     con.close()
 
 
-def test_upgrade_drops_retired_tables_and_indexes(tmp_path):
+@pytest.mark.parametrize("old_version", [10, 13])
+def test_upgrade_drops_retired_tables_and_indexes(tmp_path, old_version):
+    """10：表精简之前的库；13：上一版。两种都要走一次完整初始化，删掉退役的表和索引。"""
     path = tmp_path / "old.db"
-    _make_old_database(path)
+    _make_old_database(path, old_version)
 
     db = _init(path)
 
@@ -148,6 +162,43 @@ def test_upgrade_drops_retired_tables_and_indexes(tmp_path):
         cursor = conn.cursor()
         cursor.execute("SELECT meta_value FROM schema_meta WHERE meta_key='schema_version'")
         assert cursor.fetchone()[0] == str(SCHEMA_VERSION)
+
+
+def test_upgrade_drops_tables_that_others_reference_by_foreign_key(tmp_path, monkeypatch):
+    """MySQL 会拦下删除被外键引用的表；被拦的表之后启动走快速路径，再也删不掉。
+
+    业务库的 SQLite 连接不开外键检查，这里打开它来模拟 MySQL：
+    knowledge_reconciliation_issues.run_id 引用 knowledge_reconciliation_runs.id。
+    """
+    path = tmp_path / "fk.db"
+    _init(path)
+    con = sqlite3.connect(path)
+    with con:
+        con.execute("UPDATE schema_meta SET meta_value='12' WHERE meta_key='schema_version'")
+        con.execute("CREATE TABLE knowledge_reconciliation_runs (id VARCHAR(255) PRIMARY KEY)")
+        con.execute(
+            "CREATE TABLE knowledge_reconciliation_issues (id VARCHAR(255) PRIMARY KEY, "
+            "run_id VARCHAR(255) NOT NULL REFERENCES knowledge_reconciliation_runs(id))"
+        )
+        con.execute("INSERT INTO knowledge_reconciliation_runs VALUES ('r1')")
+        con.execute("INSERT INTO knowledge_reconciliation_issues VALUES ('i1', 'r1')")
+    con.close()
+
+    connect = sqlite3.connect
+
+    def connect_with_foreign_keys(*args, **kwargs):
+        conn = connect(*args, **kwargs)
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", connect_with_foreign_keys)
+    _init(path)
+    monkeypatch.undo()
+
+    assert not _names(path, "table") & {
+        "knowledge_reconciliation_runs",
+        "knowledge_reconciliation_issues",
+    }
 
 
 def test_upgrade_moves_the_migration_ledger_into_schema_meta(tmp_path):

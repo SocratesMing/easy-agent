@@ -24,6 +24,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from easy_agent.db.database import Database  # noqa: E402
+# 知识库建表函数在 import 时注册进 db（应用启动时由 app.py 导入）；不导入的话
+# init_tables() 只建核心表，源库的 knowledge_* 表在目标库里找不到。
+import easy_agent.knowledges  # noqa: E402,F401
 
 from scripts.db.mysql_target import (  # noqa: E402
     ForeignKey,

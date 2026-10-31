@@ -16,8 +16,13 @@ WORKDIR /build/frontend-vue2
 COPY frontend-vue2/package.json frontend-vue2/package-lock.json* ./
 RUN npm install --registry=https://registry.npmmirror.com
 
-# Copy frontend source and build
-COPY frontend-vue2/ ./
+# npm run build 会先跑 sync-frontend-shared.mjs，需要仓库根布局：
+# frontend-shared/ + scripts/dev/sync-frontend-shared.mjs（相对 frontend-vue2 的 ../）
+WORKDIR /build
+COPY frontend-shared/ ./frontend-shared/
+COPY scripts/dev/sync-frontend-shared.mjs ./scripts/dev/sync-frontend-shared.mjs
+COPY frontend-vue2/ ./frontend-vue2/
+WORKDIR /build/frontend-vue2
 RUN npm run build
 
 # ---------- Stage 2: bubblewrap Build (离线源码编译) ----------

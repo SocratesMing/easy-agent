@@ -65,7 +65,7 @@ class FileRepository:
 
     def get_owned_session_meta(self, session_id: str, username: str) -> dict:
         """返回会话归属元信息；不存在或跨用户统一 404。"""
-        from easy_agent.utils.session import get_owned_session_meta
+        from easy_agent.db.session_ownership import get_owned_session_meta
 
         return get_owned_session_meta(self._db, session_id, username)
 

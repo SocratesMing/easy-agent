@@ -109,8 +109,16 @@ def test_project_structure():
 class TestImports:
     """Test that all public imports work correctly"""
 
-    def test_top_level_imports(self):
-        from easy_agent import EasyAgent, Config, create_model, discover_skills
+    def test_top_level_package_only_holds_the_version(self):
+        """导入任何 easy_agent.* 都会先执行根包，所以它不转出符号，类和函数从定义它们的模块导入。"""
+        import easy_agent
+        from easy_agent.agent import EasyAgent
+        from easy_agent.agent.model import create_model
+        from easy_agent.agent.skills import discover_skills
+        from easy_agent.bootstrap.config import Config
+
+        assert easy_agent.__version__
+        assert not hasattr(easy_agent, "EasyAgent")
         assert EasyAgent is not None
         assert Config is not None
         assert create_model is not None
@@ -124,10 +132,9 @@ class TestImports:
         assert UserModel is not None
 
     def test_service_imports(self):
-        from easy_agent.services import (
-            chat_stream_generator,
-            init_agent_config,
-        )
+        from easy_agent.services.agent_manager import init_agent_config
+        from easy_agent.services.streaming.orchestrator import chat_stream_generator
+
         assert chat_stream_generator is not None
         assert init_agent_config is not None
 

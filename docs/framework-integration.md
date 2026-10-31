@@ -16,7 +16,7 @@
 | # | 位置 | 依赖的上游实现 | 失效后果 | 升级时需要做什么 |
 | --- | --- | --- | --- | --- |
 | 1 | `easy_agent/agent/hitl.py` `register_execute_description_profiles` | `HarnessProfile(tool_description_overrides=...)` + `register_harness_profile`（profiles beta API） | execute 工具描述不再注入 HITL 说明 | 对照 profiles API 的变化修正注册逻辑 |
-| 2 | `easy_agent/persistence/checkpoints.py` `PersistentMemorySaver`（仅 MySQL 回退使用） | `MemorySaver.storage/writes/blobs` 私有属性 + pickle；deepagents 的 `messages` 是 `DeltaChannel`（beta），读状态要沿父链重放增量，所以 thread 内的 checkpoint 不能裁剪 | 重启后 HITL 审批恢复失败（静默）；数据格式变化；裁剪 thread 内 checkpoint 会让 messages 重建成空列表 | FW-09 起默认已走官方 saver；升级时复核私有属性/pickle 格式与 `DeltaChannel` 契约（跑 `tests/db/test_checkpoint_pruning.py`），并推动 MySQL 用户迁移到 PG/SQLite |
+| 2 | `easy_agent/persistence/checkpoints.py` `PersistentMemorySaver`（仅显式 legacy 或 SQLite 打不开时使用） | `MemorySaver.storage/writes/blobs` 私有属性 + pickle；deepagents 的 `messages` 是 `DeltaChannel`（beta），读状态要沿父链重放增量，所以 thread 内的 checkpoint 不能裁剪 | 重启后 HITL 审批恢复失败（静默）；数据格式变化；裁剪 thread 内 checkpoint 会让 messages 重建成空列表 | FW-09 起默认已走官方 saver；升级时复核私有属性/pickle 格式与 `DeltaChannel` 契约（跑 `tests/db/test_checkpoint_pruning.py`），并推动 MySQL 用户迁移到 PG/SQLite |
 | 3 | `easy_agent/backends/context.py` `ContextBackend`（两层 `CompositeBackend`，DA-05） | `CompositeBackend` 的 `default` / `routes` / `sorted_routes` / `artifacts_root` 语义：权限 `_resolve_real_path` 递归进会话 composite、带 execute 时权限路径须落在 `routes` 前缀下、route→宿主机路径提示读 `sorted_routes` | symlink 权限校验失效、建图期 NotImplementedError，或模型收到「改用宿主机路径」的错误提示 | 跑 `tests/agent/test_backend_routing.py` 与 `tests/agent/test_langsmith_sandbox.py`；复核上述字段名与读取方式 |
 | 4 | `easy_agent/agent/memory.py` `SessionMemoryMiddleware`（DA-03） | `MemoryMiddleware.before_agent` / `abefore_agent` 在 state 已有 `memory_contents` 时跳过加载；同名实例原位替换默认项 | 改成会话级 thread 后，记忆（会话 `memory.md`、长期 `AGENTS.md`、上传清单）停在会话第一轮 | 跑 `tests/agent/test_session_memory.py`；其中对照组若失败，说明上游已改成每次运行都重读，可去掉覆盖 |
 | 5 | `easy_agent/agent/turn_context.py` `TurnAwareSummarizationMiddleware`（DA-03） | 继承官方 `SummarizationMiddleware`（私有类 `_DeepAgentsSummarizationMiddleware` 的公开别名）：子类的 `name` 默认回落为类名，须覆盖成 `"SummarizationMiddleware"`；状态 schema 继承 `SummarizationState`；新增的自定义中间件排在摘要之后 | 默认摘要不被替换（出现两份摘要），或本轮渲染内容不计入摘要的 token | 跑 `tests/agent/test_turn_context.py` 与 `tests/agent/test_session_memory.py::test_main_agent_stack_uses_session_memory_and_turn_aware_summarization` |
@@ -79,12 +79,12 @@
 
 - **FW-09 已落地（默认官方 saver）**：`EASY_CHECKPOINT_BACKEND=auto|sqlite|legacy`
   （默认 `auto`），选择规则集中在 `checkpoints.resolve_checkpoint_backend()`：
-  1. 显式 `EASY_CHECKPOINT_SQLITE_PATH`，或业务库为 SQLite → 官方
-     `AsyncSqliteSaver`，默认文件 `data/checkpoints.db`（相对路径按仓库根解析）；
-  2. 业务库为 MySQL 且没配 SQLite 路径 → 官方没有 MySQL saver，回退自研
-     `PersistentMemorySaver` 并打 warning（进程内，不写业务库，重启后待审批状态丢失）；
-  3. `EASY_CHECKPOINT_BACKEND=legacy` → 强制用这个进程内 checkpointer。
-  官方 saver 打开失败降级为进程内 checkpointer，不阻断启动；
+  1. `auto` / `sqlite` → 官方 `AsyncSqliteSaver`，文件路径取 config.yaml 的
+     `checkpoint.sqlite_path`，没配时用旧环境变量 `EASY_CHECKPOINT_SQLITE_PATH`，
+     再没有就是 `/qts/checkpoint/{pod}.db`（相对路径按仓库根解析，`{pod}` 换成实例名）；
+  2. `EASY_CHECKPOINT_BACKEND=legacy` → 强制用自研 `PersistentMemorySaver`
+     （进程内，不写业务库，重启后待审批状态丢失）。
+  单 pod 时官方 saver 打开失败降级为进程内 checkpointer，不阻断启动；
   `shutdown_checkpointers()` 负责关闭 saver 并清空自研缓存（测试隔离亦依赖）。
   Postgres saver 曾是第一优先级，2026-10-21 移除（生产只有 MySQL，按单 pod 部署）。
   见 `docs/archive/audit-reports/2026-10-17-increment38-fw09-report.md`。

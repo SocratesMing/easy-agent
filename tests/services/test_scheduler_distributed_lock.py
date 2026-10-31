@@ -15,7 +15,7 @@ import easy_agent.services.agent_manager as agent_manager
 import easy_agent.services.scheduler as sched
 from easy_agent.bootstrap.config import DistributedLockConfig
 from easy_agent.models.db import ScheduledTaskModel
-from easy_agent.utils.distributed_lock import DistributedLock
+from easy_agent.persistence.distributed_lock import DistributedLock
 
 TASK_ID = "t-1"
 

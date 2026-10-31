@@ -325,11 +325,23 @@ def _cleanup_legacy_schema(db: Database, cursor) -> None:
     - knowledge_tasks：数据库任务队列设计已被进程内 worker 取代，全库无读写；
     - knowledge_team_space_viewers：从来没有写入和读取（只有删除人员时的一句 DELETE）；
     - knowledge_original_access_audit：并入 knowledge_audit_events，旧行先搬过去再删表；
+    - knowledge_alerts / knowledge_reconciliation_runs / knowledge_reconciliation_issues /
+      knowledge_runtime_heartbeats / knowledge_schema_migrations：旧版 easy_agent/knowledge/
+      模块的表，模块在 6245747d 删除后再没有读写；
     - 其余为无查询路径支撑、或已是别的索引前缀的二级索引。
     """
 
-    # 死表：SQLite / MySQL 均支持 DROP TABLE IF EXISTS
-    for table in ("knowledge_tasks", "knowledge_team_space_viewers"):
+    # 死表：SQLite / MySQL 均支持 DROP TABLE IF EXISTS。
+    # issues 有外键指向 runs，MySQL 上必须先删 issues，否则删 runs 报错、之后也不会再删。
+    for table in (
+        "knowledge_tasks",
+        "knowledge_team_space_viewers",
+        "knowledge_alerts",
+        "knowledge_reconciliation_issues",
+        "knowledge_reconciliation_runs",
+        "knowledge_runtime_heartbeats",
+        "knowledge_schema_migrations",
+    ):
         try:
             cursor.execute(f"DROP TABLE IF EXISTS {table}")
         except Exception as exc:  # noqa: BLE001

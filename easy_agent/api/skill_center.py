@@ -2,7 +2,6 @@
 
 import io
 import logging
-import re
 import shutil
 import uuid
 import zipfile
@@ -14,14 +13,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from easy_agent.middleware import get_current_username
-from easy_agent.agent.skills import discover_skills
-from easy_agent.agent import builtin_skills
-from easy_agent.services import (
-    get_agent_config,
-    invalidate_user_agents,
-    skill_categories,
-    skill_library,
+from easy_agent.agent.skills import (
+    MAX_SKILL_NAME_CHARS,
+    SKILL_NAME_RE,
+    discover_skills,
 )
+from easy_agent.agent import builtin_skills
+from easy_agent.services import skill_categories, skill_library
+from easy_agent.services.agent_manager import get_agent_config, invalidate_user_agents
 
 logger = logging.getLogger(__name__)
 
@@ -659,14 +658,34 @@ def _locate_skill_root(tmp_dir: Path, zip_filename: str) -> tuple[Path, str]:
     return skill_src, skill_name
 
 
+def _validate_skill_dir_name(skill_name: str) -> str:
+    """校验落库的技能目录名，返回去空白后的名字；不合规直接 400。
+
+    规则与官方 Agent Skills 规范（`easy_agent/agent/skills.py::SKILL_NAME_RE`）及前端
+    `utils/skillZip.js` 保持一致：只允许小写字母、数字与单个连字符。
+    """
+    name = (skill_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="技能目录名无效")
+    if len(name) > MAX_SKILL_NAME_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"技能目录名「{name}」超过 {MAX_SKILL_NAME_CHARS} 个字符",
+        )
+    if not SKILL_NAME_RE.match(name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"技能目录名「{name}」只能包含小写字母、数字和单个连字符（-）",
+        )
+    return name
+
+
 def _install_skill_dir(
     user_skills_dir: Path, skill_src: Path, skill_name: str, tmp_dir: Path
 ) -> tuple[str, Path]:
     """把技能目录落到用户技能库，返回 (规范化后的目录名, 目标目录)；同名已存在时 409。"""
-    # 规范化技能目录名（仅允许字母数字下划线连字符）
-    safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", skill_name).strip("_")
-    if not safe_name:
-        raise HTTPException(status_code=400, detail="技能目录名无效")
+    # 不合规就拒绝，不再静默改名：旧实现会把中文/大写替换成 `_`，用户拿到一个自己没起过的目录名
+    safe_name = _validate_skill_dir_name(skill_name)
 
     target_dir = user_skills_dir / safe_name
     if target_dir.exists():

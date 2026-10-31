@@ -178,7 +178,7 @@ def scheduled_run(tmp_path, db, monkeypatch):
     import easy_agent.services.scheduler as sched
     from easy_agent.bootstrap.config import DistributedLockConfig
     from easy_agent.models.db import ScheduledTaskModel
-    from easy_agent.utils.distributed_lock import DistributedLock
+    from easy_agent.persistence.distributed_lock import DistributedLock
 
     reset_agent_graph_cache()
     monkeypatch.setenv("EASY_AGENT_GRAPH_CACHE", "1")

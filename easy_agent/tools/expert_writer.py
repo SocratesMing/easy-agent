@@ -31,7 +31,7 @@ import logging
 from typing import Any, Literal, Optional
 
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SkipValidation
 
 from easy_agent.db import Database, get_database
 from easy_agent.db.expert_store import (
@@ -55,6 +55,12 @@ logger = logging.getLogger("easy_agent.tools.expert_writer")
 
 #: 结构化直传路径要求的最小字段集合（缺 system_prompt 时改走兜底生成）
 _REQUIRED_STRUCTURED = ("system_prompt",)
+
+#: 创建/修改专家时**不算专家技能包**的技能目录名。
+#: ``expert-creator`` 是"造专家"的元技能：专家面板会把它预选进输入框（否则
+#: ``save_expert`` 由 include_tools 带不出来），它只是本轮的执行手段，绝不能
+#: 落进专家的 ``export_required_skills``——否则专家会把"造专家"当成自己的本事。
+_META_SKILL_DIRS = frozenset({"expert-creator"})
 
 
 class SaveExpertArgs(BaseModel):
@@ -134,6 +140,7 @@ def _to_public(record: dict) -> dict:
         "export_name_cn": record.get("export_name_cn", ""),
         "export_description": record.get("export_description", ""),
         "export_skills_names": record.get("export_skills_names", []),
+        "export_required_skills": record.get("export_required_skills", []),
         "export_features_prompt": record.get("export_features_prompt", []),
         "export_file_path": record.get("export_file_path", ""),
         "agent_status": record.get("agent_status", ""),
@@ -265,13 +272,57 @@ class SaveExpertTool(BaseTool):
     #: ``agent_manager`` 持有并在聊天请求带 ``pending_expert_id`` 时写入。
     #: 修改专家时 ID 以这里为准（用户消息里不再携带专家 ID，防篡改）；
     #: 模型若显式传了 ``expert_agent_id``，必须与绑定值一致，否则拒绝。
-    edit_targets: Optional[dict] = None
+    #: 两张表都是 ``agent_manager`` 那一份（``SkipValidation`` 防止 pydantic 复制）：
+    #: 会话 Agent 会复用，绑定和本轮技能常常在工具装配之后才写入。
+    edit_targets: SkipValidation[Optional[dict]] = None
+    #: 会话 → 本轮输入框选中的技能目录名（``agent_manager`` 持有，供本工具落库）。
+    #: 技能胶囊只在请求体的 ``skills`` 字段里，工具侧看不到，所以由装配根暂存一份。
+    turn_skills: SkipValidation[Optional[dict]] = None
 
     def _run(self, **kwargs) -> str:
         raise NotImplementedError("此工具仅支持异步调用，请使用 _arun")
 
     def _tags(self, config) -> list[dict]:
         return self.tag_options or _config_tag_options(config)
+
+    # ── 内部：用户选定的技能包（本次改造） ──────────────────────────────
+
+    def _selected_skill_dirs(self) -> list[str]:
+        """本轮输入框选中的技能包 → canonical 目录名（已剔除造专家用的元技能）。
+
+        技能胶囊只在聊天请求体的 ``skills`` 字段里，工具侧看不到，因此由
+        ``agent_manager._session_turn_skills`` 暂存、``chat.py`` 每轮写入。
+
+        返回空列表表示"用户一个都没选"——按需求语义，专家不绑定技能包，
+        对话时保持技能库全量可见（= 改造前行为）。
+        """
+        sid = (self.session_id or "")[-5:] or "new"
+        raw = [
+            str(name).strip()
+            for name in ((self.turn_skills or {}).get(self.session_id or "", []) or [])
+            if str(name).strip()
+        ]
+        meta = [name for name in raw if name in _META_SKILL_DIRS]
+        names = [name for name in raw if name not in _META_SKILL_DIRS]
+        if meta:
+            logger.info(
+                f"[{sid}] 🧑‍🔬 保存专家：已剔除造专家用的元技能 {meta}（不写入专家技能包）"
+            )
+        if not names:
+            logger.info(
+                f"[{sid}] 🧑‍🔬 保存专家：本轮未选择技能包 | 用户={self.username} | "
+                f"专家将不绑定技能（对话时技能库全量可见）"
+            )
+            return []
+
+        from easy_agent.services import tool_scope
+
+        kept, dropped = tool_scope.normalize_expert_skills(self.username, names, sid)
+        logger.info(
+            f"[{sid}] 🧑‍🔬 保存专家：技能包已归一 | 用户={self.username} | "
+            f"原始={names} | 归一后目录名={kept} | 剔除={dropped or '无'}"
+        )
+        return kept
 
     # ── 内部：把工具参数整理成 generate_expert_config 的口径 ────────────
 
@@ -362,6 +413,9 @@ class SaveExpertTool(BaseTool):
 
         expert_agent_id, name_en_placeholder = build_expert_ids(name_cn)
 
+        # 用户创建专家时选定的技能包（可为空 = 不绑定 = 对话时技能库全量可见）
+        selected_skills = self._selected_skill_dirs()
+
         # 先落 building 占位行：生成途中崩溃也能查到记录，前端列表可见「生成中」
         store.create(
             {
@@ -373,6 +427,7 @@ class SaveExpertTool(BaseTool):
                 "export_prompt": args.prompt,
                 "export_description": "",
                 "export_skills_names": [],
+                "export_required_skills": selected_skills,
                 "export_features_prompt": [],
                 "export_file_path": "",
                 "agent_status": STATUS_BUILDING,
@@ -398,6 +453,7 @@ class SaveExpertTool(BaseTool):
             name_cn=name_cn,
             version=1,
             generated=generated,
+            required_skills=selected_skills,
         )
         if not ok:
             return (
@@ -405,13 +461,17 @@ class SaveExpertTool(BaseTool):
                 "请稍后重试。"
             )
 
+        # 技能暂存使命完成：清掉，避免下一轮无关的创建/修改误用上一轮的选择
+        self._clear_turn_skills()
+
         record = store.get(expert_agent_id) or {}
         logger.info(
-            "对话内创建专家成功 | user=%s | expert=%s | 来源=%s | tag=%s",
+            "对话内创建专家成功 | user=%s | expert=%s | 来源=%s | tag=%s | 技能包=%s",
             self.username,
             expert_agent_id,
             source,
             record.get("tag_id", ""),
+            record.get("export_required_skills") or "（未绑定）",
         )
         return self._success_text("创建", _to_public(record), source)
 
@@ -472,6 +532,21 @@ class SaveExpertTool(BaseTool):
         # 修改 = 新版本目录 v{n+1}，不覆盖 v{n}（运行中的旧会话不受影响）
         new_version = int(record.get("export_version") or 1) + 1
 
+        # 技能包：本轮选了就整份替换（用户在编辑流程里重新选）；没选则沿用原记录，
+        # 避免"只想改描述"的一次编辑把专家绑定清空。
+        selected_skills = self._selected_skill_dirs()
+        next_skills = selected_skills or None
+        if next_skills is None:
+            logger.info(
+                f"[{expert_agent_id}] 修改专家：本轮未选择技能包，沿用原绑定 | "
+                f"原={record.get('export_required_skills') or '（未绑定）'}"
+            )
+        else:
+            logger.info(
+                f"[{expert_agent_id}] 修改专家：技能包将替换 | "
+                f"原={record.get('export_required_skills') or '（未绑定）'} | 新={next_skills}"
+            )
+
         try:
             generated, source = await self._resolve_config(
                 args, config, name_cn, user_prompt
@@ -488,6 +563,7 @@ class SaveExpertTool(BaseTool):
             name_cn=name_cn,
             version=new_version,
             generated=generated,
+            required_skills=next_skills,
         )
         if not ok:
             return "错误：专家配置落盘失败（版本目录写入异常）。原专家保持不变，请稍后重试。"
@@ -504,15 +580,23 @@ class SaveExpertTool(BaseTool):
         except Exception as exc:  # noqa: BLE001
             logger.warning("专家修改后驱逐 Agent 缓存失败: %s", exc)
 
+        self._clear_turn_skills()
+
         updated = store.get_owned(expert_agent_id, user_id) or {}
         logger.info(
-            "对话内修改专家成功 | user=%s | expert=%s | v%s | 来源=%s",
+            "对话内修改专家成功 | user=%s | expert=%s | v%s | 来源=%s | 技能包=%s",
             self.username,
             expert_agent_id,
             new_version,
             source,
+            updated.get("export_required_skills") or "（未绑定）",
         )
         return self._success_text("修改", _to_public(updated), source)
+
+    def _clear_turn_skills(self) -> None:
+        """清掉本会话的「本轮技能暂存」（保存完成后调用），避免黏到下一次无关的创建。"""
+        if self.turn_skills is not None:
+            self.turn_skills.pop(self.session_id or "", None)
 
     # ── 落盘（两条路径共用） ───────────────────────────────────────────
 
@@ -526,8 +610,13 @@ class SaveExpertTool(BaseTool):
         name_cn: str,
         version: int,
         generated: dict,
+        required_skills: Optional[list[str]] = None,
     ) -> bool:
-        """写版本目录 + 刷新库记录；失败时把状态置 ``failed`` 并返回 False。"""
+        """写版本目录 + 刷新库记录；失败时把状态置 ``failed`` 并返回 False。
+
+        ``required_skills``：专家绑定的技能包目录名。``None`` = 本次不修改该字段
+        （修改专家且用户没重选时用），列表（含空列表）= 覆盖。
+        """
         name_en = slugify(generated.get("name_en") or "", max_len=48)
         try:
             file_path = write_expert_version(
@@ -558,6 +647,9 @@ class SaveExpertTool(BaseTool):
         }
         if name_en:
             fields["export_name_en"] = name_en
+        # 技能包：None = 本次不改（修改专家且未重选）；列表 = 覆盖（含清空）
+        if required_skills is not None:
+            fields["export_required_skills"] = list(required_skills)
         store.update_fields(expert_agent_id, fields)
         return True
 
@@ -566,6 +658,12 @@ class SaveExpertTool(BaseTool):
     @staticmethod
     def _success_text(verb: str, record: dict, source: str) -> str:
         skills = "、".join(record.get("export_skills_names") or []) or "（未生成）"
+        packages = record.get("export_required_skills") or []
+        packages_text = (
+            "、".join(packages)
+            if packages
+            else "（未绑定技能包 → 该专家对话时技能库全量可见）"
+        )
         how = "由你直接产出" if source == "structured" else "由模型自动生成"
         return (
             f"专家{verb}成功！\n"
@@ -575,6 +673,7 @@ class SaveExpertTool(BaseTool):
             f"- 版本：v{record.get('export_version', 1)}\n"
             f"- 功能描述：{record.get('export_description', '')}\n"
             f"- 技能标签：{skills}\n"
+            f"- 绑定技能包：{packages_text}\n"
             f"- 配置来源：{how}\n"
             f"请如实告知用户：{verb}已完成，可在「专家 · 技能 · 连接器」面板的专家 Tab 中"
             f"看到并使用（点击「使用」即可由该专家回答）。"
@@ -589,6 +688,7 @@ def create_save_expert_tool(
     config_model: str = "",
     tag_options=None,
     edit_targets: Optional[dict] = None,
+    turn_skills: Optional[dict] = None,
 ) -> SaveExpertTool:
     """构造 ``save_expert`` 工具，并把分类标签候选写进工具描述。
 
@@ -599,6 +699,10 @@ def create_save_expert_tool(
     ``edit_targets`` 为会话级「待修改专家」绑定表（``{session_id: expert_agent_id}``），
     由 ``agent_manager`` 持有：修改专家时 ID 以绑定值为准，用户消息里不再携带
     专家 ID（防篡改），见 ``SaveExpertTool.edit_targets``。
+
+    ``turn_skills`` 为会话级「本轮输入框选中的技能目录名」
+    （``{session_id: [dir_name, ...]}``），同由 ``agent_manager`` 持有：创建 / 修改专家时
+    写进库字段 ``export_required_skills``，对话时按它做技能作用域硬隔离。
     """
     options = normalize_tag_options(tag_options)
     description = BASE_DESCRIPTION
@@ -611,5 +715,6 @@ def create_save_expert_tool(
         config_model=config_model or "",
         tag_options=options,
         edit_targets=edit_targets,
+        turn_skills=turn_skills,
         description=description,
     )

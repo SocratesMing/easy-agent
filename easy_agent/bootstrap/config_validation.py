@@ -13,9 +13,11 @@ from pydantic import BaseModel
 
 from easy_agent.bootstrap.config_models import (
     AgentConfig,
+    CheckpointConfig,
     DatabaseConfig,
     DistributedLockConfig,
     FileContextConfig,
+    HitlConfig,
     MySQLConfig,
     MySQLPoolConfig,
     PersonnelConfig,
@@ -56,6 +58,8 @@ KNOWN_TOP_LEVEL_KEYS = _fields(AgentConfig) | frozenset(
         "web_search",
         "preset_questions",
         "database",
+        "checkpoint",
+        "hitl",
         "personnel",
         "distributed_lock",
         "upload_limits",
@@ -67,6 +71,7 @@ KNOWN_TOP_LEVEL_KEYS = _fields(AgentConfig) | frozenset(
         "expert_relevance_strict",
         "expert_relevance_disable_thinking",
         "expert_auto_install_required_skills",
+        "expert_tool_scope_enabled",
         "app_welcome_title",
         "knowledge",
         "log",  # 历史遗留，Config 不再读取
@@ -86,6 +91,8 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
     "database.sqlite": _fields(SQLiteConfig),
     "database.mysql": _fields(MySQLConfig),
     "database.mysql.pool": _fields(MySQLPoolConfig),
+    "checkpoint": _fields(CheckpointConfig),
+    "hitl": _fields(HitlConfig),
     "summarization": _fields(SummarizationConfig),
     "web_search": _fields(WebSearchConfig),
     "distributed_lock": _fields(DistributedLockConfig),
@@ -100,6 +107,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "relevance_strict",
             "relevance_disable_thinking",
             "auto_install_required_skills",
+            "tool_scope_enabled",
         }
     ),
     "knowledge": frozenset(

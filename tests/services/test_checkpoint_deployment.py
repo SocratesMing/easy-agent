@@ -55,7 +55,8 @@ class TestDeploymentValidation:
         with pytest.raises(ck.CheckpointDeploymentError) as err:
             _validate(LEGACY)
         assert "EASY_ALLOW_LEGACY_CHECKPOINTER=1" in str(err.value)
-        assert "data/checkpoints/{pod}.db" in str(err.value)
+        assert "checkpoint.sqlite_path" in str(err.value)
+        assert ck.DEFAULT_SQLITE_PATH in str(err.value)
 
     def test_several_workers_in_one_pod_fail(self):
         with pytest.raises(ck.CheckpointDeploymentError, match="WEB_CONCURRENCY"):
@@ -176,7 +177,12 @@ def test_k8s_manifest_runs_one_sqlite_file_per_pod(monkeypatch):
     assert replicas > 1
     assert config["EASY_REPLICA_COUNT"] == str(replicas)
     assert env["EASY_POD_NAME"]["valueFrom"]["fieldRef"]["fieldPath"] == "metadata.name"
-    assert "{pod}" in config["EASY_CHECKPOINT_SQLITE_PATH"]
+    # 路径用 config.yaml 的默认值 /qts/checkpoint/{pod}.db，目录挂 pod 本地的 emptyDir（不能是 NAS）
+    assert "EASY_CHECKPOINT_SQLITE_PATH" not in config
+    checkpoint_dir = str(Path(ck.DEFAULT_SQLITE_PATH).parent)
+    mount = next(m for m in container["volumeMounts"] if m["mountPath"] == checkpoint_dir)
+    volume = next(v for v in pod["volumes"] if v["name"] == mount["name"])
+    assert "emptyDir" in volume
     assert config["EASY_STICKY_SESSIONS"] == "1"
     assert config["EASY_ALLOW_LEGACY_CHECKPOINTER"] == "0"
     assert config["DISTRIBUTED_LOCK_ENABLED"] == "true"
@@ -184,12 +190,14 @@ def test_k8s_manifest_runs_one_sqlite_file_per_pod(monkeypatch):
 
     # 按清单的配置解析并校验，能通过
     monkeypatch.setenv("EASY_POD_NAME", "easy-agent-6d4b9c-x7k2p")
+    monkeypatch.delenv("EASY_CHECKPOINT_SQLITE_PATH", raising=False)
     selection = ck.resolve_checkpoint_backend(
         backend=config["EASY_CHECKPOINT_BACKEND"],
-        sqlite_path=config["EASY_CHECKPOINT_SQLITE_PATH"],
+        sqlite_path=None,
         db_type="mysql",
     )
     assert selection.per_pod is True
+    assert selection.sqlite_path == f"{checkpoint_dir}/easy-agent-6d4b9c-x7k2p.db"
     assert ck.validate_checkpoint_deployment(
         selection,
         agent_env=config["AGENT_ENV"],

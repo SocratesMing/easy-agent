@@ -14,11 +14,15 @@ from pathlib import Path
 
 import pytest
 
+import easy_agent.sandboxing.sandbox as sandbox_mod
+from easy_agent.sandboxing import landlock as landlock_mod
 from easy_agent.sandboxing.sandbox import (
     _path_allowed,
     _venv_prefix,
     bwrap_usable,
     check_command_paths,
+    log_sandbox_startup_report,
+    sandbox_report,
 )
 from easy_agent.agent import _PathTranslatingShell
 
@@ -149,3 +153,104 @@ class TestBwrapIsolation:
         node = shutil.which("node")
         if node:
             assert r.exit_code == 0 and "v" in r.output
+
+
+class _FakeCompleted:
+    """Minimal ``subprocess.CompletedProcess`` stand-in for the probe."""
+
+    def __init__(self, returncode: int, stdout: str = "", stderr: str = ""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _fake_run(returncode: int, stdout: str = "", stderr: str = ""):
+    def _run(argv, *args, **kwargs):  # noqa: ANN001, ARG001
+        return _FakeCompleted(returncode, stdout, stderr)
+
+    return _run
+
+
+class TestSandboxStartupReport:
+    """启动期沙箱自检：结论、修复建议与 strict 行为（不依赖真实 bwrap）。"""
+
+    @staticmethod
+    def _reset_probe(monkeypatch, landlock_ok: bool) -> None:
+        monkeypatch.setattr(sandbox_mod, "_bwrap_usable", None)
+        monkeypatch.setattr(sandbox_mod, "_bwrap_probe_path", None)
+        monkeypatch.setattr(sandbox_mod, "_bwrap_probe_reason", "")
+        monkeypatch.setattr(landlock_mod, "landlock_usable", lambda: landlock_ok)
+
+    def test_bwrap_ok_reports_version(self, monkeypatch):
+        self._reset_probe(monkeypatch, landlock_ok=False)
+        monkeypatch.setattr(
+            sandbox_mod.shutil, "which", lambda _name: "/usr/local/bin/bwrap"
+        )
+        monkeypatch.setattr(
+            sandbox_mod.subprocess,
+            "run",
+            _fake_run(0, "bubblewrap 0.13.1\n", ""),
+        )
+
+        report = sandbox_report(sandbox_enabled=True)
+
+        assert report["mode"] == "bwrap"
+        assert report["bwrap_path"] == "/usr/local/bin/bwrap"
+        assert report["bwrap_version"] == "bubblewrap 0.13.1"
+        assert report["bwrap_ok"] is True
+        assert report["hints"] == []
+
+    def test_missing_binary_degrades_to_landlock(self, monkeypatch):
+        self._reset_probe(monkeypatch, landlock_ok=True)
+        monkeypatch.setattr(sandbox_mod.shutil, "which", lambda _name: None)
+
+        report = sandbox_report(sandbox_enabled=True)
+
+        assert report["mode"] == "landlock"
+        assert report["bwrap_ok"] is False
+        assert report["landlock_ok"] is True
+        assert "找不到 bwrap" in str(report["bwrap_reason"])
+
+    def test_fail_closed_carries_actionable_hints(self, monkeypatch):
+        self._reset_probe(monkeypatch, landlock_ok=False)
+        monkeypatch.setattr(sandbox_mod.shutil, "which", lambda _name: "/usr/bin/bwrap")
+        monkeypatch.setattr(
+            sandbox_mod.subprocess,
+            "run",
+            _fake_run(
+                1,
+                "",
+                "bwrap: Creating new namespace failed: Operation not permitted",
+            ),
+        )
+
+        report = sandbox_report(sandbox_enabled=True)
+        hints = " ".join(str(h) for h in report["hints"])
+
+        assert report["mode"] == "fail-closed"
+        assert "Operation not permitted" in str(report["bwrap_reason"])
+        assert "max_user_namespaces" in hints
+        assert "seccomp=unconfined" in hints
+        # 非 strict 只记日志，不阻断启动
+        assert log_sandbox_startup_report(sandbox_enabled=True)["mode"] == "fail-closed"
+
+    def test_strict_fails_startup_when_nothing_available(self, monkeypatch):
+        self._reset_probe(monkeypatch, landlock_ok=False)
+        monkeypatch.setattr(sandbox_mod.shutil, "which", lambda _name: None)
+
+        with pytest.raises(RuntimeError, match="沙箱自检失败"):
+            log_sandbox_startup_report(sandbox_enabled=True, strict=True)
+
+    def test_disabled_sandbox_skips_probe(self, monkeypatch):
+        self._reset_probe(monkeypatch, landlock_ok=True)
+        monkeypatch.setattr(
+            sandbox_mod.shutil,
+            "which",
+            lambda _name: pytest.fail("sandbox_enabled=false 时不应探测 bwrap"),
+        )
+
+        report = sandbox_report(sandbox_enabled=False)
+
+        assert report["mode"] == "disabled"
+        assert report["bwrap_ok"] is False
+        assert "sandbox_enabled=false" in str(report["bwrap_reason"])

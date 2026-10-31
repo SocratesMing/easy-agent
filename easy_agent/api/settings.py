@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from easy_agent.bootstrap.config import Config
@@ -15,6 +15,7 @@ from easy_agent.middleware import get_current_username
 from easy_agent.models.api import (
     ContentResponse,
     MemoryContentResponse,
+    KnowledgeStatusResponse,
     MemoryUpdateResponse,
     ModelsResponse,
     SkillsResponse,
@@ -22,7 +23,7 @@ from easy_agent.models.api import (
     WebSearchStatusResponse,
 )
 from easy_agent.agent.skills import discover_skills
-from easy_agent.services import get_agent_config
+from easy_agent.services.agent_manager import get_agent_config
 from easy_agent.services.prompt_loader import load_system_prompt
 from easy_agent.tools.web_search import TIME_RANGE_VALUES, is_web_search_available, resolve_provider
 
@@ -269,4 +270,22 @@ async def get_upload_limits():
         f"总量 {payload['max_total_size_mb']}MB"
     )
     return payload
+
+
+# ── 知识库开关 ────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/knowledge",
+    summary="获取知识库是否启用（公共接口，无需登录）",
+    response_model=KnowledgeStatusResponse,
+)
+async def get_knowledge_status(request: Request):
+    """只返回 ``knowledge.enabled``，不暴露 Ragflow 地址和密钥。
+
+    侧边栏据此决定是否显示「知识库」菜单。配置未注入时按未启用处理。
+    """
+    config = getattr(request.app.state, "knowledge_config", None)
+    enabled = bool(getattr(config, "enabled", False))
+    return {"enabled": enabled}
 

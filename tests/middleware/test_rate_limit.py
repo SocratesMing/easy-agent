@@ -171,6 +171,37 @@ def test_multiworker_warns_once_for_process_local_counter(monkeypatch, caplog):
     assert getattr(middleware, "counter").is_shared is False
 
 
+def test_cors_is_outermost_so_429_carries_cors_headers(monkeypatch):
+    """跨域页面（AI 侧边栏 SDK）被限流时要拿到 429，而不是浏览器报 CORS 错误。"""
+    from fastapi.middleware.cors import CORSMiddleware
+
+    from easy_agent.app import app as real_app
+
+    assert real_app.user_middleware[0].cls is CORSMiddleware
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(client_ip_mod, "get_client_ip", lambda request: "203.0.113.20")
+    app = FastAPI()
+
+    @app.get("/limited")
+    async def limited():
+        return {"ok": True}
+
+    app.add_middleware(RateLimitMiddleware, rules=[("/limited", 1, 60.0)])
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+    client = TestClient(app)
+    origin = {"Origin": "http://host.example"}
+
+    assert client.get("/limited", headers=origin).status_code == 200
+    preflight = client.options(
+        "/limited", headers={**origin, "Access-Control-Request-Method": "GET"}
+    )
+    assert preflight.status_code == 200
+    limited_response = client.get("/limited", headers=origin)
+    assert limited_response.status_code == 429
+    assert limited_response.headers["access-control-allow-origin"] == "*"
+
+
 def test_multiworker_does_not_warn_for_shared_counter(monkeypatch, caplog):
     class _SharedCounter:
         is_shared = True

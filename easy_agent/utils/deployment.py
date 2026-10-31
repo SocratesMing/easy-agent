@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import socket
 
@@ -44,6 +45,11 @@ def instance_name() -> str:
         if value:
             return value
     return socket.gethostname().strip()
+
+
+def instance_owner() -> str:
+    """本进程持有跨副本锁（会话流锁等）时的身份：``主机名:进程号``。"""
+    return f"{socket.gethostname()}:{os.getpid()}"
 
 
 def is_valid_instance_name(name: str) -> bool:

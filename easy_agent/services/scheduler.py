@@ -19,7 +19,7 @@ from apscheduler.triggers.cron import CronTrigger
 from easy_agent.db import get_database
 from easy_agent.models.db import ScheduledTaskModel, ScheduledTaskRunModel, SessionModel
 from easy_agent.utils.deployment import detect_worker_count as _detect_worker_count
-from easy_agent.utils.distributed_lock import get_distributed_lock
+from easy_agent.persistence.distributed_lock import get_distributed_lock
 from easy_agent.utils.task_logger import log_task_event
 from langchain_core.callbacks import BaseCallbackHandler
 
@@ -34,7 +34,7 @@ def set_agent_lifecycle(provider) -> None:
     """注册返回 (get_or_create_agent, remove_agent) 的 provider。
 
     用 provider 而非直接函数对象，保证测试/运行时对 agent_manager 函数的替换生效；
-    scheduler 不在模块级 import agent_manager（断 SCC 环）。
+    scheduler 不导入 agent_manager（断 SCC 环），由 agent_manager 导入时调用本函数注册。
     """
     global _agent_lifecycle_provider
     _agent_lifecycle_provider = provider
@@ -43,15 +43,10 @@ def set_agent_lifecycle(provider) -> None:
 def _require_agent_lifecycle():
     provider = _agent_lifecycle_provider
     if provider is None:
-        # 兼容绕过 agent_manager 初始化的单测/独立调用：动态导入，不形成 AST 边。
-        import importlib
-
-        module = importlib.import_module("easy_agent.services.agent_manager")
-        provider = lambda: (  # noqa: E731
-            module.get_or_create_agent_for_session,
-            module.remove_session_agent,
+        raise RuntimeError(
+            "定时任务拿不到 agent 生命周期：easy_agent.services.agent_manager 还没有导入"
+            "（它在导入时调用 set_agent_lifecycle 注册，应用启动路径会自动完成）"
         )
-        set_agent_lifecycle(provider)
     return provider()
 
 _scheduler_instance: AsyncIOScheduler | None = None
