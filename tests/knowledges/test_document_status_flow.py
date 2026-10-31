@@ -46,6 +46,18 @@ class _StatusFakeRagflow(_FakeRagflow):
         self.stopped.extend(document_ids)
 
 
+class _UnfilteredFakeRagflow(_FakeRagflow):
+    """模拟忽略 document_id 过滤的上游：每次返回整页文档，首位固定是慢文档。"""
+
+    def __init__(self, documents: list[dict]):
+        super().__init__()
+        self._documents = documents
+
+    async def list_documents(self, dataset_id, **kwargs):
+        self.document_queries.append({"dataset_id": dataset_id, **kwargs})
+        return {"docs": list(self._documents), "total": len(self._documents)}
+
+
 async def _upload(service, base) -> tuple[str, str]:
     content = b"document status flow"
     accepted = await service.upload_document(
@@ -258,6 +270,35 @@ async def test_pause_and_resume_restart_parse_timer(db, tmp_path):
     document = repository.get_document(document_id)
     assert document["status"] == DocumentStatus.PROCESSING.value
     assert document["parse_started_at"] != OLD_PARSE_STARTED_AT
+
+
+async def test_refresh_matches_document_by_id_when_upstream_ignores_filter(db, tmp_path):
+    """上游忽略 document_id 返回整页时，也必须按 ID 取本文档状态。"""
+
+    slow_doc = {"id": "rd-slow", "run": "RUNNING", "progress": 0.1}
+    fast_doc = {"id": "rd-fast", "run": "DONE", "progress": 1.0}
+    ragflow = _UnfilteredFakeRagflow([slow_doc, fast_doc])
+    service = _make_service(db, ragflow, tmp_path)
+    base = _create_base_row(db, space_type="personal", owner_user_id="u-1")
+    fast = _add_document(
+        db, str(base["id"]), name="fast.txt", status="processing",
+        remote_document_id="rd-fast",
+    )
+    slow = _add_document(
+        db, str(base["id"]), name="slow.txt", status="processing",
+        remote_document_id="rd-slow",
+    )
+
+    await service.refresh_base_documents(base)
+
+    repository = KnowledgeRepository(db)
+    fast_row = repository.get_document(fast["id"])
+    slow_row = repository.get_document(slow["id"])
+    # 不能因为查询结果首位是慢文档，就把同批其它文档也写成慢文档的状态
+    assert fast_row["status"] == DocumentStatus.READY.value
+    assert fast_row["progress"] == 1.0
+    assert slow_row["status"] == DocumentStatus.PROCESSING.value
+    assert slow_row["progress"] == 0.1
 
 
 def test_refreshable_scope_requires_remote_copy_and_active_status(db):

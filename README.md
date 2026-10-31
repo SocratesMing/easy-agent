@@ -4,7 +4,7 @@
 > [`docs/architecture-current.md`](docs/architecture-current.md) 为准；本次后端目录
 > 已按职责重组为 `agent/`、`bootstrap/`、`persistence/`、`sandboxing/`、`security/`
 > 等子包（见 [`docs/archive/design/2026-10-18-backend-directory-reorg.md`](docs/archive/design/2026-10-18-backend-directory-reorg.md)）。
-> 当前后端托管 `frontend-vue2/`（Vue 2.7 + Element UI），同时维护 `frontend/`
+> 当前后端托管 `frontend-vue2/`（Vue 2.6.3 + Element UI），同时维护 `frontend/`
 > （Vue 3.5 + Vite）；运行时技能 7 个；DeepAgents 0.7 兼容；已有 Dockerfile /
 > docker-compose / k8s / CI。新增配置键请同步 `config-example.yaml` 并跑
 > `python scripts/quality/check_config_schema.py --check`。
@@ -28,7 +28,7 @@ Easy Agent 是一个开箱即用的 AI Agent 平台，让大模型能够：
 - 由模型自行识别用户意图并创建定时任务
 - 管理员可通过网页终端（Web Terminal，默认关闭）直接操作宿主机 shell
 
-前后端一体化部署：后端 FastAPI 提供 REST + SSE 流式接口。当前后端托管 `frontend-vue2/`（Vue 2.7 + Element UI + Vue CLI）构建产物，同时维护 `frontend/`（Vue 3.5 + Vite）第二基线。
+前后端一体化部署：后端 FastAPI 提供 REST + SSE 流式接口。当前后端托管 `frontend-vue2/`（Vue 2.6.3 + Element UI + Vue CLI）构建产物，同时维护 `frontend/`（Vue 3.5 + Vite）第二基线。
 
 后端已针对**多副本容器部署**做了基础外置：SSE 事件持久化/跨 Pod 回放、run 租约与中断恢复、数据库迁移串行锁、上传原始文件可落 LangGraph Store；HITL checkpoint 用官方 SQLite saver，多副本时每个 pod 一个文件、靠 Ingress 粘性会话；`agent/` 负责运行时装配，`bootstrap/` 负责启动/配置，`persistence/` 负责持久化适配，职责边界清晰。
 
@@ -83,7 +83,7 @@ easy-agent/
 │   ├── config/                   # config.yaml 模板 + prompts（资源目录）
 │   └── skills/                   # 包内技能回退副本
 │
-├── frontend-vue2/                # 当前托管前端（Vue 2.7）
+├── frontend-vue2/                # 当前托管前端（Vue 2.6.3）
 ├── frontend/                     # 第二前端基线（Vue 3.5 + Vite）
 ├── skills/                       # canonical 运行时技能（7 个）
 ├── experts/                      # 预置专家
@@ -471,7 +471,7 @@ npm run dev
 
 ### 代码风格
 - Python：遵循 PEP 8，使用 `ruff` 检查
-- Vue：Vue 2.7 Options API（禁用 `<script setup>`，由 `src/utils/vue2Compat.test.js` 守卫），scoped 样式
+- Vue：Vue 2.6.3 Options API（禁用 Composition API 与 `<script setup>`，由 `src/utils/vue2Compat.test.js` 守卫），scoped 样式
 
 ### 测试与质量门禁
 

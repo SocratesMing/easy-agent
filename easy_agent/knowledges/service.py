@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Callable
 
 from starlette.concurrency import run_in_threadpool
 
+from easy_agent.knowledges.core.chunks import chunk_id, chunk_text, ordered_chunks
 from easy_agent.knowledges.core.config import (
     KnowledgeConfig,
     UPSTREAM_DOCUMENT_STATUS_MAPPING,
@@ -292,25 +293,26 @@ class KnowledgeService:
                 _shared_dataset_id = await self._create_shared_dataset(
                     SHARED_DATASET_NAME, configured_model
                 )
-            elif await self._dataset_needs_model_switch(found, configured_model):
-                # 旧共享库已有 chunk 且模型不一致：新建模型专用库，
-                # 避免 RAGFlow 继续用旧模型解析新文档。
-                old_model = await self._dataset_model(found)
-                _shared_dataset_id = await self._create_shared_dataset(
-                    preferred_name, configured_model
-                )
-                logger.warning(
-                    "检测到共享数据集模型变化，已切换到新数据集 | old_dataset=%s "
-                    "new_dataset=%s old_model=%s new_model=%s | 旧库文档不会自动"
-                    "迁移，需要重新上传才能用新模型解析",
-                    found,
-                    _shared_dataset_id,
-                    old_model,
-                    configured_model,
-                )
             else:
-                await self._validate_shared_dataset_model(found)
-                _shared_dataset_id = found
+                old_model = await self._stale_dataset_model(found, configured_model)
+                if old_model:
+                    # 旧共享库已有 chunk 且模型不一致：新建模型专用库，
+                    # 避免 RAGFlow 继续用旧模型解析新文档。
+                    _shared_dataset_id = await self._create_shared_dataset(
+                        preferred_name, configured_model
+                    )
+                    logger.warning(
+                        "检测到共享数据集模型变化，已切换到新数据集 | old_dataset=%s "
+                        "new_dataset=%s old_model=%s new_model=%s | 旧库文档不会自动"
+                        "迁移，需要重新上传才能用新模型解析",
+                        found,
+                        _shared_dataset_id,
+                        old_model,
+                        configured_model,
+                    )
+                else:
+                    await self._validate_shared_dataset_model(found)
+                    _shared_dataset_id = found
 
             logger.info("共享数据集就绪 | id=%s", _shared_dataset_id)
             return _shared_dataset_id
@@ -358,9 +360,8 @@ class KnowledgeService:
         if found is not None:
             await self._validate_shared_dataset_model(found)
             logger.warning(
-                "指定共享数据集模型不一致，改用模型专用数据集 | configured=%s "
-                "actual_dataset=%s actual_model=%s new_dataset=%s new_model=%s",
-                dataset_id,
+                "指定共享数据集模型不一致，改用模型专用数据集 | dataset=%s "
+                "actual_model=%s new_dataset=%s new_model=%s",
                 dataset_id,
                 actual,
                 found,
@@ -421,26 +422,27 @@ class KnowledgeService:
         digest = hashlib.sha1(model.encode("utf-8")).hexdigest()[:8]
         return f"{SHARED_DATASET_NAME}_{digest}"
 
-    async def _dataset_model(self, dataset_id: str) -> str:
-        dataset = await self._get_dataset(dataset_id)
-        return str(dataset.get("embedding_model") or "").strip() if dataset else ""
-
-    async def _dataset_needs_model_switch(
+    async def _stale_dataset_model(
         self, dataset_id: str, configured_model: str
-    ) -> bool:
-        """旧库是否因“有 chunk + 模型不一致”而需要切到模型专用新库。"""
+    ) -> str | None:
+        """旧库因“有 chunk + 模型不一致”需要切换时，返回其实际模型。
+
+        返回非空即调用方应新建模型专用数据集；None 表示无需切换。
+        """
 
         if not configured_model:
-            return False
+            return None
         dataset = await self._get_dataset(dataset_id)
         if dataset is None:
-            return False
+            return None
         actual = str(dataset.get("embedding_model") or "").strip()
-        return bool(
+        if (
             actual
             and actual != configured_model
             and self._dataset_chunk_count(dataset) > 0
-        )
+        ):
+            return actual
+        return None
 
     async def _create_shared_dataset(self, name: str, model: str) -> str:
         try:
@@ -599,9 +601,32 @@ class KnowledgeService:
             return False
         docs = data.get("docs") if isinstance(data, dict) else data
         if isinstance(docs, list) and docs:
-            run = str(docs[0].get("run", "")).upper()
-            return run in {"RUNNING", "DONE"}
+            upstream_doc = self._match_upstream_document(docs, remote_id)
+            # 上游未按 id 过滤时（返回整页），不能拿 docs[0] 判断本文档状态
+            if upstream_doc is None and len(docs) == 1:
+                upstream_doc = docs[0]
+            if isinstance(upstream_doc, dict):
+                run = str(upstream_doc.get("run", "")).upper()
+                return run in {"RUNNING", "DONE"}
         return False
+
+    @staticmethod
+    def _match_upstream_document(
+        documents: list[Any], remote_id: str
+    ) -> Mapping[str, Any] | None:
+        """从上游返回的文档列表中按 ID 精确取出本文档。
+
+        不同 RAGFlow 版本的文档过滤参数名不一致；即使上游忽略过滤返回整页，
+        也必须按 ID 匹配，避免同批文档都显示成列表首位（进度最慢那篇）的状态。
+        """
+
+        for document in documents:
+            if (
+                isinstance(document, Mapping)
+                and str(document.get("id") or "") == remote_id
+            ):
+                return document
+        return None
 
     async def _authorized_base(
         self,
@@ -709,6 +734,32 @@ class KnowledgeService:
         )
 
     @staticmethod
+    def _normalized_progress(value: object) -> float | None:
+        """归一化进度字段：仅接受 [0, 1] 区间内的数值，其余视为未知。"""
+
+        return value if isinstance(value, (int, float)) and 0 <= value <= 1 else None
+
+    @staticmethod
+    def _error_response(
+        record: Mapping[str, Any],
+        *,
+        default_code: str,
+        default_message: str,
+        request_id: str,
+        retryable: bool,
+    ) -> KnowledgeErrorResponse | None:
+        """把行内错误字段转换为对外错误模型；无错误时返回 None。"""
+
+        if not (record.get("error_code") or record.get("error_message")):
+            return None
+        return KnowledgeErrorResponse(
+            code=str(record.get("error_code") or default_code),
+            message=str(record.get("error_message") or default_message),
+            request_id=request_id,
+            retryable=retryable,
+        )
+
+    @staticmethod
     def _document_summary(
         document: Mapping[str, Any],
         role: KnowledgeBaseRole,
@@ -716,17 +767,14 @@ class KnowledgeService:
     ) -> DocumentSummary:
         """将文档行转换为摘要模型，并归一化错误与进度字段。"""
 
-        error = None
-        if document.get("error_code") or document.get("error_message"):
-            error = KnowledgeErrorResponse(
-                code=str(document.get("error_code") or "KNOWLEDGE_DOCUMENT_ERROR"),
-                message=str(document.get("error_message") or "文档处理失败"),
-                request_id=request_id,
-                retryable=str(document.get("status")) == DocumentStatus.FAILED.value,
-            )
-        progress = document.get("progress")
-        if not isinstance(progress, (int, float)) or not 0 <= progress <= 1:
-            progress = None
+        error = KnowledgeService._error_response(
+            document,
+            default_code="KNOWLEDGE_DOCUMENT_ERROR",
+            default_message="文档处理失败",
+            request_id=request_id,
+            retryable=str(document.get("status")) == DocumentStatus.FAILED.value,
+        )
+        progress = KnowledgeService._normalized_progress(document.get("progress"))
         return DocumentSummary(
             id=str(document["id"]),
             base_id=str(document["base_id"]),
@@ -760,17 +808,14 @@ class KnowledgeService:
     ) -> OperationSummary:
         """将操作记录行转换为摘要模型，并归一化错误与进度字段。"""
 
-        error = None
-        if operation.get("error_code") or operation.get("error_message"):
-            error = KnowledgeErrorResponse(
-                code=str(operation.get("error_code") or "KNOWLEDGE_OPERATION_ERROR"),
-                message=str(operation.get("error_message") or "知识任务失败"),
-                request_id=request_id,
-                retryable=bool(operation.get("retryable")),
-            )
-        progress = operation.get("progress")
-        if not isinstance(progress, (int, float)) or not 0 <= progress <= 1:
-            progress = None
+        error = KnowledgeService._error_response(
+            operation,
+            default_code="KNOWLEDGE_OPERATION_ERROR",
+            default_message="知识任务失败",
+            request_id=request_id,
+            retryable=bool(operation.get("retryable")),
+        )
+        progress = KnowledgeService._normalized_progress(operation.get("progress"))
         return OperationSummary(
             id=str(operation["id"]),
             resource_type=str(operation.get("resource_type") or "") or None,
@@ -785,6 +830,24 @@ class KnowledgeService:
             error=error,
             created_at=operation["created_at"],
             updated_at=operation["updated_at"],
+        )
+
+    @staticmethod
+    def _folder_summary(
+        folder: Mapping[str, Any], role: KnowledgeBaseRole
+    ) -> FolderSummary:
+        """将文件夹行转换为摘要模型；计数缺失时按 0 处理。"""
+
+        return FolderSummary(
+            id=folder["id"],
+            base_id=folder["base_id"],
+            parent_id=folder.get("parent_id"),
+            name=folder["name"],
+            document_count=int(folder.get("document_count") or 0),
+            child_count=int(folder.get("child_count") or 0),
+            allowed_actions=allowed_actions(role),
+            created_at=folder["created_at"],
+            updated_at=folder["updated_at"],
         )
 
     # ---------------- 知识库 ----------------
@@ -1034,6 +1097,20 @@ class KnowledgeService:
             deleted_by=principal.user_id,
         )
 
+    async def _delete_remote_documents(
+        self, dataset_id: str, document_ids: list[str]
+    ) -> None:
+        """删除远端文档副本；远端已不存在按成功处理（幂等）。"""
+
+        try:
+            await self.ragflow.delete_documents(
+                dataset_id=dataset_id, document_ids=document_ids
+            )
+        except RagflowNotFoundError:
+            pass
+        except RagflowError as exc:
+            raise self._upstream_error(exc) from exc
+
     async def _delete_base_remote_documents(self, base: Mapping[str, Any]) -> None:
         """同步删除知识库下全部远端文档（分批调用，远端缺失视为已删除）。
 
@@ -1060,15 +1137,9 @@ class KnowledgeService:
         dataset_id = await self._dataset_id_for(base)
         for start in range(0, len(pending), 100):
             chunk = pending[start : start + 100]
-            try:
-                await self.ragflow.delete_documents(
-                    dataset_id=dataset_id,
-                    document_ids=[remote_id for _, remote_id in chunk],
-                )
-            except RagflowNotFoundError:
-                pass  # 远端已不存在：视为已删除（幂等）
-            except RagflowError as exc:
-                raise self._upstream_error(exc) from exc
+            await self._delete_remote_documents(
+                dataset_id, [remote_id for _, remote_id in chunk]
+            )
             for document_id, _remote_id in chunk:
                 await self._repo(
                     self.repository.update_document,
@@ -1086,21 +1157,31 @@ class KnowledgeService:
         _, role = await self._authorized_base(base_id, principal)
         rows = await self._repo(self.repository.list_folders, base_id)
         return FolderListResponse(
-            items=[
-                FolderSummary(
-                    id=row["id"],
-                    base_id=row["base_id"],
-                    parent_id=row.get("parent_id"),
-                    name=row["name"],
-                    document_count=int(row.get("document_count") or 0),
-                    child_count=int(row.get("child_count") or 0),
-                    allowed_actions=allowed_actions(role),
-                    created_at=row["created_at"],
-                    updated_at=row["updated_at"],
-                )
-                for row in rows
-            ]
+            items=[self._folder_summary(row, role) for row in rows]
         )
+
+    async def _require_folder(
+        self,
+        base_id: str,
+        folder_id: str,
+        *,
+        missing_message: str = "文件夹不存在",
+    ) -> dict[str, Any]:
+        """读取文件夹并校验归属；不存在或跨库时按 404 处理。"""
+
+        folder = await self._repo(self.repository.get_folder, folder_id)
+        if folder is None or str(folder["base_id"]) != base_id:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_FOLDER_NOT_FOUND", missing_message, status_code=404
+            )
+        return folder
+
+    @staticmethod
+    def _is_folder_conflict(exc: Exception) -> bool:
+        """数据库唯一约束冲突（并发创建/重命名同名文件夹）。"""
+
+        text = str(exc).upper()
+        return "UNIQUE" in text or "DUPLICATE" in text
 
     async def create_folder(
         self,
@@ -1116,26 +1197,15 @@ class KnowledgeService:
             base_id, principal, AllowedAction.CREATE_FOLDER
         )
         if parent_id:
-            parent = await self._repo(self.repository.get_folder, parent_id)
-            if parent is None or str(parent["base_id"]) != base_id:
+            await self._require_folder(
+                base_id, parent_id, missing_message="上级文件夹不存在"
+            )
+            if await self._folder_chain_depth(base_id, parent_id) >= 5:
                 raise KnowledgeServiceError(
-                    "KNOWLEDGE_FOLDER_NOT_FOUND", "上级文件夹不存在", status_code=404
+                    "KNOWLEDGE_FOLDER_DEPTH_LIMIT",
+                    "文件夹最多支持 5 层",
+                    status_code=409,
                 )
-            depth = 1
-            cursor = parent
-            while cursor.get("parent_id"):
-                depth += 1
-                if depth >= 5:
-                    raise KnowledgeServiceError(
-                        "KNOWLEDGE_FOLDER_DEPTH_LIMIT",
-                        "文件夹最多支持 5 层",
-                        status_code=409,
-                    )
-                cursor = await self._repo(
-                    self.repository.get_folder, str(cursor["parent_id"])
-                )
-                if cursor is None:
-                    break
         try:
             existing = await self._repo(
                 self.repository.find_folder_by_name, base_id, name, parent_id
@@ -1155,24 +1225,14 @@ class KnowledgeService:
         except KnowledgeServiceError:
             raise
         except Exception as exc:
-            if "UNIQUE" in str(exc).upper() or "DUPLICATE" in str(exc).upper():
+            if self._is_folder_conflict(exc):
                 raise KnowledgeServiceError(
                     "KNOWLEDGE_FOLDER_EXISTS",
                     "同名文件夹已存在",
                     status_code=409,
                 ) from exc
             raise
-        return FolderSummary(
-            id=row["id"],
-            base_id=row["base_id"],
-            parent_id=row.get("parent_id"),
-            name=row["name"],
-            document_count=0,
-            child_count=0,
-            allowed_actions=allowed_actions(role),
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
+        return self._folder_summary(row, role)
 
     async def _folder_chain_depth(
         self, base_id: str, folder_id: str | None
@@ -1245,9 +1305,7 @@ class KnowledgeService:
                     current = str(row["id"])
                 except Exception as exc:
                     # 并发下撞唯一约束：回读已创建的同名文件夹复用
-                    if "UNIQUE" not in str(exc).upper() and "DUPLICATE" not in str(
-                        exc
-                    ).upper():
+                    if not self._is_folder_conflict(exc):
                         raise
                     existing = await self._repo(
                         self.repository.find_folder_by_name,
@@ -1279,11 +1337,7 @@ class KnowledgeService:
         """
         await self._authorized_base(base_id, principal, AllowedAction.UPLOAD)
         if folder_id:
-            folder = await self._repo(self.repository.get_folder, folder_id)
-            if folder is None or str(folder["base_id"]) != base_id:
-                raise KnowledgeServiceError(
-                    "KNOWLEDGE_FOLDER_NOT_FOUND", "文件夹不存在", status_code=404
-                )
+            await self._require_folder(base_id, folder_id)
         ensured = 0
         for raw_path in paths:
             segments = _split_folder_segments(str(raw_path or ""))
@@ -1326,7 +1380,7 @@ class KnowledgeService:
         except KnowledgeServiceError:
             raise
         except Exception as exc:
-            if "UNIQUE" in str(exc).upper() or "DUPLICATE" in str(exc).upper():
+            if self._is_folder_conflict(exc):
                 raise KnowledgeServiceError(
                     "KNOWLEDGE_FOLDER_EXISTS",
                     "同名文件夹已存在",
@@ -1334,17 +1388,7 @@ class KnowledgeService:
                 ) from exc
             raise
         assert row is not None
-        return FolderSummary(
-            id=row["id"],
-            base_id=row["base_id"],
-            parent_id=row.get("parent_id"),
-            name=row["name"],
-            document_count=0,
-            child_count=0,
-            allowed_actions=allowed_actions(role),
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
+        return self._folder_summary(row, role)
 
     async def delete_folder(
         self, *, folder_id: str, principal: KnowledgePrincipal
@@ -1369,15 +1413,12 @@ class KnowledgeService:
 
     # ---------------- 权限 ----------------
 
-    async def get_permissions(
-        self, base_id: str, principal: KnowledgePrincipal
+    @staticmethod
+    def _permission_list_response(
+        rows: Iterable[Mapping[str, Any]], *, restrict_access: bool
     ) -> PermissionListResponse:
-        """查询知识库授权列表与受限标记（需管理权限）。"""
+        """把权限行转换为对外响应（角色与主体原样回显）。"""
 
-        base, _ = await self._authorized_base(
-            base_id, principal, AllowedAction.MANAGE_PERMISSIONS
-        )
-        rows = await self._repo(self.repository.list_permissions, base_id)
         return PermissionListResponse(
             items=[
                 PermissionEntry(
@@ -1387,7 +1428,20 @@ class KnowledgeService:
                 )
                 for row in rows
             ],
-            restrict_access=_base_access_restricted(base),
+            restrict_access=restrict_access,
+        )
+
+    async def get_permissions(
+        self, base_id: str, principal: KnowledgePrincipal
+    ) -> PermissionListResponse:
+        """查询知识库授权列表与受限标记（需管理权限）。"""
+
+        base, _ = await self._authorized_base(
+            base_id, principal, AllowedAction.MANAGE_PERMISSIONS
+        )
+        rows = await self._repo(self.repository.list_permissions, base_id)
+        return self._permission_list_response(
+            rows, restrict_access=_base_access_restricted(base)
         )
 
     async def replace_permissions(
@@ -1457,16 +1511,16 @@ class KnowledgeService:
             permissions=payload,
             created_by=principal.user_id,
         )
-        return PermissionListResponse(
-            items=[
-                PermissionEntry(
-                    subject_type=row["subject_type"],
-                    subject_id=row["subject_id"],
-                    role=row["role"],
-                )
-                for row in rows
-            ],
-            restrict_access=restrict_access,
+        return self._permission_list_response(
+            rows, restrict_access=restrict_access
+        )
+
+    @staticmethod
+    def _permission_directory_response(
+        rows: Iterable[Mapping[str, Any]],
+    ) -> PermissionDirectoryListResponse:
+        return PermissionDirectoryListResponse(
+            items=[PermissionDirectoryUser(**row) for row in rows]
         )
 
     async def get_permission_directory(
@@ -1481,9 +1535,7 @@ class KnowledgeService:
             self.repository.list_permission_directory_users,
             exclude_user_id=str(base.get("owner_user_id") or ""),
         )
-        return PermissionDirectoryListResponse(
-            items=[PermissionDirectoryUser(**row) for row in rows]
-        )
+        return self._permission_directory_response(rows)
 
     async def get_creation_permission_directory(
         self, principal: KnowledgePrincipal
@@ -1504,11 +1556,19 @@ class KnowledgeService:
             self.repository.list_permission_directory_users,
             exclude_user_id=str(principal.user_id or ""),
         )
-        return PermissionDirectoryListResponse(
-            items=[PermissionDirectoryUser(**row) for row in rows]
-        )
+        return self._permission_directory_response(rows)
 
     # ---------------- 文档 ----------------
+
+    async def _require_document(self, document_id: str) -> dict[str, Any]:
+        """读取文档记录；不存在时按 404 处理（软删除状态由调用方决定）。"""
+
+        document = await self._repo(self.repository.get_document, document_id)
+        if document is None:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
+            )
+        return document
 
     async def refresh_base_documents(self, base: Mapping[str, Any]) -> None:
         """用上游文档状态刷新本地投影；仅后台解析轮询 worker 调用。
@@ -1583,8 +1643,8 @@ class KnowledgeService:
                     docs = upstream.get("docs") if isinstance(upstream, dict) else None
                     if not isinstance(docs, list) or not docs:
                         return
-                    upstream_doc = docs[0]
-                    if isinstance(upstream_doc, dict):
+                    upstream_doc = self._match_upstream_document(docs, remote_id)
+                    if upstream_doc is not None:
                         await self._apply_upstream_doc_status(local, upstream_doc)
                 except RagflowError as exc:
                     logger.warning(
@@ -1608,9 +1668,8 @@ class KnowledgeService:
         if str(local.get("status")) == DocumentStatus.PAUSED.value:
             return
         status = DocumentStatus(_map_upstream_status(upstream_doc.get("run")))
-        progress = upstream_doc.get("progress")
-        if not isinstance(progress, (int, float)) or not 0 <= progress <= 1:
-            progress = None
+        progress = self._normalized_progress(upstream_doc.get("progress"))
+        failure_message = str(upstream_doc.get("progress_msg") or "文档解析失败")
         now_iso = datetime.now(UTC).isoformat()
         parse_started_at = local.get("parse_started_at")
         if status == DocumentStatus.PROCESSING and not parse_started_at:
@@ -1674,9 +1733,7 @@ class KnowledgeService:
                 {
                     "progress": None,
                     "error_code": "KNOWLEDGE_PARSE_FAILED",
-                    "error_message": str(
-                        upstream_doc.get("progress_msg") or "文档解析失败"
-                    ),
+                    "error_message": failure_message,
                 }
             )
         elif status == DocumentStatus.READY:
@@ -1719,9 +1776,7 @@ class KnowledgeService:
                     "progress": None,
                     "retryable": True,
                     "error_code": "KNOWLEDGE_PARSE_FAILED",
-                    "error_message": str(
-                        upstream_doc.get("progress_msg") or "文档解析失败"
-                    ),
+                    "error_message": failure_message,
                 }
             )
         elif status == DocumentStatus.CANCELLED:
@@ -1927,13 +1982,7 @@ class KnowledgeService:
             base_id, principal, AllowedAction.UPLOAD
         )
         if folder_id:
-            folder = await self._repo(self.repository.get_folder, folder_id)
-            if folder is None or str(folder["base_id"]) != base_id:
-                raise KnowledgeServiceError(
-                    "KNOWLEDGE_FOLDER_NOT_FOUND",
-                    "文件夹不存在",
-                    status_code=404,
-                )
+            await self._require_folder(base_id, folder_id)
         if relative_path:
             folder_id = await self._ensure_folder_chain(
                 base_id, folder_id, relative_path
@@ -2109,11 +2158,7 @@ class KnowledgeService:
     ) -> DocumentSummary:
         """移动文档到目标文件夹（目标须属于同一知识库）。"""
 
-        document = await self._repo(self.repository.get_document, document_id)
-        if document is None:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-            )
+        document = await self._require_document(document_id)
         if str(document.get("status")) == DocumentStatus.DELETED.value:
             raise KnowledgeServiceError(
                 "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
@@ -2122,11 +2167,7 @@ class KnowledgeService:
             str(document["base_id"]), principal, AllowedAction.MOVE_DOCUMENT
         )
         if folder_id:
-            folder = await self._repo(self.repository.get_folder, folder_id)
-            if folder is None or str(folder["base_id"]) != str(document["base_id"]):
-                raise KnowledgeServiceError(
-                    "KNOWLEDGE_FOLDER_NOT_FOUND", "文件夹不存在", status_code=404
-                )
+            await self._require_folder(str(document["base_id"]), folder_id)
         document = await self._repo(
             self.repository.update_document, document_id, folder_id=folder_id
         )
@@ -2141,11 +2182,7 @@ class KnowledgeService:
         request_id: str,
     ) -> tuple[dict[str, Any], KnowledgeDocumentBinary]:
         """优先返回本地原文；不可用时回退下载上游副本。"""
-        document = await self._repo(self.repository.get_document, document_id)
-        if document is None:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-            )
+        document = await self._require_document(document_id)
         if str(document.get("status")) == DocumentStatus.DELETED.value:
             raise KnowledgeServiceError(
                 "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
@@ -2223,11 +2260,7 @@ class KnowledgeService:
         按 404 幂等处理。
         """
         del request_id
-        document = await self._repo(self.repository.get_document, document_id)
-        if document is None:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-            )
+        document = await self._require_document(document_id)
         if str(document.get("status")) == DocumentStatus.DELETED.value:
             return
         base, _role = await self._authorized_base(
@@ -2235,15 +2268,9 @@ class KnowledgeService:
         )
         remote_id = str(document.get("remote_document_id") or "").strip()
         if remote_id:
-            try:
-                await self.ragflow.delete_documents(
-                    dataset_id=await self._dataset_id_for(base),
-                    document_ids=[remote_id],
-                )
-            except RagflowNotFoundError:
-                pass  # 远端已不存在：视为已删除（幂等）
-            except RagflowError as exc:
-                raise self._upstream_error(exc) from exc
+            await self._delete_remote_documents(
+                await self._dataset_id_for(base), [remote_id]
+            )
         await self._repo(
             self.repository.update_document,
             document_id,
@@ -2306,11 +2333,7 @@ class KnowledgeService:
     ) -> Mapping[str, Any]:
         """暂停未就绪文档的解析任务：退出解析队列，保留原文可随时恢复。"""
         del request_id
-        document = await self._repo(self.repository.get_document, document_id)
-        if document is None:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-            )
+        document = await self._require_document(document_id)
         base, _role = await self._authorized_base(
             str(document["base_id"]), principal, AllowedAction.RETRY_DOCUMENT
         )
@@ -2354,11 +2377,7 @@ class KnowledgeService:
     ) -> Mapping[str, Any]:
         """恢复已暂停文档：重新提交解析队列，回到待解析状态。"""
         del request_id
-        document = await self._repo(self.repository.get_document, document_id)
-        if document is None:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-            )
+        document = await self._require_document(document_id)
         base, _role = await self._authorized_base(
             str(document["base_id"]), principal, AllowedAction.RETRY_DOCUMENT
         )
@@ -2403,11 +2422,7 @@ class KnowledgeService:
         request_id: str,
     ) -> DocumentUploadAccepted:
         """重试失败文档：删除上游旧副本后，用本地原文重新上传并解析。"""
-        document = await self._repo(self.repository.get_document, document_id)
-        if document is None:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-            )
+        document = await self._require_document(document_id)
         base, role = await self._authorized_base(
             str(document["base_id"]), principal, AllowedAction.RETRY_DOCUMENT
         )
@@ -2443,6 +2458,8 @@ class KnowledgeService:
             created_by=principal.user_id,
             retryable=True,
         )
+        failure_message = "文档重试失败"
+        original_error_message = "文档原文件不可用"
         source: BinaryIO | None = None
         try:
             dataset_id = await self._dataset_id_for(base)
@@ -2487,8 +2504,8 @@ class KnowledgeService:
                 document_id=document_id,
                 operation_id=str(operation["id"]),
                 exc=exc,
-                failure_message="文档重试失败",
-                original_error_message="文档原文件不可用",
+                failure_message=failure_message,
+                original_error_message=original_error_message,
             )
         try:
             document, operation = await self._submit_to_ragflow(
@@ -2497,8 +2514,8 @@ class KnowledgeService:
                 dataset_id=dataset_id,
                 source=source,
                 operation_id=str(operation["id"]),
-                failure_message="文档重试失败",
-                original_error_message="文档原文件不可用",
+                failure_message=failure_message,
+                original_error_message=original_error_message,
             )
         finally:
             if source is not None:
@@ -2760,11 +2777,11 @@ class KnowledgeService:
                 continue
             if not chunks:
                 continue
-            ordered = self._ordered_chunks(chunks)
+            ordered = ordered_chunks(chunks)
             index_by_id = {
-                self._chunk_id(chunk): index
+                chunk_id(chunk): index
                 for index, chunk in enumerate(ordered)
-                if self._chunk_id(chunk)
+                if chunk_id(chunk)
             }
             # 聚合模式只对得分最高的 2 条做整块扩展，其余仍按 10% 邻接，控制上下文
             items = sorted(items, key=lambda item: item["score"], reverse=True)
@@ -2779,7 +2796,7 @@ class KnowledgeService:
                     for offset in range(1, 6):
                         if index + offset >= len(ordered):
                             break
-                        following = self._chunk_text(ordered[index + offset])
+                        following = chunk_text(ordered[index + offset])
                         if not following:
                             continue
                         if _SECTION_HEADING_RE.search(following[:80]):
@@ -2790,44 +2807,19 @@ class KnowledgeService:
                     continue
                 parts: list[str] = []
                 if index > 0:
-                    previous = self._chunk_text(ordered[index - 1])
+                    previous = chunk_text(ordered[index - 1])
                     if previous:
                         parts.append(previous[-self._overlap_chars(previous) :])
                 parts.append(item["snippet"])
                 if index + 1 < len(ordered):
-                    following = self._chunk_text(ordered[index + 1])
+                    following = chunk_text(ordered[index + 1])
                     if following:
                         parts.append(following[: self._overlap_chars(following)])
                 item["snippet"] = "\n".join(parts)
 
     @staticmethod
-    def _chunk_id(chunk: Mapping[str, Any]) -> str:
-        return str(chunk.get("chunk_id") or chunk.get("id") or "")
-
-    @staticmethod
-    def _chunk_text(chunk: Mapping[str, Any]) -> str:
-        return str(
-            chunk.get("content_with_weight") or chunk.get("content") or ""
-        ).strip()
-
-    @staticmethod
     def _overlap_chars(text: str) -> int:
         return max(1, int(len(text) * RETRIEVAL_NEIGHBOR_OVERLAP_RATIO))
-
-    @staticmethod
-    def _ordered_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """优先按 chunk_order_int/order_int 排序，字段缺失时保留接口顺序。"""
-
-        key = next(
-            (
-                name
-                for name in ("chunk_order_int", "order_int")
-                if chunks
-                and all(isinstance(item.get(name), (int, float)) for item in chunks)
-            ),
-            None,
-        )
-        return sorted(chunks, key=lambda item: item[key]) if key else chunks
 
     async def retrieve_session_evidence(
         self,
@@ -2896,7 +2888,7 @@ class KnowledgeService:
                 offset=0,
             )
             for document in documents:
-                progress = document.get("progress")
+                progress = self._normalized_progress(document.get("progress"))
                 catalog.append(
                     {
                         "base_id": str(base["id"]),
@@ -2904,11 +2896,7 @@ class KnowledgeService:
                         "document_id": str(document["id"]),
                         "document_name": str(document["name"]),
                         "status": str(document["status"]),
-                        "progress": (
-                            float(progress)
-                            if isinstance(progress, (int, float)) and 0 <= progress <= 1
-                            else None
-                        ),
+                        "progress": float(progress) if progress is not None else None,
                     }
                 )
         return catalog
@@ -2939,16 +2927,24 @@ class KnowledgeService:
             page=PageInfo(page=page, page_size=page_size, total=total),
         )
 
-    async def get_session_scope(
-        self, *, session_id: str, principal: KnowledgePrincipal
-    ) -> SessionKnowledgeScopeResponse:
-        """读取会话知识范围，并剔除已失去权限的知识库。"""
+    async def _require_session(
+        self, session_id: str, principal: KnowledgePrincipal
+    ) -> Any:
+        """读取会话并校验归属；不存在或属于他人时按 404 处理。"""
 
         session = await self._repo(self.repository.db.get_session, session_id)
         if session is None or session.username != principal.username:
             raise KnowledgeServiceError(
                 "KNOWLEDGE_NOT_FOUND", "会话不存在", status_code=404
             )
+        return session
+
+    async def get_session_scope(
+        self, *, session_id: str, principal: KnowledgePrincipal
+    ) -> SessionKnowledgeScopeResponse:
+        """读取会话知识范围，并剔除已失去权限的知识库。"""
+
+        await self._require_session(session_id, principal)
         base_ids = await self._repo(
             self.repository.get_session_scope,
             session_id=session_id,
@@ -2981,11 +2977,7 @@ class KnowledgeService:
     ) -> SessionKnowledgeScopeResponse:
         """替换会话知识范围：要求所选知识库向量模型一致。"""
 
-        session = await self._repo(self.repository.db.get_session, session_id)
-        if session is None or session.username != principal.username:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "会话不存在", status_code=404
-            )
+        await self._require_session(session_id, principal)
         embedding_models: set[str] = set()
         for base_id in base_ids:
             base, _ = await self._authorized_base(

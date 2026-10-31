@@ -139,6 +139,8 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "enabled",
             "owner_username",
             "file_root",
+            "staging_dir",
+            "staging_retention_hours",
             "base_id",
             "base_name",
             "lookback_days",

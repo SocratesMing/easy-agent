@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from easy_agent.db import Database
 from easy_agent.services.sse import SSEEvent
-from easy_agent.knowledges.api import get_knowledge_principal
+from easy_agent.knowledges.api import get_knowledge_principal, knowledge_http_error
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.models import DocumentMetadataFilter
 from easy_agent.knowledges.core.repository import KnowledgeRepository
@@ -164,17 +164,20 @@ def _build_knowledge_context(
     return "\n\n".join(lines)
 
 
-def _knowledge_http_error(exc: KnowledgeServiceError) -> HTTPException:
-    """把知识服务异常转换为宿主可直接返回的 HTTP 错误。"""
+def _build_service(request: Request, db: Database) -> KnowledgeService:
+    """按宿主运行态构造知识服务；未启用或客户端缺失时按 503 拒绝。"""
 
-    return HTTPException(
-        status_code=exc.status_code,
-        detail={
-            "code": exc.code,
-            "message": exc.message,
-            "retryable": exc.retryable,
-        },
-    )
+    config = getattr(request.app.state, "knowledge_config", KnowledgeConfig())
+    ragflow = getattr(request.app.state, "ragflow_client", None)
+    if not config.enabled or ragflow is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "KNOWLEDGE_NOT_READY",
+                "message": "会话已选择知识库，但知识服务尚未就绪",
+            },
+        )
+    return KnowledgeService(KnowledgeRepository(db), ragflow, config)
 
 
 async def prepare_knowledge_chat(
@@ -195,23 +198,11 @@ async def prepare_knowledge_chat(
 
     repository = KnowledgeRepository(db)
     principal = None
-    config: KnowledgeConfig | None = None
-    ragflow = None
     service: KnowledgeService | None = None
 
     if knowledge_base_ids is not None:
         principal = await get_knowledge_principal(request, db)
-        config = getattr(request.app.state, "knowledge_config", KnowledgeConfig())
-        ragflow = getattr(request.app.state, "ragflow_client", None)
-        if not config.enabled or ragflow is None:
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "code": "KNOWLEDGE_NOT_READY",
-                    "message": "会话已选择知识库，但知识服务尚未就绪",
-                },
-            )
-        service = KnowledgeService(repository, ragflow, config)
+        service = _build_service(request, db)
         try:
             await service.replace_session_scope(
                 session_id=session_id,
@@ -219,7 +210,7 @@ async def prepare_knowledge_chat(
                 base_ids=list(knowledge_base_ids),
             )
         except KnowledgeServiceError as exc:
-            raise _knowledge_http_error(exc) from exc
+            raise knowledge_http_error(exc) from exc
 
     if not repository.has_session_scope(session_id=session_id):
         return KnowledgeChatContext(None, [], [])
@@ -242,20 +233,8 @@ async def prepare_knowledge_chat(
 
     if principal is None:
         principal = await get_knowledge_principal(request, db)
-    if config is None:
-        config = getattr(request.app.state, "knowledge_config", KnowledgeConfig())
-    if ragflow is None:
-        ragflow = getattr(request.app.state, "ragflow_client", None)
-    if not config.enabled or ragflow is None:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "KNOWLEDGE_NOT_READY",
-                "message": "会话已选择知识库，但知识服务尚未就绪",
-            },
-        )
     if service is None:
-        service = KnowledgeService(repository, ragflow, config)
+        service = _build_service(request, db)
     try:
         result = await service.retrieve_session_evidence(
             session_id=session_id,
@@ -270,7 +249,7 @@ async def prepare_knowledge_chat(
             principal=principal,
         )
     except KnowledgeServiceError as exc:
-        raise _knowledge_http_error(exc) from exc
+        raise knowledge_http_error(exc) from exc
     evidence = [item.model_dump(mode="json") for item in result.evidence]
     return KnowledgeChatContext(
         context=_build_knowledge_context(evidence, result.warnings, document_catalog),

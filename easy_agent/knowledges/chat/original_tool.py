@@ -20,14 +20,15 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from easy_agent.db import get_database
-from easy_agent.knowledges.api import KnowledgePrincipal
+from easy_agent.knowledges.core.chunks import chunk_text, ordered_chunks
 from easy_agent.knowledges.core.config import KnowledgeConfig
-from easy_agent.knowledges.core.models import AllowedAction
+from easy_agent.knowledges.core.models import AllowedAction, KnowledgePrincipal
 from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
 from easy_agent.knowledges.core.original_store import LocalOriginalStore, OriginalStorageError
 from easy_agent.knowledges.core.permissions import allowed_actions, effective_role
 from easy_agent.knowledges.core.repository import KnowledgeRepository
 from easy_agent.knowledges.ragflow import RagflowClient, RagflowError
+from easy_agent.knowledges.service import SHARED_DATASET_NAME
 
 
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+")
@@ -38,7 +39,6 @@ MAX_AGENT_TOTAL_SIZE_MB = 200
 MATERIALIZED_FILE_TTL_SECONDS = 3600
 # extract 返回给模型的文本上限，避免把整本 PDF 一次性塞进上下文/checkpoint
 MAX_AGENT_EXTRACT_CHARS = 120_000
-_SHARED_DATASET_NAME = "EA_SHARED"
 
 
 class KnowledgeOriginalArgs(BaseModel):
@@ -259,25 +259,6 @@ class KnowledgeOriginalTool(BaseTool):
             *lines,
         ])
 
-    @staticmethod
-    def _chunk_text(chunk: Mapping[str, Any]) -> str:
-        return str(
-            chunk.get("content_with_weight") or chunk.get("content") or ""
-        ).strip()
-
-    @classmethod
-    def _ordered_chunks(cls, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        key = next(
-            (
-                name
-                for name in ("chunk_order_int", "order_int")
-                if chunks
-                and all(isinstance(item.get(name), (int, float)) for item in chunks)
-            ),
-            None,
-        )
-        return sorted(chunks, key=lambda item: item[key]) if key else chunks
-
     async def _extract_with_client(
         self,
         client: Any,
@@ -295,11 +276,11 @@ class KnowledgeOriginalTool(BaseTool):
             dataset_id = str(self.knowledge_config.shared_dataset_id or "").strip()
         if not dataset_id:
             data = await client.list_datasets(
-                name=_SHARED_DATASET_NAME, page=1, page_size=10
+                name=SHARED_DATASET_NAME, page=1, page_size=10
             )
             datasets = data.get("datasets") if isinstance(data, dict) else None
             for item in datasets or []:
-                if isinstance(item, dict) and item.get("name") == _SHARED_DATASET_NAME:
+                if isinstance(item, dict) and item.get("name") == SHARED_DATASET_NAME:
                     dataset_id = str(item.get("id") or "")
                     break
         if not dataset_id:
@@ -321,9 +302,7 @@ class KnowledgeOriginalTool(BaseTool):
                 break
         text = "\n".join(
             value
-            for value in (
-                self._chunk_text(item) for item in self._ordered_chunks(chunks)
-            )
+            for value in (chunk_text(item) for item in ordered_chunks(chunks))
             if value
         )
         if not text:

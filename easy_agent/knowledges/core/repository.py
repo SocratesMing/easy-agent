@@ -33,6 +33,9 @@ _OPERATION_UPDATE_FIELDS = {
     "phase", "status", "current_count", "total_count", "progress",
     "retryable", "error_code", "error_message",
 }
+_SYNC_ITEM_UPDATE_FIELDS = {
+    "document_id", "status", "attempts", "last_error", "publish_date",
+}
 
 # 文档查询统一带出原始文件对象状态，供服务层组装 DocumentSummary
 _DOCUMENT_SELECT = """
@@ -746,19 +749,12 @@ class KnowledgeRepository:
             return _row_dict(cursor.fetchone())
 
     def update_sync_item(self, item_id: str, **fields: object) -> None:
-        allowed = {"document_id", "status", "attempts", "last_error", "publish_date"}
-        updates = {key: value for key, value in fields.items() if key in allowed}
-        if not updates:
-            return
-        updates["updated_at"] = _now()
-        assignments = ", ".join(f"{column}=?" for column in updates)
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                f"UPDATE knowledge_source_sync_items SET {assignments} WHERE id=?",
-                (*updates.values(), item_id),
-            )
+        self._update_by_id(
+            "knowledge_source_sync_items",
+            item_id,
+            _SYNC_ITEM_UPDATE_FIELDS,
+            fields,
+        )
 
     def list_sync_items(
         self, *, source: str, statuses: Iterable[str], limit: int = 100

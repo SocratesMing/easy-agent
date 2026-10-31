@@ -714,9 +714,11 @@ class RagflowClient:
     ) -> dict[str, Any]:
         """查询知识库文档列表（RI007：GET /api/v1/datasets/{dataset_id}/documents）。
 
-        文档规定查询参数：page / page_size（默认 30）/ keywords /
-        document_id（按文档 id 精确过滤）；orderby / desc / name 为文档
-        未提及的可选参数，保持原状。
+        实际 RAGFlow 版本按 ``id`` 精确过滤文档；``document_id`` 会被上游忽略，
+        返回整页其它文档，导致调用方取 docs[0] 时把同批文档都显示成同一篇
+        （通常是进度最慢那篇）的状态。这里统一把参数名映射为 ``id``。
+        page / page_size（默认 30）/ keywords 为文档规定查询参数；orderby /
+        desc / name 为文档未提及的可选参数，保持原状。
 
         Returns:
             ``{"docs": [...], "total": n}`` 形式的 data 字段，
@@ -733,7 +735,7 @@ class RagflowClient:
                 "orderby": orderby,
                 "desc": desc,
                 "keywords": keywords,
-                "document_id": document_id,
+                "id": document_id,
                 "name": name,
             }
         )

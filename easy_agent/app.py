@@ -9,7 +9,6 @@ from easy_agent.bootstrap.env import env_bool
 import platform
 import sys
 import time
-import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -612,64 +611,8 @@ async def log_requests(request: Request, call_next):
                     logger.exception("审计记录写入失败 | request_id=%s", request_id)
 
 
-# knowledge 可观测性中间件（additive）：只新增 request_id、X-Request-Id 响应头与
-# 日志；不修改响应体/状态码。仅当 knowledge 已启用且 audit.enabled 时，对
-# /agent/knowledge 请求写审计记录，写入失败只告警。
-@app.middleware("http")
-async def knowledge_observability(request: Request, call_next):
-    request_id = request.headers.get("X-Request-Id", "").strip()
-    if (
-        not request_id
-        or len(request_id) > 128
-        or "\r" in request_id
-        or "\n" in request_id
-    ):
-        request_id = str(uuid.uuid4())
-    request.state.request_id = request_id
-
-    started = time.perf_counter()
-    response = await call_next(request)
-    duration_ms = (time.perf_counter() - started) * 1000
-
-    response.headers["X-Request-Id"] = request_id
-    logger.info(
-        f"[响应] {request.method} {request.url.path} -> {response.status_code} "
-        f"| {duration_ms:.1f}ms | request_id={request_id}"
-    )
-
-    knowledge_config = getattr(request.app.state, "knowledge_config", None)
-    if (
-        knowledge_config is not None
-        and knowledge_config.enabled
-        and knowledge_config.audit.enabled
-        # 复用模块自身策略：只审计写入路径，跳过端点已单独审计的读路径
-        # （should_audit 排除 /capabilities、/status、/health、/metrics 等）。
-        and should_audit(request.url.path, request.method)
-    ):
-        try:
-            db = getattr(request.app.state, "db", None)
-            if db is not None:
-                await run_in_threadpool(
-                    KnowledgeOperationsRepository(db).record_audit,
-                    request_id=request_id,
-                    actor_user_id=str(
-                        getattr(request.state, "actor_user_id", "") or "anonymous"
-                    ),
-                    actor_username=str(
-                        getattr(request.state, "actor_username", "") or "anonymous"
-                    ),
-                    **audit_metadata(
-                        request.url.path,
-                        request.method,
-                        response.status_code,
-                        duration_ms / 1000,
-                    ),
-                    max_details_bytes=knowledge_config.audit.max_details_bytes,
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"知识库审计写入失败: {exc}")
-
-    return response
+# 请求 ID、X-Request-Id、访问日志与知识库审计统一由 log_requests 完成；
+# 不再叠加第二个同名中间件（旧实现会重复写审计并重复响应日志）。
 
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):

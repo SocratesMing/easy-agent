@@ -110,6 +110,7 @@ class SourceSyncConfig(BaseModel):
 
     每次按 ``publishDate`` 取 [当前时刻-lookback_days, 当前时刻] 的记录，
     与本地已入库的 source_record_id 做差集；上传按滑动窗口限流。
+    配置 ``staging_dir`` 时先把本批文件拷贝到暂存目录，解析 READY 后删除副本；
     查询语句与列映射固定在代码内，表名通过 ``mysql.table`` 覆盖。
     """
 
@@ -117,6 +118,11 @@ class SourceSyncConfig(BaseModel):
     owner_username: str = "admin"
     # 磁盘文件根目录（绝对路径，必填）：按文档 SQL 的 batchid 在该目录下匹配同名文件
     file_root: str = ""
+    # 暂存目录（绝对路径，可选）：设置后先把本批要入库的文件拷贝到这里，
+    # 解析 READY 后删除暂存副本；留空则维持直接读取 file_root 的旧行为。
+    staging_dir: str = ""
+    # 暂存残留清理阈值（小时）：每轮同步开始时删除超过该时长未清理的暂存文件
+    staging_retention_hours: int = Field(default=24, ge=1, le=24 * 30)
     # 指定既有知识库 ID（可选）：同名库有多个时用来锁定具体目标；留空则按 base_name 查找
     base_id: str = ""
     base_name: str = "报告库"
@@ -138,6 +144,22 @@ class SourceSyncConfig(BaseModel):
                 datetime.strptime(self.start_date, "%Y-%m-%d")
             except ValueError as exc:
                 raise ValueError("source_sync.start_date 必须为 YYYY-MM-DD") from exc
+        staging = self.staging_dir.strip()
+        if staging:
+            if not Path(staging).is_absolute():
+                raise ValueError("source_sync.staging_dir 必须为绝对路径")
+            # 暂存目录与源目录相同会导致 READY 后误删业务原件，直接拒绝。
+            try:
+                if self.file_root.strip() and Path(staging).resolve() == Path(
+                    self.file_root.strip()
+                ).resolve():
+                    raise ValueError(
+                        "source_sync.staging_dir 不能与 file_root 相同"
+                    )
+            except OSError as exc:
+                raise ValueError(
+                    "source_sync.staging_dir / file_root 路径无法解析"
+                ) from exc
         return self
 
 

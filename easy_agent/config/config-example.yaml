@@ -246,7 +246,9 @@ knowledge:
   source_sync:
     enabled: ${KNOWLEDGE_SOURCE_SYNC_ENABLED:-false}
     owner_username: "admin"     # 入库归属用户（需已存在，以该用户身份上传并授权）
-    file_root: "${SOURCE_SYNC_FILE_ROOT:-}"  # 磁盘文件根目录（绝对路径，必填）：按文档 SQL 的 batchid 在此目录下匹配同名文件
+    file_root: "${SOURCE_SYNC_FILE_ROOT:-}"  # 源目录（绝对路径，必填）：按文档 SQL 的 batchid 在此目录下匹配同名文件
+    staging_dir: "${SOURCE_SYNC_STAGING_DIR:-}"  # 暂存目录（绝对路径，可选）：先把本批文件拷贝到这里，READY 后删除暂存副本；留空=直接读源目录
+    staging_retention_hours: 24  # 暂存残留清理阈值（小时）：每轮同步开始时清理超过该时长的残留文件
     base_id: ""                # 精确指定入库的知识库 ID（同名库有多个时用它锁定）；留空则按 base_name 查找/新建
     base_name: "报告库"  # 按这个名字找知识库，找不到才新建（新建固定为团队公共库）；base_id 为空时生效
     lookback_days: 7           # 按 publishDate 取最近 N 天

@@ -14,6 +14,25 @@ from easy_agent.knowledges.personnel.models import PersonnelCreateRequest, Perso
 
 DEFAULT_PASSWORD = "123456"
 
+# 新增/更新人员的列顺序与占位符在手动维护与 Excel 导入两条路径共用，
+# 避免同一张表的两套 SQL 随字段调整而漂移。
+_USER_INSERT_SQL = """
+    INSERT INTO users (
+        user_id, username, password_hash, organization_id, email, bound_ip,
+        token_version, employee_id, display_name, department_id,
+        department_name, division_name, team_name, position, mobile,
+        account_status, personnel_source, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, '', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+_USER_UPDATE_SQL = """
+    UPDATE users SET organization_id=?, email=?, employee_id=?, display_name=?,
+        department_id=?, department_name=?, division_name=?, team_name=?,
+        position=?, mobile=?, account_status=?,
+        personnel_source=?, token_version=CASE WHEN ?='disabled'
+            THEN token_version+1 ELSE token_version END,
+        updated_at=? WHERE {key}=?
+"""
+
 
 class PersonnelConflictError(ValueError):
     pass
@@ -117,12 +136,7 @@ def create_personnel(db: Database, item: PersonnelCreateRequest) -> dict:
             cursor = connection.cursor()
             db._execute(
                 cursor,
-                """INSERT INTO users (
-                    user_id, username, password_hash, organization_id, email, bound_ip,
-                    token_version, employee_id, display_name, department_id,
-                    department_name, division_name, team_name, position, mobile,
-                    account_status, personnel_source, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, '', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                _USER_INSERT_SQL,
                 (
                     str(uuid.uuid4()), item.username, hash_password(DEFAULT_PASSWORD),
                     item.department_id, item.email, item.employee_id or None,
@@ -151,11 +165,7 @@ def update_personnel(db: Database, user_id: str, item: PersonnelUpdateRequest) -
             cursor = connection.cursor()
             db._execute(
                 cursor,
-                """UPDATE users SET organization_id=?, email=?, employee_id=?, display_name=?,
-                    department_id=?, department_name=?, division_name=?, team_name=?,
-                    position=?, mobile=?, account_status=?,
-                    personnel_source=?, token_version=CASE WHEN ?='disabled' THEN token_version+1 ELSE token_version END,
-                    updated_at=? WHERE user_id=?""",
+                _USER_UPDATE_SQL.format(key="user_id"),
                 (
                     item.department_id, item.email, item.employee_id or None,
                     item.display_name, item.department_id, item.department_name,
@@ -253,11 +263,7 @@ def _import_personnel_transaction(
             if existing:
                 db._execute(
                     cursor,
-                    """UPDATE users SET organization_id=?, email=?, employee_id=?, display_name=?,
-                        department_id=?, department_name=?, division_name=?, team_name=?,
-                        position=?, mobile=?, account_status=?,
-                        personnel_source=?, token_version=CASE WHEN ?='disabled' THEN token_version+1 ELSE token_version END,
-                        updated_at=? WHERE username=?""",
+                    _USER_UPDATE_SQL.format(key="username"),
                     (
                         item.department_id, item.email, item.employee_id or None, item.display_name,
                         item.department_id, item.department_name, item.division_name, item.team_name,
@@ -269,12 +275,7 @@ def _import_personnel_transaction(
             else:
                 db._execute(
                     cursor,
-                    """INSERT INTO users (
-                        user_id, username, password_hash, organization_id, email, bound_ip,
-                        token_version, employee_id, display_name, department_id,
-                        department_name, division_name, team_name, position, mobile,
-                        account_status, personnel_source, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, '', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    _USER_INSERT_SQL,
                     (
                         str(uuid.uuid4()), item.username, default_password_hash,
                         item.department_id, item.email, item.employee_id or None, item.display_name,

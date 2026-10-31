@@ -22,7 +22,73 @@ from easy_agent.knowledges.service import KnowledgeService
 logger = logging.getLogger(__name__)
 
 
-class KnowledgeParsePollWorker:
+class _PeriodicWorker:
+    """周期任务生命周期：统一 start/stop、异常吞掉与可中断的间隔等待。"""
+
+    def __init__(self, *, interval_seconds: float):
+        self._interval_seconds = interval_seconds
+        self._stop = asyncio.Event()
+        self._task: asyncio.Task | None = None
+
+    @property
+    def is_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    async def _run_once(self) -> object:
+        raise NotImplementedError
+
+    def _log_started(self) -> None: ...
+
+    def _log_stopped(self) -> None: ...
+
+    def _log_failure(self, exc: Exception) -> None: ...
+
+    async def run_forever(self) -> None:
+        """周期执行 ``_run_once``；单轮异常只记日志，间隔等待可被 stop 唤醒。"""
+
+        self._log_started()
+        try:
+            while not self._stop.is_set():
+                try:
+                    await self._run_once()
+                except Exception as exc:  # noqa: BLE001 - 单轮失败不退出循环
+                    self._log_failure(exc)
+                try:
+                    await asyncio.wait_for(
+                        self._stop.wait(), timeout=self._interval_seconds
+                    )
+                except TimeoutError:
+                    pass
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._log_stopped()
+
+    def start(self) -> None:
+        """在当前事件循环中启动后台任务（幂等）。"""
+
+        if self.is_running:
+            return
+        self._stop.clear()
+        self._task = asyncio.create_task(self.run_forever(), name=self._task_name)
+
+    async def stop(self) -> None:
+        """请求停止并等待后台任务收尾。"""
+
+        self._stop.set()
+        task = self._task
+        if task is None:
+            return
+        self._task = None
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+class KnowledgeParsePollWorker(_PeriodicWorker):
     """轮询上游解析状态并刷新本地文档投影。"""
 
     def __init__(
@@ -37,6 +103,7 @@ class KnowledgeParsePollWorker:
     ):
         """初始化解析轮询 worker；poll_interval_seconds 为轮询间隔（默认 5 秒）。"""
 
+        super().__init__(interval_seconds=poll_interval_seconds)
         self.config = config
         self.ragflow = ragflow
         self.original_store = original_store
@@ -50,17 +117,27 @@ class KnowledgeParsePollWorker:
 
             lock_provider = get_distributed_lock
         self._lock_provider = lock_provider
-        self._stop = asyncio.Event()
-        self._task: asyncio.Task | None = None
 
-    @property
-    def is_running(self) -> bool:
-        return self._task is not None and not self._task.done()
+    _task_name = "knowledge-parse-poll-worker"
+
+    def _log_started(self) -> None:
+        logger.info(
+            "知识库解析轮询 worker 已启动 | interval=%ss", self.poll_interval_seconds
+        )
+
+    def _log_stopped(self) -> None:
+        logger.info("知识库解析轮询 worker 已停止")
+
+    def _log_failure(self, exc: Exception) -> None:
+        logger.warning("知识库轮询单轮执行失败: %s", exc)
 
     def _refreshable_base_ids(self, db: Database) -> list[str]:
         """找出仍有可轮询解析文档（已有远端副本的 pending/processing）的知识库。"""
 
         return KnowledgeRepository(db).list_refreshable_base_ids()
+
+    async def _run_once(self) -> bool:
+        return await self.poll_once()
 
     async def poll_once(self) -> bool:
         """单轮轮询；返回是否处理了任何知识库。数据库未就绪时静默跳过。"""
@@ -110,58 +187,8 @@ class KnowledgeParsePollWorker:
                 logger.warning("知识库轮询刷新 base=%s 失败: %s", base_id, exc)
         return processed > 0
 
-    async def run_forever(self) -> None:
-        """轮询主循环：每 poll_interval_seconds（默认 5 秒）拉取一轮上游进度。
 
-        单轮异常只记日志不退出循环；间隔等待可被 stop 事件立即唤醒，保证
-        关停及时。仍处于 pending/processing 的文档由后续轮次持续跟进。
-        """
-
-        logger.info("知识库解析轮询 worker 已启动 | interval=%ss", self.poll_interval_seconds)
-        try:
-            while not self._stop.is_set():
-                try:
-                    await self.poll_once()
-                except Exception as exc:
-                    logger.warning("知识库轮询单轮执行失败: %s", exc)
-                try:
-                    await asyncio.wait_for(
-                        self._stop.wait(), timeout=self.poll_interval_seconds
-                    )
-                except TimeoutError:
-                    pass
-        except asyncio.CancelledError:
-            pass
-        finally:
-            logger.info("知识库解析轮询 worker 已停止")
-
-    def start(self) -> None:
-        """在当前事件循环中启动后台轮询任务（幂等）。"""
-
-        if self.is_running:
-            return
-        self._stop.clear()
-        self._task = asyncio.create_task(
-            self.run_forever(), name="knowledge-parse-poll-worker"
-        )
-
-    async def stop(self) -> None:
-        """请求停止并等待后台任务收尾。"""
-
-        self._stop.set()
-        task = self._task
-        if task is None:
-            return
-        self._task = None
-        if not task.done():
-            task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-
-class KnowledgePurgeWorker:
+class KnowledgePurgeWorker(_PeriodicWorker):
     """软删除远端副本兜底清理：周期删除同步删除失败/历史遗留的 Ragflow 文档。
 
     正常删除文档/知识库时已同步删除远端副本；本 worker 仅兜底重试失败项与
@@ -179,18 +206,31 @@ class KnowledgePurgeWorker:
     ):
         """初始化清理 worker；默认每 3600 秒执行一轮，每轮最多清 batch_limit（默认 100）条。"""
 
+        super().__init__(interval_seconds=purge_interval_seconds)
         self.config = config
         self.ragflow = ragflow
         # 数据库在宿主 lifespan 中晚于本 worker 初始化，必须惰性获取
         self._db_provider = db_provider
         self.purge_interval_seconds = purge_interval_seconds
         self.batch_limit = batch_limit
-        self._stop = asyncio.Event()
-        self._task: asyncio.Task | None = None
 
-    @property
-    def is_running(self) -> bool:
-        return self._task is not None and not self._task.done()
+    _task_name = "knowledge-purge-worker"
+
+    def _log_started(self) -> None:
+        logger.info(
+            "知识库软删除清理 worker 已启动 | interval=%ss, batch=%s",
+            self.purge_interval_seconds,
+            self.batch_limit,
+        )
+
+    def _log_stopped(self) -> None:
+        logger.info("知识库软删除清理 worker 已停止")
+
+    def _log_failure(self, exc: Exception) -> None:
+        logger.warning("知识库清理单轮执行失败: %s", exc)
+
+    async def _run_once(self) -> int:
+        return await self.purge_once()
 
     async def purge_once(self) -> int:
         """单轮清理；返回本次清理的远端文档数。数据库未就绪时静默跳过。"""
@@ -202,59 +242,6 @@ class KnowledgePurgeWorker:
             KnowledgeRepository(db), self.ragflow, self.config
         )
         return await service.purge_deleted_documents(limit=self.batch_limit)
-
-    async def run_forever(self) -> None:
-        """清理主循环：每 purge_interval_seconds（默认 1 小时）清一轮待兜底远端文档。
-
-        单轮异常只记日志不退出；等待期间可被 stop 事件提前唤醒。
-        """
-
-        logger.info(
-            "知识库软删除清理 worker 已启动 | interval=%ss, batch=%s",
-            self.purge_interval_seconds,
-            self.batch_limit,
-        )
-        try:
-            while not self._stop.is_set():
-                try:
-                    await self.purge_once()
-                except Exception as exc:
-                    logger.warning("知识库清理单轮执行失败: %s", exc)
-                try:
-                    await asyncio.wait_for(
-                        self._stop.wait(), timeout=self.purge_interval_seconds
-                    )
-                except TimeoutError:
-                    pass
-        except asyncio.CancelledError:
-            pass
-        finally:
-            logger.info("知识库软删除清理 worker 已停止")
-
-    def start(self) -> None:
-        """在当前事件循环中启动后台清理任务（幂等）。"""
-
-        if self.is_running:
-            return
-        self._stop.clear()
-        self._task = asyncio.create_task(
-            self.run_forever(), name="knowledge-purge-worker"
-        )
-
-    async def stop(self) -> None:
-        """请求停止并等待后台任务收尾。"""
-
-        self._stop.set()
-        task = self._task
-        if task is None:
-            return
-        self._task = None
-        if not task.done():
-            task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
 
 
 __all__ = ["KnowledgeParsePollWorker", "KnowledgePurgeWorker"]

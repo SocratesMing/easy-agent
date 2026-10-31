@@ -312,8 +312,9 @@ async def test_list_documents_ri007_document_id_query_param():
         result = await client.list_documents("ds-1", page=1, keywords="报告", document_id="doc-9")
     request = capture.last
     assert request.url.path == "/api/v1/datasets/ds-1/documents"
-    # 文档规定按文档 id 精确过滤的查询参数名为 document_id
-    assert request.url.params["document_id"] == "doc-9"
+    # RAGFlow 实际按 id 过滤；传 document_id 会被忽略并返回整页其它文档
+    assert request.url.params["id"] == "doc-9"
+    assert "document_id" not in request.url.params
     assert request.url.params["keywords"] == "报告"
     assert result["docs"][0]["id"] == "doc-9"
 

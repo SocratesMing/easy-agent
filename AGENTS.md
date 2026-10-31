@@ -2,14 +2,14 @@
 
 > ℹ️ **2026-10-18 事实同步**：模块地图 / 数据流 / 命令以
 > `docs/architecture-current.md` 为准。本文件已同步的关键事实：
-> 双前端基线（`frontend-vue2/` Vue 2.7 当前托管、`frontend/` Vue 3.5 + Vite
+> 双前端基线（`frontend-vue2/` Vue 2.6.3 当前托管、`frontend/` Vue 3.5 + Vite
 > 并行维护）；运行时技能 7 个；公共技能经只读路由 `/skills/builtin/` 共享（按用户
 > 添加 / 启停，不再复制，DA-13 S2），用户技能在 `/user-skills/`；`X-Username` 兼容回退已移除；JWT secret 在 dev/test
 > 持久化于 `data/.jwt_secret`（prod 必须显式设置 `EASY_JWT_SECRET`）；
 > 仓库已有 Dockerfile / docker-compose / k8s / `.github/workflows/ci.yml`。
 
 
-Contributor guide for **easy-agent**, an AI agent web app built on LangChain DeepAgents with a FastAPI backend and two Vue baselines (`frontend-vue2/` Vue 2.7, `frontend/` Vue 3.5 + Vite).
+Contributor guide for **easy-agent**, an AI agent web app built on LangChain DeepAgents with a FastAPI backend and two Vue baselines (`frontend-vue2/` Vue 2.6.3, `frontend/` Vue 3.5 + Vite).
 
 ## Project Structure & Module Organization
 
@@ -30,7 +30,7 @@ easy-agent/
 │   ├── sandboxing/       # bwrap/Landlock/fs_safety
 │   ├── security/         # prompt guard
 │   └── config/           # YAML configs + prompts/
-├── frontend-vue2/       # 当前托管基线：Vue 2.7 + Element UI（构建产物 frontend-vue2/dist/）
+├── frontend-vue2/       # 当前托管基线：Vue 2.6.3 + Element UI（构建产物 frontend-vue2/dist/）
 ├── frontend/            # 第二基线：Vue 3.5 + Vite（并行维护）
 ├── skills/              # canonical 运行时技能（7 个；easy_agent/skills/ 为包内回退副本）
 ├── tests/               # pytest tests (test_*.py) and manual demo scripts
@@ -60,7 +60,7 @@ cd frontend && npm run build        # Build the Vue3 baseline
 ## Coding Style & Naming Conventions
 
 - **Python**: requires 3.11+. Four-space indentation, `snake_case` for functions/variables, `PascalCase` for classes. Ruff runs in CI with the fatal rules (`E9/F63/F7/F82`) plus unused imports, redefinitions and unused local variables (`F401/F811/F841`); mark an intentional re-export with `# noqa: F401 - <reason>` on the first line of the import. Match surrounding style for everything else.
-- **Frontend**: Vue 2.7, primarily Options API. Vue 2.7 built-in Composition API functions (`ref`/`computed`/`watch`) are allowed; `<script setup>` and Vue 3-only syntax are forbidden (enforced by `src/utils/vue2Compat.test.js`). Components are `PascalCase.vue`; API modules in `frontend/src/api/` are camelCase `.js`.
+- **Frontend**: Vue 2.6.3, Options API only. Vue 2.7 Composition API (`setup()`/`ref`/`reactive`/`computed`/`watch`) is not available; `<script setup>` and Vue 3-only syntax are forbidden (enforced by `src/utils/vue2Compat.test.js`). Components are `PascalCase.vue`; API modules in `frontend/src/api/` are camelCase `.js`.
 - **Config**: YAML files in `easy_agent/config/`; sensitive values use `${ENV_VAR}` placeholders resolved at load time.
 
 ## Testing Guidelines

@@ -304,20 +304,26 @@ def _service(
     )
 
 
+def knowledge_http_error(exc: KnowledgeServiceError) -> HTTPException:
+    """把知识服务异常转换为带稳定错误码的 HTTP 异常。"""
+
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={
+            "code": exc.code,
+            "message": exc.message,
+            "retryable": exc.retryable,
+        },
+    )
+
+
 async def _call(awaitable):
     """统一执行服务调用，将业务错误转换为带错误码的 HTTP 异常。"""
 
     try:
         return await awaitable
     except KnowledgeServiceError as exc:
-        raise HTTPException(
-            status_code=exc.status_code,
-            detail={
-                "code": exc.code,
-                "message": exc.message,
-                "retryable": exc.retryable,
-            },
-        ) from exc
+        raise knowledge_http_error(exc) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1054,7 +1060,7 @@ async def ask(
                 "evidence_document_ids": list(
                     dict.fromkeys(item.document_id for item in retrieved.evidence)
                 ),
-                "citation_count": len(re.findall(r"\[知识依据\d+\]", answer)),
+                "citation_count": len(_CITATION_RE.findall(answer)),
                 "quality_warnings": quality_warnings,
             },
             max_details_bytes=service.config.audit.max_details_bytes,
@@ -1122,10 +1128,7 @@ async def prepare_easyagent_chat_session(
         principal=principal,
         create_missing=not peek,
     )
-    return SessionKnowledgeScopeResponse(
-        session_id=session.session_id,
-        base_ids=[base_id],
-    )
+    return _scope_response(session, base_id)
 
 
 @router.post(
@@ -1154,10 +1157,7 @@ async def rotate_easyagent_chat_session(
             base_ids=[base_id],
         )
     )
-    return SessionKnowledgeScopeResponse(
-        session_id=session.session_id,
-        base_ids=[base_id],
-    )
+    return _scope_response(session, base_id)
 
 
 @router.post("/bases/{base_id}/ask/cancel", response_model=KnowledgeAskCancelResponse)
@@ -1234,6 +1234,16 @@ def _admin(
     return principal
 
 
+def _scope_response(
+    session: SessionModel, base_id: str
+) -> SessionKnowledgeScopeResponse:
+    """构造会话知识范围响应（隐藏问答会话固定绑定单个知识库）。"""
+
+    return SessionKnowledgeScopeResponse(
+        session_id=session.session_id, base_ids=[base_id]
+    )
+
+
 def _team_manager_summary(item: dict) -> TeamSpaceManagerSummary:
     """将数据库行转换为公共空间管理员摘要模型。"""
 
@@ -1303,8 +1313,8 @@ async def set_team_space_manager(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    config = getattr(request.app.state, "knowledge_config", None)
-    if config is None or config.audit.enabled:
+    config = _get_knowledge_config(request)
+    if config.audit.enabled:
         await run_in_threadpool(
             KnowledgeOperationsRepository(db).record_audit,
             request_id=str(getattr(request.state, "request_id", "unknown")),
@@ -1318,9 +1328,7 @@ async def set_team_space_manager(
             object_type="team_space_manager",
             object_id=user_id,
             details={"enabled": payload.enabled},
-            max_details_bytes=getattr(
-                getattr(config, "audit", None), "max_details_bytes", 4096
-            ),
+            max_details_bytes=config.audit.max_details_bytes,
         )
     return TeamSpaceManagerUpdateResponse(
         user_id=user_id,
