@@ -565,7 +565,7 @@ class LangSmithExecuteShell(_PathTranslatingShell):
             return self._reverse_output(result)
 
     async def aexecute(
-        self, command: str, *, timeout: int | None = None
+        self, command: str, *, timeout: int | None = None  # noqa: ASYNC109 - 协议签名；同步执行已整体 to_thread
     ) -> ExecuteResponse:
         """异步包装：同步协议在 worker 线程执行（含前后同步）。"""
         return await asyncio.to_thread(self.execute, command, timeout=timeout)

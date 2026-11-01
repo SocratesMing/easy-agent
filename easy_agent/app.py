@@ -743,7 +743,7 @@ async def _readiness_payload() -> HealthResponse:
         cfg = get_agent_config()
         if cfg and cfg.get("config"):
             workspace_dir = cfg["config"].agent.workspace_dir
-    except Exception:
+    except Exception:  # noqa: S110 - 运行期配置缺失时按默认 workspace 目录探测可写性
         pass
     ws_ok, ws_detail = await asyncio.to_thread(workspace_writable, workspace_dir)
     ready = db_ok and ws_ok and agent_config is not None
@@ -814,7 +814,7 @@ async def api_get_config():
 @app.get("/", response_class=FileResponse)
 async def serve_frontend():
     index_html = os.path.join(frontend_dist, "index.html")
-    if os.path.exists(index_html):
+    if os.path.exists(index_html):  # noqa: ASYNC240 - 单次 stat，切线程开销更大
         # 入口 HTML 禁止缓存：打包产物文件名固定（/js/app.js），旧缓存会指向
         # 已下线的接口/入口，出现 405、旧界面等问题。
         return FileResponse(
@@ -879,11 +879,11 @@ async def serve_static(full_path: str, request: Request):
 
     # SEC-02：先解析再校验必须落在构建目录内。os.path.join 遇到绝对路径会丢掉
     # 前缀（``GET //etc/passwd``），``%2e%2e/`` 也能逃出目录。
-    dist_root = os.path.realpath(frontend_dist)
-    static_file = os.path.realpath(os.path.join(dist_root, full_path))
+    dist_root = os.path.realpath(frontend_dist)  # noqa: ASYNC240 - 单次路径解析，切线程开销更大
+    static_file = os.path.realpath(os.path.join(dist_root, full_path))  # noqa: ASYNC240 - 单次路径解析
     if not _is_within_dir(dist_root, static_file):
         return JSONResponse({"detail": "Not Found"}, status_code=404)
-    if os.path.isfile(static_file):
+    if os.path.isfile(static_file):  # noqa: ASYNC240 - 单次 stat，切线程开销更大
         # 静态产物文件名固定（/js/app.js）：no-cache 禁止启发式强缓存，
         # 强制走协商缓存（ETag/Last-Modified 变了即拉新），新版本部署后普通刷新即可生效。
         if (
@@ -912,7 +912,7 @@ async def serve_static(full_path: str, request: Request):
         return FileResponse(static_file, headers={"Cache-Control": "no-cache"})
 
     index_html = os.path.join(frontend_dist, "index.html")
-    if os.path.exists(index_html):
+    if os.path.exists(index_html):  # noqa: ASYNC240 - 单次 stat，切线程开销更大
         return FileResponse(
             index_html,
             headers={"Cache-Control": "no-cache, no-store, must-revalidate"},

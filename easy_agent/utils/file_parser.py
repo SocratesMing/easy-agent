@@ -536,7 +536,7 @@ def _parse_csv(path: Path) -> str:
             rows = list(reader)
             if rows:
                 return "\n".join(",".join(row) for row in rows)
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - GBK 也失败时退回纯文本解析
+        logger.debug(f"GBK CSV 解析失败: {exc}")
 
     return _parse_text(path)

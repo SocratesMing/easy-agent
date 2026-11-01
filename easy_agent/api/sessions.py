@@ -130,7 +130,7 @@ def get_context_length() -> int | None:
         cfg = get_agent_config()
         if cfg and cfg.get("config"):
             return cfg["config"].llm.context_length
-    except Exception:
+    except Exception:  # noqa: S110 - 运行期配置不可用时回退到下面对 Config.load() 的兜底读取
         pass
     try:
         cfg = Config.load()

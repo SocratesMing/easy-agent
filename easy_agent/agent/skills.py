@@ -38,8 +38,7 @@ def find_skills_root(skills_dir: str | None = None) -> str | None:
         if not p.exists():
             try:
                 p.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                # 外部挂载点可能无需创建；即便为空也保持配置值，不回退
+            except Exception:  # noqa: S110 - 外部挂载点可能无需创建，失败也保持配置值不回退
                 pass
         return str(p.absolute())
 

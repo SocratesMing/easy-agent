@@ -374,7 +374,7 @@ async def check_relevance(
     llm: Any,
     basis: str,
     message: str,
-    timeout: float = DEFAULT_TIMEOUT,
+    timeout: float = DEFAULT_TIMEOUT,  # noqa: ASYNC109 - 超时由 asyncio.wait_for 消费，不阻塞事件循环
     context: str = "",
     disable_thinking: bool = True,
     attachments: Optional[list[str]] = None,

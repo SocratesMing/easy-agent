@@ -516,8 +516,8 @@ async def _get_or_create_agent_unlocked(
             session = await run_blocking(db.get_session, session_id)
             if session and session.workspace_name:
                 workspace_name = session.workspace_name
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - 读不到就按空 workspace_name 继续建 Agent
+            logger.debug(f"[{session_id[-5:]}] 读取会话 workspace_name 失败: {exc}")
 
     effective_model = model_name or config.active_model
     logger.info(
@@ -988,7 +988,9 @@ async def cancel_stream_task(session_id: str) -> bool:
     return True
 
 
-async def drain_stream_tasks(timeout: float = 20.0) -> None:
+async def drain_stream_tasks(
+    timeout: float = 20.0,  # noqa: ASYNC109 - timeout 传给 asyncio.wait，不阻塞
+) -> None:
     """Wait for in-flight SSE/astream tasks on shutdown, then cancel leftovers."""
     tasks = [
         state.stream_task

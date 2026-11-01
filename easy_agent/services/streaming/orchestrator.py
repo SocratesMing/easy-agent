@@ -751,8 +751,8 @@ async def resume_stream_generator(
     try:
         if session and session.messages:
             original_user_msg = last_user_message(session.messages)
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - 只用于记忆生成，取不到不影响恢复流
+        logger.debug(f"[{sid}] HITL 恢复: 读取原始用户消息失败: {exc}")
 
     # 与主生成器同一套 config（含按编译图节点数计算的 recursion_limit 兜底）。
     stream_config = build_run_config(agent, thread_id)

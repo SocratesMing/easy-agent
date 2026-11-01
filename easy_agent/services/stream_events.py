@@ -168,7 +168,9 @@ class StreamEventWriter:
                     f"[{self.session_id[-5:]}] stream_events 队列满，无法入队收尾 sentinel"
                 )
 
-    async def aclose(self, timeout: float = ACLOSE_TIMEOUT_SECONDS) -> None:
+    async def aclose(
+        self, timeout: float = ACLOSE_TIMEOUT_SECONDS  # noqa: ASYNC109 - 传给 asyncio.wait_for，不阻塞
+    ) -> None:
         """等待后台任务把剩余事件写完后退出（shutdown / 测试用）。"""
         self.request_close()
         task = self._task
@@ -187,7 +189,7 @@ class StreamEventWriter:
             task.cancel()
             try:
                 await task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110 - 已取消的后台任务无需处理
                 pass
         except asyncio.CancelledError:
             raise
@@ -310,7 +312,9 @@ class StreamEventWriter:
         return db
 
 
-async def flush_all_stream_events(timeout: float = ACLOSE_TIMEOUT_SECONDS) -> None:
+async def flush_all_stream_events(
+    timeout: float = ACLOSE_TIMEOUT_SECONDS,  # noqa: ASYNC109 - 传给 asyncio.wait_for，不阻塞
+) -> None:
     """shutdown 钩子：flush 所有仍在运行的 stream event writer。"""
     # aclose 幂等：已经 request_close 的 writer 只需等待后台任务把批次写完。
     writers = list(_active_writers)

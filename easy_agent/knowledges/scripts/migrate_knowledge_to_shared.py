@@ -201,7 +201,7 @@ async def _migrate_document(
         if close is not None:
             try:
                 close()
-            except Exception:
+            except Exception:  # noqa: S110 - 迁移脚本收尾关闭 best-effort，失败不影响迁移结果
                 pass
 
 
@@ -301,7 +301,7 @@ async def run(args: argparse.Namespace) -> int:
         print(f"\n以下 {len(deletable_datasets)} 个旧数据集已无引用：")
         for dataset_id in deletable_datasets:
             print(f"  - {dataset_id}")
-        answer = input("确认删除这些旧数据集? [y/N] ")
+        answer = input("确认删除这些旧数据集? [y/N] ")  # noqa: ASYNC250 - 命令行迁移脚本，无并发请求
         if answer.strip().lower() in ("y", "yes"):
             await ragflow.delete_datasets(deletable_datasets)
             print("旧数据集已删除")

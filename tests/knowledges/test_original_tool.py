@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from easy_agent.knowledges.chat import original_tool as original_tool_module
@@ -213,3 +215,29 @@ async def test_extract_returns_parsed_text_in_chunk_order(db, tmp_path, monkeypa
     assert ragflow.list_datasets_calls
     assert ragflow.list_chunks_calls[0]["dataset_id"] == "shared-1"
     assert ragflow.list_chunks_calls[0]["document_id"] == "rd-1"
+
+
+def test_audit_write_failure_logs_warning_and_keeps_result(scoped_tool, monkeypatch, caplog):
+    """审计落库失败只留痕：工具结果照常返回，异常细节不返回给模型。"""
+
+    tool, _base_id, document_id = scoped_tool
+
+    def _boom(self, **kwargs):
+        raise RuntimeError("audit db down")
+
+    monkeypatch.setattr(
+        original_tool_module.KnowledgeOperationsRepository, "record_audit", _boom
+    )
+
+    with caplog.at_level(logging.WARNING, logger=original_tool_module.__name__):
+        result = tool._run(action="metadata", document_id=document_id)
+
+    # 工具结果不受影响，且不向模型泄露内部异常。
+    assert "文件名" in result
+    assert "audit db down" not in result
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("知识库原文访问审计写入失败" in m for m in warnings), warnings
+    assert any("action=metadata" in m for m in warnings), warnings
+    assert any(document_id in m for m in warnings), warnings
+    assert any("audit db down" in m for m in warnings), warnings

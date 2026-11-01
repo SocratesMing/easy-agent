@@ -132,7 +132,7 @@ class SessionLogger:
             _cfg = get_runtime_agent_config()
             if _cfg:
                 return _cfg.get("system_prompt", "") or ""
-        except Exception:
+        except Exception:  # noqa: S110 - 配置未初始化时返回空提示词
             pass
         return ""
 

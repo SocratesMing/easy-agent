@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import re
 import time
@@ -30,6 +31,8 @@ from easy_agent.knowledges.core.repository import KnowledgeRepository
 from easy_agent.knowledges.ragflow import RagflowClient, RagflowError
 from easy_agent.knowledges.service import SHARED_DATASET_NAME
 from easy_agent.utils.blocking import run_blocking
+
+logger = logging.getLogger(__name__)
 
 
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+")
@@ -372,7 +375,7 @@ class KnowledgeOriginalTool(BaseTool):
         action: str,
         result: str,
     ) -> None:
-        """把工具动作写入审计日志（受 audit 开关控制，失败静默）。"""
+        """把工具动作写入审计日志（受 audit 开关控制；失败只记 warning，不向模型暴露细节）。"""
 
         if principal is None or not document_id:
             return
@@ -393,9 +396,14 @@ class KnowledgeOriginalTool(BaseTool):
                 },
                 max_details_bytes=self.knowledge_config.audit.max_details_bytes,
             )
-        except Exception:
-            # 审计失败不得向模型泄露存储或授权内部细节
-            pass
+        except Exception as exc:  # noqa: BLE001 - 审计失败只留痕，不影响工具结果
+            # 细节只进服务端日志，不向模型泄露存储或授权内部细节。
+            logger.warning(
+                "知识库原文访问审计写入失败 | action=%s | document=%s | %s",
+                action,
+                document_id,
+                exc,
+            )
 
     def _execute(self, action: str, base_id: str = "", document_id: str = "") -> str:
         """执行 list / metadata / materialize 动作，错误转成模型可读文本。

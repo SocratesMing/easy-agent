@@ -861,7 +861,7 @@ def session_stats() -> dict[str, dict[str, int]]:
 def _shutdown_at_exit() -> None:  # pragma: no cover - process teardown
     try:
         _manager.close_all_sync()
-    except Exception:  # noqa: BLE001 - best effort at interpreter exit
+    except Exception:  # noqa: BLE001, S110 - best effort at interpreter exit
         pass
 
 

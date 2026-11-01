@@ -320,7 +320,7 @@ async def _reject(websocket: WebSocket, code: int, reason: str) -> None:
     try:
         await websocket.send_text(f"\r\n\x1b[31m[{reason}]\x1b[0m\r\n")
         await websocket.close(code=code, reason=reason)
-    except Exception:  # noqa: BLE001 - 客户端可能已断开
+    except Exception:  # noqa: BLE001, S110 - 客户端可能已断开
         pass
 
 
@@ -330,7 +330,7 @@ async def _run_shell_session(websocket: WebSocket, web_user: str) -> None:
     默认工作目录为服务进程用户的 home 目录 (~)。
     """
     # 默认使用用户 home 目录
-    cwd = os.path.expanduser("~")
+    cwd = os.path.expanduser("~")  # noqa: ASYNC240 - 只展开 ~，不碰文件系统
 
     # 获取当前系统用户名
     import getpass
@@ -345,7 +345,7 @@ async def _run_shell_session(websocket: WebSocket, web_user: str) -> None:
     # 启动 shell 子进程
     env = os.environ.copy()
     env["TERM"] = "xterm-256color"
-    env["HOME"] = os.path.expanduser("~")
+    env["HOME"] = os.path.expanduser("~")  # noqa: ASYNC240 - 只展开 ~，不碰文件系统
     env["USER"] = username
     env["LANG"] = "en_US.UTF-8"
     env["LC_ALL"] = "en_US.UTF-8"
@@ -411,7 +411,7 @@ async def _run_shell_session(websocket: WebSocket, web_user: str) -> None:
                     try:
                         data = text.encode("utf-8")
                         os.write(master_fd, data)
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110 - 客户端断开/pty 已关闭时丢弃本次输入
                         pass
         except WebSocketDisconnect:
             pass
@@ -442,14 +442,14 @@ async def _run_shell_session(websocket: WebSocket, web_user: str) -> None:
             pass
         try:
             os.kill(pid, 9)
-            os.waitpid(pid, 0)
+            os.waitpid(pid, 0)  # noqa: ASYNC222 - SIGKILL 后回收很快，pty 清理须在同一协程的 finally 完成
         except (OSError, ChildProcessError):
             pass
 
         if websocket.client_state == WebSocketState.CONNECTED:
             try:
                 await websocket.close()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - 关闭已断开的连接无意义
                 pass
 
         logger.info(f"终端会话已关闭 | web_user={web_user} | pid={pid}")

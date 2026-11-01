@@ -75,7 +75,7 @@ def _expert_flags() -> tuple[bool, bool, bool]:
                 bool(getattr(config, "expert_relevance_check_enabled", True)),
                 bool(getattr(config, "expert_relevance_strict", False)),
             )
-    except Exception:  # noqa: BLE001 —— 配置异常时按默认处理
+    except Exception:  # noqa: BLE001, S110 —— 配置异常时按默认处理
         pass
     return flags
 
@@ -264,7 +264,7 @@ def _expert_tag_name(tag_id: str) -> str:
         for tag in getattr(config, "expert_tags", None) or []:
             if str(getattr(tag, "tag_id", "")) == tag_id:
                 return str(getattr(tag, "tag_name", "") or "").strip()
-    except Exception:  # noqa: BLE001 —— 分类名只是辅助信息，取不到不影响预检
+    except Exception:  # noqa: BLE001, S110 —— 分类名只是辅助信息，取不到不影响预检
         pass
     return ""
 
@@ -291,7 +291,7 @@ def _precheck_disable_thinking() -> bool:
         config = cfg.get("config") if isinstance(cfg, dict) else None
         if config is not None:
             return bool(getattr(config, "expert_relevance_disable_thinking", True))
-    except Exception:  # noqa: BLE001 —— 配置异常时按默认（关思考）处理
+    except Exception:  # noqa: BLE001, S110 —— 配置异常时按默认（关思考）处理
         pass
     return True
 

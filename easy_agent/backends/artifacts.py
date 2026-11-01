@@ -79,7 +79,9 @@ class AgentArtifactsBackend(FilesystemBackend, SandboxBackendProtocol):
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         return self._shell.execute(command, timeout=self._capped(timeout))
 
-    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+    async def aexecute(
+        self, command: str, *, timeout: int | None = None  # noqa: ASYNC109 - 协议签名，timeout 透传底层
+    ) -> ExecuteResponse:
         return await self._shell.aexecute(command, timeout=self._capped(timeout))
 
     # ── 写入只允许框架产物前缀（异步版本默认经 to_thread 调到这里） ──

@@ -453,7 +453,7 @@ async def _stop_heartbeat(heartbeat: "asyncio.Task | None") -> None:
     heartbeat.cancel()
     try:
         await heartbeat
-    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+    except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110 - 心跳任务收尾噪声，无需处理
         pass
 
 
@@ -956,8 +956,8 @@ async def chat_resume(
     # 复用缓存的 Agent 实例（保留 checkpointer 中的 interrupt 状态）。
     # 必须带上该会话当前生效的专家 ID，否则「在专家会话里触发 HITL 审批 -> 恢复」
     # 会被判定为「专家变更」而驱逐缓存，重建出通用 Agent（人设丢失）。
-    # 取值安全性：_session_expert 与 _session_agents 同生共死（只在 Agent 创建成功后
-    # 一起写入、清理时一起删除），因此这里取到的值要么与缓存中的专家一致 —— 命中缓存
+    # 取值安全性：SessionState.expert_key 与 SessionState.agent 同生共死（只在 Agent
+    # 创建成功后一起写入、清理时一起删除），因此这里取到的值要么与缓存中的专家一致 —— 命中缓存
     # 原样复用、人设保留；要么为 ""（缓存已失效）—— 等价于通用 Agent 重建，
     # 行为与引入专家模块之前逐字一致。
     # 连接器无需传参：agent_manager 直接读该会话的开关记录，缓存失效时按同一套集合重建。

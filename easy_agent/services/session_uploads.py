@@ -23,6 +23,7 @@
 重命名（``_maybe_rename_workspace``），相对路径在重命名后依然有效。
 """
 
+import asyncio
 import logging
 import re
 from datetime import datetime
@@ -266,7 +267,8 @@ async def save_upload_streaming(
     dest = Path(dest)
     limit = get_max_file_size_bytes() if max_bytes is _UNSET else max_bytes
     total = 0
-    fd = open(dest, "wb")
+    # open 也要碰文件系统元数据：放进线程，别让上传落盘卡住事件循环（ASYNC230）。
+    fd = await asyncio.to_thread(open, dest, "wb")
     try:
         while True:
             chunk = await upload.read(chunk_size)

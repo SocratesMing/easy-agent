@@ -292,7 +292,8 @@ class SaveExpertTool(BaseTool):
         """本轮输入框选中的技能包 → canonical 目录名（已剔除造专家用的元技能）。
 
         技能胶囊只在聊天请求体的 ``skills`` 字段里，工具侧看不到，因此由
-        ``agent_manager._session_turn_skills`` 暂存、``chat.py`` 每轮写入。
+        ``agent_manager.SessionState.turn_skills``（``_TURN_SKILLS_VIEW``）暂存、
+        ``chat.py`` 每轮写入。
 
         返回空列表表示"用户一个都没选"——按需求语义，专家不绑定技能包，
         对话时保持技能库全量可见（= 改造前行为）。

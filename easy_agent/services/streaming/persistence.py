@@ -145,8 +145,8 @@ def persist_tool_result_event(
                 step=step,
                 message_id=message_id,
             )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - 会话日志写失败不影响流式输出
+            logger.warning(f"[{sid}] 会话日志记录工具调用失败: {exc}")
     if tool_name in ("write_file", "write_tool"):
         try:
             file_args = tool_args if isinstance(tool_args, dict) else {}

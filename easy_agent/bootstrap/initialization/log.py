@@ -128,7 +128,7 @@ def _reset_handlers(logger: logging.Logger) -> None:
         logger.removeHandler(handler)
         try:
             handler.close()
-        except Exception:
+        except Exception:  # noqa: S110 - 关闭失败基本是 no-op，重置 handler 时不能因此中断
             pass
 
 

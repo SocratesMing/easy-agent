@@ -113,8 +113,11 @@ def _create_sessions_table(db, cursor, messages_type):
                 cursor.execute(
                     "ALTER TABLE sessions MODIFY COLUMN messages LONGTEXT NOT NULL"
                 )
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - 加宽失败只告警，不阻断启动
+                # 锁等待超时 / 权限不足时这里会失败，列没加宽要等到写长消息报 1406 才暴露。
+                logger.warning(
+                    "MySQL 列加宽失败 | sessions.messages -> LONGTEXT | %s", exc
+                )
 
     _ensure_column(db, cursor, "sessions", "todos", "TEXT DEFAULT NULL")
     # 列表不再对 session_messages 做逐行 COUNT；插入/删除消息时维护这一列。
@@ -157,8 +160,10 @@ def _create_session_messages_table(db, cursor, auto_inc):
                 cursor.execute(
                     "ALTER TABLE session_messages MODIFY COLUMN content MEDIUMTEXT"
                 )
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - 加宽失败只告警，不阻断启动
+                logger.warning(
+                    "MySQL 列加宽失败 | session_messages.content -> MEDIUMTEXT | %s", exc
+                )
         if "mediumtext" not in _column_type(db, 
             cursor, "session_messages", "extra_data"
         ):
@@ -166,8 +171,10 @@ def _create_session_messages_table(db, cursor, auto_inc):
                 cursor.execute(
                     "ALTER TABLE session_messages MODIFY COLUMN extra_data MEDIUMTEXT"
                 )
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - 加宽失败只告警，不阻断启动
+                logger.warning(
+                    "MySQL 列加宽失败 | session_messages.extra_data -> MEDIUMTEXT | %s", exc
+                )
 
 def _create_files_tables(db, cursor, auto_inc):
     cursor.execute(f"""
@@ -472,8 +479,8 @@ def _drop_retired_indexes(db, cursor) -> None:
                 cursor.execute(f"DROP INDEX `{index}` ON `{table}`")
             else:
                 cursor.execute(f"DROP INDEX IF EXISTS `{index}`")
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001 - 索引本就不存在（新库）即目标状态
+            logger.debug("跳过删除废弃索引 | %s.%s | %s", table, index, exc)
 
 
 def _backfill_message_counts(db, cursor) -> None:

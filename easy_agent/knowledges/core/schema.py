@@ -365,8 +365,7 @@ def _cleanup_legacy_schema(db: Database, cursor) -> None:
                 cursor.execute(f"DROP INDEX `{index}` ON `{table}`")
             else:
                 cursor.execute(f"DROP INDEX IF EXISTS `{index}`")
-        except Exception:  # noqa: BLE001
-            # 索引不存在（新装库）即目标状态，静默跳过
+        except Exception:  # noqa: BLE001, S110 - 索引不存在（新装库）即目标状态
             pass
 
 

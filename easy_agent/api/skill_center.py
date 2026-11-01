@@ -116,7 +116,7 @@ async def list_public_skills(
     _cfg = get_agent_config()
     # 运行期配置结构为 {"config": Config, ...}；公共技能目录在 _cfg["config"].tools.skills_dir
     skills_root = _cfg["config"].tools.skills_dir if _cfg else "./skills"
-    abs_skills_root = str(Path(skills_root).absolute())
+    abs_skills_root = str(Path(skills_root).absolute())  # noqa: ASYNC240 - 只转绝对路径，无磁盘 IO
     skills = discover_skills(skills_root or None)
     logger.info(
         f"📂 公共技能目录 | 目录: {abs_skills_root} | 技能数量: {len(skills)}"

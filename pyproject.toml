@@ -94,11 +94,47 @@ dev = [
 target-version = "py311"
 line-length = 100
 respect-gitignore = true
-# docs/archive 下是当时的取证脚本，归档后不再修改
-exclude = ["easy_agent/skills/**", "easy_agent/static/**", ".venv", "_analysis", "docs/archive"]
+# docs/archive 下是当时的取证脚本，归档后不再修改；
+# 仓库根 skills/** 是 easy_agent/skills 的 vendored 副本（运行时技能，
+# scripts/skills/sync_skills.py 会与包内副本比对），和 easy_agent/skills 一样
+# 不属于后端服务代码，不参与 lint。
+exclude = [
+    "easy_agent/skills/**",
+    "easy_agent/static/**",
+    "skills/**",
+    ".venv",
+    "_analysis",
+    "docs/archive",
+]
 
 [tool.ruff.lint]
 # E9: 语法/IO 错误；F63/F7/F82: 无效比较、语法错误、未定义名——命中即代表运行期必坏。
 # F401/F811/F841: 未使用的 import、重复定义、未使用的局部变量，防止清理过的死代码长回来。
 # 有意保留的兼容重导出在 import 语句首行写 `# noqa: F401 - 原因`。
-select = ["E9", "F63", "F7", "F82", "F401", "F811", "F841"]
+# S110: try/except/pass 必须留痕——需要留痕的补日志，确属无害的写 `# noqa: S110 - 原因`
+#        （T1：吞错修复，见 docs/design/2026-11-01-backend-improvement-backlog.md）。
+# ASYNC: async def 里的同步阻塞调用；能放进线程的用 asyncio.to_thread / run_blocking，
+#        确属无害的写 `# noqa: ASYNC240 - 原因` 等（T13：ruff ASYNC 规则开启）。
+select = ["E9", "F63", "F7", "F82", "F401", "F811", "F841", "S110", "ASYNC"]
+
+# 测试不参与 T1 / T13 治理：命中的都是测试自身的语义（等异步任务就绪的轮询、假 backend
+# 复刻协议签名、故意阻塞事件循环验证监控、手动脚本的 input() 等），改测试写法不在本任务
+# 范围。这里逐文件只放开确认过的那几条，测试里新命中的其他规则仍然会被拦下。
+[tool.ruff.lint.per-file-ignores]
+# mcp-server/tests：启动 uvicorn 后轮询 server.started，等端口就绪（ASYNC110）。
+"mcp-server/tests/conftest.py" = ["ASYNC110"]
+"mcp-server/tests/test_app.py" = ["ASYNC110"]
+"mcp-server/tests/test_market.py" = ["ASYNC110"]
+# tests/helpers：手动 demo 脚本——吞掉 schema 探测异常（S110）、os.path.isdir 判断环境变量
+# 目录（ASYNC240）、交互式 input()（ASYNC250）。
+"tests/helpers/demo_mysql_mcp_gold.py" = ["S110", "ASYNC240"]
+"tests/helpers/interactive_agent.py" = ["ASYNC250"]
+"tests/helpers/virtual_root_agent.py" = ["ASYNC240", "ASYNC250"]
+# 单测：假 backend 复刻 aexecute(timeout=...) 协议签名（ASYNC109）；等后台任务置位 started
+# 的轮询（ASYNC110）；故意 time.sleep 阻塞事件循环以验证 lag 监控（ASYNC251）。
+"tests/agent/test_langsmith_sandbox.py" = ["ASYNC109"]
+"tests/api/test_expert.py" = ["ASYNC109"]
+"tests/services/test_metrics.py" = ["ASYNC251"]
+"tests/services/test_session_skill_registration.py" = ["ASYNC110"]
+"tests/services/test_stream_offload.py" = ["ASYNC110"]
+"tests/utils/test_blocking.py" = ["ASYNC110"]

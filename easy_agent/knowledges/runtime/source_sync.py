@@ -1752,7 +1752,7 @@ async def shutdown_source_sync(app) -> None:
     task.cancel()  # 给任务发“取消”信号
     try:
         await task  # 等任务真正结束，避免进程退出时留下半截操作
-    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+    except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110 - shutdown 取消同步任务，异常无需上抛
         pass
 
 
