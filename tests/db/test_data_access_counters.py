@@ -122,8 +122,8 @@ def test_repository_data_access_counters_are_at_or_under_the_limits():
         <= allowlists.MAX_DATABASE_ESCAPE_HATCH_REFS
     )
     # 下限：防止扫描器静默失效（什么都数不到时上面的「超上限」断言会假通过）
-    assert stats["database_methods"] >= 90
-    assert stats["database_delegations"] >= 55
+    assert stats["database_methods"] >= 75
+    assert stats["database_delegations"] >= 40
     assert stats["get_database_calls_outside_db"] >= 10
     assert stats["database_escape_hatch_refs"] >= 5
 
@@ -143,6 +143,7 @@ def test_raising_a_limit_immediately_fails_the_gate(monkeypatch):
 def test_deleted_session_domain_delegations_stay_deleted():
     """T3a 删掉的 Database 转发不能被悄悄加回来（加回来会被 DW201/DW202 拦）。"""
     deleted = [
+        # T3a 会话/消息/run/流事件域
         "get_messages",
         "get_messages_from_rows",
         "start_run",
@@ -157,6 +158,25 @@ def test_deleted_session_domain_delegations_stay_deleted():
         "delete_session",
         "update_session_todos",
         "delete_stream_events_before",
+        # T3b 文件/用户域
+        "add_session_file",
+        "get_session_files",
+        "delete_file",
+        "get_generated_filenames",
+        "get_user_by_employee_id",
+        "get_user_by_account",
+        "update_user",
+        "bind_user_ip",
+        "get_user_bound_ip",
+        "get_user_token_version",
+        "touch_user_activity",
+        "get_user_activity_time",
+        "clear_user_activity",
+        "delete_user",
+        "get_or_create_default_user",
+        "list_users",
+        "count_users",
+        "_row_to_user",
     ]
     for name in deleted:
         assert not hasattr(Database, name), name

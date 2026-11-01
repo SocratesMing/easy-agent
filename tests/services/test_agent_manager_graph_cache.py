@@ -49,14 +49,19 @@ def compiled(monkeypatch):
         return []
 
     monkeypatch.setattr(am, "load_mcp_tools_for_user", _no_mcp)
-    monkeypatch.setattr(
-        am,
-        "get_database",
-        lambda: SimpleNamespace(
-            get_user_by_username=lambda username: None,
-            get_session=lambda session_id: None,
-        ),
+    _fake = SimpleNamespace(
+        get_user_by_username=lambda username: None,
+        get_session=lambda session_id: None,
+        get_session_runtime=lambda session_id: None,
+        upsert_session_runtime=lambda *args, **kwargs: None,
     )
+    # T3b：agent_manager 改走 db.providers 的领域 repository；测试里整体换成假端口。
+    for _provider in (
+        "get_session_repository",
+        "get_session_runtime_repository",
+        "get_user_repository",
+    ):
+        monkeypatch.setattr(am, _provider, lambda _fake=_fake: _fake)
     for sid in ("s1", "s2"):
         am._sessions[sid] = am.SessionState(connectors=())
     return calls

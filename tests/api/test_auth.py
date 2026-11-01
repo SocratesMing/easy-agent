@@ -1,6 +1,7 @@
 """认证接口测试：注册、登录、资料、改密、配置。"""
 
 from datetime import timedelta
+from easy_agent.db.repositories.user_repository import UserRepository
 from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
@@ -117,7 +118,7 @@ def test_admin_can_list_users(db):
     db.register_user("admin", "admin")
     db.register_user("alice", "secret123")
 
-    users = auth_mod.list_users(db, "admin")
+    users = auth_mod.list_users(UserRepository(db), "admin")
 
     assert users.total == 2
     assert {user.username for user in users.users} == {"admin", "alice"}
@@ -162,7 +163,7 @@ def test_non_admin_cannot_list_users_or_reset_password(db):
     db.register_user("alice", "secret123")
 
     with pytest.raises(HTTPException) as list_error:
-        auth_mod.list_users(db, "alice")
+        auth_mod.list_users(UserRepository(db), "alice")
     with pytest.raises(HTTPException) as reset_error:
         auth_mod.admin_reset_password("alice", "alice", db)
 

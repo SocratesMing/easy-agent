@@ -2,7 +2,8 @@
 缺列时行映射的兜底值。
 """
 
-from easy_agent.db.database import Database, init_database
+from easy_agent.db.database import init_database
+from easy_agent.db.repositories.user_repository import UserRepository
 
 
 def test_new_user_has_personnel_columns(db):
@@ -58,7 +59,7 @@ def test_row_to_user_falls_back_when_columns_missing():
         "created_at": "t0",
         "updated_at": "t1",
     }
-    u = Database._row_to_user(row)
+    u = UserRepository.row_to_user(row)
     assert u.account_status == "active"
     assert u.department_id == "dept-xyz"
     assert u.display_name == "" and u.personnel_source == ""

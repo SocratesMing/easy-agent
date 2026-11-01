@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from langgraph.store.memory import InMemoryStore
 
+from easy_agent.db.providers import get_file_repository
 from easy_agent.services import upload_storage as us
 
 
@@ -137,16 +138,14 @@ def test_delete_removes_store_object(store_client):
     assert up["file_path"].startswith("store://")
     assert len(_items(store)) == 1
 
-    from easy_agent.db import get_database
-
-    rows = get_database().get_session_files(sid)
+    rows = get_file_repository().get_session_files(sid)
     assert rows and rows[0]["file_path"] == up["file_path"]
 
     resp = client.delete(f"/agent/files/{rows[0]['id']}")
     assert resp.status_code == 200
 
     # DB 行与 Store 对象都清掉（缓存也清）
-    assert get_database().get_session_files(sid) == []
+    assert get_file_repository().get_session_files(sid) == []
     assert _items(store) == []
     assert not [p for p in Path(us.BASE_CACHE_DIR).rglob("*") if p.is_file()]
 

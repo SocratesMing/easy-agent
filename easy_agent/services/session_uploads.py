@@ -98,18 +98,18 @@ def _cfg_int(name: str, default: int) -> int:
 
 
 def _session_store(db=None):
-    """解析会话数据端口。
+    """解析会话文件数据端口。
 
-    接受 ``Database``，也接受暴露 ``get_session`` / ``get_session_files`` 的
-    repository（``ChatRepository`` / ``ExpertRepository`` 等）；API 层因此可以
-    直接传 repository，不必再向下取 ``repo.database``。不传时回退进程级
-    ``get_database()``，既有直接调用点行为不变。
+    接受暴露 ``get_session`` / ``get_session_files`` 的数据端口：文件域用
+    :class:`~easy_agent.db.repositories.file_repository.FileRepository`，会话域
+    用 ``SessionRepository`` / ``ChatRepository``（迁移期 ``Database`` 也兼容）。
+    不传时回退进程级 ``FileRepository``（T3b），既有直接调用点行为不变。
     """
     if db is not None:
         return db
-    from easy_agent.db import get_database
+    from easy_agent.db.providers import get_file_repository
 
-    return get_database()
+    return get_file_repository()
 
 
 def get_session_workspace_dir(session_id: str, username: str, db=None) -> Path | None:

@@ -366,6 +366,8 @@ class Database:
         return sessions_repo.update_last_assistant_message_row(self, *args, **kwargs)
 
     # ARCH-03 Phase 2: users SQL 已抽到 db/repositories/users.py
+    # T3b 起用户的登录/资料/管理员接口走 UserRepository；下列方法保留给
+    # knowledges/personnel（人员管理纵向切片，后续批次迁移）。
     def create_user(self, *args, **kwargs):
         return users_repo.create_user(self, *args, **kwargs)
 
@@ -375,35 +377,8 @@ class Database:
     def get_user_by_id(self, *args, **kwargs):
         return users_repo.get_user_by_id(self, *args, **kwargs)
 
-    def get_user_by_employee_id(self, *args, **kwargs):
-        return users_repo.get_user_by_employee_id(self, *args, **kwargs)
-
-    def get_user_by_account(self, *args, **kwargs):
-        return users_repo.get_user_by_account(self, *args, **kwargs)
-
-    def update_user(self, *args, **kwargs):
-        return users_repo.update_user(self, *args, **kwargs)
-
-    def bind_user_ip(self, *args, **kwargs):
-        return users_repo.bind_user_ip(self, *args, **kwargs)
-
-    def get_user_bound_ip(self, *args, **kwargs):
-        return users_repo.get_user_bound_ip(self, *args, **kwargs)
-
     def increment_user_token_version(self, *args, **kwargs):
         return users_repo.increment_user_token_version(self, *args, **kwargs)
-
-    def get_user_token_version(self, *args, **kwargs):
-        return users_repo.get_user_token_version(self, *args, **kwargs)
-
-    def touch_user_activity(self, *args, **kwargs):
-        return users_repo.touch_user_activity(self, *args, **kwargs)
-
-    def get_user_activity_time(self, *args, **kwargs):
-        return users_repo.get_user_activity_time(self, *args, **kwargs)
-
-    def clear_user_activity(self, *args, **kwargs):
-        return users_repo.clear_user_activity(self, *args, **kwargs)
 
     def register_user(self, *args, **kwargs):
         return users_repo.register_user(self, *args, **kwargs)
@@ -417,22 +392,6 @@ class Database:
     def update_user_password(self, *args, **kwargs):
         return users_repo.update_user_password(self, *args, **kwargs)
 
-    def delete_user(self, *args, **kwargs):
-        return users_repo.delete_user(self, *args, **kwargs)
-
-    def get_or_create_default_user(self, *args, **kwargs):
-        return users_repo.get_or_create_default_user(self, *args, **kwargs)
-
-    def list_users(self, *args, **kwargs):
-        return users_repo.list_users(self, *args, **kwargs)
-
-    def count_users(self, *args, **kwargs):
-        return users_repo.count_users(self, *args, **kwargs)
-
-    @staticmethod
-    def _row_to_user(row):
-        return users_repo.row_to_user(row)
-
     # ARCH-03 Phase 2: MCP API Key SQL 已抽到 db/repositories/mcp_api_keys.py
     def issue_mcp_api_key(self, *args, **kwargs):
         return mcp_api_keys_repo.issue_mcp_api_key(self, *args, **kwargs)
@@ -444,14 +403,8 @@ class Database:
         return mcp_api_keys_repo.get_mcp_api_keys(self, *args, **kwargs)
 
     # ARCH-03 Phase 2: 文件 SQL 已抽到 db/repositories/files.py
-    def add_session_file(self, *args, **kwargs):
-        return files_repo.add_session_file(self, *args, **kwargs)
-
-    def get_session_files(self, session_id: str) -> list[dict]:
-        return files_repo.get_session_files(self, session_id)
-
-    def delete_file(self, file_id: int, username: str | None = None) -> bool:
-        return files_repo.delete_file(self, file_id, username)
+    # T3b 起上传/生成文件接口走 FileRepository；下列生成文件方法保留给
+    # streaming/side_effects.py（T3c 迁移）。
 
     def add_generated_file(self, *args, **kwargs):
         return files_repo.add_generated_file(self, *args, **kwargs)
@@ -461,9 +414,6 @@ class Database:
 
     def delete_generated_file(self, file_id: int) -> bool:
         return files_repo.delete_generated_file(self, file_id)
-
-    def get_generated_filenames(self, username: str) -> set[str]:
-        return files_repo.get_generated_filenames(self, username)
 
     # ARCH-03 Phase 2: 定时任务 SQL 已抽到 db/repositories/scheduled_tasks.py
     def create_scheduled_task(self, task: ScheduledTaskModel) -> ScheduledTaskModel:
@@ -593,7 +543,7 @@ def init_database(db_config: dict = None) -> Database:
     else:
         # 多副本：迁移由一次性 Job/脚本完成，Pod 启动只校验，不并发 DDL。
         db.verify_schema_current()
-    db.get_or_create_default_user()
+    users_repo.get_or_create_default_user(db)
     _db_instance = db
     logger.info("✅ 数据库初始化完成")
     return db

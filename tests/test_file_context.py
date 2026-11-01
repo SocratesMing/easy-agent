@@ -18,6 +18,7 @@
 from pathlib import Path
 
 import pytest
+from easy_agent.db.repositories.file_repository import FileRepository
 
 from easy_agent.bootstrap.config import Config, FileContextConfig
 from easy_agent.services import session_uploads as su
@@ -307,7 +308,7 @@ def _seed_source_file(db, sid: str, name: str, data: bytes) -> Path:
     upload_dir.mkdir(parents=True, exist_ok=True)
     saved = upload_dir / f"ab12cd34_{name}"
     saved.write_bytes(data)
-    db.add_session_file(
+    FileRepository(db).add_session_file(
         session_id=sid,
         filename=name,
         file_path=str(saved),

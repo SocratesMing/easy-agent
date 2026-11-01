@@ -11,10 +11,12 @@ import pytest
 
 from easy_agent.db import providers
 from easy_agent.db.repositories.agent_runs import AgentRunRepository
+from easy_agent.db.repositories.file_repository import FileRepository
 from easy_agent.db.repositories.message_repository import MessageRepository
 from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.db.repositories.session_runtime import SessionRuntimeRepository
 from easy_agent.db.repositories.stream_events import StreamEventRepository
+from easy_agent.db.repositories.user_repository import UserRepository
 
 _PROVIDERS = (
     (providers.get_session_repository, SessionRepository),
@@ -22,6 +24,8 @@ _PROVIDERS = (
     (providers.get_agent_run_repository, AgentRunRepository),
     (providers.get_session_runtime_repository, SessionRuntimeRepository),
     (providers.get_stream_event_repository, StreamEventRepository),
+    (providers.get_file_repository, FileRepository),
+    (providers.get_user_repository, UserRepository),
 )
 
 

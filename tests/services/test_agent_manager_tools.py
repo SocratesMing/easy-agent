@@ -78,11 +78,16 @@ def _isolate(monkeypatch):
         },
     )
     monkeypatch.setattr(am, "EasyAgent", _SpyAgent)
-    monkeypatch.setattr(
-        am,
-        "get_database",
-        lambda: (_ for _ in ()).throw(RuntimeError("db disabled in test")),
-    )
+    for _provider in (
+        "get_session_repository",
+        "get_session_runtime_repository",
+        "get_user_repository",
+    ):
+        monkeypatch.setattr(
+            am,
+            _provider,
+            lambda: (_ for _ in ()).throw(RuntimeError("db disabled in test")),
+        )
     monkeypatch.setattr(
         Config,
         "get_user_mcp_path",
@@ -212,7 +217,14 @@ async def test_session_connectors_are_loaded_off_the_event_loop(monkeypatch):
     from easy_agent.services import session_runtime
 
     monkeypatch.setattr(am, "create_web_search_tool", lambda *a, **k: None)
-    monkeypatch.setattr(am, "get_database", lambda: object())
+    _fake = object()
+    # T3b：agent_manager 改走 db.providers 的领域 repository；测试里整体换成假端口。
+    for _provider in (
+        "get_session_repository",
+        "get_session_runtime_repository",
+        "get_user_repository",
+    ):
+        monkeypatch.setattr(am, _provider, lambda _fake=_fake: _fake)
     loop_thread = threading.get_ident()
     off_loop: list[bool] = []
 

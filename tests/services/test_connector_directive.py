@@ -221,7 +221,9 @@ def manager(monkeypatch, tmp_path):
     monkeypatch.setattr(am, "EasyAgent", _FakeAgent)
     monkeypatch.setattr(am, "load_mcp_tools_for_user", _record_mcp)
     monkeypatch.setattr(
-        am, "get_database", lambda: SimpleNamespace(get_user_by_username=lambda u: None)
+        am,
+        "get_user_repository",
+        lambda: SimpleNamespace(get_user_by_username=lambda u: None),
     )
     # T3a：会话/运行期状态改走 db.providers 的领域 repository；用进程内假端口替换。
     class _FakeSessionRuntimeRepository:

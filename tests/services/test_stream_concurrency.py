@@ -16,7 +16,12 @@ from easy_agent.services import session_runtime
 @pytest.mark.asyncio
 async def test_register_stream_task_rejects_second_active_stream(monkeypatch):
     monkeypatch.setattr(session_runtime, "acquire_stream", lambda *a, **k: "owner")
-    monkeypatch.setattr(am, "get_database", lambda: None)
+    for _provider in (
+        "get_session_repository",
+        "get_session_runtime_repository",
+        "get_user_repository",
+    ):
+        monkeypatch.setattr(am, _provider, lambda: None)
     am._reset_session_state()
     t1 = asyncio.create_task(asyncio.sleep(30))
     t2 = asyncio.create_task(asyncio.sleep(30))
@@ -38,7 +43,12 @@ async def test_register_stream_task_rejects_second_active_stream(monkeypatch):
 @pytest.mark.asyncio
 async def test_register_stream_task_allows_after_finish(monkeypatch):
     monkeypatch.setattr(session_runtime, "acquire_stream", lambda *a, **k: "owner")
-    monkeypatch.setattr(am, "get_database", lambda: None)
+    for _provider in (
+        "get_session_repository",
+        "get_session_runtime_repository",
+        "get_user_repository",
+    ):
+        monkeypatch.setattr(am, _provider, lambda: None)
     am._reset_session_state()
     t1 = asyncio.create_task(asyncio.sleep(0))
     await asyncio.gather(t1, return_exceptions=True)

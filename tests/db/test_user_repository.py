@@ -2,6 +2,7 @@
 
 from easy_agent.db.database import Database
 from easy_agent.db.repositories.user_repository import UserRepository
+from easy_agent.models.db import UserModel
 
 
 def _make_db(tmp_path) -> Database:
@@ -74,3 +75,43 @@ def test_repository_passwordless_login_respects_existing_user_id(tmp_path):
     assert conflict is None
     assert conflict_created is False
     assert repo.get_user_by_username("other") is None
+
+
+def test_repository_creates_binds_and_deletes_users(tmp_path):
+    """T3b：create_user / bind_user_ip / delete_user / row_to_user 的领域入口。"""
+    db = _make_db(tmp_path)
+    repo = UserRepository(db)
+
+    created = repo.create_user(
+        UserModel(
+            user_id="u-explicit",
+            username="carol",
+            password_hash="hash",
+            created_at="2026-01-01T00:00:00",
+            updated_at="2026-01-01T00:00:00",
+        )
+    )
+    assert created.username == "carol"
+    assert repo.get_user_by_username("carol").user_id == "u-explicit"
+
+    assert repo.bind_user_ip("carol", "10.0.0.8") is True
+    assert repo.get_user_bound_ip("carol") == "10.0.0.8"
+    assert repo.bind_user_ip("missing", "10.0.0.9") is False
+    assert repo.get_user_bound_ip("missing") == ""
+
+    mapped = UserRepository.row_to_user(
+        {
+            "user_id": "u1",
+            "username": "alice",
+            "password_hash": "h",
+            "organization_id": "dept-xyz",
+            "created_at": "t0",
+            "updated_at": "t1",
+        }
+    )
+    assert mapped.account_status == "active"
+    assert mapped.department_id == "dept-xyz"
+
+    assert repo.delete_user("carol") is True
+    assert repo.delete_user("carol") is False
+    assert repo.get_user_by_username("carol") is None

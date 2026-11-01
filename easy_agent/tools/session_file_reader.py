@@ -68,13 +68,15 @@ class ReadUploadedFileTool(BaseTool):
         if not filename.strip():
             return "错误：filename 不能为空。请传入 uploads/index.md 清单中的文件名（含扩展名）。"
 
-        from easy_agent.db import get_database
+        from easy_agent.db.providers import get_file_repository
 
-        db = get_database()
+        # T3b：文件域走 FileRepository；session_uploads 的端口只要求
+        # get_session / get_session_files。
+        files = get_file_repository()
         try:
             # 解析文件 + 查库都是同步的，放进线程，不占事件循环
             parsed = await run_blocking(
-                ensure_parsed_text, self.session_id, self.username, filename, db
+                ensure_parsed_text, self.session_id, self.username, filename, files
             )
         except Exception as e:
             logger.warning(

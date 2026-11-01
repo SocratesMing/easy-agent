@@ -5,6 +5,7 @@ import pytest
 from easy_agent.db.database import Database
 from easy_agent.db.repositories.agent_runs import AgentRunRepository
 from easy_agent.db.repositories.chat_repository import ChatRepository
+from easy_agent.db.repositories.file_repository import FileRepository
 from easy_agent.db.repositories.message_repository import MessageRepository
 from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.db.repositories.session_runtime import SessionRuntimeRepository
@@ -61,7 +62,9 @@ def test_repository_exposes_session_files_for_upload_ports(tmp_path):
     db = _make_db(tmp_path)
     repo = ChatRepository(db)
     repo.create_session(_session())
-    db.add_session_file("sess-chat", "方案.pdf", "/tmp/方案.pdf", "pdf", 42, "alice")
+    FileRepository(db).add_session_file(
+        "sess-chat", "方案.pdf", "/tmp/方案.pdf", "pdf", 42, "alice"
+    )
 
     rows = repo.get_session_files("sess-chat")
     assert [row["filename"] for row in rows] == ["方案.pdf"]

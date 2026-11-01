@@ -36,7 +36,13 @@ def _patch_manager(monkeypatch, config):
         return []
 
     monkeypatch.setattr(agent_manager, "load_mcp_tools_for_user", _no_mcp)
-    monkeypatch.setattr(agent_manager, "get_database", lambda: SimpleNamespace(get_user_by_username=lambda u: None))
+    _fake = SimpleNamespace(get_user_by_username=lambda u: None)
+    for _provider in (
+        "get_session_repository",
+        "get_session_runtime_repository",
+        "get_user_repository",
+    ):
+        monkeypatch.setattr(agent_manager, _provider, lambda _fake=_fake: _fake)
 
     created = []
 

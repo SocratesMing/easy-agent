@@ -3,6 +3,7 @@
 from easy_agent.db.database import Database
 from easy_agent.db.expert_store import STATUS_ACTIVE
 from easy_agent.db.repositories.expert_repository import ExpertRepository
+from easy_agent.db.repositories.file_repository import FileRepository
 from easy_agent.models.db import SessionModel
 
 
@@ -72,7 +73,7 @@ def test_repository_delegates_expert_crud_and_owner_scoping(tmp_path):
 def test_repository_exposes_session_files_for_upload_ports(tmp_path):
     db = _make_db(tmp_path)
     repo = ExpertRepository(db)
-    db.add_session_file("sess-expert", "报告.docx", "/tmp/报告.docx", "docx", 7, "alice")
+    FileRepository(db).add_session_file("sess-expert", "报告.docx", "/tmp/报告.docx", "docx", 7, "alice")
 
     rows = repo.get_session_files("sess-expert")
     assert [row["filename"] for row in rows] == ["报告.docx"]

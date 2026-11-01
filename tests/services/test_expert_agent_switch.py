@@ -46,7 +46,14 @@ def manager(db, monkeypatch, tmp_path):
     _FakeAgent.instances = []
 
     monkeypatch.setattr(am, "EasyAgent", _FakeAgent)
-    monkeypatch.setattr(am, "get_database", lambda: db)
+    _fake = db
+    # T3b：agent_manager 改走 db.providers 的领域 repository；测试里整体换成假端口。
+    for _provider in (
+        "get_session_repository",
+        "get_session_runtime_repository",
+        "get_user_repository",
+    ):
+        monkeypatch.setattr(am, _provider, lambda _fake=_fake: _fake)
 
     async def _no_mcp(_user=None, server_names=None):
         return []

@@ -35,10 +35,10 @@ def _get_idle_logout_minutes() -> int:
     return 0
 
 
-# 「用户存储端口」：活跃时间读写与单点登录校验只用下列同名方法，
-# ``Database`` 与 ``UserRepository`` 都提供且语义一致，因此 API 层可以把
-# repository 直接传进来，无需再向下取 ``repo.database``。
-UserActivityStore = Database | UserRepository
+# 「用户存储端口」：活跃时间读写与单点登录校验只用下列同名方法。T3b 起统一
+# 收口到 ``UserRepository``（生产路径不再直接依赖 ``Database``）；测试替身只要
+# 提供同名方法即可按 duck typing 工作。
+UserActivityStore = UserRepository
 
 
 def touch_user_activity(
@@ -49,7 +49,7 @@ def touch_user_activity(
     多 worker 下登录请求可能落在 worker A，后续请求落在 worker B；活跃时间
     必须存进共享数据库，否则 worker B 会误判用户「空闲过期」而将其登出。
 
-    ``db`` 可为 ``Database`` 或 ``UserRepository``（同名方法、同一语义）。
+    ``db`` 为用户存储端口（生产路径是 ``UserRepository``）。
     """
     if not username or db is None:
         return
@@ -108,7 +108,7 @@ def verify_token_sso(token: str, db: UserActivityStore) -> Optional[str]:
     供 files.py 等无法走 Depends(get_current_username) 的场景（如 iframe 预览的
     query token）复用，确保被踢下线的旧 token 同样无法访问文件预览。
 
-    ``db`` 可为 ``Database`` 或 ``UserRepository``（由 API 层注入 repository）。
+    ``db`` 为用户存储端口（由 API 层注入 ``UserRepository``）。
     """
     payload = decode_access_token(token, verify_exp=False)
     if not payload:
@@ -144,13 +144,14 @@ def get_user_repository(
 
 def get_current_username(
     http_request: Request,
-    db: Annotated[Database, Depends(get_database)],
+    repo: Annotated[UserRepository, Depends(get_user_repository)],
 ) -> str:
     """校验 Bearer token 并返回用户名（每个需要登录的接口都经过这里）。
 
     刻意写成同步函数：FastAPI 会把同步依赖放进线程池执行。这里每个请求都要查库（用户状态、
     单点登录的 ``token_version``、空闲登出的最近活动时间），写成 ``async def`` 会在事件循环上
     同步查库，业务库是 MySQL 时每次往返都会卡住所有并发的 SSE 流。
+    T3b 起依赖 ``UserRepository``，不再直接使用 ``Database`` 门面。
     """
     auth_header = http_request.headers.get("Authorization")
 
@@ -161,7 +162,7 @@ def get_current_username(
             username = payload.get("sub")
             token_v = payload.get("v")
             if username:
-                user = db.get_user_by_username(username)
+                user = repo.get_user_by_username(username)
                 if user:
                     if user.account_status == "disabled":
                         raise HTTPException(status_code=403, detail="账号已停用")
@@ -172,12 +173,12 @@ def get_current_username(
                             status_code=401,
                             detail="您的账号在其他设备登录，您已被迫下线，请重新登录",
                         )
-                    if not _user_session_is_active(db, username):
+                    if not _user_session_is_active(repo, username):
                         raise HTTPException(
                             status_code=401,
                             detail="登录已过期或未登录，请重新登录",
                         )
-                    touch_user_activity(db, username)
+                    touch_user_activity(repo, username)
                     return username
 
     # 未携带有效凭证（token 过期/未登录/被踢下线）时返回 401。

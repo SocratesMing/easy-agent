@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from easy_agent.bootstrap.env import env_bool
+from easy_agent.db.repositories.file_repository import FileRepository
 from easy_agent.db.repositories.message_repository import MessageRepository
 from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.services.stream_messages import _partial_message_dict, tool_call_records_to_dicts
@@ -39,6 +40,20 @@ def _session_port(db):
     if callable(getattr(db, "get_session", None)):
         return db
     return SessionRepository(db)
+
+
+def _file_port(db):
+    """文件域数据端口：``FileRepository``，或提供 ``add_generated_file`` 的旧数据端口。
+
+    T3b 之后生产路径应传 ``FileRepository``；迁移期 orchestrator 仍以 ``db=``
+    传入 ``Database``（文件域方法保留给 ``streaming/side_effects`` 等未迁移调用方），
+    测试替身则直接实现 ``add_generated_file``。本适配不改变持久化语义。
+    """
+    if isinstance(db, FileRepository):
+        return db
+    if callable(getattr(db, "add_generated_file", None)):
+        return db
+    return FileRepository(db)
 
 
 def persist_incremental(
@@ -179,7 +194,7 @@ def persist_tool_result_event(
             if filename:
                 base_name = os.path.basename(filename) if filename else "unknown"
                 ext = os.path.splitext(base_name)[1].lstrip(".") or "txt"
-                db.add_generated_file(
+                _file_port(db).add_generated_file(
                     session_id=session_id,
                     message_id=message_id,
                     filename=base_name,

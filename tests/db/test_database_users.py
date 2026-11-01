@@ -7,6 +7,7 @@ from contextlib import contextmanager
 import pytest
 
 from easy_agent.db.database import Database
+from easy_agent.db.repositories.user_repository import UserRepository
 
 
 def test_count_users_supports_mysql_dict_cursor(db, monkeypatch):
@@ -27,7 +28,7 @@ def test_count_users_supports_mysql_dict_cursor(db, monkeypatch):
 
     monkeypatch.setattr(db, "get_connection", get_connection)
 
-    assert db.count_users() == 3
+    assert UserRepository(db).count_users() == 3
 
 
 def test_default_admin_requires_an_explicit_strong_bootstrap_secret(
@@ -40,7 +41,7 @@ def test_default_admin_requires_an_explicit_strong_bootstrap_secret(
     database.init_tables()
 
     with pytest.raises(RuntimeError, match="EASYAGENT_BOOTSTRAP_ADMIN_PASSWORD"):
-        database.get_or_create_default_user()
+        UserRepository(database).get_or_create_default_user()
 
 
 def test_default_admin_uses_the_injected_bootstrap_secret(tmp_path, monkeypatch):
@@ -51,7 +52,7 @@ def test_default_admin_uses_the_injected_bootstrap_secret(tmp_path, monkeypatch)
     )
     database.init_tables()
 
-    created = database.get_or_create_default_user()
+    created = UserRepository(database).get_or_create_default_user()
 
     assert created.username == "admin"
     assert database.verify_user_password("admin", secret) is not None
@@ -68,7 +69,7 @@ def test_production_rotates_a_legacy_known_admin_password(tmp_path, monkeypatch)
     monkeypatch.setenv("AGENT_ENV", "prod")
     monkeypatch.setenv("EASYAGENT_BOOTSTRAP_ADMIN_PASSWORD", rotated_secret)
 
-    database.get_or_create_default_user()
+    UserRepository(database).get_or_create_default_user()
 
     assert database.verify_user_password("admin", rotated_secret) is not None
     assert database.verify_user_password("admin", "admin") is None

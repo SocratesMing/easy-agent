@@ -58,6 +58,20 @@ INFRA_DATABASE_METHODS = {
 #   delete_stream_events_before
 # 例外：add_message 仍被 services/scheduler.py（定时任务域，未迁移）调用，
 #       保留到 T3c 再删。
+#
+# T3b（2026-11-01，文件/用户域）删除的纯委托：
+#   files: add_session_file / get_session_files / delete_file /
+#          get_generated_filenames
+#   users: get_user_by_employee_id / get_user_by_account / update_user /
+#          bind_user_ip / get_user_bound_ip / get_user_token_version /
+#          touch_user_activity / get_user_activity_time / clear_user_activity /
+#          delete_user / get_or_create_default_user / list_users / count_users /
+#          _row_to_user
+# 保留说明：文件域 add_generated_file / get_generated_files / delete_generated_file
+# 仍被 persistence.py 兼容端口与 streaming/side_effects.py（T3c）调用；
+# users 的 create_user / get_user_by_username / get_user_by_id / register_user /
+# verify_user_password / get_or_create_passwordless_user / update_user_password /
+# increment_user_token_version 仍被 knowledges 域与 personnel 调用（后续批次）。
 # 这些名字不再出现在下面的冻结集合里：再加回 Database 会被 DW201 拦下。
 # Frozen set of every method that exists on Database at the time phase 0 lands
 # (ARCH-03 phase 2 extracted the SQL into db/repositories/*).  Non-infrastructure
@@ -107,35 +121,17 @@ FROZEN_DATABASE_METHODS = {
     "create_user",
     "get_user_by_username",
     "get_user_by_id",
-    "get_user_by_employee_id",
-    "get_user_by_account",
-    "update_user",
-    "bind_user_ip",
-    "get_user_bound_ip",
     "increment_user_token_version",
-    "get_user_token_version",
-    "touch_user_activity",
-    "get_user_activity_time",
-    "clear_user_activity",
     "register_user",
     "verify_user_password",
     "get_or_create_passwordless_user",
     "update_user_password",
-    "delete_user",
-    "get_or_create_default_user",
-    "list_users",
-    "count_users",
-    "_row_to_user",
     "issue_mcp_api_key",
     "revoke_mcp_api_key",
     "get_mcp_api_keys",
-    "add_session_file",
-    "get_session_files",
-    "delete_file",
     "add_generated_file",
     "get_generated_files",
     "delete_generated_file",
-    "get_generated_filenames",
     "create_scheduled_task",
     "get_scheduled_task",
     "list_scheduled_tasks",
@@ -177,8 +173,8 @@ FROZEN_DATABASE_METHODS = {
 #   ``repo.database`` / ``repository.database`` / ``db.database`` 属性访问次数
 #   （``Database`` 逃生口）。
 #
-# T3a（2026-11-01 会话/消息域）实测：96 / 61 / 18 / 12。
-MAX_DATABASE_METHODS = 96
-MAX_DATABASE_PURE_DELEGATIONS = 61
-MAX_GET_DATABASE_CALLS_OUTSIDE_DB = 18
+# T3b（2026-11-01 文件/用户域）实测：78 / 43 / 15 / 12。
+MAX_DATABASE_METHODS = 78
+MAX_DATABASE_PURE_DELEGATIONS = 43
+MAX_GET_DATABASE_CALLS_OUTSIDE_DB = 15
 MAX_DATABASE_ESCAPE_HATCH_REFS = 12

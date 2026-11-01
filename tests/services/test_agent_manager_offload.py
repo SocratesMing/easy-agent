@@ -32,7 +32,14 @@ def recorder(monkeypatch):
 
     for name in ("acquire_stream", "release_stream", "request_cancel", "save_connectors", "save_edit_target"):
         monkeypatch.setattr(session_runtime, name, fake(name))
-    monkeypatch.setattr(am, "get_database", lambda: object())
+    _fake = object()
+    # T3b：agent_manager 改走 db.providers 的领域 repository；测试里整体换成假端口。
+    for _provider in (
+        "get_session_repository",
+        "get_session_runtime_repository",
+        "get_user_repository",
+    ):
+        monkeypatch.setattr(am, _provider, lambda _fake=_fake: _fake)
     return calls
 
 

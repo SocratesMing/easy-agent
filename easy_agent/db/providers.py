@@ -20,17 +20,21 @@ from __future__ import annotations
 
 from easy_agent.db.database import get_database
 from easy_agent.db.repositories.agent_runs import AgentRunRepository
+from easy_agent.db.repositories.file_repository import FileRepository
 from easy_agent.db.repositories.message_repository import MessageRepository
 from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.db.repositories.session_runtime import SessionRuntimeRepository
 from easy_agent.db.repositories.stream_events import StreamEventRepository
+from easy_agent.db.repositories.user_repository import UserRepository
 
 __all__ = [
     "get_agent_run_repository",
+    "get_file_repository",
     "get_message_repository",
     "get_session_repository",
     "get_session_runtime_repository",
     "get_stream_event_repository",
+    "get_user_repository",
 ]
 
 
@@ -57,3 +61,12 @@ def get_session_runtime_repository() -> SessionRuntimeRepository:
 def get_stream_event_repository() -> StreamEventRepository:
     """进程级 ``Database`` 上的 SSE 事件持久化 repository。"""
     return StreamEventRepository(get_database())
+
+def get_file_repository() -> FileRepository:
+    """进程级 ``Database`` 上的文件域 repository（上传文件 / 生成文件 / 归属）。"""
+    return FileRepository(get_database())
+
+
+def get_user_repository() -> UserRepository:
+    """进程级 ``Database`` 上的用户域 repository（服务层 / 工具层用）。"""
+    return UserRepository(get_database())

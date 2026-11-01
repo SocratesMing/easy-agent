@@ -113,9 +113,9 @@ def test_session_files_list(client):
     up = client.post(f"/agent/sessions/{sess}/upload", files=files)
     assert up.status_code == 200
 
-    from easy_agent.db import get_database
+    from easy_agent.db.providers import get_file_repository
 
-    rows = get_database().get_session_files(sess)
+    rows = get_file_repository().get_session_files(sess)
     assert rows and rows[0]["filename"] == "data.txt"
 
 

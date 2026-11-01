@@ -15,6 +15,7 @@ import pytest
 from fastapi import HTTPException
 
 from easy_agent.db import Database, init_database
+from easy_agent.db.repositories.user_repository import UserRepository
 from easy_agent.middleware import auth as auth_middleware
 from easy_agent.utils import auth as auth_utils
 from easy_agent.utils.auth import create_access_token
@@ -65,10 +66,12 @@ def test_login_activity_visible_to_other_worker(two_workers, monkeypatch):
     monkeypatch.setattr(auth_middleware, "get_agent_config", lambda: _config(5))
     token = _register_and_login(db_a)
 
-    auth_middleware.touch_user_activity(db_a, "alice")
+    auth_middleware.touch_user_activity(UserRepository(db_a), "alice")
     auth_middleware._activity_write_throttle.clear()
 
-    username = auth_middleware.get_current_username(_Request(token), db_b)
+    username = auth_middleware.get_current_username(
+        _Request(token), UserRepository(db_b)
+    )
 
     assert username == "alice"
 
@@ -79,8 +82,10 @@ def test_idle_timeout_still_enforced_across_workers(two_workers, monkeypatch):
     monkeypatch.setattr(auth_middleware, "get_agent_config", lambda: _config(1))
     token = _register_and_login(db_a)
 
-    db_a.clear_user_activity("alice")
-    db_a.touch_user_activity("alice", auth_middleware.time.time() - 61)
+    UserRepository(db_a).clear_user_activity("alice")
+    UserRepository(db_a).touch_user_activity(
+        "alice", auth_middleware.time.time() - 61
+    )
     auth_middleware._activity_write_throttle.clear()
 
     with pytest.raises(HTTPException) as exc_info:
@@ -95,10 +100,14 @@ def test_active_user_on_other_worker_passes_idle_check(two_workers, monkeypatch)
     monkeypatch.setattr(auth_middleware, "get_agent_config", lambda: _config(1))
     token = _register_and_login(db_a)
 
-    db_a.touch_user_activity("alice", auth_middleware.time.time())
+    UserRepository(db_a).touch_user_activity(
+        "alice", auth_middleware.time.time()
+    )
     auth_middleware._activity_write_throttle.clear()
 
-    username = auth_middleware.get_current_username(_Request(token), db_b)
+    username = auth_middleware.get_current_username(
+        _Request(token), UserRepository(db_b)
+    )
 
     assert username == "alice"
 

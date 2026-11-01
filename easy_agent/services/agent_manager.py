@@ -14,10 +14,10 @@ from easy_agent.agent import EasyAgent
 from easy_agent.agent.graph_cache import clear_agent_graph_cache, get_agent_graph_cache
 from easy_agent.agent.hitl import hitl_enabled
 from easy_agent.bootstrap.config import Config
-from easy_agent.db import get_database
 from easy_agent.db.providers import (
     get_session_repository,
     get_session_runtime_repository,
+    get_user_repository,
 )
 from easy_agent.bootstrap.runtime_config import (
     get_runtime_agent_config,
@@ -534,8 +534,8 @@ async def _get_or_create_agent_unlocked(
     # 查询用户机构ID，注入系统提示词
     organization_id = ""
     try:
-        db = get_database()
-        user = await run_blocking(db.get_user_by_username, username)
+        user_repo = get_user_repository()
+        user = await run_blocking(user_repo.get_user_by_username, username)
         if user:
             organization_id = user.organization_id or ""
     except Exception as e:
