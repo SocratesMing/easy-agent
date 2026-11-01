@@ -176,6 +176,178 @@ def _inspect_one(username: str, name: str) -> dict[str, Any]:
     )
 
 
+def _new_skill_report(expert_id: str | None) -> dict[str, Any]:
+    """依赖技能补装报告的空模板（字段契约见 ``provision_expert_skills`` docstring）。"""
+    return {
+        "expert_id": expert_id or "",
+        "enabled": _auto_install_enabled(),
+        "required": [],
+        "resolved": [],
+        "installed": [],
+        "existing": [],
+        "skipped": [],
+        "missing": [],
+        "skills_root": "",
+        "cache_invalidated": 0,
+    }
+
+
+def _skill_resolution(state: dict[str, Any], name: str) -> dict[str, Any]:
+    """声明 → 实际解析结果（目录名 + 匹配方式），供报告排查「声明写错」。"""
+    resolved_dir = state.get("resolved_dir") or ""
+    return {
+        "declared": state.get("declared", name),
+        "resolved_dir": resolved_dir,
+        "matched_by": state.get("matched_by", ""),
+    }
+
+
+def _record_existing_skill(
+    report: dict[str, Any], name: str, state: dict[str, Any], resolution: dict[str, Any]
+) -> None:
+    """已可用：记 existing + resolved。"""
+    resolved_dir = state.get("resolved_dir") or ""
+    report["existing"].append(resolved_dir or name)
+    report["resolved"].append(resolution)
+
+
+def _record_disabled_skill(
+    report: dict[str, Any],
+    *,
+    username: str,
+    expert_id: str,
+    name: str,
+    state: dict[str, Any],
+    resolution: dict[str, Any],
+) -> None:
+    """用户主动停用：不自动装回，记 skipped（节流 info 日志）。"""
+    resolved_dir = state.get("resolved_dir") or ""
+    report["skipped"].append(
+        {"skill": name, "reason": "disabled", "detail": state["detail"], "path": state["path"],
+         "resolved_dir": resolved_dir, "matched_by": state.get("matched_by", "")}
+    )
+    report["resolved"].append(resolution)
+    _log_once(
+        logging.INFO,
+        (username, expert_id, name, "disabled"),
+        f"⏸️ 专家依赖技能已被用户停用，不自动装回 | 用户: {username} | "
+        f"专家: {expert_id} | 技能: {name} | 目录: {resolved_dir or '(未解析)'}",
+    )
+
+
+def _record_missing_skill(
+    report: dict[str, Any],
+    *,
+    username: str,
+    expert_id: str,
+    name: str,
+    state: dict[str, Any],
+    resolution: dict[str, Any],
+) -> None:
+    """公共目录里没有 / 未配置公共目录：记 missing + skipped（节流 error 日志）。"""
+    resolved_dir = state.get("resolved_dir") or ""
+    report["missing"].append(name)
+    report["skipped"].append(
+        {
+            "skill": name,
+            "reason": state["state"],
+            "detail": state["detail"],
+            "path": state["path"],
+            "resolved_dir": resolved_dir,
+            "matched_by": state.get("matched_by", ""),
+            "candidates": state.get("candidates") or [],
+        }
+    )
+    report["resolved"].append(resolution)
+    where = report["skills_root"] or "（未配置 tools.skills_dir）"
+    _log_once(
+        logging.ERROR,
+        (username, expert_id, name, state["state"]),
+        f"❌ 专家依赖技能缺失，无法自动添加 | 用户: {username} | 专家: {expert_id} | "
+        f"技能: {name} | 请把该技能包放到公共技能目录（目录内需含 SKILL.md）: {where} | "
+        f"原因: {state['detail']} | 候选: {state.get('candidates') or '无'}",
+    )
+
+
+def _record_install_failure(
+    report: dict[str, Any],
+    *,
+    username: str,
+    expert_id: str,
+    name: str,
+    state: dict[str, Any],
+    resolution: dict[str, Any],
+    target_dir: str,
+    exc: Exception,
+) -> None:
+    """写清单失败：不阻断对话，记 skipped（节流 warning）。"""
+    report["skipped"].append(
+        {"skill": name, "reason": "install_failed", "detail": str(exc), "path": state["path"],
+         "resolved_dir": state.get("resolved_dir") or "", "matched_by": state.get("matched_by", "")}
+    )
+    report["resolved"].append(resolution)
+    _log_once(
+        logging.WARNING,
+        (username, expert_id, name, "install_failed"),
+        f"⚠️ 专家依赖技能添加失败（不阻断对话） | 用户: {username} | "
+        f"专家: {expert_id} | 技能: {name} | 目录: {target_dir} | {exc}",
+    )
+
+
+def _install_skill(
+    report: dict[str, Any],
+    *,
+    username: str,
+    expert_id: str,
+    name: str,
+    state: dict[str, Any],
+    resolution: dict[str, Any],
+    root,
+) -> None:
+    """解析到 canonical 目录后登记进用户技能清单，并记录 installed/existing/失败。"""
+    # 解析到 canonical 目录名后统一登记；声明写的是 name 时也不影响清单键
+    target_dir = state.get("resolved_dir") or name
+    try:
+        builtin_skills.add(username, target_dir, root)
+    except FileExistsError:  # 并发兜底：另一路刚添加成功，等价于已可用
+        report["existing"].append(target_dir)
+        report["resolved"].append(resolution)
+        return
+    except Exception as exc:  # noqa: BLE001 - 添加失败不阻断对话
+        _record_install_failure(
+            report,
+            username=username,
+            expert_id=expert_id,
+            name=name,
+            state=state,
+            resolution=resolution,
+            target_dir=target_dir,
+            exc=exc,
+        )
+        return
+
+    report["installed"].append(target_dir)
+    report["resolved"].append(resolution)
+    logger.info(
+        f"🎁 自动添加专家依赖技能 | 用户: {username} | 专家: {expert_id} | "
+        f"技能: {name} | 目录: {target_dir} | 匹配方式: {resolution['matched_by']} | 公共目录: {root}"
+    )
+
+
+def _invalidate_agents_after_install(
+    report: dict[str, Any], username: str, *, invalidate_cache: bool
+) -> None:
+    """清单变了：已缓存的 Agent 看不到新技能（技能清单在构造时注入），必须驱逐。"""
+    if not (invalidate_cache and report["installed"]):
+        return
+    try:
+        from .agent_manager import invalidate_user_agents
+
+        report["cache_invalidated"] = int(invalidate_user_agents(username) or 0)
+    except Exception as exc:  # noqa: BLE001 - 驱逐失败最多是下一轮才生效
+        logger.warning(f"⚠️ 依赖技能添加后驱逐缓存 Agent 失败 | 用户: {username} | {exc}")
+
+
 def provision_expert_skills(
     username: str, expert_id: str | None, *, invalidate_cache: bool = True
 ) -> dict[str, Any]:
@@ -204,19 +376,10 @@ def provision_expert_skills(
     ``required`` 里的声明值可以是目录名，也可以是 SKILL.md 的 ``name``（常见为中文）；
     ``resolved`` 记录每条声明实际解析到的目录名与匹配方式，``installed``/``existing``
     一律是 canonical 目录名（清单键），便于排查「声明写错」与「技能没放」的区别。
+
+    结构：建报告 → 解析声明 → 逐条分派（已可用 / 停用 / 缺失 / 安装）→ 按需驱逐缓存。
     """
-    report: dict[str, Any] = {
-        "expert_id": expert_id or "",
-        "enabled": _auto_install_enabled(),
-        "required": [],
-        "resolved": [],
-        "installed": [],
-        "existing": [],
-        "skipped": [],
-        "missing": [],
-        "skills_root": "",
-        "cache_invalidated": 0,
-    }
+    report = _new_skill_report(expert_id)
     if not username or not expert_id:
         # 没有专家 ID 就不补装。这里刻意只打 debug：每轮通用对话都会走到，
         # 用 info 会把日志刷满。真正的排查点是 chat 入口那行「expert: xxx」。
@@ -241,91 +404,42 @@ def provision_expert_skills(
 
     for name in required:
         state = _inspect_one(username, name)
-        resolved_dir = state.get("resolved_dir") or ""
-        resolution = {
-            "declared": state.get("declared", name),
-            "resolved_dir": resolved_dir,
-            "matched_by": state.get("matched_by", ""),
-        }
-        if state["state"] == "existing":
-            report["existing"].append(resolved_dir or name)
-            report["resolved"].append(resolution)
-            continue
-        if state["state"] == "disabled":
-            report["skipped"].append(
-                {"skill": name, "reason": "disabled", "detail": state["detail"], "path": state["path"],
-                 "resolved_dir": resolved_dir, "matched_by": state.get("matched_by", "")}
+        resolution = _skill_resolution(state, name)
+        kind = state["state"]
+        if kind == "existing":
+            _record_existing_skill(report, name, state, resolution)
+        elif kind == "disabled":
+            _record_disabled_skill(
+                report,
+                username=username,
+                expert_id=expert_id,
+                name=name,
+                state=state,
+                resolution=resolution,
             )
-            report["resolved"].append(resolution)
-            _log_once(
-                logging.INFO,
-                (username, expert_id, name, "disabled"),
-                f"⏸️ 专家依赖技能已被用户停用，不自动装回 | 用户: {username} | "
-                f"专家: {expert_id} | 技能: {name} | 目录: {resolved_dir or '(未解析)'}",
+        elif kind in {"source_missing", "source_unconfigured"}:
+            _record_missing_skill(
+                report,
+                username=username,
+                expert_id=expert_id,
+                name=name,
+                state=state,
+                resolution=resolution,
             )
-            continue
-        if state["state"] in {"source_missing", "source_unconfigured"}:
-            report["missing"].append(name)
-            report["skipped"].append(
-                {
-                    "skill": name,
-                    "reason": state["state"],
-                    "detail": state["detail"],
-                    "path": state["path"],
-                    "resolved_dir": resolved_dir,
-                    "matched_by": state.get("matched_by", ""),
-                    "candidates": state.get("candidates") or [],
-                }
+        else:
+            _install_skill(
+                report,
+                username=username,
+                expert_id=expert_id,
+                name=name,
+                state=state,
+                resolution=resolution,
+                root=root,
             )
-            report["resolved"].append(resolution)
-            where = report["skills_root"] or "（未配置 tools.skills_dir）"
-            _log_once(
-                logging.ERROR,
-                (username, expert_id, name, state["state"]),
-                f"❌ 专家依赖技能缺失，无法自动添加 | 用户: {username} | 专家: {expert_id} | "
-                f"技能: {name} | 请把该技能包放到公共技能目录（目录内需含 SKILL.md）: {where} | "
-                f"原因: {state['detail']} | 候选: {state.get('candidates') or '无'}",
-            )
-            continue
 
-        # 解析到 canonical 目录名后统一登记；声明写的是 name 时也不影响清单键
-        target_dir = resolved_dir or name
-        try:
-            builtin_skills.add(username, target_dir, root)
-        except FileExistsError:  # 并发兜底：另一路刚添加成功，等价于已可用
-            report["existing"].append(target_dir)
-            report["resolved"].append(resolution)
-            continue
-        except Exception as exc:  # noqa: BLE001 - 添加失败不阻断对话
-            report["skipped"].append(
-                {"skill": name, "reason": "install_failed", "detail": str(exc), "path": state["path"],
-                 "resolved_dir": resolved_dir, "matched_by": state.get("matched_by", "")}
-            )
-            report["resolved"].append(resolution)
-            _log_once(
-                logging.WARNING,
-                (username, expert_id, name, "install_failed"),
-                f"⚠️ 专家依赖技能添加失败（不阻断对话） | 用户: {username} | "
-                f"专家: {expert_id} | 技能: {name} | 目录: {target_dir} | {exc}",
-            )
-            continue
-
-        report["installed"].append(target_dir)
-        report["resolved"].append(resolution)
-        logger.info(
-            f"🎁 自动添加专家依赖技能 | 用户: {username} | 专家: {expert_id} | "
-            f"技能: {name} | 目录: {target_dir} | 匹配方式: {resolution['matched_by']} | 公共目录: {root}"
-        )
-
-    if invalidate_cache and report["installed"]:
-        # 清单变了：已缓存的 Agent 看不到新技能（技能清单在构造时注入），必须驱逐。
-        try:
-            from .agent_manager import invalidate_user_agents
-
-            report["cache_invalidated"] = int(invalidate_user_agents(username) or 0)
-        except Exception as exc:  # noqa: BLE001 - 驱逐失败最多是下一轮才生效
-            logger.warning(f"⚠️ 依赖技能添加后驱逐缓存 Agent 失败 | 用户: {username} | {exc}")
-
+    _invalidate_agents_after_install(
+        report, username, invalidate_cache=invalidate_cache
+    )
     return report
 
 

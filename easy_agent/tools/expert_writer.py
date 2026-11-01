@@ -487,10 +487,16 @@ class SaveExpertTool(BaseTool):
         )
         return self._success_text("创建", _to_public(record), source)
 
-    async def _update(self, args: SaveExpertArgs) -> str:
-        # 待修改专家 ID 的取值优先级：系统绑定值（用户点「编辑」时经请求结构化字段
-        # 写入会话上下文，用户不可见、不可改）> 模型参数。两者同时存在且不一致时
-        # 视为篡改，直接拒绝——消息体里的 ID 不可信（用户可任意修改）。
+    def _resolve_edit_target(self, args: SaveExpertArgs) -> tuple[str, str | None]:
+        """确定本次要修改的专家 ID（系统绑定值优先于模型参数）。
+
+        待修改专家 ID 的取值优先级：系统绑定值（用户点「编辑」时经请求结构化字段
+        写入会话上下文，用户不可见、不可改）> 模型参数。两者同时存在且不一致时
+        视为篡改，直接拒绝——消息体里的 ID 不可信（用户可任意修改）。
+
+        Returns:
+            ``(expert_agent_id, 错误文案)``；成功时错误文案为 ``None``。
+        """
         bound_id = str((self.edit_targets or {}).get(self.session_id or "", "") or "").strip()
         supplied_id = (args.expert_agent_id or "").strip()
         if supplied_id and bound_id and supplied_id != bound_id:
@@ -501,55 +507,32 @@ class SaveExpertTool(BaseTool):
                 supplied_id,
                 bound_id,
             )
-            return (
+            return "", (
                 "错误：本次会话待修改的专家与传入的 expert_agent_id 不一致，已拒绝执行。"
                 "请回到专家面板重新点「编辑」，由系统带入正确的待修改专家。"
             )
         expert_agent_id = bound_id or supplied_id
         if not expert_agent_id:
-            return (
+            return "", (
                 "错误：修改专家需要先在专家面板点「编辑」，由系统带入待修改的专家；"
                 "不要凭记忆或猜测 expert_agent_id。"
             )
+        return expert_agent_id, None
 
-        config = _agent_config()
-        if config is None:
-            return "错误：服务端配置未初始化，暂时无法修改专家，请稍后再试。"
-
-        expert_repo = get_expert_repository()
-        user_id = await run_blocking(
-            _current_user_id, expert_repo, self.username
-        )
-        store = expert_repo
-
-        record = await run_blocking(store.get_owned, expert_agent_id, user_id)
-        if record is None:
-            return (
-                f"错误：专家「{expert_agent_id}」不存在，或不属于当前用户，无法修改。"
-                "请确认 ID 是否正确。"
-            )
-
+    @staticmethod
+    def _prepare_update_text(args: SaveExpertArgs, record: dict) -> tuple[str, str, str | None]:
+        """取本次要写入的名称/提示词（未传则沿用原记录）并校验，返回 (name_cn, prompt, 错误)。"""
         name_cn = (args.name_cn or record.get("export_name_cn") or "").strip()
         user_prompt = (args.prompt or record.get("export_prompt") or "").strip()
         try:
             validate_create_params(name_cn, user_prompt)
         except ValueError as exc:
-            return f"错误：{exc}。请补齐信息后重试。"
+            return name_cn, user_prompt, f"错误：{exc}。请补齐信息后重试。"
+        return name_cn, user_prompt, None
 
-        conflict = await run_blocking(
-            store.find_by_name_cn, user_id, name_cn, exclude_agent_id=expert_agent_id
-        )
-        if conflict:
-            return (
-                f"错误：已有同名的专家Agent「{conflict.get('export_name_cn') or name_cn}」，"
-                "请修改专家名称后重试。"
-            )
-
-        # 修改 = 新版本目录 v{n+1}，不覆盖 v{n}（运行中的旧会话不受影响）
-        new_version = int(record.get("export_version") or 1) + 1
-
-        # 技能包：本轮选了就整份替换（用户在编辑流程里重新选）；没选则沿用原记录，
-        # 避免"只想改描述"的一次编辑把专家绑定清空。
+    def _resolve_update_skills(self, record: dict, expert_agent_id: str) -> list[str] | None:
+        """技能包：本轮选了就整份替换（用户在编辑流程里重新选）；没选则沿用原记录，
+        避免「只想改描述」的一次编辑把专家绑定清空。"""
         selected_skills = self._selected_skill_dirs()
         next_skills = selected_skills or None
         if next_skills is None:
@@ -562,15 +545,43 @@ class SaveExpertTool(BaseTool):
                 f"[{expert_agent_id}] 修改专家：技能包将替换 | "
                 f"原={record.get('export_required_skills') or '（未绑定）'} | 新={next_skills}"
             )
+        return next_skills
 
+    async def _generate_update_payload(
+        self,
+        args: SaveExpertArgs,
+        config,
+        name_cn: str,
+        user_prompt: str,
+        expert_agent_id: str,
+    ) -> tuple[Optional[dict], str, str | None]:
+        """调 LLM 生成新版本配置；失败时返回 (None, "", 错误文案)。"""
         try:
             generated, source = await self._resolve_config(
                 args, config, name_cn, user_prompt
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("专家配置生成失败（修改）| %s | %s", expert_agent_id, exc)
-            return f"错误：专家配置生成失败（{exc}）。原专家保持不变，请稍后重试。"
+            return (
+                None,
+                "",
+                f"错误：专家配置生成失败（{exc}）。原专家保持不变，请稍后重试。",
+            )
+        return generated, source, None
 
+    async def _persist_updated_expert(
+        self,
+        *,
+        store,
+        config,
+        expert_agent_id: str,
+        name_cn: str,
+        user_prompt: str,
+        new_version: int,
+        generated: dict,
+        next_skills: list[str] | None,
+    ) -> str | None:
+        """落盘新版本目录并更新记录元信息；失败返回错误文案，成功返回 None。"""
         ok = await run_blocking(
             self._persist,
             store=store,
@@ -590,8 +601,10 @@ class SaveExpertTool(BaseTool):
             expert_agent_id,
             {"export_name_cn": name_cn, "export_prompt": user_prompt},
         )
+        return None
 
-        # 该用户所有缓存 Agent 失效，下次请求用新版本提示词重建
+    def _invalidate_agents_after_update(self) -> None:
+        """该用户所有缓存 Agent 失效，下次请求用新版本提示词重建。"""
         try:
             from easy_agent.bootstrap.runtime_config import invalidate_user_agents
 
@@ -599,9 +612,9 @@ class SaveExpertTool(BaseTool):
         except Exception as exc:  # noqa: BLE001
             logger.warning("专家修改后驱逐 Agent 缓存失败: %s", exc)
 
-        self._clear_turn_skills()
-
-        updated = await run_blocking(store.get_owned, expert_agent_id, user_id) or {}
+    def _log_update_success(
+        self, expert_agent_id: str, new_version: int, source: str, updated: dict
+    ) -> None:
         logger.info(
             "对话内修改专家成功 | user=%s | expert=%s | v%s | 来源=%s | 技能包=%s",
             self.username,
@@ -610,6 +623,71 @@ class SaveExpertTool(BaseTool):
             source,
             updated.get("export_required_skills") or "（未绑定）",
         )
+
+    async def _update(self, args: SaveExpertArgs) -> str:
+        """修改专家：校验目标 → 生成新版本 → 落盘 → 驱逐缓存 → 返回结果文案。"""
+        expert_agent_id, error = self._resolve_edit_target(args)
+        if error is not None:
+            return error
+
+        config = _agent_config()
+        if config is None:
+            return "错误：服务端配置未初始化，暂时无法修改专家，请稍后再试。"
+
+        expert_repo = get_expert_repository()
+        user_id = await run_blocking(
+            _current_user_id, expert_repo, self.username
+        )
+        store = expert_repo
+
+        record = await run_blocking(store.get_owned, expert_agent_id, user_id)
+        if record is None:
+            return (
+                f"错误：专家「{expert_agent_id}」不存在，或不属于当前用户，无法修改。"
+                "请确认 ID 是否正确。"
+            )
+
+        name_cn, user_prompt, error = self._prepare_update_text(args, record)
+        if error is not None:
+            return error
+
+        conflict = await run_blocking(
+            store.find_by_name_cn, user_id, name_cn, exclude_agent_id=expert_agent_id
+        )
+        if conflict:
+            return (
+                f"错误：已有同名的专家Agent「{conflict.get('export_name_cn') or name_cn}」，"
+                "请修改专家名称后重试。"
+            )
+
+        # 修改 = 新版本目录 v{n+1}，不覆盖 v{n}（运行中的旧会话不受影响）
+        new_version = int(record.get("export_version") or 1) + 1
+        next_skills = self._resolve_update_skills(record, expert_agent_id)
+
+        generated, source, error = await self._generate_update_payload(
+            args, config, name_cn, user_prompt, expert_agent_id
+        )
+        if error is not None:
+            return error
+
+        error = await self._persist_updated_expert(
+            store=store,
+            config=config,
+            expert_agent_id=expert_agent_id,
+            name_cn=name_cn,
+            user_prompt=user_prompt,
+            new_version=new_version,
+            generated=generated,
+            next_skills=next_skills,
+        )
+        if error is not None:
+            return error
+
+        self._invalidate_agents_after_update()
+        self._clear_turn_skills()
+
+        updated = await run_blocking(store.get_owned, expert_agent_id, user_id) or {}
+        self._log_update_success(expert_agent_id, new_version, source, updated)
         return self._success_text("修改", _to_public(updated), source)
 
     def _clear_turn_skills(self) -> None:

@@ -570,6 +570,101 @@ def build_long_term_memory_update_prompt(
     )
 
 
+def _prepare_long_term_context(
+    memory_file: Path, user_message: str, assistant_response: str
+) -> tuple[str, str, str]:
+    """读取当前长期记忆、导入 legacy 内容，并截断本次会话文本（无其它副作用）。
+
+    Returns:
+        ``(current_memory, user_msg_trunc, asst_msg_trunc)``
+    """
+    current_memory = read_memory(memory_file)
+    # 首次升级时把旧 Markdown 导入 sidecar；已同步时按内容 hash 幂等跳过
+    _import_legacy_markdown(memory_file, current_memory)
+
+    # 截断过长的会话内容，避免 token 浪费
+    user_msg_trunc = (user_message or "")[:800]
+    asst_msg_trunc = (assistant_response or "")[:2000]
+    return current_memory, user_msg_trunc, asst_msg_trunc
+
+
+def _generate_long_term_update(
+    *,
+    current_memory: str,
+    user_msg_trunc: str,
+    asst_msg_trunc: str,
+    llm,
+    max_chars: int,
+) -> str:
+    """调一次 LLM，生成长期记忆的新正文（返回 strip 后的文本）。"""
+    from langchain_core.messages import HumanMessage
+
+    prompt = build_long_term_memory_update_prompt(
+        current_memory=current_memory,
+        user_message=user_msg_trunc,
+        assistant_response=asst_msg_trunc,
+        max_chars=max_chars,
+    )
+    response = llm.invoke([HumanMessage(content=prompt)])
+    return getattr(response, "content", str(response)).strip()
+
+
+def _sanitize_long_term_update(updated: str, *, llm, max_chars: int) -> str | None:
+    """清理 LLM 输出：剔角色职责规则 → 有意义性校验 → 超预算压缩（压缩后再过滤）→ 硬截断。
+
+    返回 ``None`` 表示剔除后已无实际条目（调用方保留原文件不写入）。
+    """
+    # 兜底剔除「角色职责 / 领域边界 / 拒答规则」：这份记忆会注入所有专家，
+    # 一旦写进就会被其它专家当成自己的规矩（详见 strip_role_scope_clauses）。
+    updated, dropped = strip_role_scope_clauses(updated)
+    if dropped:
+        logger.info(
+            f"🧹 用户长期记忆已剔除 {len(dropped)} 处「角色职责/拒答规则」"
+            f"（避免注入到其它专家）| 样例: {dropped[:3]}"
+        )
+    if not _has_meaningful_content(updated):
+        logger.warning("剔除角色职责后长期记忆已无实际条目，保留原文件不写入")
+        return None
+
+    target_chars = max_chars
+    compression_threshold = min(LONG_TERM_COMPRESS_THRESHOLD, target_chars)
+
+    # 若更新后超过目标预算，触发压缩
+    if len(updated) > compression_threshold:
+        logger.info(
+            f"更新后长期记忆超过目标预算 ({len(updated)} > {target_chars} 字符)，触发压缩"
+        )
+        updated = compress_memory(updated, llm, max_chars=target_chars)
+        # 压缩是一次 LLM 改写，可能把刚剔掉的规则又写回来，再过滤一遍
+        updated, _more_dropped = strip_role_scope_clauses(updated)
+
+    # 最终硬保底
+    if len(updated) > target_chars:
+        updated = _hard_truncate(updated, target_chars)
+    return updated
+
+
+def _persist_long_term_update(
+    memory_file: Path, content: str, *, current_memory: str, max_chars: int
+) -> tuple[str, int]:
+    """在同一把跨进程锁内写 sidecar 与 Markdown，返回 ``(最终正文, 条目数)``。"""
+    with memory_lock(memory_file):
+        result = _persist_structured_memory(
+            memory_file,
+            content,
+            title=LONG_TERM_MEMORY_TITLE,
+            source=SOURCE_LLM_LONG_TERM,
+            max_chars=max_chars,
+            previous_markdown=current_memory,
+        )
+        if result is None:
+            # 解析失败 / 开关关闭：保持旧行为，Markdown 原文写入，不丢数据
+            write_memory(memory_file, content)
+            return content, 0
+        _write_markdown_file(memory_file, result.markdown)
+        return result.markdown, result.entries
+
+
 def update_long_term_memory_after_session(
     memory_file: Path,
     user_message: str,
@@ -583,6 +678,12 @@ def update_long_term_memory_after_session(
     - 这是**用户级、跨会话持久化**的长期记忆；
     - 只保留稳定、长期有效、跨会话有价值的用户偏好与可复用经验，
       不记录单次会话的临时上下文、一次性任务或寒暄。
+
+    结构：
+    1. :func:`_prepare_long_term_context`：读当前记忆 + 截断本次会话文本；
+    2. :func:`_generate_long_term_update`：LLM 生成新正文；
+    3. :func:`_sanitize_long_term_update`：剔规则 / 有意义性 / 压缩 / 硬截断；
+    4. :func:`_persist_long_term_update`：跨进程锁内写 sidecar + Markdown。
 
     Args:
         memory_file: 长期记忆文件路径（AGENTS.md）
@@ -600,13 +701,9 @@ def update_long_term_memory_after_session(
 
     start = time.time()
     try:
-        current_memory = read_memory(memory_file)
-        # 首次升级时把旧 Markdown 导入 sidecar；已同步时按内容 hash 幂等跳过
-        _import_legacy_markdown(memory_file, current_memory)
-
-        # 截断过长的会话内容，避免 token 浪费
-        user_msg_trunc = (user_message or "")[:800]
-        asst_msg_trunc = (assistant_response or "")[:2000]
+        current_memory, user_msg_trunc, asst_msg_trunc = _prepare_long_term_context(
+            memory_file, user_message, assistant_response
+        )
 
         # 如果会话内容为空（如纯工具调用无文本），跳过更新
         if not user_msg_trunc.strip() and not asst_msg_trunc.strip():
@@ -618,69 +715,27 @@ def update_long_term_memory_after_session(
             f"当前长度: {len(current_memory)} 字符"
         )
 
-        from langchain_core.messages import HumanMessage
-
-        prompt = build_long_term_memory_update_prompt(
+        updated = _generate_long_term_update(
             current_memory=current_memory,
-            user_message=user_msg_trunc,
-            assistant_response=asst_msg_trunc,
+            user_msg_trunc=user_msg_trunc,
+            asst_msg_trunc=asst_msg_trunc,
+            llm=llm,
             max_chars=max_chars,
         )
-        response = llm.invoke([HumanMessage(content=prompt)])
-        updated = getattr(response, "content", str(response)).strip()
-
         if not updated:
             logger.warning("LLM 返回空内容，长期记忆未更新")
             return enforce_memory_limit(memory_file, llm, max_chars=max_chars)
 
-        # 兜底剔除「角色职责 / 领域边界 / 拒答规则」：这份记忆会注入所有专家，
-        # 一旦写进就会被其它专家当成自己的规矩（详见 strip_role_scope_clauses）。
-        updated, dropped = strip_role_scope_clauses(updated)
-        if dropped:
-            logger.info(
-                f"🧹 用户长期记忆已剔除 {len(dropped)} 处「角色职责/拒答规则」"
-                f"（避免注入到其它专家）| 样例: {dropped[:3]}"
-            )
-        if not _has_meaningful_content(updated):
-            logger.warning("剔除角色职责后长期记忆已无实际条目，保留原文件不写入")
+        updated = _sanitize_long_term_update(updated, llm=llm, max_chars=max_chars)
+        if updated is None:
             return False
 
-        target_chars = max_chars
-        compression_threshold = min(LONG_TERM_COMPRESS_THRESHOLD, target_chars)
-
-        # 若更新后超过目标预算，触发压缩
-        if len(updated) > compression_threshold:
-            logger.info(
-                f"更新后长期记忆超过目标预算 ({len(updated)} > {target_chars} 字符)，触发压缩"
-            )
-            updated = compress_memory(updated, llm, max_chars=target_chars)
-            # 压缩是一次 LLM 改写，可能把刚剔掉的规则又写回来，再过滤一遍
-            updated, more_dropped = strip_role_scope_clauses(updated)
-            dropped.extend(more_dropped)
-
-        # 最终硬保底
-        if len(updated) > target_chars:
-            updated = _hard_truncate(updated, target_chars)
-
-        # 同会话级记忆：sidecar 与 Markdown 在同一把跨进程锁内完成。
-        with memory_lock(memory_file):
-            result = _persist_structured_memory(
-                memory_file,
-                updated,
-                title=LONG_TERM_MEMORY_TITLE,
-                source=SOURCE_LLM_LONG_TERM,
-                max_chars=target_chars,
-                previous_markdown=current_memory,
-            )
-            if result is None:
-                # 解析失败 / 开关关闭：保持旧行为，Markdown 原文写入，不丢数据
-                write_memory(memory_file, updated)
-                final_content = updated
-                entry_count = 0
-            else:
-                _write_markdown_file(memory_file, result.markdown)
-                final_content = result.markdown
-                entry_count = result.entries
+        final_content, entry_count = _persist_long_term_update(
+            memory_file,
+            updated,
+            current_memory=current_memory,
+            max_chars=max_chars,
+        )
 
         elapsed = time.time() - start
         logger.info(
