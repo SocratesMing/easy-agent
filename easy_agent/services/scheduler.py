@@ -28,6 +28,7 @@ from easy_agent.persistence.distributed_lock import get_distributed_lock
 from easy_agent.utils.blocking import run_blocking
 from easy_agent.utils.task_logger import log_task_event
 from langchain_core.callbacks import BaseCallbackHandler
+from easy_agent.agent.run_config import build_run_config, run_context_kwargs
 
 logger = logging.getLogger("easy_agent.scheduler")
 
@@ -568,7 +569,6 @@ async def _invoke_task_agent(
         raise _TaskAborted(f"任务已被暂停/删除: {task.task_id}")
     execution.thread_id = f"sched-{task.task_id}-{execution.run_id}"
     handler = _PauseAwareCallback(task.task_id)
-    from easy_agent.agent.run_config import build_run_config, run_context_kwargs
 
     # 与聊天流同一套调用参数：共享编译图必须带 SessionContext，否则 backend 在
     # before_agent 读记忆时就抛「缺少运行期 SessionContext」，任务直接失败。
@@ -697,7 +697,7 @@ async def _finalize_task_run(
     # 每次运行一个独立 thread，且关闭了 HITL，运行结束后没有需要恢复的状态；
     # checkpointer 不会自动清理，这里删掉（DA-03）
     if execution.agent is not None and execution.thread_id:
-        from easy_agent.persistence.checkpoints import adelete_agent_thread
+        from easy_agent.persistence.checkpoints import adelete_agent_thread  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
         await adelete_agent_thread(execution.agent, execution.thread_id)
 

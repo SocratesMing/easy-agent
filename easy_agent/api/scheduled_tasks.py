@@ -33,6 +33,8 @@ from easy_agent.api.files import (
 )
 from easy_agent.bootstrap.config import Config
 from easy_agent.utils.task_logger import log_task_event
+from easy_agent.middleware.auth import verify_token_sso
+from easy_agent.services.scheduler import _execute_task
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +182,6 @@ async def run_scheduled_task_now(
     if task.username != username:
         raise HTTPException(status_code=403, detail="无权操作此任务")
     try:
-        from easy_agent.services.scheduler import _execute_task
         scheduler = get_scheduler()
         scheduler.add_job(
             _execute_task,
@@ -257,11 +258,9 @@ def get_task_workspace_file(
     username = None
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
-        from easy_agent.middleware.auth import verify_token_sso
 
         username = verify_token_sso(auth_header[7:], user_repo)
     if not username and token:
-        from easy_agent.middleware.auth import verify_token_sso
 
         username = verify_token_sso(token, user_repo)
     if not username:

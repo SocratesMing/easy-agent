@@ -29,6 +29,10 @@ from easy_agent.bootstrap.env import env_int
 from easy_agent.services.sessions.runtime import instance_owner, is_stream_active
 from easy_agent.services.streaming.emitter import SSEEmitter
 from easy_agent.utils.blocking import run_blocking
+from easy_agent.db.providers import (
+    get_agent_run_repository,
+    get_stream_event_repository,
+    )
 
 logger = logging.getLogger("easy_agent.run_registry")
 
@@ -314,10 +318,6 @@ def purge_stale_stream_events(
 
 async def _run_recovery_loop(interval: float) -> None:
     # 延迟导入：run_registry 在 db 层之上，避免导入期循环
-    from easy_agent.db.providers import (
-        get_agent_run_repository,
-        get_stream_event_repository,
-    )
 
     while True:
         await asyncio.sleep(interval)

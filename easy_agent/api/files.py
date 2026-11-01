@@ -42,6 +42,7 @@ from easy_agent.services.sessions.upload_storage import (
     save_upload_to_store,
     store_mode_enabled,
 )
+from easy_agent.middleware.auth import verify_token_sso
 
 logger = logging.getLogger(__name__)
 
@@ -303,7 +304,7 @@ def serve_pdf_preview(full_path: Path, file_path: str) -> FileResponse:
     不支持的文件类型返回 400，转换失败返回 500。
     """
     try:
-        from easy_agent.services.document_convert import convert_to_pdf
+        from easy_agent.services.document_convert import convert_to_pdf  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
         pdf_path = convert_to_pdf(full_path, "pdf")
     except ValueError as e:
@@ -528,11 +529,9 @@ async def preview_file(
     username = None
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
-        from easy_agent.middleware.auth import verify_token_sso
 
         username = await asyncio.to_thread(verify_token_sso, auth_header[7:], user_repo)
     if not username and token:
-        from easy_agent.middleware.auth import verify_token_sso
 
         username = await asyncio.to_thread(verify_token_sso, token, user_repo)
     if not username:

@@ -60,7 +60,7 @@ class SessionRepository:
 
     def get_owned_session(self, session_id: str, username: str) -> SessionModel:
         """返回归属当前用户的会话；不存在或跨用户统一 404（领域异常）。"""
-        from easy_agent.db.session_ownership import (
+        from easy_agent.db.session_ownership import (  # 延迟导入：循环导入：db.repositories 与 db 包内模块互相引用，保持函数内导入
             get_owned_session as _get_owned_session,
         )
 
@@ -68,7 +68,7 @@ class SessionRepository:
 
     def get_owned_session_meta(self, session_id: str, username: str) -> dict:
         """轻量版归属校验：只返回归属/工作区所需字段，不加载消息。"""
-        from easy_agent.db.session_ownership import (
+        from easy_agent.db.session_ownership import (  # 延迟导入：循环导入：db.repositories 与 db 包内模块互相引用，保持函数内导入
             get_owned_session_meta as _get_owned_session_meta,
         )
 

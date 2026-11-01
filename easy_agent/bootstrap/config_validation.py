@@ -303,7 +303,7 @@ def _ensure_project_env_loaded() -> None:
     shell 里 export 的变量常常传不进进程，这里保证无论入口如何都能取到 .env 的值。
     """
     try:
-        from easy_agent.utils.env_loader import load_project_env
+        from easy_agent.utils.env_loader import load_project_env  # 延迟导入：可选依赖：包在 try/except 中，导入失败走降级分支
     except Exception as e:  # pragma: no cover - 兜底，不影响配置解析
         logger.debug(f"跳过项目根 .env 加载: {e}")
         return

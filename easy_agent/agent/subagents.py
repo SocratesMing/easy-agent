@@ -61,6 +61,7 @@ DEFAULT_SUBAGENTS = [
 ]
 
 from easy_agent.utils.mcp_tool_names import resolve_tool_names
+from easy_agent.agent.skills import skill_tool_resolver
 
 # 官方 SubAgent 字段（deepagents 0.7.x）+ 项目扩展键。
 # 其他键一律视为拼写错误：既不能传给框架（会 TypeError），也不该静默吞掉。
@@ -126,7 +127,6 @@ def apply_skill_gated_tools(specs, gated_tools, skills_paths, backend) -> list[d
     """
     from deepagents.middleware.skills import SkillsMiddleware
 
-    from easy_agent.agent.skills import skill_tool_resolver
 
     gated = {getattr(tool, "name", ""): tool for tool in gated_tools or ()}
     result: list[dict] = []

@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from easy_agent.bootstrap.config import Config
+from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
 try:  # POSIX 跨进程文件锁；Windows 等平台没有 fcntl，降级为进程内串行
     import fcntl as _fcntl
@@ -63,7 +64,6 @@ def builtin_root(config: Any = None) -> Path | None:
     ``config`` 缺省时读运行期配置（``get_runtime_agent_config()["config"]``）。
     """
     if config is None:
-        from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
         runtime = get_runtime_agent_config() or {}
         config = runtime.get("config") if isinstance(runtime, dict) else None

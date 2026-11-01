@@ -36,13 +36,13 @@ from easy_agent.db.schema import (  # noqa: F401 - 兼容重导出（tests/db �
     SCHEMA_VERSION,
     SCHEMA_VERSION_KEY,
 )
+from easy_agent.utils.deployment import detect_worker_count
 
 
 def _mysql_sqlite_fallback_forbidden() -> bool:
     """生产多副本连不上 MySQL 时不能改写本地 SQLite。单机开发允许降级启动。"""
     if str(env_str("AGENT_ENV", "dev")).strip().lower() != "prod":
         return False
-    from easy_agent.utils.deployment import detect_worker_count
 
     return detect_worker_count() > 1
 

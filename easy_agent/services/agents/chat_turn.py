@@ -587,7 +587,7 @@ async def prepare_turn(
     # 本人创建的可用专家，预置专家 / 他人的专家 / 不存在的 ID 一律忽略并告警。
     # 绑定后由 save_expert 工具在修改时取用（见 tools/expert_writer.py）。
     if request.pending_expert_id:
-        from easy_agent.tools.expert_writer import resolve_owned_expert
+        from easy_agent.tools.expert_writer import resolve_owned_expert  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
         owned = await asyncio.to_thread(
             resolve_owned_expert, repo.experts, username, request.pending_expert_id

@@ -28,7 +28,7 @@ def summarization_settings(config, model_key: str | None = None) -> dict:
     不能拿 ``model.model_name`` 去查：那是 API 模型名（如 ``deepseek-v4.1-flash``），
     与配置键（``deepseek``）对不上，会一律退回默认模型。
     """
-    from easy_agent.agent.model import resolve_context_length
+    from easy_agent.agent.model import resolve_context_length  # 延迟导入：导入期重依赖：避免加载 langchain/deepagents 等重依赖
 
     thr = float(getattr(config.summarization, "compression_threshold", 0.0) or 0.8)
     tgt = float(getattr(config.summarization, "compression_target", 0.0) or 0.1)
@@ -78,7 +78,7 @@ def build_summarization_middleware(
     """
     from deepagents.middleware.summarization import SummarizationMiddleware
 
-    from easy_agent.agent.turn_context import TurnAwareSummarizationMiddleware
+    from easy_agent.agent.turn_context import TurnAwareSummarizationMiddleware  # 延迟导入：导入期重依赖：避免加载 langchain/deepagents 等重依赖
 
     settings = summarization_settings(config, model_key)
     label = str(getattr(model, "model_name", None) or getattr(model, "model", None) or "model")

@@ -63,7 +63,7 @@ async def _run(args: argparse.Namespace) -> int:
     # 知识库建表函数和默认管理员策略在 import 时注册进 db（应用启动时由 app.py 导入）。
     # 前者随上面的 easy_agent.knowledges 导入已注册，后者要导入 personnel，
     # 否则 init_database 最后报「默认管理员策略未注册」。
-    import easy_agent.knowledges.personnel  # noqa: F401
+    import easy_agent.knowledges.personnel  # noqa: F401 - 延迟导入：导入期重依赖：避免脚本顶层加载 langchain/openpyxl，schema 注册留到运行期
 
     db = init_database(app_config.database.model_dump())
     ragflow = RagflowClient(config.base_url, config.api_key.get_secret_value())

@@ -58,6 +58,7 @@ from easy_agent.bootstrap.config_validation import (  # noqa: F401 - 兼容重�
     validate_config_keys,
 )
 from easy_agent.bootstrap.env import env_str
+from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
 logger = logging.getLogger(__name__)
 
@@ -480,7 +481,6 @@ class Config(BaseModel):
                 # 运行期配置结构为 {"config": Config, "win":..., "agent_env":...}，
                 # 真正的目录在 _cfg["config"].agent.workspace_dir（而非顶层 "agent" 字典）。
                 # 惰性导入避免与 agent_manager 形成循环依赖。
-                from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
                 _cfg = get_runtime_agent_config()
                 agent_cfg = _cfg.get("config") if _cfg else None
                 base = Path(agent_cfg.agent.workspace_dir)
@@ -499,7 +499,6 @@ class Config(BaseModel):
             base = Path(config.agent.workspace_dir)
         else:
             try:
-                from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
                 _cfg = get_runtime_agent_config()
                 agent_cfg = _cfg.get("config") if _cfg else None
                 base = Path(agent_cfg.agent.workspace_dir)
@@ -527,7 +526,6 @@ class Config(BaseModel):
             base = Path(config.agent.sessions_dir)
         else:
             try:
-                from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
                 _cfg = get_runtime_agent_config()
                 agent_cfg = _cfg.get("config") if _cfg else None
@@ -556,7 +554,6 @@ class Config(BaseModel):
             base = Path(config.agent.memories_dir)
         else:
             try:
-                from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
                 _cfg = get_runtime_agent_config()
                 agent_cfg = _cfg.get("config") if _cfg else None

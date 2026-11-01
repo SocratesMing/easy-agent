@@ -21,6 +21,8 @@ from easy_agent.models.db import SessionModel
 from easy_agent.db.message_serialization import (  # noqa: F401 - 兼容重导出
     _sanitize_extra_data,
 )
+from easy_agent.db.session_messages import get_messages_from_rows as _from_rows
+from easy_agent.db.session_messages import add_message_row as _add_row
 
 logger = logging.getLogger("easy_agent.db.sessions")
 
@@ -344,7 +346,6 @@ def update_last_assistant_message(db, session_id: str, message: dict):
 
 
 def add_message_row(db, session_id: str, message: dict):
-    from easy_agent.db.session_messages import add_message_row as _add_row
 
     _add_row(db, session_id, message)
 
@@ -452,7 +453,6 @@ def update_last_assistant_message_row(db, session_id: str, message: dict):
 
 
 def get_messages_from_rows(db, session_id: str) -> list[dict]:
-    from easy_agent.db.session_messages import get_messages_from_rows as _from_rows
 
     return _from_rows(db, session_id)
 

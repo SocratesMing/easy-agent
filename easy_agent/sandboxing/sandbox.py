@@ -295,7 +295,7 @@ def sandbox_report(*, sandbox_enabled: bool = True) -> dict[str, object]:
         return report
 
     bwrap_ok = bwrap_usable()
-    from easy_agent.sandboxing.landlock import landlock_usable
+    from easy_agent.sandboxing.landlock import landlock_usable  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
     landlock_ok = landlock_usable()
     if bwrap_ok:
@@ -516,7 +516,7 @@ def _format_execute_result(
 def _landlock_preflight() -> tuple[object | None, ExecuteResponse | None]:
     """导入 Landlock 执行器并确认可用；不可用时返回 fail-closed 响应。"""
     try:
-        import easy_agent.sandboxing.landlock as _ll
+        import easy_agent.sandboxing.landlock as _ll  # 延迟导入：可选依赖：包在 try/except 中，导入失败走降级分支
     except Exception as exc:  # noqa: BLE001
         return None, ExecuteResponse(
             output=f"Error: Landlock 模块不可用，已拒绝执行命令: {exc}",

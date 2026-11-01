@@ -52,6 +52,8 @@ from easy_agent.services.experts.service import (
     write_expert_version,
 )
 from easy_agent.utils.blocking import run_blocking
+from easy_agent.services.agents import tool_scope
+from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
 logger = logging.getLogger("easy_agent.tools.expert_writer")
 
@@ -194,7 +196,6 @@ def resolve_owned_expert(
 def _agent_config():
     """运行期配置（``{"config": Config, ...}``）；未初始化时返回 None。"""
     try:
-        from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
         cfg = get_runtime_agent_config()
         if cfg and cfg.get("config"):
@@ -321,7 +322,6 @@ class SaveExpertTool(BaseTool):
             )
             return []
 
-        from easy_agent.services.agents import tool_scope
 
         kept, dropped = tool_scope.normalize_expert_skills(self.username, names, sid)
         logger.info(
@@ -375,7 +375,7 @@ class SaveExpertTool(BaseTool):
             ) or pick_tag_id(structured.get("tag_id", ""), tags)
             return structured, "structured"
 
-        from easy_agent.agent.model import create_model
+        from easy_agent.agent.model import create_model  # 延迟导入：测试 monkeypatch 语义 + 导入期重依赖：函数内导入才能取到替换对象且不拖慢导入
 
         llm = create_model(config, self.config_model or None, self.session_id or None)
         generated = await generate_expert_config(
@@ -606,7 +606,7 @@ class SaveExpertTool(BaseTool):
     def _invalidate_agents_after_update(self) -> None:
         """该用户所有缓存 Agent 失效，下次请求用新版本提示词重建。"""
         try:
-            from easy_agent.bootstrap.runtime_config import invalidate_user_agents
+            from easy_agent.bootstrap.runtime_config import invalidate_user_agents  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
             invalidate_user_agents(self.username)
         except Exception as exc:  # noqa: BLE001

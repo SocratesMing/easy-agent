@@ -85,6 +85,24 @@ from easy_agent.api import (
     scheduled_tasks_router,
     expert_router,
 )
+from easy_agent.services.metrics import snapshot_metrics
+from easy_agent.services.health import ping_database, workspace_writable
+from easy_agent.services.streaming.runs import start_run_recovery
+from easy_agent.services.sessions.upload_storage import preflight_upload_store
+from easy_agent.persistence.stores import reset_store
+from easy_agent.sandboxing.sandbox import log_sandbox_startup_report
+from easy_agent.bootstrap.runtime_features import check_multi_replica_startup
+from easy_agent.utils.auth import validate_production_jwt_secret
+from easy_agent.persistence.checkpoints import shutdown_checkpointers
+from easy_agent.services.mcp.sessions import aclose_mcp_sessions
+from easy_agent.services.streaming.runs import stop_run_recovery
+from easy_agent.agent.hitl import register_execute_description_profiles
+from easy_agent.utils.deployment import (
+    deployment_errors,
+    deployment_warnings,
+    )
+from easy_agent.services.streaming.runs import recover_stale_runs
+from easy_agent.services.experts import public as public_expert_service
 
 # Web Terminal 依赖 pty（POSIX 专用），Windows 不支持，故不加载该模块
 terminal_router = None
@@ -256,7 +274,6 @@ async def _recover_stale_runs() -> None:
     不自动重新执行（执行器属于 Phase 2C）。任何异常只告警，不阻断启动。
     """
     try:
-        from easy_agent.services.streaming.runs import recover_stale_runs
 
         recovered = await asyncio.to_thread(recover_stale_runs, db_instance)
         if recovered:
@@ -272,10 +289,6 @@ async def _recover_stale_runs() -> None:
 def _check_deployment(agent_env: str) -> None:
     """部署形态 fail-fast：生产多 worker/副本 + SQLite = 运行期随机丢消息/锁表，
     这里在启动期直接拒绝（用户决策：生产强制 MySQL）。"""
-    from easy_agent.utils.deployment import (
-        deployment_errors,
-        deployment_warnings,
-    )
 
     db_type = getattr(db_instance, "db_type", "unknown")
     for msg in deployment_warnings(db_type=db_type, agent_env=agent_env, workers=None):
@@ -319,7 +332,6 @@ def _register_execute_profiles(config) -> None:
     """FW-04：execute 的 HITL 文案改由官方 HarnessProfile 注入（不再 monkeypatch
     FilesystemMiddleware）。启动期为配置中的每个模型注册一次；失败只报错，不阻断启动
     （首次建图前 agent.py 还会兜底重试）。"""
-    from easy_agent.agent.hitl import register_execute_description_profiles
 
     profile_keys = register_execute_description_profiles(config)
     if profile_keys:
@@ -335,7 +347,6 @@ def _log_public_experts() -> None:
     """公共（预置）专家目录：把「解析到哪个目录、来源是谁」打出来，
     出问题时能一眼看出是配置写错还是目录没挂上。"""
     try:
-        from easy_agent.services.experts import public as public_expert_service
 
         public_experts = public_expert_service.discover_public_experts()
         if public_experts:
@@ -360,7 +371,7 @@ async def _start_checkpointing(agent_env: str, config) -> None:
     两种后端都不能跨副本共享，prod 多副本在启动期 fail-fast（可用
     EASY_ALLOW_LEGACY_CHECKPOINTER=1 显式豁免），配置错误不再被静默吞掉。
     """
-    from easy_agent.persistence.checkpoints import (
+    from easy_agent.persistence.checkpoints import (  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
         CheckpointDeploymentError,
         start_checkpoint_backend,
         start_checkpoint_gc,
@@ -386,7 +397,6 @@ async def _start_checkpointing(agent_env: str, config) -> None:
 async def _shutdown_services(app) -> None:
     """关闭顺序：停周期恢复 → 等流式任务结束 → 刷出事件 → 关 MCP、Store、checkpointer、知识库
     → 调度器与数据库。"""
-    from easy_agent.services.streaming.runs import stop_run_recovery
 
     await stop_run_recovery()
     await drain_stream_tasks()
@@ -397,16 +407,13 @@ async def _shutdown_services(app) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"flush SSE 事件写入器失败: {exc}")
     try:
-        from easy_agent.services.mcp.sessions import aclose_mcp_sessions
 
         await aclose_mcp_sessions()
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"关闭 MCP 持久 session 失败: {exc}")
-    from easy_agent.persistence.stores import reset_store
 
     reset_store()
     try:
-        from easy_agent.persistence.checkpoints import shutdown_checkpointers
 
         await shutdown_checkpointers()
     except Exception as exc:  # noqa: BLE001
@@ -429,13 +436,11 @@ async def lifespan(app: FastAPI):
 
     # B3：生产环境 JWT 密钥 fail-fast。必须在启动期（而非模块 import 期）校验，
     # 避免 pytest / 工具脚本仅 import 就失败；dev/test 保留 data/.jwt_secret 回退。
-    from easy_agent.utils.auth import validate_production_jwt_secret
 
     validate_production_jwt_secret(env=agent_env)
 
     # Phase 0：严格多副本门禁。默认关闭；Phase 2/3 完成前开启会明确失败，
     # 避免在 SSE/run/file/sandbox 尚未外置时误宣称多副本安全。
-    from easy_agent.bootstrap.runtime_features import check_multi_replica_startup
 
     check_multi_replica_startup(agent_env)
 
@@ -454,7 +459,6 @@ async def lifespan(app: FastAPI):
     # execute 才发现落进 fail-closed。探测结果有缓存，后续 shell 后端复用同一结论。
     # EASY_SANDBOX_STRICT=1 时沙箱不可用直接拒绝启动（放在 DB 初始化之前，避免
     # fail-fast 时留下未关闭的连接池）。
-    from easy_agent.sandboxing.sandbox import log_sandbox_startup_report
 
     log_sandbox_startup_report(
         sandbox_enabled=bool(
@@ -498,14 +502,12 @@ async def lifespan(app: FastAPI):
 
         # LangGraph Store 是业务库 SqlStore，首次使用时绑定业务库；先丢掉同一进程里
         # 之前缓存的实例（测试会在一个进程里换着业务库多次启动应用）
-        from easy_agent.persistence.stores import reset_store
 
         reset_store()
 
         # 对象存储 A：EASY_UPLOAD_BACKEND=store 时上传原始文件必须落 LangGraph
         # Store，这里做启动期 fail-closed 自检（local 模式为空操作）。宁可启动
         # 失败，也不要跑起来后每次上传都 503。
-        from easy_agent.services.sessions.upload_storage import preflight_upload_store
 
         preflight_upload_store()
 
@@ -515,7 +517,6 @@ async def lifespan(app: FastAPI):
 
     # 新 pod 往往在旧 pod 的 run 租约过期前就起来了，启动时那一轮扫不到，之后定期再扫。
     # 放在所有 fail-fast 检查之后：启动失败时不留下没人收尾的后台任务
-    from easy_agent.services.streaming.runs import start_run_recovery
 
     start_run_recovery()
 
@@ -542,7 +543,7 @@ app.add_middleware(MetricsMiddleware)
 
 
 def _get_client_ip(request: Request) -> str:
-    from easy_agent.utils.client_ip import get_client_ip as _ip
+    from easy_agent.utils.client_ip import get_client_ip as _ip  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
     return _ip(request)
 
@@ -734,7 +735,6 @@ async def health_check():
 
 
 async def _readiness_payload() -> HealthResponse:
-    from easy_agent.services.health import ping_database, workspace_writable
 
     # 探针每隔几秒就来一次：查库和写盘检查都放进线程，库慢或盘慢时不拖住事件循环
     db_ok, db_detail = await asyncio.to_thread(ping_database, db_instance)
@@ -783,7 +783,6 @@ async def runtime_metrics(
     """
     if username != "admin":
         raise HTTPException(status_code=403, detail="仅管理员可以查看运行指标")
-    from easy_agent.services.metrics import snapshot_metrics
 
     return JSONResponse(content=snapshot_metrics())
 

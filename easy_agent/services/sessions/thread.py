@@ -34,6 +34,7 @@ from easy_agent.persistence.checkpoints import (
 )
 from easy_agent.services.streaming.approvals import pending_hitl_interrupts
 from easy_agent.services.streaming.messages import build_context_messages
+from easy_agent.db.repositories.message_repository import MessageRepository
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ def session_thread_in_use(config) -> bool:
 
     与 :func:`session_thread_active` 口径一致：legacy 快照 saver 下仍是每条消息一个 thread。
     """
-    from easy_agent.persistence.checkpoints import sqlite_checkpointer_active
+    from easy_agent.persistence.checkpoints import sqlite_checkpointer_active  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
     return session_thread_enabled(config) and sqlite_checkpointer_active()
 
@@ -214,7 +215,6 @@ async def plan_turn(
 
 def record_turn_checkpoint(db, session_id: str, turn_id: str, checkpoint_id: str, sid: str = "") -> None:
     """把本轮开始前会话 thread 的 checkpoint id 记到本轮用户消息上（留给将来的编辑 / 重新生成）。"""
-    from easy_agent.db.repositories.message_repository import MessageRepository
 
     try:
         MessageRepository(db).annotate_user_turn(

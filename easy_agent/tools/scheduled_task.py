@@ -20,6 +20,7 @@ from easy_agent.db.providers import (
 from easy_agent.models.db import ScheduledTaskModel
 from easy_agent.utils.blocking import run_blocking
 from easy_agent.utils.task_logger import log_task_event
+from easy_agent.services.scheduler import preview_next_run, reconcile_scheduled_tasks
 
 logger = logging.getLogger("easy_agent.tools.scheduled_task")
 
@@ -98,7 +99,6 @@ class CreateScheduledTaskTool(BaseTool):
         await run_blocking(scheduled_repo.create_scheduled_task, task)
 
         # 只写库。本进程若已有调度器，立刻对账装上 job；其它副本靠周期对账在数秒内装上。
-        from easy_agent.services.scheduler import preview_next_run, reconcile_scheduled_tasks
 
         next_run = preview_next_run(schedule_cron)
         if next_run:

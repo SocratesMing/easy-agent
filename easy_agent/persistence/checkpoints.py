@@ -28,6 +28,15 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from easy_agent.bootstrap.env import env_bool, env_int, env_str
 from easy_agent.utils.paths import PROJECT_ROOT
+from easy_agent.utils.blocking import run_blocking
+from easy_agent.persistence.thread_ids import session_id_of_thread
+from easy_agent.utils.deployment import (
+    detect_replica_count,
+    detect_workers_per_pod,
+    instance_name,
+    is_valid_instance_name,
+)
+from easy_agent.db.repositories import sessions as sessions_repo
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +127,6 @@ def resolve_sqlite_path(path: str) -> Path:
 def _pod_instance_name() -> str:
     """拼进 SQLite 路径的实例名；不能安全地放进路径时启动失败。"""
     # 延迟导入：utils 包会拉起较重依赖，checkpoints 可能先于 app 初始化被导入。
-    from easy_agent.utils.deployment import instance_name, is_valid_instance_name
 
     name = instance_name()
     if not is_valid_instance_name(name):
@@ -132,7 +140,7 @@ def _pod_instance_name() -> str:
 def detect_business_db_type() -> str | None:
     """返回已加载业务库的类型（sqlite/mysql）；不触发建库，避免启动副作用。"""
     try:
-        from easy_agent.db import database as _database_module
+        from easy_agent.db import database as _database_module  # 延迟导入：可选依赖：包在 try/except 中，导入失败走降级分支
     except Exception:  # noqa: BLE001 - 数据库模块不可用时按未知处理
         return None
     db = getattr(_database_module, "_db_instance", None)
@@ -229,7 +237,6 @@ def _resolve_replicas(replicas: int | None) -> int:
     if replicas is not None:
         return int(replicas)
     # 延迟导入：utils 包会拉起较重依赖，checkpoints 可能先于 app 初始化被导入。
-    from easy_agent.utils.deployment import detect_replica_count
 
     return detect_replica_count()
 
@@ -237,7 +244,6 @@ def _resolve_replicas(replicas: int | None) -> int:
 def _resolve_workers_per_pod(workers_per_pod: int | None) -> int:
     if workers_per_pod is not None:
         return int(workers_per_pod)
-    from easy_agent.utils.deployment import detect_workers_per_pod
 
     return detect_workers_per_pod()
 
@@ -555,7 +561,6 @@ def checkpoint_instance() -> str:
     """checkpoint 所在的实例名：按 pod 隔离时是替换进路径的名字，否则是本实例名。"""
     if _active_selection is not None and _active_selection.instance:
         return _active_selection.instance
-    from easy_agent.utils.deployment import instance_name
 
     return instance_name()
 
@@ -660,7 +665,6 @@ async def prune_deleted_session_threads(db=None) -> int:
     saver = _sqlite_saver
     if saver is None:
         return 0
-    from easy_agent.persistence.thread_ids import session_id_of_thread
 
     by_session: dict[str, list[str]] = {}
     for thread_id in await _list_thread_ids(saver):
@@ -670,11 +674,9 @@ async def prune_deleted_session_threads(db=None) -> int:
     if not by_session:
         return 0
 
-    from easy_agent.db.repositories import sessions as sessions_repo
-    from easy_agent.utils.blocking import run_blocking
 
     if db is None:
-        from easy_agent.db import get_database
+        from easy_agent.db import get_database  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
         db = get_database()
     try:

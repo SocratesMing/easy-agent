@@ -38,7 +38,7 @@ class ExpertRepository:
 
     def _store(self):
         """延迟构造 ``ExpertStore``（避免 db 层导入期环）。"""
-        from easy_agent.db.expert_store import ExpertStore
+        from easy_agent.db.expert_store import ExpertStore  # 延迟导入：循环导入：db.repositories 与 db 包内模块互相引用，保持函数内导入
 
         return ExpertStore(self._db)
 

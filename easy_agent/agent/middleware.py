@@ -44,7 +44,7 @@ def build_agent_middleware(config, max_steps) -> list:
     """
     from langchain.agents.middleware import TodoListMiddleware
 
-    from easy_agent.agent.tool_errors import build_tool_error_middleware
+    from easy_agent.agent.tool_errors import build_tool_error_middleware  # 延迟导入：导入期重依赖：避免加载 langchain/deepagents 等重依赖
 
     middleware = []
     # 0.7 起 write_todos 需要显式 TodoListMiddleware（0.6.8 是默认内置）；
@@ -54,7 +54,7 @@ def build_agent_middleware(config, max_steps) -> list:
     # 放在 ToolError **之前**：先定义的中间件在最外层，只有这样才能拿到
     # ToolErrorMiddleware 转换后的 ToolMessage（异常已变成错误文本），
     # 从而对「空结果」补终止信号。错误文本自带重试提示，这里会跳过不重复加。
-    from easy_agent.agent.tool_progress import ToolProgressMiddleware
+    from easy_agent.agent.tool_progress import ToolProgressMiddleware  # 延迟导入：导入期重依赖：避免加载 langchain/deepagents 等重依赖
 
     middleware.append(
         ToolProgressMiddleware(

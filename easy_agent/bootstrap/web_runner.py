@@ -25,7 +25,7 @@ def run_web():
 
     os.chdir(PROJECT_ROOT)
 
-    from easy_agent.bootstrap.initialization import initialize_runtime
+    from easy_agent.bootstrap.initialization import initialize_runtime  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
     initialize_runtime()
 

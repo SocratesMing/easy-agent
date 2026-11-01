@@ -66,6 +66,8 @@ from easy_agent.agent.model import (
 )
 from easy_agent.security.prompt_guard import assemble_system_prompt
 from easy_agent.utils.prompt_probe import describe_prompt, prompt_fingerprint
+from easy_agent.agent.model import resolve_llm_config
+from easy_agent.agent.tool_errors import build_tool_error_middleware
 
 
 logger = logging.getLogger(__name__)
@@ -162,7 +164,6 @@ def build_subagent_specs(
     """
     from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
-    from easy_agent.agent.tool_errors import build_tool_error_middleware
 
     specs: list[dict] = []
     for base in (GENERAL_PURPOSE_SUBAGENT, *DEFAULT_SUBAGENTS):
@@ -183,7 +184,7 @@ def _shared_graph_checkpointer():
     session 维度。MySQL 无官方 saver 时 checkpoints.py 会按 session 创建
     ``PersistentMemorySaver``，该对象不能塞进共享图，此时由调用方显式降级为按会话建图。
     """
-    from easy_agent.persistence.checkpoints import sqlite_checkpointer_active
+    from easy_agent.persistence.checkpoints import sqlite_checkpointer_active  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
     if not sqlite_checkpointer_active():
         return None
@@ -584,7 +585,6 @@ class EasyAgent(AgentWorkspaceMixin):
 
     def _resolve_actual_llm_config(self):
         """解析本会话实际使用的模型配置，并记录模型 / 提示词预览日志。"""
-        from easy_agent.agent.model import resolve_llm_config
 
         actual_llm_cfg = resolve_llm_config(self.config, self.model_name)
         logger.info(

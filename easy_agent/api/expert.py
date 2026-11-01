@@ -67,6 +67,8 @@ from easy_agent.api.expert_helpers import (
     _to_public,
     _with_guardrail,
 )
+from easy_agent.services.agents import tool_scope
+from easy_agent.services.skills import provision as skill_provision
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +180,6 @@ async def add_expert(
     expert_agent_id, name_en = build_expert_ids(request.name_cn)
 
     # 专家绑定的技能包（用户选择）：归一成 canonical 目录名后落库；不传 = 不绑定
-    from easy_agent.services.agents import tool_scope
 
     selected_skills: list[str] = []
     if request.required_skills:
@@ -274,7 +275,6 @@ async def update_expert(
     # 由 _generate_and_store 里的大模型自动归类结果覆盖。
     meta = {"export_name_cn": name_cn, "export_prompt": user_prompt}
     if request.required_skills is not None:
-        from easy_agent.services.agents import tool_scope
 
         kept, dropped = tool_scope.normalize_expert_skills(
             username, request.required_skills, "update"
@@ -528,7 +528,6 @@ def expert_required_skills(
 
     本接口**只读**：不会触发安装，也不会驱逐缓存（触发补装的是真正发消息那一刻）。
     """
-    from easy_agent.services.skills import provision as skill_provision
 
     report = skill_provision.required_skills_status(username, expert_id)
     if not report["required"]:

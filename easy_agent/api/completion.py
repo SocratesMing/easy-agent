@@ -50,7 +50,7 @@ def _get_llm(model_name: Optional[str] = None):
                 )
     # _llm_instance 是启动时懒初始化的全局变量，须在调用时读取最新值，
     # 不能用模块顶层 from import 绑定（否则拿到的是初始化前的 None）。
-    from easy_agent.services.agents.manager import _llm_instance
+    from easy_agent.services.agents.manager import _llm_instance  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
     llm = _llm_instance
     if llm is None:

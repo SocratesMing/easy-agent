@@ -327,21 +327,19 @@ def _tool_factories() -> dict[str, Callable[..., Any]]:
     其余三个工厂在对应工具真正被构造时才 import——这样单个工具模块加载失败
     只会让该工具被跳过（注册表逐条目告警），不会拖垮整次 Agent 创建。
     """
-    from easy_agent.knowledges.facade import extend_agent_tools
+
+    from easy_agent.knowledges.facade import extend_agent_tools  # 延迟导入：每次装配才加载知识库扩展，避免导入期强依赖
 
     def _scheduled_task(**kwargs: Any) -> Any:
-        from easy_agent.tools.scheduled_task import CreateScheduledTaskTool
-
+        from easy_agent.tools.scheduled_task import CreateScheduledTaskTool  # 延迟导入：工具模块加载隔离（单模块失败只跳过该工具）
         return CreateScheduledTaskTool(**kwargs)
 
     def _save_expert(**kwargs: Any) -> Any:
-        from easy_agent.tools.expert_writer import create_save_expert_tool
-
+        from easy_agent.tools.expert_writer import create_save_expert_tool  # 延迟导入：工具模块加载隔离（单模块失败只跳过该工具）
         return create_save_expert_tool(**kwargs)
 
     def _read_uploaded_file(**kwargs: Any) -> Any:
-        from easy_agent.tools.session_file_reader import ReadUploadedFileTool
-
+        from easy_agent.tools.session_file_reader import ReadUploadedFileTool  # 延迟导入：工具模块加载隔离（单模块失败只跳过该工具）
         return ReadUploadedFileTool(**kwargs)
 
     return {
@@ -424,7 +422,7 @@ async def _resolve_session_connectors(state, session_id: str) -> list[str] | Non
     recorded_connectors = state.connectors
     if recorded_connectors is None:
         try:
-            from easy_agent.services.sessions.runtime import load_connectors
+            from easy_agent.services.sessions.runtime import load_connectors  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
             recorded_connectors = await run_blocking(
                 load_connectors, get_session_runtime_repository(), session_id
@@ -837,8 +835,7 @@ def _bind_edit_target(session_id: str, expert_agent_id: str) -> str:
 
 def _save_edit_target(session_id: str, expert_agent_id: str) -> None:
     try:
-        from easy_agent.services.sessions.runtime import save_edit_target
-
+        from easy_agent.services.sessions.runtime import save_edit_target  # 延迟导入：测试按 session_runtime 模块属性 monkeypatch 写库函数
         save_edit_target(
             get_session_runtime_repository(), session_id, expert_agent_id
         )
@@ -927,7 +924,7 @@ def _apply_session_connectors(
 
 def _save_connectors(session_id: str, normalized: tuple[str, ...]) -> None:
     try:
-        from easy_agent.services.sessions.runtime import save_connectors
+        from easy_agent.services.sessions.runtime import save_connectors  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
         save_connectors(
             get_session_runtime_repository(), session_id, list(normalized)
@@ -964,7 +961,7 @@ async def aregister_stream_task(session_id: str, task: asyncio.Task[None]) -> No
 
 def _acquire_stream_lock(session_id: str) -> None:
     """获取 DB 流锁；会话已被占用时抛 ``SessionBusyError``，其它错误只记日志。"""
-    from easy_agent.services.sessions.runtime import SessionBusyError, acquire_stream
+    from easy_agent.services.sessions.runtime import SessionBusyError, acquire_stream  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
     try:
         acquire_stream(get_session_runtime_repository(), session_id)
@@ -975,8 +972,7 @@ def _acquire_stream_lock(session_id: str) -> None:
 
 
 def _remember_stream_task(session_id: str, task: asyncio.Task[None]) -> None:
-    from easy_agent.services.sessions.runtime import SessionBusyError
-
+    from easy_agent.services.sessions.runtime import SessionBusyError  # 延迟导入：与同模块其它 session_runtime 函数保持同一导入时序
     state = _state_for(session_id)
     old = state.stream_task
     if old and not old.done() and old is not task:
@@ -1027,8 +1023,7 @@ def _forget_stream_task(session_id: str, task: asyncio.Task[None] | None) -> Non
 
 def _release_stream_lock(session_id: str) -> None:
     try:
-        from easy_agent.services.sessions.runtime import release_stream
-
+        from easy_agent.services.sessions.runtime import release_stream  # 延迟导入：测试按 session_runtime 模块属性 monkeypatch 写库函数
         release_stream(get_session_runtime_repository(), session_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[{session_id[-5:]}] 会话流锁释放失败: {exc}")
@@ -1045,8 +1040,7 @@ async def cancel_stream_task(session_id: str) -> bool:
     import time as _time
 
     try:
-        from easy_agent.services.sessions.runtime import request_cancel
-
+        from easy_agent.services.sessions.runtime import request_cancel  # 延迟导入：测试按 session_runtime 模块属性 monkeypatch 写库函数
         await run_blocking(
             request_cancel, get_session_runtime_repository(), session_id
         )

@@ -280,7 +280,7 @@ def _precheck_llm():
     函数内 import 是必须的：``_llm_instance`` 在 lifespan 里才被赋值，模块顶层
     ``from ... import _llm_instance`` 会固定成初始化前的 None。
     """
-    from easy_agent.services.agents.manager import _llm_instance
+    from easy_agent.services.agents.manager import _llm_instance  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
     return _llm_instance
 

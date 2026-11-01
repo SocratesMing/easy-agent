@@ -33,6 +33,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from easy_agent.bootstrap.env import env_str
 from easy_agent.utils.deployment import detect_worker_count
+from easy_agent.utils.blocking import run_blocking
+from easy_agent.db.providers import get_rate_limit_repository
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +115,6 @@ class DBRateLimitCounter:
     def _repo(self):
         if self._db_provider is not None:
             return self._db_provider()
-        from easy_agent.db.providers import get_rate_limit_repository
 
         return get_rate_limit_repository()
 
@@ -125,8 +126,7 @@ class DBRateLimitCounter:
             if callable(try_allow):
                 return try_allow(key, limit, window_seconds, now)
             # 迁移期兼容：直接传进来的 Database / 旧测试替身走模块级 SQL 入口
-            from easy_agent.db.repositories.rate_limits import try_allow
-
+            from easy_agent.db.repositories.rate_limits import try_allow  # 延迟导入：局部变量遮蔽：函数内重新导入以取得模块级 SQL 入口，避开同名局部变量
             return try_allow(port, key, limit, window_seconds, now)
         except Exception as exc:  # 计数器故障不阻断业务
             if not self._db_failed:
@@ -198,7 +198,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         # 延迟 import：utils 包会导入 auth（bcrypt/jose），放在模块顶层会拖慢
         # app 启动早期 import，也更容易形成 middleware <-> utils 的环。
-        from easy_agent.utils.client_ip import get_client_ip
+        from easy_agent.utils.client_ip import get_client_ip  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
         client = get_client_ip(request)
         for prefix, limit, window in self.rules:
@@ -223,6 +223,5 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not getattr(self.counter, "is_shared", False):
             return self.counter.allow(key, limit, window)
         # 延迟 import，原因同 dispatch 里的 get_client_ip
-        from easy_agent.utils.blocking import run_blocking
 
         return await run_blocking(self.counter.allow, key, limit, window)

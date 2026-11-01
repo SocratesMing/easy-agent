@@ -22,13 +22,14 @@ from langgraph.store.base import (
     SearchItem,
     SearchOp,
 )
+from easy_agent.db.providers import get_agent_state_repository
+from easy_agent.db.repositories.agent_state import AgentStateRepository
+from easy_agent.db.database import Database
 
 _NS_SEP = "\x1f"
 
 def _state_port(db):
     """LangGraph store 数据端口：``AgentStateRepository``、``Database`` 连接或测试替身。"""
-    from easy_agent.db.database import Database
-    from easy_agent.db.repositories.agent_state import AgentStateRepository
 
     if isinstance(db, AgentStateRepository):
         return db
@@ -204,7 +205,6 @@ def get_agent_store(db=None) -> BaseStore:
     if _store is not None:
         return _store
     if db is None:
-        from easy_agent.db.providers import get_agent_state_repository
 
         db = get_agent_state_repository()
     _store = SqlStore(db)

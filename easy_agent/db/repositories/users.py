@@ -13,6 +13,8 @@ from typing import Optional
 
 from easy_agent.models.db import UserModel
 from easy_agent.utils.auth import hash_password, verify_password
+from easy_agent.db.user_fields_registry import get_or_create_default_admin
+from easy_agent.db.user_fields_registry import save_user_fields
 
 logger = logging.getLogger("easy_agent.db.users")
 
@@ -40,7 +42,6 @@ def create_user(db, user_data: UserModel) -> UserModel:
                 user_data.updated_at,
             ),
         )
-        from easy_agent.db.user_fields_registry import save_user_fields
 
         save_user_fields(db, cursor, user_data)
     return user_data
@@ -129,7 +130,6 @@ def update_user(db, user_data: UserModel):
             ),
         )
 
-        from easy_agent.db.user_fields_registry import save_user_fields
 
         save_user_fields(db, cursor, user_data)
 
@@ -334,7 +334,6 @@ def delete_user(db, username: str) -> bool:
         return cursor.rowcount > 0
 
 def get_or_create_default_user(db) -> UserModel:
-    from easy_agent.db.user_fields_registry import get_or_create_default_admin
 
     return get_or_create_default_admin(db)
 

@@ -41,7 +41,7 @@ router = APIRouter(prefix="/agent/personnel", tags=["Personnel"])
 @router.get("/login-policy")
 def login_policy():
     """Public UI capability flags; no users, credentials or infrastructure data."""
-    from easy_agent.services.agents.manager import get_agent_config
+    from easy_agent.services.agents.manager import get_agent_config  # 延迟导入：测试 monkeypatch 语义 + 导入期重依赖：函数内导入才能取到替换对象且不拖慢导入
     state = get_agent_config()
     policy = getattr(state.get("config"), "personnel", None) if state else None
     return {"self_registration_enabled": bool(getattr(policy, "self_registration_enabled", False))}

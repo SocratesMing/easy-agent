@@ -23,6 +23,7 @@ import logging
 
 from easy_agent.db.repositories.stream_events import append_stream_event
 from easy_agent.services.streaming.sse import is_terminal_event
+from easy_agent.db import database as database_module
 
 logger = logging.getLogger(__name__)
 
@@ -316,7 +317,6 @@ class StreamEventWriter:
         store = self._repository if self._repository is not None else self._db
         if store is None:
             # 延迟解析进程级 Database；不主动 init，避免测试/工具导入时产生副作用。
-            from easy_agent.db import database as database_module
 
             store = database_module._db_instance
         self._resolved_store = store

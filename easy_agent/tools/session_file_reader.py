@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from easy_agent.services.sessions.uploads import ensure_parsed_text
 from easy_agent.utils.blocking import run_blocking
+from easy_agent.db.providers import get_file_repository
 
 logger = logging.getLogger("easy_agent.tools.session_file_reader")
 
@@ -68,7 +69,6 @@ class ReadUploadedFileTool(BaseTool):
         if not filename.strip():
             return "错误：filename 不能为空。请传入 uploads/index.md 清单中的文件名（含扩展名）。"
 
-        from easy_agent.db.providers import get_file_repository
 
         # T3b：文件域走 FileRepository；session_uploads 的端口只要求
         # get_session / get_session_files。

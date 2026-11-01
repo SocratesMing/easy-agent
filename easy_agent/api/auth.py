@@ -35,6 +35,7 @@ from easy_agent.models.api import (
 from easy_agent.services.agents.manager import get_agent_config
 from easy_agent.utils.auth import create_access_token, hash_password
 from easy_agent.utils.auth import decode_access_token
+from easy_agent.utils.auth import ACCESS_TOKEN_EXPIRE_MINUTES
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,6 @@ def _get_token_lifetime() -> timedelta:
     配置为 0 时由 _token_never_expires() 签发无过期 token；
     其余情况保持默认 30 分钟有效期，接口调用会滑动续期后端登录缓存。
     """
-    from easy_agent.utils.auth import ACCESS_TOKEN_EXPIRE_MINUTES
 
     return timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 
@@ -87,7 +87,7 @@ def _get_context_length() -> int:
 
 
 def get_client_ip(request: Request) -> str:
-    from easy_agent.utils.client_ip import get_client_ip as _ip
+    from easy_agent.utils.client_ip import get_client_ip as _ip  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
     return _ip(request)
 
