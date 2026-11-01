@@ -47,6 +47,12 @@ from easy_agent.knowledges.facade import knowledge_router
 from easy_agent.knowledges.personnel import router as personnel_router
 from easy_agent.agent.model import create_model
 from easy_agent.models.api import HealthResponse
+from easy_agent.models.exceptions import (
+    BadRequestError,
+    ConflictError,
+    DomainError,
+    NotFoundError,
+)
 from easy_agent.utils.paths import PROJECT_ROOT
 from easy_agent.services.agent_manager import (
     drain_stream_tasks,
@@ -630,6 +636,32 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     if request_id:
         headers.setdefault("X-Request-Id", str(request_id))
     return JSONResponse(status_code=exc.status_code, content=jsonable_encoder(payload), headers=headers)
+
+
+# ── 领域异常 → HTTP 映射（T11）────────────────────────────────────────
+# 数据库层 / 服务层只抛 easy_agent.models.exceptions 里的领域异常，不再 import
+# fastapi。这里有唯一一张映射表；响应体直接复用 http_exception_handler，
+# 因此 detail 文案、code（HTTP_<status>）、request_id 与迁移前逐字一致。
+_DOMAIN_ERROR_STATUS: dict[type[DomainError], int] = {
+    BadRequestError: 400,
+    NotFoundError: 404,
+    ConflictError: 409,
+}
+
+
+@app.exception_handler(DomainError)
+async def domain_exception_handler(request: Request, exc: DomainError):
+    """领域异常按 ``_DOMAIN_ERROR_STATUS`` 转成既有的 HTTP 错误体。"""
+    for cls in type(exc).__mro__:
+        status_code = _DOMAIN_ERROR_STATUS.get(cls)
+        if status_code is not None:
+            http_exc = StarletteHTTPException(
+                status_code=status_code, detail=exc.message
+            )
+            return await http_exception_handler(request, http_exc)
+    # 未登记的领域异常子类：交给全局 500 处理器（记录 traceback，
+    # 不把内部文案返回给客户端）
+    raise exc
 
 
 @app.exception_handler(RequestValidationError)

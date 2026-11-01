@@ -22,11 +22,10 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from fastapi import HTTPException
-
 from easy_agent.db.expert_store import STATUS_ACTIVE
 from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.models.api import ChatRequest
+from easy_agent.models.exceptions import BadRequestError, NotFoundError
 from easy_agent.services.expert_service import load_active_prompt
 from easy_agent.services.session_thread import abandon_pending_approval, session_thread_in_use
 from easy_agent.services.sse import SSEEvent
@@ -113,8 +112,9 @@ def _load_expert_prompt(
         / ``""``。
 
     Raises:
-        HTTPException: 404 —— 我的专家与公共专家都找不到该 ID；
-            400 —— 命中的是我的专家但状态不是「可用」（生成失败 / 已停用）。
+        NotFoundError: 我的专家与公共专家都找不到该 ID（HTTP 映射 404）；
+        BadRequestError: 命中的是我的专家但状态不是「可用」（生成失败 / 已停用，
+            HTTP 映射 400）。
     """
     if not expert_agent_id:
         return "", "", ""
@@ -124,9 +124,7 @@ def _load_expert_prompt(
     record = repo.get_owned(expert_agent_id, user_id)
     if record is not None:
         if record.get("agent_status") != STATUS_ACTIVE:
-            raise HTTPException(
-                status_code=400, detail="专家已停用或生成失败，无法执行"
-            )
+            raise BadRequestError("专家已停用或生成失败，无法执行")
         prompt_text, version, version_dir = load_active_prompt(username, expert_agent_id)
         if prompt_text.strip():
             logger.info(
@@ -144,7 +142,7 @@ def _load_expert_prompt(
     # ── 2. 公共（预置）专家：只读目录，不落库 ─────────────────────────
     public = public_expert_service.find_public_expert(expert_agent_id)
     if public is None:
-        raise HTTPException(status_code=404, detail="专家不存在")
+        raise NotFoundError("专家不存在")
 
     prompt_text, version, prompt_path = public_expert_service.load_public_prompt(
         expert_agent_id

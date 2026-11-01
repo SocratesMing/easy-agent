@@ -3,16 +3,17 @@
 用临时 SQLite ``Database`` 直接构造 repository，不依赖 FastAPI app/lifespan。
 覆盖 API 当前使用的全部方法，重点确认：
 - repository 方法确实委托到既有 repository 函数（返回类型/字段不变）；
-- ``get_owned_session`` 保持 404 语义（不存在与跨用户一致）；
+- ``get_owned_session`` 抛 ``NotFoundError``（不存在与跨用户一致，
+  HTTP 层仍是 404，见 app.py 的领域异常映射）；
 - A2 之后消息仍只写 ``session_messages`` 行表。
 """
 
 import pytest
-from fastapi import HTTPException
 
 from easy_agent.db.database import Database
 from easy_agent.db.session_repository import SessionRepository
 from easy_agent.models.db import SessionModel
+from easy_agent.models.exceptions import NotFoundError
 
 
 def _make_db(tmp_path) -> Database:
@@ -130,15 +131,13 @@ def test_repository_get_owned_session_enforces_owner_and_404(tmp_path):
     assert repo.get_session_owner("sess-c1")["username"] == "alice"
     assert repo.get_session_owner("missing") is None
 
-    with pytest.raises(HTTPException) as cross_user:
+    with pytest.raises(NotFoundError) as cross_user:
         repo.get_owned_session("sess-c1", "bob")
-    assert cross_user.value.status_code == 404
-    assert cross_user.value.detail == "会话不存在"
+    assert cross_user.value.message == "会话不存在"
 
-    with pytest.raises(HTTPException) as missing:
+    with pytest.raises(NotFoundError) as missing:
         repo.get_owned_session("missing", "alice")
-    assert missing.value.status_code == 404
-    assert missing.value.detail == "会话不存在"
+    assert missing.value.message == "会话不存在"
 
 
 def test_repository_delete_session_removes_rows(tmp_path):

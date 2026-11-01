@@ -1,11 +1,11 @@
 """C1 剩余域：``FileRepository`` 委托、归属校验与删除权限。"""
 
 import pytest
-from fastapi import HTTPException
 
 from easy_agent.db.database import Database
 from easy_agent.db.repositories.file_repository import FileRepository
 from easy_agent.models.db import SessionModel
+from easy_agent.models.exceptions import NotFoundError
 
 
 def _make_db(tmp_path) -> Database:
@@ -70,11 +70,10 @@ def test_repository_get_owned_session_meta_enforces_owner_and_404(tmp_path):
     assert meta["username"] == "alice"
     assert meta["workspace_name"] == "ws-files"
 
-    with pytest.raises(HTTPException) as cross_user:
+    with pytest.raises(NotFoundError) as cross_user:
         repo.get_owned_session_meta("sess-files", "bob")
-    assert cross_user.value.status_code == 404
-    assert cross_user.value.detail == "会话不存在"
+    assert cross_user.value.message == "会话不存在"
 
-    with pytest.raises(HTTPException) as missing:
+    with pytest.raises(NotFoundError) as missing:
         repo.get_owned_session_meta("missing", "alice")
-    assert missing.value.status_code == 404
+    assert missing.value.message == "会话不存在"
