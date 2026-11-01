@@ -95,8 +95,8 @@
 
 ```bash
 uv sync                                  # 安装依赖（dependency-groups dev / extra docs）
-uv run pytest tests/ -q                  # 全量测试（当前基线：933+ passed）
-uvx ruff check .                         # 致命规则（E9/F63/F7/F82）+ 未使用的 import / 变量、重复定义（F401/F811/F841）
+uv run pytest tests/ -q                  # 全量测试（当前基线：2307 passed / 5 skipped，2026-11-01）
+uvx ruff check .                         # 致命规则（E9/F63/F7/F82）+ 未使用 import / 变量（F401/F811/F841）+ try/except/pass（S110）+ async 阻塞调用（ASYNC）
 python scripts/skills/sync_skills.py --check    # 技能副本一致性
 cd frontend-vue2 && npm ci && npm run build
 cd frontend && npm ci && npm run build
@@ -106,7 +106,8 @@ CI：`.github/workflows/ci.yml`（后端 ruff + pytest collect/test + 双前端 
 
 ## 6. 已知架构债（详见审计报告）
 
-- 剩余 1 个 16 模块强连通分量（`api.chat ↔ knowledges.* ↔ services`），按 `docs/archive/design/2026-10-17-module-refactor-plan.md` 分阶段处理。
+- 模块 import 图 0 个强连通分量（`scripts/quality/import_graph.py --check-scc`）；分层方向与包入口（`scripts/quality/import_layers.json`）都有 CI 门禁。
 - `Database` 仍较大（待 Phase 2 拆 repository）。
 - 多副本状态仍在进程内（agent 缓存/SSE hub/调度）；设计见 `docs/archive/design/2026-10-17-multi-instance-state.md`。
-- 安全：审计报告中的 4 个 P0 / 8 个 P1 尚未修复（Batch 0/1 未执行）。
+- 安全：SEC-01 / 02 / 04 / 05 已修复（`9a98040`）；SEC-06 / 07 / 08 / 09（prompts / completion 未鉴权、文件解析 / 预览越权）已修复；SEC-03 / 10 / 12（登录与凭据）待负责人确认策略后处理，见 `docs/design/2026-11-01-backend-improvement-backlog.md` 的 S2。
+- async 代码里的同步数据库调用仍有 41 处基线（`scripts/quality/async_blocking_whitelist.json`，只减不增）。

@@ -476,9 +476,9 @@ npm run dev
 ### 测试与质量门禁
 
 ```bash
-uv run pytest                         # 全量：当前 1607 passed / 1 skipped
+uv run pytest                         # 全量：当前 2307 passed / 5 skipped
 uv run pytest tests/agent tests/api   # 指定目录
-uvx ruff check .                      # 静态检查
+uvx ruff check .                      # 静态检查（含 S110 / ASYNC 门禁）
 python scripts/quality/import_graph.py --check-scc       # 模块 SCC=0
 python scripts/quality/check_double_write.py             # 双写冻结
 python scripts/quality/check_config_schema.py --check    # 配置键集合
