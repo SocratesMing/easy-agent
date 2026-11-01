@@ -100,7 +100,7 @@ class CreateScheduledTaskTool(BaseTool):
         if next_run:
             await run_blocking(db.update_scheduled_task_run_times, task_id, "", next_run)
         try:
-            reconcile_scheduled_tasks()
+            await reconcile_scheduled_tasks()
         except Exception as exc:  # noqa: BLE001 - 库已写入，对账失败由周期任务补
             logger.warning(f"定时任务已入库，本进程对账失败: {exc}")
 

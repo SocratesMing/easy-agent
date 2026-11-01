@@ -160,38 +160,93 @@ def preview_next_run(schedule_cron: str) -> str:
     return nxt.strftime("%Y-%m-%d %H:%M:%S") if nxt else ""
 
 
-def reconcile_scheduled_tasks() -> int:
+def _read_enabled_scheduled_tasks() -> list[ScheduledTaskModel]:
+    """同步查库：读取数据库里全部启用的定时任务。
+
+    只碰数据库、不碰进程内状态；只应通过 ``asyncio.to_thread`` 调用，避免同步驱动
+    （SQLite 单连接 + RLock、MySQL 连接池）占住事件循环。
+    """
+    return get_database().list_all_enabled_scheduled_tasks()
+
+
+def _read_scheduled_task(task_id: str) -> ScheduledTaskModel | None:
+    """同步查库：按任务 ID 读取任务的最新状态（对账复核用，只应通过 asyncio.to_thread 调用）。"""
+    return get_database().get_scheduled_task(task_id)
+
+
+def _is_stopping_in_flight(task_id: str) -> bool:
+    """任务是否真的在停止中：有停止标记，且本进程有在途运行正在被取消。
+
+    ``unregister_scheduled_task`` 对没有在途运行的任务也会写停止标记（要等下一次执行收尾
+    才清），这种陈旧标记只该清掉、不能拦住重新启用：否则任务暂停后再开启就永远不会被
+    注册。有在途运行时保留标记，交给在途执行收尾时清理。
+    """
+    if task_id not in stopping_tasks:
+        return False
+    running = running_tasks.get(task_id)
+    return running is not None and not running.done()
+
+
+async def reconcile_scheduled_tasks() -> int:
     """把本进程调度器对齐到数据库里启用的任务。
 
     每个运行中的调度器都执行：新建任务不必落在「当时处理对话的那台机器」上才会触发。
     执行本身仍由每任务分布式锁保证只跑一次。``manual-`` 前缀的手动触发 job 不参与对账。
-    调度器未初始化或未启动时直接返回。
+
+    事件循环约束：数据库层是同步的，读库 / 写库都放进线程；对齐（读 job 列表、注册 /
+    注销、``stopping_tasks`` 等进程内状态）留在事件循环上。注册新任务前还要按任务 ID
+    复核「是否正在停止」和「库里是否仍启用」（读库放线程），避免把批量读之后刚被停用的
+    任务装回去。调度器未初始化或未启动时不读库，直接返回 0。
     """
-    if _scheduler_instance is None or not _scheduler_instance.running:
+    scheduler = _scheduler_instance
+    if scheduler is None or not scheduler.running:
         return 0
-    db = get_database()
-    tasks = db.list_all_enabled_scheduled_tasks()
+
+    # 第一步（线程）：批量读启用的任务；对齐只留在事件循环上做。
+    tasks = await asyncio.to_thread(_read_enabled_scheduled_tasks)
+    if not scheduler.running:
+        # 读库期间调度器被关闭：没有可对齐的对象
+        return 0
     wanted = {task.task_id: task for task in tasks}
     existing = {
         job.id
-        for job in _scheduler_instance.get_jobs()
+        for job in scheduler.get_jobs()
         if not str(job.id).startswith("manual-")
     }
     added = 0
-    for task_id, task in wanted.items():
+    for task_id in wanted:
         if task_id in existing:
             continue
-        next_run = register_scheduled_task(task)
+        # 复核一：暂停/删除请求（unregister）已经把任务标记为停止中，不要装回去。
+        # 没有在途运行的标记是上一次暂停留下的陈旧值，清掉后按最新库状态处理。
+        if task_id in stopping_tasks:
+            if _is_stopping_in_flight(task_id):
+                logger.info(f"定时任务对账跳过停止中的任务 | task_id={task_id}")
+                continue
+            stopping_tasks.discard(task_id)
+        # 复核二（线程）：按任务 ID 读最新状态。批量读到这里之间任务可能刚被停用/删除。
+        latest = await asyncio.to_thread(_read_scheduled_task, task_id)
+        if latest is None or not latest.enabled or task_id in stopping_tasks:
+            logger.info(f"定时任务对账跳过已停用/删除的任务 | task_id={task_id}")
+            continue
+        next_run = register_scheduled_task(latest)
         if next_run:
-            db.update_scheduled_task_run_times(task_id, task.last_run_at or "", next_run)
+            # 写库同样放进线程，不占事件循环
+            await asyncio.to_thread(
+                get_database().update_scheduled_task_run_times,
+                task_id,
+                latest.last_run_at or "",
+                next_run,
+            )
             added += 1
-    for job_id in existing - set(wanted):
+    removed = existing - set(wanted)
+    for job_id in removed:
         unregister_scheduled_task(job_id)
-    if added or existing - set(wanted):
+    if added or removed:
         logger.info(
             "定时任务对账 | 新增 %s | 移除 %s | 启用 %s",
             added,
-            len(existing - set(wanted)),
+            len(removed),
             len(wanted),
         )
     return added
@@ -200,7 +255,7 @@ def reconcile_scheduled_tasks() -> int:
 async def _reconcile_loop() -> None:
     while True:
         try:
-            reconcile_scheduled_tasks()
+            await reconcile_scheduled_tasks()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - 对账失败不拖垮调度器

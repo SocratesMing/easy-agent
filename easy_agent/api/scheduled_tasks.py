@@ -120,7 +120,7 @@ async def delete_scheduled_task(
         logger.warning(f"移除 scheduler job 失败: {e}")
     await asyncio.to_thread(repo.delete_scheduled_task, task_id)
     try:
-        reconcile_scheduled_tasks()
+        await reconcile_scheduled_tasks()
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"删除后对账失败: {exc}")
     logger.info(f"[{username}] 删除定时任务 | task_id={task_id}")
@@ -153,7 +153,7 @@ async def toggle_scheduled_task(
         except Exception as e:
             logger.warning(f"移除 scheduler job 失败: {e}")
     try:
-        reconcile_scheduled_tasks()
+        await reconcile_scheduled_tasks()
     except Exception as e:
         logger.warning(f"切换状态后对账失败: {e}")
     logger.info(f"[{username}] 切换定时任务状态 | task_id={task_id} | enabled={new_enabled}")

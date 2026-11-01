@@ -4,10 +4,6 @@
     "easy_agent/api/chat.py": {
       "chat_stream() -> skill_provision.provision_expert_skills": 1
     },
-    "easy_agent/api/scheduled_tasks.py": {
-      "delete_scheduled_task() -> reconcile_scheduled_tasks": 1,
-      "toggle_scheduled_task() -> reconcile_scheduled_tasks": 1
-    },
     "easy_agent/app.py": {
       "lifespan() -> _init_database_and_state": 1,
       "lifespan() -> _start_scheduler": 1
@@ -62,17 +58,10 @@
       "adelete_thread() -> self._flush": 1,
       "aput() -> self._flush": 1,
       "aput_writes() -> self._flush": 1
-    },
-    "easy_agent/services/scheduler.py": {
-      "_reconcile_loop() -> reconcile_scheduled_tasks": 1
-    },
-    "easy_agent/tools/scheduled_task.py": {
-      "_arun() -> reconcile_scheduled_tasks": 1
     }
   },
   "reasons": {
     "easy_agent/api/chat.py": "provision_expert_skills 对 builtin-skills.json 做无锁的读改写，留在事件循环上与其他请求串行；放进线程会和并发请求互相覆盖",
-    "easy_agent/api/scheduled_tasks.py": "reconcile_scheduled_tasks 读库后立即对齐本进程调度器，两步要在事件循环上一次做完；读库放进线程的话，与暂停 / 删除交错会把刚停用的任务重新注册",
     "easy_agent/app.py": "lifespan 启动阶段，还没有接流量",
     "easy_agent/knowledges/api.py": "知识库域另行处理：origin/rag-1018 正在改 knowledges/api.py 与 chat/chat_bridge.py，合并后再把这些调用挪进线程",
     "easy_agent/knowledges/chat/chat_bridge.py": "知识库域另行处理：origin/rag-1018 正在改 knowledges/api.py 与 chat/chat_bridge.py，合并后再把这些调用挪进线程",
@@ -80,8 +69,6 @@
     "easy_agent/knowledges/scripts/migrate_knowledge_to_shared.py": "命令行脚本（asyncio.run），没有并发请求",
     "easy_agent/knowledges/scripts/sync_source_docs.py": "命令行脚本（asyncio.run），没有并发请求",
     "easy_agent/middleware/rate_limit.py": "这一行只走进程内计数器（is_shared=False，只改内存）；共享计数器已经 run_blocking",
-    "easy_agent/persistence/checkpoints.py": "legacy 回退 saver：_flush 要在事件循环上对进程内的 storage / writes 做快照，放进线程会和并发的 aput 交错；只在回退模式启用",
-    "easy_agent/services/scheduler.py": "reconcile_scheduled_tasks 读库后立即对齐本进程调度器，两步要在事件循环上一次做完；读库放进线程的话，与暂停 / 删除交错会把刚停用的任务重新注册",
-    "easy_agent/tools/scheduled_task.py": "reconcile_scheduled_tasks 读库后立即对齐本进程调度器，两步要在事件循环上一次做完；读库放进线程的话，与暂停 / 删除交错会把刚停用的任务重新注册"
+    "easy_agent/persistence/checkpoints.py": "legacy 回退 saver：_flush 要在事件循环上对进程内的 storage / writes 做快照，放进线程会和并发的 aput 交错；只在回退模式启用"
   }
 }
