@@ -15,9 +15,30 @@ from datetime import datetime
 from pathlib import Path
 
 from easy_agent.bootstrap.env import env_bool
+from easy_agent.db.repositories.message_repository import MessageRepository
+from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.services.stream_messages import _partial_message_dict, tool_call_records_to_dicts
 
 logger = logging.getLogger("easy_agent.chat_service")
+
+
+def _message_port(db):
+    """消息域数据端口：``MessageRepository``，或提供同名方法的旧数据端口。
+
+    T3 之后生产路径应传 ``MessageRepository``；迁移期 orchestrator 仍以 ``db=``
+    传入进程级 ``Database``（其消息方法保留给知识库域），测试替身则直接实现这几个
+    方法。本适配只统一调用写法，不改变任何持久化语义与异常策略。
+    """
+    if callable(getattr(db, "update_last_assistant_message", None)):
+        return db
+    return MessageRepository(db)
+
+
+def _session_port(db):
+    """会话域数据端口：``SessionRepository``，或提供 ``get_session`` 的旧数据端口。"""
+    if callable(getattr(db, "get_session", None)):
+        return db
+    return SessionRepository(db)
 
 
 def persist_incremental(
@@ -29,7 +50,7 @@ def persist_incremental(
     """
     try:
         msg = _partial_message_dict(proc, time.time() - start_time)
-        db.update_last_assistant_message(session_id, msg)
+        _message_port(db).update_last_assistant_message(session_id, msg)
     except Exception as e:
         logger.warning(f"[{sid}] 增量持久化失败: {e}")
 
@@ -111,7 +132,7 @@ def persist_partial(
         partial_msg = _partial_message_dict(
             proc, time.time() - start_time, with_approval=with_approval
         )
-        db.update_last_assistant_message(session_id, partial_msg)
+        _message_port(db).update_last_assistant_message(session_id, partial_msg)
     except Exception as e:
         if raise_on_error:
             raise
@@ -176,14 +197,21 @@ def persist_tool_result_event(
 def persist_todos(db, session_id: str, todos: list, sid: str) -> None:
     """持久化 Todo list（失败只记日志）。"""
     try:
-        db.update_session_todos(session_id, todos)
+        # ``update_session_todos`` 已从 Database 门面删除（T3a）：旧数据端口
+        # （测试替身 / 迁移期调用方）有同名方法就直接用，否则走会话领域 repository。
+        port = (
+            db
+            if callable(getattr(db, "update_session_todos", None))
+            else SessionRepository(db)
+        )
+        port.update_session_todos(session_id, todos)
     except Exception as e:
         logger.warning(f"[{sid}] 持久化 Todo list 失败: {e}")
 
 
 def persist_final_message(db, session_id: str, message: dict) -> None:
     """写入最终 assistant 消息（异常向上抛，由生成器统一转 error 事件）。"""
-    db.update_last_assistant_message(session_id, message)
+    _message_port(db).update_last_assistant_message(session_id, message)
 
 
 def persist_approval_decisions(
@@ -194,7 +222,7 @@ def persist_approval_decisions(
     if not status_by_id:
         return
     try:
-        sess = db.get_session(session_id)
+        sess = _session_port(db).get_session(session_id)
         if not sess or not sess.messages:
             return
         last = sess.messages[-1]
@@ -211,7 +239,7 @@ def persist_approval_decisions(
             ):
                 b["approval_status"] = status_by_id[b["tool_call_id"]]
                 b.pop("pending_approval", None)
-        db.update_last_assistant_message(session_id, last)
+        _message_port(db).update_last_assistant_message(session_id, last)
     except Exception as e:
         logger.warning(f"[{sid}] 持久化审批决策失败: {e}")
 
@@ -239,7 +267,7 @@ def write_session_context_snapshot(
         log_dir.mkdir(parents=True, exist_ok=True)
         context_path = log_dir / context_filename
 
-        session = db.get_session(session_id)
+        session = _session_port(db).get_session(session_id)
         all_messages = session.messages if session else []
 
         context_data = {

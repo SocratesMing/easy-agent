@@ -114,6 +114,17 @@ def main(argv: list[str] | None = None) -> int:
                         database_delegations=result.stats.get("database_delegations", 0),
                     )
                 )
+                print(
+                    "  Seams outside easy_agent/db: {get_database_calls_outside_db} get_database() calls, "
+                    "{database_escape_hatch_refs} .database refs".format(
+                        get_database_calls_outside_db=result.stats.get(
+                            "get_database_calls_outside_db", 0
+                        ),
+                        database_escape_hatch_refs=result.stats.get(
+                            "database_escape_hatch_refs", 0
+                        ),
+                    )
+                )
         else:
             print(
                 f"[double-write] FAIL — {len(result.violations)} violation(s); "

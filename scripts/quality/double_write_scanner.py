@@ -21,11 +21,21 @@ if str(_ROOT_FOR_IMPORTS) not in sys.path:
 from scripts.quality.double_write_allowlists import (  # noqa: E402
     FROZEN_DATABASE_METHODS,
     INFRA_DATABASE_METHODS,
+    MAX_DATABASE_ESCAPE_HATCH_REFS,
+    MAX_DATABASE_METHODS,
+    MAX_DATABASE_PURE_DELEGATIONS,
+    MAX_GET_DATABASE_CALLS_OUTSIDE_DB,
 )
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[2]
 SESSIONS_REL = "easy_agent/db/repositories/sessions.py"
 DATABASE_REL = "easy_agent/db/database.py"
+# T3 计数口径：统计 easy_agent/ 下除 easy_agent/db/ 以外的调用点。
+APP_PACKAGE = "easy_agent"
+DB_PACKAGE_PREFIX = "easy_agent/db/"
+
+# ``.database`` 逃生口的接收者名字（与设计文档 §5 的 grep 口径一致）。
+_ESCAPE_HATCH_RECEIVERS = frozenset({"repo", "repository", "db"})
 
 # --- SQL/AST helpers ----------------------------------------------------------
 
@@ -672,6 +682,112 @@ def check_database_file(
     return check_database_source(source, name, stats)
 
 
+def _iter_app_python_files(root: Path):
+    """``easy_agent/`` 下、``easy_agent/db/`` 之外的 Python 文件（相对路径, 绝对路径）。"""
+    package_dir = root / APP_PACKAGE
+    if not package_dir.is_dir():
+        return
+    for path in sorted(package_dir.rglob("*.py")):
+        relative = path.relative_to(root).as_posix()
+        if relative.startswith(DB_PACKAGE_PREFIX):
+            continue
+        yield relative, path
+
+
+def _parse_file(path: Path) -> ast.AST | None:
+    try:
+        return ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, SyntaxError):
+        return None
+
+
+def count_get_database_calls(root: str | Path = DEFAULT_ROOT) -> int:
+    """统计 ``easy_agent/`` 中 ``db/`` 之外显式调用 ``get_database()`` 的次数（AST）。"""
+    root = Path(root)
+    total = 0
+    for _relative, path in _iter_app_python_files(root):
+        tree = _parse_file(path)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "get_database"
+            ):
+                total += 1
+    return total
+
+
+def count_database_escape_hatches(root: str | Path = DEFAULT_ROOT) -> int:
+    """统计 ``easy_agent/`` 中 ``db/`` 之外的 ``repo/repository/db.database`` 引用。
+
+    这是「调用方还从 repository 门面往下取 ``Database``」的逃生口数量。AST 口径
+    天然排除 ``from easy_agent.db.database import ...`` 这类导入行与注释，只数真实
+    属性访问。
+    """
+    root = Path(root)
+    total = 0
+    for _relative, path in _iter_app_python_files(root):
+        tree = _parse_file(path)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr == "database"
+                and isinstance(node.value, ast.Name)
+                and node.value.id in _ESCAPE_HATCH_RECEIVERS
+            ):
+                total += 1
+    return total
+
+
+def _counter_violations(stats: dict[str, int]) -> list[Violation]:
+    """数据访问层收敛的四个只减不增上限（T3）。"""
+    limits = (
+        (
+            "database_methods",
+            MAX_DATABASE_METHODS,
+            "DW210",
+            "Database 方法总数",
+        ),
+        (
+            "database_delegations",
+            MAX_DATABASE_PURE_DELEGATIONS,
+            "DW211",
+            "Database 纯委托方法数",
+        ),
+        (
+            "get_database_calls_outside_db",
+            MAX_GET_DATABASE_CALLS_OUTSIDE_DB,
+            "DW212",
+            "easy_agent/db/ 之外 get_database() 调用数",
+        ),
+        (
+            "database_escape_hatch_refs",
+            MAX_DATABASE_ESCAPE_HATCH_REFS,
+            "DW213",
+            "easy_agent/db/ 之外 .database 逃生口引用数",
+        ),
+    )
+    violations: list[Violation] = []
+    for key, limit, code, label in limits:
+        current = int(stats.get(key, 0))
+        if current > limit:
+            violations.append(
+                Violation(
+                    "easy_agent",
+                    0,
+                    code,
+                    f"{label} {current} 超过只减不增上限 {limit}：新增数据访问请改用"
+                    " 领域 repository（easy_agent/db/repositories/）或用"
+                    " easy_agent.db.providers 的 provider，不要扩大 Database 门面",
+                )
+            )
+    return violations
+
+
 def check_repository(root: str | Path = DEFAULT_ROOT) -> CheckResult:
     """Run both freeze checks against a repository root."""
     root = Path(root)
@@ -692,4 +808,8 @@ def check_repository(root: str | Path = DEFAULT_ROOT) -> CheckResult:
             result.violations.extend(checker(path, relative, result.stats))
         else:
             result.violations.extend(checker(path, relative))
+    # T3：db/ 以外的数据访问收敛计数（只减不增，超过上限直接 FAIL）。
+    result.stats["get_database_calls_outside_db"] = count_get_database_calls(root)
+    result.stats["database_escape_hatch_refs"] = count_database_escape_hatches(root)
+    result.violations.extend(_counter_violations(result.stats))
     return result

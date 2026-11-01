@@ -102,13 +102,13 @@ def renew_stream_lease(
     services 层的 ``session_runtime.renew_stream`` 和仓储的 ``renew_stream`` 心跳都走这里。
     """
     now = datetime.now(UTC)
-    return db.renew_session_stream(
+    return renew_session_stream(
+        db,
         session_id,
         owner,
         (now + timedelta(seconds=ttl_seconds)).isoformat(timespec="seconds"),
         now.isoformat(timespec="seconds"),
     )
-
 
 
 def release_session_stream(db, session_id: str, owner: str, now_iso: str) -> bool:
@@ -190,3 +190,75 @@ def upsert_session_runtime(
                 """,
                 values,
             )
+
+
+class SessionRuntimeRepository:
+    """会话运行期状态（``session_runtime`` 表）repository。
+
+    覆盖流锁（原子抢占 / 续约 / 条件释放）、连接器开关缓存与待修改专家绑定。
+    :mod:`easy_agent.services.session_runtime` 的函数只调用同名方法，因此服务层
+    可以直接接收本对象（duck typing），不必再依赖 ``Database``。
+
+    方法签名写全；SQL、事务边界与状态语义仍在模块级函数里，本类不改变它们。
+    """
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def get_session_runtime(self, session_id: str) -> dict | None:
+        return get_session_runtime(self._db, session_id)
+
+    def try_acquire_session_stream(
+        self,
+        session_id: str,
+        owner: str,
+        until_iso: str,
+        now_iso: str,
+    ) -> tuple[bool, dict | None]:
+        """原子抢占会话流锁；成功返回 ``(True, None)``，被占用返回 ``(False, row)``。"""
+        return try_acquire_session_stream(
+            self._db, session_id, owner, until_iso, now_iso
+        )
+
+    def renew_session_stream(
+        self, session_id: str, owner: str, until_iso: str, now_iso: str
+    ) -> bool:
+        return renew_session_stream(self._db, session_id, owner, until_iso, now_iso)
+
+    def renew_stream_lease(
+        self, session_id: str, owner: str, *, ttl_seconds: int = STREAM_TTL_SECONDS
+    ) -> bool:
+        """为 ``owner`` 持有的流锁续约一个租期；owner 已变化时返回 False。"""
+        return renew_stream_lease(
+            self._db, session_id, owner, ttl_seconds=ttl_seconds
+        )
+
+    def release_session_stream(
+        self, session_id: str, owner: str, now_iso: str
+    ) -> bool:
+        """条件释放会话流锁：只有锁仍归 ``owner`` 时才清空。"""
+        return release_session_stream(self._db, session_id, owner, now_iso)
+
+    def upsert_session_runtime(
+        self,
+        session_id: str,
+        *,
+        connectors: Any = None,
+        edit_target: Any = None,
+        stream_owner: Any = None,
+        stream_until: Any = None,
+        cancel_requested: Any = None,
+        clear_connectors: bool = False,
+    ) -> None:
+        """按字段部分更新（未传的字段保留原值）；``clear_connectors`` 清空连接器缓存。"""
+        upsert_session_runtime(
+            self._db,
+            session_id,
+            connectors=connectors,
+            edit_target=edit_target,
+            stream_owner=stream_owner,
+            stream_until=stream_until,
+            cancel_requested=cancel_requested,
+            clear_connectors=clear_connectors,
+        )
+

@@ -536,12 +536,12 @@ async def upload_session_file(
             filename=safe_filename,
             size=size,
             file_type=ext,
-            db=repo.database,
+            db=repo,
             source_name=saved_name,
         )
         if parsed_entry:
             await asyncio.to_thread(
-                append_manifest, session_id, username, [parsed_entry], repo.database
+                append_manifest, session_id, username, [parsed_entry], repo
             )
     except Exception as e:
         # 解析/清单失败不能影响上传本身：文件已落盘、记录已入库，用户仍可继续对话

@@ -3,6 +3,8 @@
 
 from fastapi.testclient import TestClient
 
+from easy_agent.db.repositories.message_repository import MessageRepository
+
 
 def _create_session(client: TestClient, title=None):
     body = {"title": title} if title else {}
@@ -79,7 +81,7 @@ def test_history_keeps_raw_thinking(client, db):
     """历史读取保留原文思考：前端「思考过程」要显示真实内容，不能退化成固定摘要。"""
     sid = _create_session(client)
     thinking = "先核对用户给的表格字段，再决定是否调用工具补数据"
-    db.add_message(
+    MessageRepository(db).add_message(
         sid,
         {
             "role": "assistant",
@@ -235,7 +237,7 @@ def test_session_endpoints_report_the_window_of_the_latest_turn_model(client, db
 
     monkeypatch.setattr(sessions_api, "get_context_length", lambda: 1_000_000)
     sid = _create_session(client)
-    db.add_message(sid, {"role": "assistant", "content": "a", "usage": {
+    MessageRepository(db).add_message(sid, {"role": "assistant", "content": "a", "usage": {
         "input_tokens": 900, "output_tokens": 10, "context_tokens": 900,
         "context_length": 131072, "elapsed_time": 1.0, "step_count": 1}})
 
@@ -252,7 +254,7 @@ def test_session_endpoints_fall_back_to_the_default_window_for_old_messages(clie
 
     monkeypatch.setattr(sessions_api, "get_context_length", lambda: 4242)
     sid = _create_session(client)
-    db.add_message(sid, {"role": "assistant", "content": "a", "usage": {
+    MessageRepository(db).add_message(sid, {"role": "assistant", "content": "a", "usage": {
         "input_tokens": 5, "output_tokens": 1, "context_tokens": 5}})
 
     assert client.get(f"/agent/sessions/{sid}").json()["context_length"] == 4242

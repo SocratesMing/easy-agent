@@ -12,6 +12,8 @@ import pytest
 
 from easy_agent.db import database as dbmod
 from easy_agent.db.database import Database, SCHEMA_VERSION, EXPECTED_TABLES
+from easy_agent.db.repositories.message_repository import MessageRepository
+from easy_agent.db.repositories.session_repository import SessionRepository
 
 # 导入领域 schema 模块完成注册（Database.init_tables 通过 schema_registry 调用）
 import easy_agent.knowledges.core.schema  # noqa: E402,F401
@@ -169,11 +171,11 @@ def test_list_sessions_uses_maintained_message_count(sqlite_path):
     db.create_session(
         SessionModel(session_id="s1", title="hello", username="u", created_at="t", updated_at="t")
     )
-    db.add_message("s1", {"role": "user", "content": "hi"})
-    db.update_last_assistant_message("s1", {"role": "assistant", "content": "ok"})
-    db.update_last_assistant_message("s1", {"role": "assistant", "content": "ok-again"})
+    MessageRepository(db).add_message("s1", {"role": "user", "content": "hi"})
+    MessageRepository(db).update_last_assistant_message("s1", {"role": "assistant", "content": "ok"})
+    MessageRepository(db).update_last_assistant_message("s1", {"role": "assistant", "content": "ok-again"})
 
-    [session] = db.list_sessions(username="u")
+    [session] = SessionRepository(db).list_sessions(username="u")
     assert len(session.messages) == 2
 
 

@@ -3,7 +3,12 @@
 import pytest
 
 from easy_agent.db.database import Database
+from easy_agent.db.repositories.agent_runs import AgentRunRepository
 from easy_agent.db.repositories.chat_repository import ChatRepository
+from easy_agent.db.repositories.message_repository import MessageRepository
+from easy_agent.db.repositories.session_repository import SessionRepository
+from easy_agent.db.repositories.session_runtime import SessionRuntimeRepository
+from easy_agent.db.repositories.stream_events import StreamEventRepository
 from easy_agent.models.db import SessionModel
 from easy_agent.models.exceptions import NotFoundError
 
@@ -101,3 +106,25 @@ def test_repository_get_owned_session_meta_enforces_owner_and_404(tmp_path):
     assert missing.value.message == "会话不存在"
 
     assert repo.renew_stream("missing") is False
+
+
+def test_repository_composes_the_five_domain_repositories(tmp_path):
+    """T3：ChatRepository 是组合门面，领域 repository 各自可单独注入/替换。"""
+    db = _make_db(tmp_path)
+    repo = ChatRepository(db)
+
+    assert isinstance(repo.sessions, SessionRepository)
+    assert isinstance(repo.messages, MessageRepository)
+    assert isinstance(repo.runs, AgentRunRepository)
+    assert isinstance(repo.runtime, SessionRuntimeRepository)
+    assert isinstance(repo.stream_events, StreamEventRepository)
+    # 兼容方法委托到组合出来的领域 repository（同一底层连接）
+    assert repo.sessions.database is db
+    repo.create_session(_session())
+    repo.messages.add_message(
+        "sess-chat", {"role": "user", "content": "组合", "timestamp": "t1"}
+    )
+    assert [m["content"] for m in repo.messages.get_messages("sess-chat")] == ["组合"]
+    # run / 流事件域也能从门面直接拿到底层记录
+    assert repo.runs.get_run("missing-run") is None
+    assert repo.stream_events.clear_stream_events("sess-chat") == 0

@@ -53,15 +53,17 @@ RETAINED_DATABASE_BOUNDARIES = {
     "scheduled_tasks.py": 0,
     # 2026-10-22 专家对话并入 /agent/chat/stream 后，/agent/stream_export_run 连同
     # 其 run 登记（repo.database ×4）一起删除；专家对话的 run 登记走 chat.py 的
-    # start_run 边界（已计入 chat.py:9）。
+    # start_run 边界。
+    # T3a（2026-11-01）：chat_stream / chat_resume 的 start_run 改传 repo.runs，11 → 9。
     "expert.py": 0,
     # 知识域鉴权/编排 ×2 + 专家绑定 ×1 + 流式引擎 ×2 + 事件回放/状态 ×4
     # + Phase 2B run 登记 ×2（chat_stream / chat_resume 的 start_run）
     # + 2026-10-22 专家对话并入 chat_stream：ExpertRepository 构造 ×1 +
     #   短路拒答落库 ×1（原 /agent/stream_export_run 的边界随路由一起迁入）
-    "chat.py": 11,
+    "chat.py": 9,
     "chat_live.py": 2,
-    "sessions.py": 2,  # 会话上传清单 / session_uploads 构造边界
+    # T3a（2026-11-01）：session_uploads 端口直接吃 SessionRepository，2 → 0。
+    "sessions.py": 0,
 }
 
 

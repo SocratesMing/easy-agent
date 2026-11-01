@@ -22,12 +22,9 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from easy_agent.db.repositories import agent_runs as agent_runs_repo
-from easy_agent.db.repositories import session_runtime as session_runtime_repo
-from easy_agent.db.repositories.stream_events import (
-    append_stream_event,
-    delete_stream_events_before,
-)
+from easy_agent.db.repositories.agent_runs import AgentRunRepository
+from easy_agent.db.repositories.session_runtime import SessionRuntimeRepository
+from easy_agent.db.repositories.stream_events import StreamEventRepository
 from easy_agent.bootstrap.env import env_int
 from easy_agent.services.session_runtime import instance_owner, is_stream_active
 from easy_agent.services.sse_emitter import SSEEmitter
@@ -82,6 +79,28 @@ def _lease_seconds(lease_seconds: int | None = None) -> int:
     return max(1, seconds)
 
 
+# ── 迁移期适配：接受 ``Database`` 或已构造的领域 repository ──────────────
+def _runs(db_or_repository) -> AgentRunRepository:
+    """把 ``Database``（app 启动恢复等旧调用方）或已构造的 repository 统一成 run 域对象。"""
+    if isinstance(db_or_repository, AgentRunRepository):
+        return db_or_repository
+    return AgentRunRepository(db_or_repository)
+
+
+def _runtime(db_or_repository) -> SessionRuntimeRepository:
+    """会话运行期状态域对象（流锁/连接器），语义同 :func:`_runs`。"""
+    if isinstance(db_or_repository, SessionRuntimeRepository):
+        return db_or_repository
+    return SessionRuntimeRepository(db_or_repository)
+
+
+def _stream_events(db_or_repository) -> StreamEventRepository:
+    """SSE 事件持久化域对象，语义同 :func:`_runs`。"""
+    if isinstance(db_or_repository, StreamEventRepository):
+        return db_or_repository
+    return StreamEventRepository(db_or_repository)
+
+
 def new_run_id(session_id: str, message_id: str = "") -> str:
     """生成 run_id：``session_id:message_id``，message_id 缺失时用 uuid 兜底。
 
@@ -106,8 +125,7 @@ def start_run(
     """登记 run 为 running；异常只记日志，返回 False（不影响聊天）。"""
     try:
         until = _iso(_utc_now() + timedelta(seconds=_lease_seconds(lease_seconds)))
-        return agent_runs_repo.start_run(
-            db,
+        return _runs(db).start_run(
             run_id,
             session_id,
             username or "",
@@ -131,7 +149,7 @@ def renew_run(
     """续约 running run；异常只记日志，返回 False。"""
     try:
         until = _iso(_utc_now() + timedelta(seconds=_lease_seconds(lease_seconds)))
-        return agent_runs_repo.renew_run(db, run_id, owner or instance_owner(), until)
+        return _runs(db).renew_run(run_id, owner or instance_owner(), until)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"续约 run 失败（忽略本次） | run={run_id} | {type(exc).__name__}: {exc}")
         return False
@@ -140,13 +158,18 @@ def renew_run(
 def finish_run(db, run_id: str, status: str, error: str = "") -> bool:
     """落 run 终态；异常只记日志，返回 False。"""
     try:
-        return agent_runs_repo.finish_run(db, run_id, status, (error or "")[:MAX_ERROR_CHARS])
+        return _runs(db).finish_run(run_id, status, (error or "")[:MAX_ERROR_CHARS])
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"写入 run 终态失败（忽略） | run={run_id} | {type(exc).__name__}: {exc}")
         return False
 
 
-def recover_stale_runs(db, now: datetime | None = None) -> int:
+def recover_stale_runs(
+    db,
+    now: datetime | None = None,
+    *,
+    stream_events: StreamEventRepository | None = None,
+) -> int:
     """把租约过期的 running run 标记为 interrupted，并补一条 error 事件。
 
     多 Pod 同时启动时，只有 ``mark_interrupted`` 返回 True 的 Pod 才写 SSE
@@ -154,6 +177,8 @@ def recover_stale_runs(db, now: datetime | None = None) -> int:
 
     返回成功标记的 run 数量。**只做恢复标记，不重新执行**（Phase 2C 执行器）。
     """
+    # 调用方可以只给 run repository（周期恢复），此时 SSE 事件存储单独注入。
+    event_store = stream_events if stream_events is not None else _stream_events(db)
     try:
         current = now or _utc_now()
         if current.tzinfo is None:
@@ -167,9 +192,7 @@ def recover_stale_runs(db, now: datetime | None = None) -> int:
     recovered = 0
     while True:
         try:
-            rows = agent_runs_repo.list_stale_running(
-                db, now_iso, RECOVER_BATCH_LIMIT
-            )
+            rows = _runs(db).list_stale_running(now_iso, RECOVER_BATCH_LIMIT)
         except Exception as exc:  # noqa: BLE001 - 启动恢复失败只告警
             logger.warning(f"扫描 stale run 失败（停止本轮恢复）: {exc}")
             break
@@ -181,8 +204,8 @@ def recover_stale_runs(db, now: datetime | None = None) -> int:
             run_id = str(row.get("run_id") or "")
             session_id = str(row.get("session_id") or "")
             try:
-                marked = agent_runs_repo.mark_interrupted(
-                    db, run_id, RECOVER_ERROR_MESSAGE
+                marked = _runs(db).mark_interrupted(
+                    run_id, RECOVER_ERROR_MESSAGE
                 )
             except Exception as exc:  # noqa: BLE001 - 单条失败不影响其它 run
                 logger.warning(f"恢复 stale run 失败（忽略） | run={run_id} | {exc}")
@@ -206,7 +229,7 @@ def recover_stale_runs(db, now: datetime | None = None) -> int:
                 # 事件写失败不影响 run 已落 interrupted 的事实。
                 try:
                     frame = SSEEmitter(session_id).error(RECOVER_ERROR_MESSAGE)
-                    append_stream_event(db, session_id, frame)
+                    event_store.append_stream_event(session_id, frame)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         f"写入恢复 error 事件失败（忽略） | run={run_id} | {exc}"
@@ -246,12 +269,12 @@ def _stream_taken_over(
     查询失败时按未接管处理（照常写 error 事件）。
     """
     try:
-        if not is_stream_active(db, session_id, now=now):
+        if not is_stream_active(_runtime(db), session_id, now=now):
             return False
-        lock = session_runtime_repo.get_session_runtime(db, session_id) or {}
+        lock = _runtime(db).get_session_runtime(session_id) or {}
         if str(lock.get("stream_owner") or "") != owner:
             return True
-        return agent_runs_repo.has_other_live_run(db, session_id, run_id, now_iso)
+        return _runs(db).has_other_live_run(session_id, run_id, now_iso)
     except Exception:  # noqa: BLE001
         return False
 
@@ -261,7 +284,7 @@ def _release_dead_stream_lock(db, session_id: str, owner: str, now_iso: str) -> 
     if not owner:
         return
     try:
-        if session_runtime_repo.release_session_stream(db, session_id, owner, now_iso):
+        if _runtime(db).release_session_stream(session_id, owner, now_iso):
             logger.info(f"释放 stale run 留下的流锁 | session={session_id} | owner={owner}")
     except Exception as exc:  # noqa: BLE001 - 释放失败只是要等锁的 TTL 过期
         logger.warning(f"释放 stale run 留下的流锁失败（忽略） | session={session_id} | {exc}")
@@ -282,7 +305,7 @@ def purge_stale_stream_events(
     cutoff = ((now or datetime.now()) - STREAM_EVENTS_RETENTION).isoformat()
     total = 0
     for _ in range(max_batches):
-        deleted = delete_stream_events_before(db, cutoff, limit=batch)
+        deleted = _stream_events(db).delete_stream_events_before(cutoff, limit=batch)
         total += deleted
         if deleted < batch:
             break
@@ -291,16 +314,25 @@ def purge_stale_stream_events(
 
 async def _run_recovery_loop(interval: float) -> None:
     # 延迟导入：run_registry 在 db 层之上，避免导入期循环
-    from easy_agent.db import get_database
+    from easy_agent.db.providers import (
+        get_agent_run_repository,
+        get_stream_event_repository,
+    )
 
     while True:
         await asyncio.sleep(interval)
         try:
-            await run_blocking(recover_stale_runs, get_database())
+            await run_blocking(
+                recover_stale_runs,
+                get_agent_run_repository(),
+                stream_events=get_stream_event_repository(),
+            )
         except Exception as exc:  # noqa: BLE001 - 恢复失败不能拖垮应用，下一轮重试
             logger.warning(f"stale run 周期恢复失败（下一轮重试）: {exc}")
         try:
-            await run_blocking(purge_stale_stream_events, get_database())
+            await run_blocking(
+                purge_stale_stream_events, get_stream_event_repository()
+            )
         except Exception as exc:  # noqa: BLE001 - 清理失败不影响恢复，下一轮重试
             logger.warning(f"stream_events 过期清理失败（下一轮重试）: {exc}")
 

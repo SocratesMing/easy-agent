@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from easy_agent.db.repositories import sessions as sessions_repo
 from easy_agent.models.exceptions import NotFoundError
 
 if TYPE_CHECKING:
@@ -41,7 +42,7 @@ def get_owned_session_meta(
         NotFoundError: 会话不存在，或不属于 *username*（两者都是 404 语义，
             不区分，避免泄露会话是否存在）。
     """
-    meta = db.get_session_owner(session_id)
+    meta = sessions_repo.get_session_owner(db, session_id)
     if not meta or (meta.get("username") or "") != (username or ""):
         raise NotFoundError("会话不存在")
     return meta

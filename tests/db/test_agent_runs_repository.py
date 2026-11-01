@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from easy_agent.db import schema as schema_module
 from easy_agent.db.repositories.agent_runs import (
     STATUS_COMPLETED,
+    AgentRunRepository,
     STATUS_INTERRUPTED,
     STATUS_RUNNING,
     finish_run,
@@ -143,15 +144,17 @@ def test_mark_interrupted_only_one_winner(db):
     assert finish_run(db, RUN_ID, STATUS_COMPLETED) is False
 
 
-def test_database_delegations_are_wired(db):
-    assert db.start_run(
-        "run-via-db", "sess-db", "u", "m", "{}", "pod-a:1", FUTURE
+def test_agent_run_repository_delegates(db):
+    """T3：run 记录域走 ``AgentRunRepository``（``Database`` 转发方法已删除）。"""
+    repo = AgentRunRepository(db)
+    assert repo.start_run(
+        "run-via-repo", "sess-db", "u", "m", "{}", "pod-a:1", FUTURE
     ) is True
-    assert db.renew_run("run-via-db", "pod-a:1", FUTURE) is True
-    assert db.get_run("run-via-db")["status"] == STATUS_RUNNING
-    assert [r["run_id"] for r in db.list_stale_running(NOW)] == []
-    assert db.finish_run("run-via-db", STATUS_COMPLETED) is True
-    assert db.mark_interrupted("run-via-db", "x") is False
+    assert repo.renew_run("run-via-repo", "pod-a:1", FUTURE) is True
+    assert repo.get_run("run-via-repo")["status"] == STATUS_RUNNING
+    assert [r["run_id"] for r in repo.list_stale_running(NOW)] == []
+    assert repo.finish_run("run-via-repo", STATUS_COMPLETED) is True
+    assert repo.mark_interrupted("run-via-repo", "x") is False
 
 
 def test_mysql_ddl_uses_longtext_and_both_indexes():

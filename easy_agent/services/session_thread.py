@@ -214,11 +214,11 @@ async def plan_turn(
 
 def record_turn_checkpoint(db, session_id: str, turn_id: str, checkpoint_id: str, sid: str = "") -> None:
     """把本轮开始前会话 thread 的 checkpoint id 记到本轮用户消息上（留给将来的编辑 / 重新生成）。"""
-    from easy_agent.db.repositories import sessions as sessions_repo
+    from easy_agent.db.repositories.message_repository import MessageRepository
 
     try:
-        sessions_repo.annotate_user_turn(
-            db, session_id, turn_id, {"turn_checkpoint_id": checkpoint_id}
+        MessageRepository(db).annotate_user_turn(
+            session_id, turn_id, {"turn_checkpoint_id": checkpoint_id}
         )
     except Exception as e:  # noqa: BLE001 - 只是锚点，失败不影响对话
         logger.warning(f"[{sid}] 记录本轮起点 checkpoint 失败: {e}")

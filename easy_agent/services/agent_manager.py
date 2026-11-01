@@ -15,6 +15,10 @@ from easy_agent.agent.graph_cache import clear_agent_graph_cache, get_agent_grap
 from easy_agent.agent.hitl import hitl_enabled
 from easy_agent.bootstrap.config import Config
 from easy_agent.db import get_database
+from easy_agent.db.providers import (
+    get_session_repository,
+    get_session_runtime_repository,
+)
 from easy_agent.bootstrap.runtime_config import (
     get_runtime_agent_config,
     set_agent_invalidator,
@@ -439,7 +443,9 @@ async def _get_or_create_agent_unlocked(
         try:
             from easy_agent.services.session_runtime import load_connectors
 
-            recorded_connectors = await run_blocking(load_connectors, get_database(), session_id)
+            recorded_connectors = await run_blocking(
+                load_connectors, get_session_runtime_repository(), session_id
+            )
             if recorded_connectors is not None:
                 state.connectors = recorded_connectors
         except Exception:
@@ -512,8 +518,8 @@ async def _get_or_create_agent_unlocked(
 
     if not workspace_name:
         try:
-            db = get_database()
-            session = await run_blocking(db.get_session, session_id)
+            session_repo = get_session_repository()
+            session = await run_blocking(session_repo.get_session, session_id)
             if session and session.workspace_name:
                 workspace_name = session.workspace_name
         except Exception as exc:  # noqa: BLE001 - 读不到就按空 workspace_name 继续建 Agent
@@ -728,7 +734,9 @@ def _save_edit_target(session_id: str, expert_agent_id: str) -> None:
     try:
         from easy_agent.services.session_runtime import save_edit_target
 
-        save_edit_target(get_database(), session_id, expert_agent_id)
+        save_edit_target(
+            get_session_runtime_repository(), session_id, expert_agent_id
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[{session_id[-5:]}] 待修改专家落库失败: {exc}")
 
@@ -816,7 +824,9 @@ def _save_connectors(session_id: str, normalized: tuple[str, ...]) -> None:
     try:
         from easy_agent.services.session_runtime import save_connectors
 
-        save_connectors(get_database(), session_id, list(normalized))
+        save_connectors(
+            get_session_runtime_repository(), session_id, list(normalized)
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[{session_id[-5:]}] 会话连接器落库失败: {exc}")
 
@@ -852,7 +862,7 @@ def _acquire_stream_lock(session_id: str) -> None:
     from easy_agent.services.session_runtime import SessionBusyError, acquire_stream
 
     try:
-        acquire_stream(get_database(), session_id)
+        acquire_stream(get_session_runtime_repository(), session_id)
     except SessionBusyError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -914,7 +924,7 @@ def _release_stream_lock(session_id: str) -> None:
     try:
         from easy_agent.services.session_runtime import release_stream
 
-        release_stream(get_database(), session_id)
+        release_stream(get_session_runtime_repository(), session_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[{session_id[-5:]}] 会话流锁释放失败: {exc}")
 
@@ -932,7 +942,9 @@ async def cancel_stream_task(session_id: str) -> bool:
     try:
         from easy_agent.services.session_runtime import request_cancel
 
-        await run_blocking(request_cancel, get_database(), session_id)
+        await run_blocking(
+            request_cancel, get_session_runtime_repository(), session_id
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[{session_id[-5:]}] 写入跨实例取消标记失败: {exc}")
 

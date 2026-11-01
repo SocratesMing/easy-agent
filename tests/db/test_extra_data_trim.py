@@ -2,7 +2,7 @@
 
 import json
 
-from easy_agent.db.repositories import sessions as sessions_repo
+from easy_agent.db import message_serialization as message_serializer
 
 LONG = "x" * 1000
 
@@ -30,12 +30,15 @@ def _message():
 
 
 def _stored(monkeypatch, limit):
-    monkeypatch.setattr(sessions_repo, "_MAX_EXTRA_DATA_CHARS", limit)
-    return json.loads(sessions_repo._sanitize_extra_data(None, _message()))
+    monkeypatch.setattr(message_serializer, "_MAX_EXTRA_DATA_CHARS", limit)
+    return json.loads(message_serializer._sanitize_extra_data(None, _message()))
 
 
 def test_message_without_extra_fields_stores_nothing():
-    assert sessions_repo._sanitize_extra_data(None, {"role": "user", "content": "hi"}) is None
+    assert (
+        message_serializer._sanitize_extra_data(None, {"role": "user", "content": "hi"})
+        is None
+    )
 
 
 def test_under_the_limit_keeps_everything(monkeypatch):

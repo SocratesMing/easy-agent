@@ -402,18 +402,18 @@ _detached_bg_tasks: "set[asyncio.Task]" = set()
 _STREAM_HEARTBEAT_SECONDS = 300.0
 
 
-async def _record_run_end(db, run_id: str, status: str, error: str, sid: str) -> None:
+async def _record_run_end(runs, run_id: str, status: str, error: str, sid: str) -> None:
     """落 run 终态（Phase 2B）；写库失败只告警，不改变本轮流的结束方式。"""
     try:
-        await asyncio.to_thread(finish_run, db, run_id, status, error)
+        await asyncio.to_thread(finish_run, runs, run_id, status, error)
     except Exception as exc:  # noqa: BLE001 - 收尾失败不改变错误流
         logger.warning(f"[{sid}] 写入 run 终态失败（忽略）: {exc}")
 
 
-async def _renew_run_lease(db, run_id: str, sid: str) -> None:
+async def _renew_run_lease(runs, run_id: str, sid: str) -> None:
     """续约 run 租约：失败只告警（可能已被启动恢复标记 interrupted），不打断正在执行的流。"""
     try:
-        renewed = await asyncio.to_thread(renew_run, db, run_id)
+        renewed = await asyncio.to_thread(renew_run, runs, run_id)
         if not renewed:
             logger.warning(
                 f"[{sid}] run 租约续约失败"
@@ -435,12 +435,12 @@ async def _renew_stream_lock(renew_stream, session_id: str, sid: str) -> bool:
     return bool(renewed)
 
 
-async def _stream_heartbeat(session_id: str, sid: str, renew_stream, db, run_id) -> None:
+async def _stream_heartbeat(session_id: str, sid: str, renew_stream, runs, run_id) -> None:
     """每隔 ``_STREAM_HEARTBEAT_SECONDS`` 续约一次：run 租约与流锁同频。"""
     while True:
         await asyncio.sleep(_STREAM_HEARTBEAT_SECONDS)
-        if run_id is not None and db is not None:
-            await _renew_run_lease(db, run_id, sid)
+        if run_id is not None and runs is not None:
+            await _renew_run_lease(runs, run_id, sid)
         if renew_stream is not None and not await _renew_stream_lock(
             renew_stream, session_id, sid
         ):
@@ -467,7 +467,7 @@ async def _clear_previous_events(db, session_id: str, sid: str) -> None:
 
 async def _drive_stream(
     gen, hub, queue: asyncio.Queue, emitter: SSEEmitter,
-    session_id: str, sid: str, renew_stream, db, run_id,
+    session_id: str, sid: str, renew_stream, db, runs, run_id,
 ) -> None:
     """后台任务：推进生成器，把每个 SSE 分片广播给 hub 的全部订阅者（原始客户端队列也是其一）。
 
@@ -484,9 +484,9 @@ async def _drive_stream(
         registered = True
         if db is not None:
             await _clear_previous_events(db, session_id, sid)
-        if renew_stream is not None or (run_id is not None and db is not None):
+        if renew_stream is not None or (run_id is not None and runs is not None):
             heartbeat = asyncio.create_task(
-                _stream_heartbeat(session_id, sid, renew_stream, db, run_id)
+                _stream_heartbeat(session_id, sid, renew_stream, runs, run_id)
             )
         async for chunk in gen:
             hub.broadcast(chunk)
@@ -510,11 +510,11 @@ async def _drive_stream(
         hub.broadcast(emitter.error(f"处理失败: {_friendly_error_message(e)}"))
     finally:
         await _stop_heartbeat(heartbeat)
-        if run_id is not None and db is not None:
+        if run_id is not None and runs is not None:
             # 先落 run 终态再关闭 hub：即使随后进程崩溃，恢复扫描也不会把它
             # 当成“仍在运行”（最坏情况是重复写一次 error，前端幂等展示）。
             try:
-                await _record_run_end(db, run_id, run_status, run_error, sid)
+                await _record_run_end(runs, run_id, run_status, run_error, sid)
             except asyncio.CancelledError:
                 logger.warning(f"[{sid}] 写入 run 终态被取消（忽略）: {run_id}")
         if registered:
@@ -525,7 +525,7 @@ async def _drive_stream(
 
 
 async def _detached_event_stream(
-    gen, session_id: str, sid: str, renew_stream=None, db=None, run_id=None
+    gen, session_id: str, sid: str, renew_stream=None, db=None, runs=None, run_id=None
 ):
     """以「后台任务 + 事件中枢」驱动流式生成器，与客户端断开解耦。
 
@@ -536,16 +536,20 @@ async def _detached_event_stream(
 
     ``run_id``（Phase 2B）：传入时后台任务与流锁心跳同频续约 run 租约，
     并在正常结束/取消/异常时落 ``completed`` / ``cancelled`` / ``failed`` 终态；
-    不传（专家拒答流等非 run 生命周期）行为与改造前一致。
+    不传（专家拒答流等非 run 生命周期）行为与改造前一致。``runs`` 是 run 记录域
+    repository（``ChatRepository.runs``）；迁移期传 ``db`` 也兼容（内部会适配）。
     """
     emitter = SSEEmitter(session_id)
+    # run 生命周期优先用领域 repository（``runs``）；迁移期仍允许只传 ``db`` 的旧调用方
+    # （测试 / 尚未迁移的入口），由 run_registry 的适配层恢复成 AgentRunRepository。
+    run_store = runs if runs is not None else db
     # 兜底：同会话已有运行中的流时，返回独立错误流（绝不加入对方 hub，
     # 否则新订阅者会收到旧流的 EOF/事件）。端点层通常已返回 409。
     if is_session_streaming(session_id):
         # 端点已登记 run；这条竞态路径不进入后台任务，需在这里落 failed 终态，
         # 否则只能等租约过期由启动恢复标记 interrupted。
-        if run_id is not None and db is not None:
-            await _record_run_end(db, run_id, "failed", "会话已被占用", sid)
+        if run_id is not None and run_store is not None:
+            await _record_run_end(run_store, run_id, "failed", "会话已被占用", sid)
         yield emitter.error("本会话正在生成回复，请等待完成或先取消当前生成")
         return
 
@@ -556,7 +560,9 @@ async def _detached_event_stream(
     queue: asyncio.Queue = hub.subscribe()
 
     bg_task = asyncio.create_task(
-        _drive_stream(gen, hub, queue, emitter, session_id, sid, renew_stream, db, run_id)
+        _drive_stream(
+            gen, hub, queue, emitter, session_id, sid, renew_stream, db, run_store, run_id
+        )
     )
     _detached_bg_tasks.add(bg_task)
     bg_task.add_done_callback(_detached_bg_tasks.discard)
@@ -709,6 +715,7 @@ async def chat_stream(
                 sid,
                 renew_stream=repo.renew_stream,
                 db=repo.database,
+                runs=repo.runs,
             )
         )
 
@@ -828,7 +835,7 @@ async def chat_stream(
     run_id = new_run_id(session_id, message_id)
     await asyncio.to_thread(
         start_run,
-        repo.database,
+        repo.runs,
         run_id,
         session_id,
         username=username or "",
@@ -857,6 +864,7 @@ async def chat_stream(
             sid,
             renew_stream=repo.renew_stream,
             db=repo.database,
+            runs=repo.runs,
             run_id=run_id,
         )
     )
@@ -999,7 +1007,7 @@ async def chat_resume(
     run_id = new_run_id(session_id, run_message_id)
     await asyncio.to_thread(
         start_run,
-        repo.database,
+        repo.runs,
         run_id,
         session_id,
         username=username or "",
@@ -1030,6 +1038,7 @@ async def chat_resume(
             sid,
             renew_stream=repo.renew_stream,
             db=repo.database,
+            runs=repo.runs,
             run_id=run_id,
         )
     )

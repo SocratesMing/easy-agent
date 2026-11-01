@@ -24,7 +24,6 @@ except ImportError:
 from easy_agent.models.db import ScheduledTaskModel, ScheduledTaskRunModel
 from easy_agent.db.repositories import session_runtime as session_runtime_repo
 from easy_agent.db.repositories import stream_events as stream_events_repo
-from easy_agent.db.repositories import agent_runs as agent_runs_repo
 from easy_agent.db.repositories import agent_state as agent_state_repo
 from easy_agent.db.repositories import scheduled_tasks as scheduled_tasks_repo
 from easy_agent.db.repositories import sessions as sessions_repo
@@ -44,7 +43,6 @@ from easy_agent.db.schema import (  # noqa: F401 - 兼容重导出（tests/db �
     SCHEMA_VERSION,
     SCHEMA_VERSION_KEY,
 )
-
 
 
 def _mysql_sqlite_fallback_forbidden() -> bool:
@@ -344,78 +342,28 @@ class Database:
     def create_session(self, *args, **kwargs):
         return sessions_repo.create_session(self, *args, **kwargs)
 
-    def get_session_owner(self, *args, **kwargs):
-        return sessions_repo.get_session_owner(self, *args, **kwargs)
-
-    def _get_legacy_session_messages(self, *args, **kwargs):
-        return sessions_repo._get_legacy_session_messages(self, *args, **kwargs)
-
-    def update_session_meta(self, *args, **kwargs):
-        return sessions_repo.update_session_meta(self, *args, **kwargs)
-
     def get_session(self, *args, **kwargs):
         return sessions_repo.get_session(self, *args, **kwargs)
-
-    def list_sessions(self, *args, **kwargs):
-        return sessions_repo.list_sessions(self, *args, **kwargs)
-
-    def update_session(self, *args, **kwargs):
-        return sessions_repo.update_session(self, *args, **kwargs)
-
-    def delete_session(self, *args, **kwargs):
-        return sessions_repo.delete_session(self, *args, **kwargs)
 
     def update_session_workspace_name(self, *args, **kwargs):
         return sessions_repo.update_session_workspace_name(self, *args, **kwargs)
 
-    def update_session_todos(self, *args, **kwargs):
-        return sessions_repo.update_session_todos(self, *args, **kwargs)
-
     def update_generated_file_paths(self, *args, **kwargs):
         return sessions_repo.update_generated_file_paths(self, *args, **kwargs)
 
-    def add_message(self, *args, **kwargs):
-        return sessions_repo.add_message(self, *args, **kwargs)
+    def add_message(self, session_id: str, message: dict) -> None:
+        """追加消息（A2：只写 session_messages 行表）。
 
-    def _sanitize_message_for_storage(self, *args, **kwargs):
-        return sessions_repo._sanitize_message_for_storage(self, *args, **kwargs)
+        T3a 仍保留：``services/scheduler.py``（定时任务域，不在本批范围）直接调用；
+        待定时任务域迁移到 ``MessageRepository`` 后在 T3c 删除。
+        """
+        sessions_repo.add_message(self, session_id, message)
 
     def update_last_assistant_message(self, *args, **kwargs):
         return sessions_repo.update_last_assistant_message(self, *args, **kwargs)
 
-    def _sanitize_blocks(self, *args, **kwargs):
-        return sessions_repo._sanitize_blocks(self, *args, **kwargs)
-
-    def _sanitize_tool_calls(self, *args, **kwargs):
-        return sessions_repo._sanitize_tool_calls(self, *args, **kwargs)
-
-    def _sanitize_extra_data(self, *args, **kwargs):
-        return sessions_repo._sanitize_extra_data(self, *args, **kwargs)
-
-    def add_message_row(self, *args, **kwargs):
-        return sessions_repo.add_message_row(self, *args, **kwargs)
-
     def update_last_assistant_message_row(self, *args, **kwargs):
         return sessions_repo.update_last_assistant_message_row(self, *args, **kwargs)
-
-    def get_messages_from_rows(self, *args, **kwargs):
-        return sessions_repo.get_messages_from_rows(self, *args, **kwargs)
-
-    def get_messages(self, *args, **kwargs):
-        return sessions_repo.get_messages(self, *args, **kwargs)
-
-    def count_sessions(self, *args, **kwargs):
-        return sessions_repo.count_sessions(self, *args, **kwargs)
-
-    def update_session_title(self, *args, **kwargs):
-        return sessions_repo.update_session_title(self, *args, **kwargs)
-
-    def toggle_session_pin(self, *args, **kwargs):
-        return sessions_repo.toggle_session_pin(self, *args, **kwargs)
-
-    @staticmethod
-    def _try_repair_json(raw: str) -> dict | None:
-        return sessions_repo.try_repair_json(raw)
 
     # ARCH-03 Phase 2: users SQL 已抽到 db/repositories/users.py
     def create_user(self, *args, **kwargs):
@@ -633,49 +581,6 @@ class Database:
         return stream_events_repo.list_stream_events(
             self, session_id, after_id=after_id, limit=limit
         )
-
-    def delete_stream_events_before(self, cutoff_iso: str) -> int:
-        return stream_events_repo.delete_stream_events_before(self, cutoff_iso)
-
-    # 多副本 Phase 2B: run 租约已抽到 db/repositories/agent_runs.py
-    def start_run(
-        self,
-        run_id: str,
-        session_id: str,
-        username: str,
-        message_id: str,
-        request_json: str,
-        owner: str,
-        lease_until: str,
-    ) -> bool:
-        return agent_runs_repo.start_run(
-            self,
-            run_id,
-            session_id,
-            username,
-            message_id,
-            request_json,
-            owner,
-            lease_until,
-        )
-
-    def renew_run(self, run_id: str, owner: str, lease_until: str) -> bool:
-        return agent_runs_repo.renew_run(self, run_id, owner, lease_until)
-
-    def finish_run(self, run_id: str, status: str, error: str = "") -> bool:
-        return agent_runs_repo.finish_run(self, run_id, status, error)
-
-    def get_run(self, run_id: str) -> dict | None:
-        return agent_runs_repo.get_run(self, run_id)
-
-    def list_stale_running(
-        self, now_iso: str, limit: int = 500
-    ) -> list[dict]:
-        return agent_runs_repo.list_stale_running(self, now_iso, limit)
-
-    def mark_interrupted(self, run_id: str, error: str) -> bool:
-        return agent_runs_repo.mark_interrupted(self, run_id, error)
-
 
 _db_instance = None
 

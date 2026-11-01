@@ -19,6 +19,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 import easy_agent.api.chat as chat_api
 import easy_agent.persistence.checkpoints as checkpoints
 from easy_agent.db.repositories import sessions as sessions_repo
+from easy_agent.db.repositories.message_repository import MessageRepository
 from easy_agent.models.db import SessionModel
 from easy_agent.services import agent_manager
 
@@ -51,8 +52,8 @@ def _session(db, sid="sess-thread"):
 
 def test_new_message_marks_the_left_over_approval_rejected(client, db, monkeypatch):
     sid = _session(db)
-    db.add_message(sid, {"role": "user", "content": "删掉 a.txt", "turn_id": "m1"})
-    db.add_message(
+    MessageRepository(db).add_message(sid, {"role": "user", "content": "删掉 a.txt", "turn_id": "m1"})
+    MessageRepository(db).add_message(
         sid,
         {
             "role": "assistant",
@@ -84,9 +85,9 @@ def test_new_message_marks_the_left_over_approval_rejected(client, db, monkeypat
 def test_legacy_snapshot_saver_does_not_abandon_approvals(client, db, monkeypatch):
     """legacy 快照 saver 下仍是每条消息一个 thread，旧审批还能恢复，DB 里不改成拒绝。"""
     sid = _session(db, "sess-legacy")
-    db.add_message(sid, {"role": "user", "content": "删掉 a.txt", "turn_id": "m1"})
+    MessageRepository(db).add_message(sid, {"role": "user", "content": "删掉 a.txt", "turn_id": "m1"})
     pending = {"role": "assistant", "content": "", "pending_approval": {"thread_id": f"{sid}-m1"}}
-    db.add_message(sid, pending)
+    MessageRepository(db).add_message(sid, pending)
     monkeypatch.setattr(chat_api, "_get_agent_config", lambda: _ON)
     monkeypatch.setattr(checkpoints, "sqlite_checkpointer_active", lambda: False)
 
@@ -136,9 +137,9 @@ def test_resume_with_a_handle_for_an_older_turn_returns_409(client, db, monkeypa
 
 def test_annotate_user_turn_merges_fields_into_the_matching_row(db):
     sid = _session(db, "sess-annotate")
-    db.add_message(sid, {"role": "user", "content": "q1", "turn_id": "m1"})
-    db.add_message(sid, {"role": "assistant", "content": "a1"})
-    db.add_message(sid, {"role": "user", "content": "q2", "turn_id": "m2"})
+    MessageRepository(db).add_message(sid, {"role": "user", "content": "q1", "turn_id": "m1"})
+    MessageRepository(db).add_message(sid, {"role": "assistant", "content": "a1"})
+    MessageRepository(db).add_message(sid, {"role": "user", "content": "q2", "turn_id": "m2"})
 
     assert sessions_repo.annotate_user_turn(db, sid, "m1", {"turn_checkpoint_id": "cp-1"}) is True
     assert sessions_repo.annotate_user_turn(db, sid, "missing", {"turn_checkpoint_id": "x"}) is False
@@ -186,8 +187,8 @@ def test_resume_on_another_pod_returns_409_before_building_the_agent(client, db,
     import easy_agent.services.session_thread as session_thread
 
     sid = _session(db, "sess-other-pod")
-    db.add_message(sid, {"role": "user", "content": "删掉 a.txt", "turn_id": "m1"})
-    db.add_message(
+    MessageRepository(db).add_message(sid, {"role": "user", "content": "删掉 a.txt", "turn_id": "m1"})
+    MessageRepository(db).add_message(
         sid,
         {"role": "assistant", "content": "", "pending_approval": {"thread_id": f"{sid}-m1", "instance": "pod-a"}},
     )

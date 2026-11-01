@@ -223,6 +223,19 @@ def manager(monkeypatch, tmp_path):
     monkeypatch.setattr(
         am, "get_database", lambda: SimpleNamespace(get_user_by_username=lambda u: None)
     )
+    # T3a：会话/运行期状态改走 db.providers 的领域 repository；用进程内假端口替换。
+    class _FakeSessionRuntimeRepository:
+        def get_session_runtime(self, session_id):
+            return None
+
+        def upsert_session_runtime(self, session_id, **kwargs):
+            return None
+
+    monkeypatch.setattr(
+        am,
+        "get_session_runtime_repository",
+        lambda: _FakeSessionRuntimeRepository(),
+    )
     monkeypatch.setattr(
         am,
         "_agent_config",

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 # run 状态机：running -> completed / failed / cancelled / interrupted（终态不再变更）
 STATUS_RUNNING = "running"
@@ -193,7 +194,6 @@ def mark_interrupted(db, run_id: str, error: str) -> bool:
         return cursor.rowcount > 0
 
 
-
 def has_other_live_run(db, session_id: str, run_id: str, now_iso: str) -> bool:
     """同一会话里除 ``run_id`` 以外是否还有租约未过期的 ``running`` run（新流在跑）。"""
     with db.get_connection() as conn:
@@ -207,7 +207,70 @@ def has_other_live_run(db, session_id: str, run_id: str, now_iso: str) -> bool:
         return cursor.fetchone() is not None
 
 
+class AgentRunRepository:
+    """一次聊天/恢复 run 的持久化 repository（``agent_runs`` 表）。
+
+    方法签名与模块级函数一一对应，只把「用哪个连接」绑定进对象；租约与状态机
+    （``running`` -> 终态、owner 条件更新）的语义完全留在模块函数里，本类不解释状态。
+    """
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def start_run(
+        self,
+        run_id: str,
+        session_id: str,
+        username: str,
+        message_id: str,
+        request_json: str,
+        owner: str,
+        lease_until: str,
+    ) -> bool:
+        """登记一次 run（幂等：同 ``run_id`` 重复调用不会覆盖既有状态）。"""
+        return start_run(
+            self._db,
+            run_id,
+            session_id,
+            username,
+            message_id,
+            request_json,
+            owner,
+            lease_until,
+        )
+
+    def renew_run(self, run_id: str, owner: str, lease_until: str) -> bool:
+        """为仍处于 ``running`` 且 owner 未变的 run 续约。"""
+        return renew_run(self._db, run_id, owner, lease_until)
+
+    def finish_run(self, run_id: str, status: str, error: str = "") -> bool:
+        """原子落终态：仅当当前状态仍是 ``running`` 时更新。"""
+        return finish_run(self._db, run_id, status, error)
+
+    def get_run(self, run_id: str) -> dict | None:
+        return get_run(self._db, run_id)
+
+    def list_session_message_ids(self, session_id: str) -> list[str]:
+        """该会话所有 run 的 message_id（去重、去空）。"""
+        return list_session_message_ids(self._db, session_id)
+
+    def list_stale_running(
+        self, now_iso: str, limit: int = DEFAULT_STALE_LIMIT
+    ) -> list[dict]:
+        """返回租约已过期的 ``running`` run（``lease_until < now_iso``）。"""
+        return list_stale_running(self._db, now_iso, limit)
+
+    def mark_interrupted(self, run_id: str, error: str) -> bool:
+        """把陈旧的 ``running`` run 标记为 ``interrupted``（条件更新，竞争只有一个成功）。"""
+        return mark_interrupted(self._db, run_id, error)
+
+    def has_other_live_run(self, session_id: str, run_id: str, now_iso: str) -> bool:
+        """同一会话里除 ``run_id`` 以外是否还有租约未过期的 ``running`` run。"""
+        return has_other_live_run(self._db, session_id, run_id, now_iso)
+
+
 __all__ = [
+    "AgentRunRepository",
     "DEFAULT_STALE_LIMIT",
     "STATUS_CANCELLED",
     "STATUS_COMPLETED",

@@ -76,7 +76,7 @@ def test_chat_stream_creates_run_and_marks_completed(client, db, monkeypatch):
     assert resp.status_code == 200
     assert '"type": "done"' in resp.text
 
-    run = db.get_run(new_run_id(sid, "msg-complete"))
+    run = agent_runs_repo.get_run(db, new_run_id(sid, "msg-complete"))
     assert run is not None
     assert run["session_id"] == sid
     assert run["username"] == "testuser"
@@ -108,7 +108,7 @@ def test_chat_stream_exception_marks_failed_and_emits_error(client, db, monkeypa
     assert '"type": "error"' in resp.text
     assert "boom" in resp.text
 
-    run = db.get_run(new_run_id(sid, "msg-fail"))
+    run = agent_runs_repo.get_run(db, new_run_id(sid, "msg-fail"))
     assert run["status"] == "failed"
     assert "RuntimeError" in run["error"]
     assert "boom" in run["error"]
@@ -145,7 +145,7 @@ async def test_cancelled_stream_marks_run_cancelled(db, monkeypatch):
     with pytest.raises(StopAsyncIteration):
         await asyncio.wait_for(consumer, timeout=5)
 
-    run = db.get_run(run_id)
+    run = agent_runs_repo.get_run(db, run_id)
     assert run["status"] == "cancelled"
     assert run["lease_until"] == ""
 
@@ -171,7 +171,7 @@ def test_resume_creates_run_with_decisions(client, db, monkeypatch):
     )
 
     assert resp.status_code == 200
-    run = db.get_run(new_run_id(sid, "msg-approve"))
+    run = agent_runs_repo.get_run(db, new_run_id(sid, "msg-approve"))
     assert run is not None
     assert run["status"] == "completed"
     payload = json.loads(run["request_json"])
@@ -226,7 +226,7 @@ def test_run_registry_failure_does_not_break_chat(client, db, monkeypatch):
     )
 
     assert resp.status_code == 200
-    assert db.get_run(new_run_id(sid, "msg-x")) is None
+    assert agent_runs_repo.get_run(db, new_run_id(sid, "msg-x")) is None
 
 
 # ── 专家对话（统一入口 /agent/chat/stream） ───────────────────────────
@@ -255,7 +255,7 @@ def test_expert_run_creates_run_and_marks_completed(client, db, monkeypatch):
     )
 
     assert resp.status_code == 200
-    run = db.get_run(new_run_id(sid, "msg-expert"))
+    run = agent_runs_repo.get_run(db, new_run_id(sid, "msg-expert"))
     assert run is not None
     assert (run["status"], run["username"], run["message_id"]) == (
         "completed",
@@ -286,7 +286,7 @@ def test_expert_run_exception_marks_failed(client, db, monkeypatch):
 
     assert resp.status_code == 200
     assert "expert boom" in resp.text
-    run = db.get_run(new_run_id(sid, "msg-expert-fail"))
+    run = agent_runs_repo.get_run(db, new_run_id(sid, "msg-expert-fail"))
     assert run["status"] == "failed"
     assert "RuntimeError: expert boom" in run["error"]
 
@@ -314,7 +314,7 @@ def test_expert_refusal_does_not_create_a_run(client, db, monkeypatch):
 
     assert resp.status_code == 200
     assert "这个问题不在本专家的职责范围内" in resp.text
-    assert db.get_run(new_run_id(sid, "msg-refused")) is None
+    assert agent_runs_repo.get_run(db, new_run_id(sid, "msg-refused")) is None
 
 
 def test_run_registry_failure_does_not_break_expert_run(client, db, monkeypatch):
@@ -334,4 +334,4 @@ def test_run_registry_failure_does_not_break_expert_run(client, db, monkeypatch)
 
     assert resp.status_code == 200
     assert '"type": "done"' in resp.text
-    assert db.get_run(new_run_id(sid, "msg-expert-x")) is None
+    assert agent_runs_repo.get_run(db, new_run_id(sid, "msg-expert-x")) is None

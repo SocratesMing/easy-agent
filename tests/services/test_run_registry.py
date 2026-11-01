@@ -172,23 +172,22 @@ def test_recover_competition_writes_event_only_once(db, monkeypatch):
     )
     row = get_run(db, "run-race")
     calls = {"n": 0}
-    real_mark = run_registry.agent_runs_repo.mark_interrupted
+    run_repo_cls = run_registry.AgentRunRepository
+    real_mark = run_repo_cls.mark_interrupted
 
-    def _mark_once(db_arg, run_id, error):
+    def _mark_once(self, run_id, error):
         calls["n"] += 1
         if calls["n"] == 1:
-            return real_mark(db_arg, run_id, error)
+            return real_mark(self, run_id, error)
         return False  # 竞争失败（另一个 Pod 已恢复）
 
     # 模拟两个恢复者看到同一行：列表里重复一次
     monkeypatch.setattr(
-        run_registry.agent_runs_repo,
+        run_repo_cls,
         "list_stale_running",
-        lambda db_arg, now_iso, limit: [row, row],
+        lambda self, now_iso, limit: [row, row],
     )
-    monkeypatch.setattr(
-        run_registry.agent_runs_repo, "mark_interrupted", _mark_once
-    )
+    monkeypatch.setattr(run_repo_cls, "mark_interrupted", _mark_once)
     assert recover_stale_runs(db, now=datetime.now(UTC)) == 1
     assert calls["n"] == 2
     assert len(list_stream_events(db, "sess-race")) == 1
@@ -198,16 +197,17 @@ def test_service_failures_are_swallowed(db, monkeypatch):
     def _boom(*args, **kwargs):  # noqa: ANN002, ANN003
         raise RuntimeError("db down")
 
-    monkeypatch.setattr(run_registry.agent_runs_repo, "start_run", _boom)
+    run_repo_cls = run_registry.AgentRunRepository
+    monkeypatch.setattr(run_repo_cls, "start_run", _boom)
     assert start_run(db, "run-x", "sess-x") is False
 
-    monkeypatch.setattr(run_registry.agent_runs_repo, "renew_run", _boom)
+    monkeypatch.setattr(run_repo_cls, "renew_run", _boom)
     assert renew_run(db, "run-x") is False
 
-    monkeypatch.setattr(run_registry.agent_runs_repo, "finish_run", _boom)
+    monkeypatch.setattr(run_repo_cls, "finish_run", _boom)
     assert finish_run(db, "run-x", STATUS_COMPLETED) is False
 
-    monkeypatch.setattr(run_registry.agent_runs_repo, "list_stale_running", _boom)
+    monkeypatch.setattr(run_repo_cls, "list_stale_running", _boom)
     assert recover_stale_runs(db) == 0
 
 
@@ -218,15 +218,16 @@ def test_recover_truncates_and_keeps_other_runs_on_append_failure(db, monkeypatc
     _seed_run(db, "run-b", "sess-b", lease_until=past)
 
     calls = {"n": 0}
-    real_append = run_registry.append_stream_event
+    event_repo_cls = run_registry.StreamEventRepository
+    real_append = event_repo_cls.append_stream_event
 
-    def _append_once(db_arg, session_id, payload):
+    def _append_once(self, session_id, payload):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("write failed")
-        return real_append(db_arg, session_id, payload)
+        return real_append(self, session_id, payload)
 
-    monkeypatch.setattr(run_registry, "append_stream_event", _append_once)
+    monkeypatch.setattr(event_repo_cls, "append_stream_event", _append_once)
     assert recover_stale_runs(db, now=datetime.now(UTC)) == 2
     assert get_run(db, "run-a")["status"] == STATUS_INTERRUPTED
     assert get_run(db, "run-b")["status"] == STATUS_INTERRUPTED

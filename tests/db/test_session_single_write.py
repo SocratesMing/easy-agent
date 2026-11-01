@@ -11,6 +11,8 @@ import json
 
 from easy_agent.db.database import Database
 from easy_agent.db.repositories import sessions as sessions_repo
+from easy_agent.db.repositories.message_repository import MessageRepository
+from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.models.db import SessionModel
 
 
@@ -67,19 +69,19 @@ def test_create_session_only_writes_metadata(tmp_path):
     # API 返回对象仍保留传入的 messages（内存语义不变）
     assert created.messages == incoming
     # 新会话行表为空 -> 读为空，且不回退解析 legacy JSON
-    assert db.get_messages(created.session_id) == []
+    assert MessageRepository(db).get_messages(created.session_id) == []
 
 
 def test_add_message_reads_from_rows_and_never_rewrites_json(tmp_path):
     db = _make_db(tmp_path / "add.db")
     sid = db.create_session(_session()).session_id
 
-    db.add_message(sid, {"role": "user", "content": "hello", "timestamp": "t1"})
-    db.update_last_assistant_message(
+    MessageRepository(db).add_message(sid, {"role": "user", "content": "hello", "timestamp": "t1"})
+    MessageRepository(db).update_last_assistant_message(
         sid, {"role": "assistant", "content": "hi", "timestamp": "t2"}
     )
 
-    assert [m["content"] for m in db.get_messages(sid)] == ["hello", "hi"]
+    assert [m["content"] for m in MessageRepository(db).get_messages(sid)] == ["hello", "hi"]
     assert _raw_messages(db, sid) == ""
 
 
@@ -91,26 +93,26 @@ def test_legacy_json_fallback_kept_for_old_sessions(tmp_path):
 
     before = sessions_repo._LEGACY_FALLBACK_COUNT
     # 行表为空 -> 回退读 legacy JSON（存量兼容）
-    assert [m["content"] for m in db.get_messages(sid)] == ["legacy-only"]
+    assert [m["content"] for m in MessageRepository(db).get_messages(sid)] == ["legacy-only"]
     assert sessions_repo._LEGACY_FALLBACK_COUNT == before + 1
 
     # 行表有消息后行表优先，不再读 legacy JSON
-    db.add_message(sid, {"role": "user", "content": "row", "timestamp": "t2"})
-    assert [m["content"] for m in db.get_messages(sid)] == ["row"]
+    MessageRepository(db).add_message(sid, {"role": "user", "content": "row", "timestamp": "t2"})
+    assert [m["content"] for m in MessageRepository(db).get_messages(sid)] == ["row"]
     assert sessions_repo._LEGACY_FALLBACK_COUNT == before + 1
 
 
 def test_update_session_does_not_rewrite_message_json(tmp_path):
     db = _make_db(tmp_path / "update.db")
     sid = db.create_session(_session()).session_id
-    db.add_message(sid, {"role": "user", "content": "keep", "timestamp": "t1"})
+    MessageRepository(db).add_message(sid, {"role": "user", "content": "keep", "timestamp": "t1"})
 
     session = db.get_session(sid)
     session.title = "new-title"
-    db.update_session(session)
+    SessionRepository(db).update_session(session)
 
     assert _raw_messages(db, sid) == ""
-    assert [m["content"] for m in db.get_messages(sid)] == ["keep"]
+    assert [m["content"] for m in MessageRepository(db).get_messages(sid)] == ["keep"]
     assert db.get_session(sid).title == "new-title"
 
 
@@ -119,8 +121,8 @@ def test_restart_repair_keeps_new_session_rows(tmp_path):
     path = tmp_path / "restart.db"
     db = _make_db(path)
     sid = db.create_session(_session()).session_id
-    db.add_message(sid, {"role": "user", "content": "must-survive", "timestamp": "t1"})
+    MessageRepository(db).add_message(sid, {"role": "user", "content": "must-survive", "timestamp": "t1"})
 
     restarted = _make_db(path)
-    assert [m["content"] for m in restarted.get_messages(sid)] == ["must-survive"]
+    assert [m["content"] for m in MessageRepository(restarted).get_messages(sid)] == ["must-survive"]
     assert _raw_messages(restarted, sid) == ""

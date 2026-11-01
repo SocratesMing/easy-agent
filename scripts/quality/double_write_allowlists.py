@@ -47,6 +47,18 @@ INFRA_DATABASE_METHODS = {
     "ping",
 }
 
+# T3a（2026-11-01，会话/消息域）删除的纯委托（已无 db/ 外调用方，见设计文档 T3）：
+#   get_session_owner / _get_legacy_session_messages / update_session_meta /
+#   list_sessions / update_session / delete_session / update_session_todos /
+#   _sanitize_message_for_storage / _sanitize_blocks /
+#   _sanitize_tool_calls / _sanitize_extra_data / add_message_row /
+#   get_messages_from_rows / get_messages / _try_repair_json / count_sessions /
+#   update_session_title / toggle_session_pin / start_run / renew_run /
+#   finish_run / get_run / list_stale_running / mark_interrupted /
+#   delete_stream_events_before
+# 例外：add_message 仍被 services/scheduler.py（定时任务域，未迁移）调用，
+#       保留到 T3c 再删。
+# 这些名字不再出现在下面的冻结集合里：再加回 Database 会被 DW201 拦下。
 # Frozen set of every method that exists on Database at the time phase 0 lands
 # (ARCH-03 phase 2 extracted the SQL into db/repositories/*).  Non-infrastructure
 # entries must stay pure delegations; see _is_pure_delegation.
@@ -86,30 +98,12 @@ FROZEN_DATABASE_METHODS = {
     "_ensure_unique_index",
     "_create_unique_index",
     "create_session",
-    "get_session_owner",
-    "_get_legacy_session_messages",
-    "update_session_meta",
-    "get_session",
-    "list_sessions",
-    "update_session",
-    "delete_session",
-    "update_session_workspace_name",
-    "update_session_todos",
-    "update_generated_file_paths",
     "add_message",
-    "_sanitize_message_for_storage",
+    "get_session",
+    "update_session_workspace_name",
+    "update_generated_file_paths",
     "update_last_assistant_message",
-    "_sanitize_blocks",
-    "_sanitize_tool_calls",
-    "_sanitize_extra_data",
-    "add_message_row",
     "update_last_assistant_message_row",
-    "get_messages_from_rows",
-    "get_messages",
-    "count_sessions",
-    "update_session_title",
-    "toggle_session_pin",
-    "_try_repair_json",
     "create_user",
     "get_user_by_username",
     "get_user_by_id",
@@ -165,12 +159,26 @@ FROZEN_DATABASE_METHODS = {
     "upsert_session_runtime",
     "append_stream_event",
     "list_stream_events",
-    "delete_stream_events_before",
-    "start_run",
-    "renew_run",
-    "finish_run",
-    "get_run",
-    "list_stale_running",
-    "mark_interrupted",
 }
 
+
+# --- T3 数据访问层收敛：只减不增的计数上限 --------------------------------
+# 每次按领域收敛（T3a 会话/消息域 → T3b 文件/用户域 → T3c 其余域）都只允许
+# **下调**这些上限；新增调用方请改用领域 repository（服务层从
+# ``easy_agent/db/providers.py`` 取，API 层走 ``easy_agent/api/deps.py``）。
+#
+# 口径（scanner 用 AST 统计，不含注释 / 字符串 / import 行）：
+# - ``MAX_DATABASE_METHODS``：``easy_agent/db/database.py`` 里 class Database 的方法总数；
+# - ``MAX_DATABASE_PURE_DELEGATIONS``：其中纯委托方法数（只转调 db/repositories 与
+#   db/schema 的单行方法）；
+# - ``MAX_GET_DATABASE_CALLS_OUTSIDE_DB``：``easy_agent/`` 中除 ``easy_agent/db/`` 外
+#   显式调用 ``get_database()`` 的次数；
+# - ``MAX_DATABASE_ESCAPE_HATCH_REFS``：``easy_agent/`` 中除 ``easy_agent/db/`` 外
+#   ``repo.database`` / ``repository.database`` / ``db.database`` 属性访问次数
+#   （``Database`` 逃生口）。
+#
+# T3a（2026-11-01 会话/消息域）实测：96 / 61 / 18 / 12。
+MAX_DATABASE_METHODS = 96
+MAX_DATABASE_PURE_DELEGATIONS = 61
+MAX_GET_DATABASE_CALLS_OUTSIDE_DB = 18
+MAX_DATABASE_ESCAPE_HATCH_REFS = 12

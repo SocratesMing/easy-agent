@@ -6,13 +6,18 @@ import json
 import logging
 from datetime import datetime
 
+from easy_agent.db.message_serialization import (
+    _sanitize_extra_data,
+    try_repair_json,
+)
+
 logger = logging.getLogger(__name__)
 
 
 def add_message_row(db, session_id: str, message: dict) -> None:
     role = message.get("role", "user")
     content = message.get("content", "")
-    extra_data = db._sanitize_extra_data(message)
+    extra_data = _sanitize_extra_data(db, message)
     timestamp = message.get("timestamp", datetime.now().isoformat())
 
     with db.get_connection() as conn:
@@ -57,7 +62,7 @@ def get_messages_from_rows(db, session_id: str) -> list[dict]:
                 msg.update(extra)
             except (json.JSONDecodeError, TypeError) as e:
                 logger.warning("解析消息extra_data失败 session=%s: %s", session_id, e)
-                extra = db._try_repair_json(raw)
+                extra = try_repair_json(raw)
                 if extra:
                     msg.update(extra)
         messages.append(msg)
