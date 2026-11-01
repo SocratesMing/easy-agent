@@ -2,7 +2,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-import easy_agent.api.chat as chat_api
+import easy_agent.services.chat_turn as chat_turn
 
 
 def test_chat_stream_returns_tokens(client):
@@ -45,8 +45,8 @@ def test_stream_passes_web_search_flag(client, monkeypatch):
         captured["request"] = kwargs["request"]
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_get_agent)
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_get_agent)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
 
     resp = client.post(
         "/agent/chat/stream",
@@ -77,7 +77,7 @@ def test_stream_passes_knowledge_base_ids_to_prepare(client, monkeypatch):
         return KnowledgeChatContext(None, [], [])
 
     _capture_agent(monkeypatch)
-    monkeypatch.setattr(chat_api, "prepare_knowledge_chat", fake_prepare)
+    monkeypatch.setattr(chat_turn, "prepare_knowledge_chat", fake_prepare)
 
     resp = client.post(
         "/agent/chat/stream",
@@ -122,8 +122,8 @@ def _capture_agent(monkeypatch):
     async def fake_stream(**kwargs):
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_get_agent)
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_get_agent)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
     return captured
 
 
@@ -172,8 +172,8 @@ def _patch_stream(monkeypatch):
         captured["stream_kwargs"] = kwargs
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_get_agent)
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_get_agent)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
     return captured
 
 

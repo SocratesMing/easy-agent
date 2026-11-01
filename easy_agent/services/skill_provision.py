@@ -174,8 +174,14 @@ def _inspect_one(username: str, name: str) -> dict[str, Any]:
     )
 
 
-def provision_expert_skills(username: str, expert_id: str | None) -> dict[str, Any]:
+def provision_expert_skills(
+    username: str, expert_id: str | None, *, invalidate_cache: bool = True
+) -> dict[str, Any]:
     """补装专家依赖技能，返回**结构化报告**（含失败原因，供提示词与诊断接口使用）。
+
+    ``invalidate_cache=False`` 时只登记技能、不驱逐 Agent 缓存：调用方通常会把「读库 +
+    清单读改写」整段放进线程，缓存是进程内状态，必须回到事件循环上驱逐（T14.2），
+    并自行把驱逐数量写回 ``report["cache_invalidated"]``。
 
     Returns:
         ``{
@@ -309,7 +315,7 @@ def provision_expert_skills(username: str, expert_id: str | None) -> dict[str, A
             f"技能: {name} | 目录: {target_dir} | 匹配方式: {resolution['matched_by']} | 公共目录: {root}"
         )
 
-    if report["installed"]:
+    if invalidate_cache and report["installed"]:
         # 清单变了：已缓存的 Agent 看不到新技能（技能清单在构造时注入），必须驱逐。
         try:
             from .agent_manager import invalidate_user_agents

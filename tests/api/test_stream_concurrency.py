@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import easy_agent.api.chat as chat_api
+import easy_agent.services.chat_turn as chat_turn
 import easy_agent.services.expert_runtime as expert_runtime
 from easy_agent.services import agent_manager
 
@@ -36,7 +36,7 @@ def _no_agent(monkeypatch):
     async def must_not_build(*args, **kwargs):
         raise AssertionError("会话正忙时不应创建 Agent")
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", must_not_build)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", must_not_build)
 
 
 def test_expert_run_on_a_busy_session_is_409(client, db, busy_session, monkeypatch):
@@ -83,4 +83,4 @@ def test_a_finished_stream_does_not_block_the_next_turn(busy_session):
         stream_task=SimpleNamespace(done=lambda: True)
     )
 
-    chat_api.reject_concurrent_stream(busy_session)
+    chat_turn.reject_concurrent_stream(busy_session)

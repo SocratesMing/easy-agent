@@ -16,7 +16,7 @@ import pytest
 from deepagents import create_deep_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
-import easy_agent.api.chat as chat_api
+import easy_agent.services.chat_turn as chat_turn
 import easy_agent.persistence.checkpoints as checkpoints
 from easy_agent.db.repositories import sessions as sessions_repo
 from easy_agent.db.repositories.message_repository import MessageRepository
@@ -62,7 +62,7 @@ def test_new_message_marks_the_left_over_approval_rejected(client, db, monkeypat
             "blocks": [{"type": "tool_call", "tool_call_id": "c1", "approval_status": "pending"}],
         },
     )
-    monkeypatch.setattr(chat_api, "_get_agent_config", lambda: _ON)
+    monkeypatch.setattr(chat_turn, "_get_agent_config", lambda: _ON)
     monkeypatch.setattr(checkpoints, "sqlite_checkpointer_active", lambda: True)
 
     async def fake_get_agent(session_id, username, workspace_name, **kwargs):
@@ -71,8 +71,8 @@ def test_new_message_marks_the_left_over_approval_rejected(client, db, monkeypat
     async def fake_stream(**kwargs):
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_get_agent)
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_get_agent)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
 
     resp = client.post("/agent/chat/stream", json={"message": "算了", "session_id": sid, "message_id": "m2"})
 
@@ -88,7 +88,7 @@ def test_legacy_snapshot_saver_does_not_abandon_approvals(client, db, monkeypatc
     MessageRepository(db).add_message(sid, {"role": "user", "content": "删掉 a.txt", "turn_id": "m1"})
     pending = {"role": "assistant", "content": "", "pending_approval": {"thread_id": f"{sid}-m1"}}
     MessageRepository(db).add_message(sid, pending)
-    monkeypatch.setattr(chat_api, "_get_agent_config", lambda: _ON)
+    monkeypatch.setattr(chat_turn, "_get_agent_config", lambda: _ON)
     monkeypatch.setattr(checkpoints, "sqlite_checkpointer_active", lambda: False)
 
     async def fake_get_agent(session_id, username, workspace_name, **kwargs):
@@ -97,8 +97,8 @@ def test_legacy_snapshot_saver_does_not_abandon_approvals(client, db, monkeypatc
     async def fake_stream(**kwargs):
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_get_agent)
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_get_agent)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
 
     client.post("/agent/chat/stream", json={"message": "算了", "session_id": sid, "message_id": "m2"})
 
@@ -107,7 +107,7 @@ def test_legacy_snapshot_saver_does_not_abandon_approvals(client, db, monkeypatc
 
 def test_resume_with_a_handle_for_an_older_turn_returns_409(client, db, monkeypatch):
     sid = _session(db, "sess-stale")
-    monkeypatch.setattr(chat_api, "_get_agent_config", lambda: _ON)
+    monkeypatch.setattr(chat_turn, "_get_agent_config", lambda: _ON)
     calls = []
 
     class _Graph:
@@ -122,8 +122,8 @@ def test_resume_with_a_handle_for_an_older_turn_returns_409(client, db, monkeypa
         calls.append(kwargs)
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_agent)
-    monkeypatch.setattr(chat_api, "resume_stream_generator", fake_resume)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_agent)
+    monkeypatch.setattr(chat_turn, "resume_stream_generator", fake_resume)
 
     resp = client.post(
         "/agent/chat/resume",
@@ -198,7 +198,7 @@ def test_resume_on_another_pod_returns_409_before_building_the_agent(client, db,
     async def must_not_build(*args, **kwargs):
         raise AssertionError("落错 pod 时不应再建 Agent")
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", must_not_build)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", must_not_build)
 
     resp = client.post(
         "/agent/chat/resume",

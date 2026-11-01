@@ -11,7 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import easy_agent.api.chat as chat_api
+import easy_agent.services.chat_turn as chat_turn
+from easy_agent.services import skill_provision
 import easy_agent.api.expert as expert_api
 import easy_agent.api.expert_helpers as expert_helpers
 import easy_agent.services.expert_runtime as expert_runtime
@@ -580,8 +581,8 @@ def stub_stream(monkeypatch):
         captured["request"] = kwargs["request"]
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_get_agent)
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_get_agent)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
     return captured
 
 
@@ -665,7 +666,7 @@ def test_chat_stream_with_expert_provisions_required_skills(
     agent_id = created["export_agent_id"]
     calls = {}
 
-    def _fake_provision(username, expert_id):
+    def _fake_provision(username, expert_id, **kwargs):
         calls["username"] = username
         calls["expert_id"] = expert_id
         return {
@@ -689,7 +690,7 @@ def test_chat_stream_with_expert_provisions_required_skills(
         }
 
     monkeypatch.setattr(
-        chat_api.skill_provision, "provision_expert_skills", _fake_provision
+        skill_provision, "provision_expert_skills", _fake_provision
     )
 
     resp = client.post(
@@ -712,7 +713,7 @@ def test_chat_stream_without_expert_skips_skill_provision(
     def _boom(*args, **kwargs):
         raise AssertionError("通用对话不应触发依赖技能补装")
 
-    monkeypatch.setattr(chat_api.skill_provision, "provision_expert_skills", _boom)
+    monkeypatch.setattr(skill_provision, "provision_expert_skills", _boom)
 
     resp = client.post("/agent/chat/stream", json={"message": "你好"})
     assert resp.status_code == 200
@@ -1222,8 +1223,8 @@ def stub_resume(monkeypatch):
     async def fake_resume(**kwargs):
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_get_agent)
-    monkeypatch.setattr(chat_api, "resume_stream_generator", fake_resume)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_get_agent)
+    monkeypatch.setattr(chat_turn, "resume_stream_generator", fake_resume)
     return captured
 
 

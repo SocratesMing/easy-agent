@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import easy_agent.api.chat as chat_api
+import easy_agent.services.chat_turn as chat_turn
 from easy_agent.models.db import SessionModel
 
 
@@ -59,8 +60,8 @@ def resume_setup(db, monkeypatch):
         calls.append(kwargs)
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_agent)
-    monkeypatch.setattr(chat_api, "resume_stream_generator", fake_resume)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_agent)
+    monkeypatch.setattr(chat_turn, "resume_stream_generator", fake_resume)
     return sid, calls
 
 

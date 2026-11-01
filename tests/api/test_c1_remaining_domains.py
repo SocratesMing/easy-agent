@@ -56,11 +56,11 @@ RETAINED_DATABASE_BOUNDARIES = {
     # start_run 边界。
     # T3a（2026-11-01）：chat_stream / chat_resume 的 start_run 改传 repo.runs，11 → 9。
     "expert.py": 0,
-    # 知识域鉴权/编排 ×2 + 专家绑定 ×1 + 流式引擎 ×2 + 事件回放/状态 ×4
-    # + Phase 2B run 登记 ×2（chat_stream / chat_resume 的 start_run）
-    # + 2026-10-22 专家对话并入 chat_stream：ExpertRepository 构造 ×1 +
-    #   短路拒答落库 ×1（原 /agent/stream_export_run 的边界随路由一起迁入）
-    "chat.py": 9,
+    # T4（2026-11-01）：本轮准备逻辑下沉 services/chat_turn.py，原 9 处里有 6 处
+    # （知识域鉴权、ExpertRepository 构造、待修改专家归属校验、知识检索、
+    #   生成器 db 传参 ×2）随代码迁入服务层。
+    # api/chat.py 只剩 SSE 驱动的 3 处 repo.database（chat_stream 两个分支 + chat_resume）。
+    "chat.py": 3,
     "chat_live.py": 2,
     # T3a（2026-11-01）：session_uploads 端口直接吃 SessionRepository，2 → 0。
     "sessions.py": 0,

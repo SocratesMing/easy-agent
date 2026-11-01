@@ -17,6 +17,8 @@ from types import SimpleNamespace
 import pytest
 
 import easy_agent.api.chat as chat_api
+import easy_agent.services.chat_turn as chat_turn
+from easy_agent.services import run_registry
 import easy_agent.services.expert_runtime as expert_runtime
 from easy_agent.models.db import SessionModel
 from easy_agent.db.repositories import agent_runs as agent_runs_repo
@@ -54,7 +56,7 @@ def _patch_agent(monkeypatch):
     async def fake_agent(session_id, username, workspace_name, **kwargs):
         return SimpleNamespace(workspace_dir=None, workspace_virtual_path="/workspace")
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_agent)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_agent)
 
 
 def test_chat_stream_creates_run_and_marks_completed(client, db, monkeypatch):
@@ -66,7 +68,7 @@ def test_chat_stream_creates_run_and_marks_completed(client, db, monkeypatch):
         yield 'data: {"type": "start"}\n\n'
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
 
     resp = client.post(
         "/agent/chat/stream",
@@ -97,7 +99,7 @@ def test_chat_stream_exception_marks_failed_and_emits_error(client, db, monkeypa
         yield 'data: {"type": "start"}\n\n'
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
 
     resp = client.post(
         "/agent/chat/stream",
@@ -158,7 +160,7 @@ def test_resume_creates_run_with_decisions(client, db, monkeypatch):
     async def fake_resume(**kwargs):
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "resume_stream_generator", fake_resume)
+    monkeypatch.setattr(chat_turn, "resume_stream_generator", fake_resume)
 
     resp = client.post(
         "/agent/chat/resume",
@@ -188,7 +190,7 @@ def test_resume_without_message_id_still_creates_run(client, db, monkeypatch):
     async def fake_resume(**kwargs):
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "resume_stream_generator", fake_resume)
+    monkeypatch.setattr(chat_turn, "resume_stream_generator", fake_resume)
 
     resp = client.post(
         "/agent/chat/resume",
@@ -217,8 +219,8 @@ def test_run_registry_failure_does_not_break_chat(client, db, monkeypatch):
     async def fake_stream(**kwargs):
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
-    monkeypatch.setattr(chat_api, "start_run", lambda *args, **kwargs: False)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(run_registry, "start_run", lambda *args, **kwargs: False)
 
     resp = client.post(
         "/agent/chat/stream",
@@ -236,8 +238,8 @@ def _patch_chat_stream(monkeypatch, fake_stream):
     async def fake_agent(session_id, username, workspace_name, **kwargs):
         return SimpleNamespace(workspace_dir=None, workspace_virtual_path="/workspace")
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_agent)
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_agent)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
 
 
 def test_expert_run_creates_run_and_marks_completed(client, db, monkeypatch):
@@ -325,7 +327,7 @@ def test_run_registry_failure_does_not_break_expert_run(client, db, monkeypatch)
         yield 'data: {"type": "done"}\n\n'
 
     _patch_chat_stream(monkeypatch, fake_stream)
-    monkeypatch.setattr(chat_api, "start_run", lambda *args, **kwargs: False)
+    monkeypatch.setattr(run_registry, "start_run", lambda *args, **kwargs: False)
 
     resp = client.post(
         "/agent/chat/stream",

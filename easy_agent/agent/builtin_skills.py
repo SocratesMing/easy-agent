@@ -27,11 +27,19 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
+import weakref
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from easy_agent.bootstrap.config import Config
+
+try:  # POSIX 跨进程文件锁；Windows 等平台没有 fcntl，降级为进程内串行
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - 平台分支
+    _fcntl = None
 
 logger = logging.getLogger("easy-agent")
 
@@ -69,6 +77,136 @@ def builtin_root(config: Any = None) -> Path | None:
 
 def store_path(username: str, config: Any = None) -> Path:
     return Config.get_user_workspace_dir(username, config) / STORE_FILE_NAME
+
+
+# ── 清单文件锁（T14.2）────────────────────────────────────────────────
+#
+# 清单是「读 → 改 → 原子写」的 JSON 文件，同一用户的多个请求会并发读改写：原子写只能防
+# 读到半截，防不住丢更新（两个请求同时读、各改一处、后写覆盖先写）。这里按用户加锁
+# （``.builtin-skills.json.lock``）：
+#
+# - 进程内可重入：同一线程嵌套调用只加深度，``add`` 里的迁移不会自锁死；
+# - POSIX 用阻塞式 ``fcntl.flock`` 做跨进程互斥（多 worker / 多副本共享 workspace 时生效）；
+# - Windows 等没有 fcntl 的平台降级为进程内互斥并只告警一次（与 ``services/memory_locks``
+#   的记忆文件锁同一口径）。
+
+_LOCK_SUFFIX = ".lock"
+_LOCK_WARNING_EMITTED = False
+_FLOCK_BROKEN = False
+# 弱引用注册表：只为「当前有人持有 / 等待」的路径保留 RLock，避免长跑服务随用户数增长累积
+_STORE_LOCKS: weakref.WeakValueDictionary[str, threading.RLock] = (
+    weakref.WeakValueDictionary()
+)
+_STORE_LOCKS_GUARD = threading.Lock()
+_STORE_LOCK_STATE = threading.local()
+
+
+def _warn_lock_degraded(reason: str) -> None:
+    """跨进程锁不可用时只告警一次，避免刷日志。"""
+    global _LOCK_WARNING_EMITTED
+    if _LOCK_WARNING_EMITTED:
+        return
+    _LOCK_WARNING_EMITTED = True
+    logger.warning(
+        "公共技能清单跨进程文件锁不可用，降级为进程内串行 | 原因: %s | "
+        "影响: 多进程并发改同一用户的 builtin-skills.json 时仍可能后写覆盖",
+        reason,
+    )
+
+
+def _lock_for(key: str) -> threading.RLock:
+    with _STORE_LOCKS_GUARD:
+        lock = _STORE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _STORE_LOCKS[key] = lock
+        return lock
+
+
+def _lock_depths() -> dict[str, int]:
+    depths = getattr(_STORE_LOCK_STATE, "depths", None)
+    if depths is None:
+        depths = {}
+        _STORE_LOCK_STATE.depths = depths
+    return depths
+
+
+def _acquire_flock(handle) -> None:
+    """尝试取跨进程排它锁；平台不支持或失败时降级并返回。"""
+    global _FLOCK_BROKEN
+    if _fcntl is None:
+        _warn_lock_degraded("当前平台无 fcntl 模块")
+        return
+    if _FLOCK_BROKEN:
+        _warn_lock_degraded("fcntl.flock 不可用")
+        return
+    try:
+        _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX)
+    except (OSError, AttributeError) as exc:
+        _FLOCK_BROKEN = True
+        _warn_lock_degraded(f"flock 失败: {exc}")
+
+
+def _release_flock(handle) -> None:
+    if _fcntl is None:
+        return
+    try:
+        _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+    except (OSError, AttributeError):
+        pass
+
+
+@contextmanager
+def store_lock(username: str, config: Any = None):
+    """按用户给 ``builtin-skills.json`` 加跨进程互斥锁（进程内可重入）。
+
+    用法::
+
+        with store_lock(username, config):
+            store = load_store(username, config)
+            ...
+            save_store(username, store, config)
+
+    只包住「读 → 改 → 写」临界区，不包文件内容解析；读方（``load_store`` /
+    ``list_added``）不加锁也能安全读，因为写用的是临时文件 + ``os.replace`` 原子写。
+    """
+    lock_path = store_path(username, config).parent / f".{STORE_FILE_NAME}{_LOCK_SUFFIX}"
+    key = os.path.abspath(str(lock_path))
+    depths = _lock_depths()
+
+    # 同一线程已持锁：只增加深度，不重复 flock（迁移路径嵌套调用靠它避免自锁死）。
+    if depths.get(key, 0) > 0:
+        depths[key] += 1
+        try:
+            yield lock_path
+        finally:
+            depths[key] -= 1
+            if depths[key] <= 0:
+                depths.pop(key, None)
+        return
+
+    thread_lock = _lock_for(key)
+    thread_lock.acquire()
+    handle = None
+    depths[key] = 1
+    try:
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(lock_path, "a+b")
+        except OSError as exc:
+            _warn_lock_degraded(f"无法创建锁文件 {lock_path.name}: {exc}")
+        else:
+            _acquire_flock(handle)
+        yield lock_path
+    finally:
+        depths.pop(key, None)
+        if handle is not None:
+            _release_flock(handle)
+            try:
+                handle.close()
+            except OSError:
+                pass
+        thread_lock.release()
 
 
 def _is_skill_dir(path: Path) -> bool:
@@ -184,12 +322,19 @@ def migrate_user_copies(
 
 
 def ensure_migrated(username: str, root: Path | None = None, config: Any = None) -> None:
-    """第一次读清单时迁移一次（失败只记日志，不影响列表）。``root`` 缺省按 ``config`` 解析。"""
+    """第一次读清单时迁移一次（失败只记日志，不影响列表）。``root`` 缺省按 ``config`` 解析。
+
+    迁移会读清单再写回，必须与 ``add`` / ``set_enabled`` / ``remove`` 的读改写互斥：
+    否则并发添加的技能会被迁移的旧快照覆盖。等锁后复核一次 ``migrated``，避免重复迁移。
+    """
     root = root if root is not None else builtin_root(config)
     if root is None or load_store(username, config).get("migrated"):
         return
     try:
-        migrate_user_copies(username, root, config=config)
+        with store_lock(username, config):
+            if load_store(username, config).get("migrated"):
+                return
+            migrate_user_copies(username, root, config=config)
     except Exception as e:  # noqa: BLE001 - 迁移失败时副本原样保留，照旧当用户技能用
         logger.warning(f"公共技能副本迁移失败（副本保留，下次再试）| 用户: {username} | {e}")
 
@@ -223,35 +368,39 @@ def add(username: str, dir_name: str, root: Path | None = None, config: Any = No
     root = root if root is not None else builtin_root(config)
     if root is None or not is_safe_dir_name(dir_name) or not _is_skill_dir(root / dir_name):
         raise FileNotFoundError(dir_name)
-    ensure_migrated(username, root, config)
-    store = load_store(username, config)
-    if dir_name in store["skills"]:
-        raise FileExistsError(dir_name)
-    store["skills"][dir_name] = {"enabled": True, "added_at": _now()}
-    save_store(username, store, config)
+    # 整段「迁移 + 读 → 改 → 写」放在同一把用户锁里：并发 add 不会互相覆盖
+    with store_lock(username, config):
+        ensure_migrated(username, root, config)
+        store = load_store(username, config)
+        if dir_name in store["skills"]:
+            raise FileExistsError(dir_name)
+        store["skills"][dir_name] = {"enabled": True, "added_at": _now()}
+        save_store(username, store, config)
     logger.info(f"公共技能添加 | 用户: {username} | 技能: {dir_name}")
     return {"dir_name": dir_name, "path": root / dir_name, "enabled": True, "source": "builtin"}
 
 
 def set_enabled(username: str, dir_name: str, enabled: bool, config: Any = None) -> dict[str, Any]:
     """启用 / 停用已添加的公共技能；未添加抛 ``FileNotFoundError``。"""
-    store = load_store(username, config)
-    entry = store["skills"].get(dir_name)
-    if entry is None:
-        raise FileNotFoundError(dir_name)
-    if entry["enabled"] != enabled:
-        entry["enabled"] = enabled
-        save_store(username, store, config)
-        logger.info(f"公共技能{'启用' if enabled else '停用'} | 用户: {username} | 技能: {dir_name}")
+    with store_lock(username, config):
+        store = load_store(username, config)
+        entry = store["skills"].get(dir_name)
+        if entry is None:
+            raise FileNotFoundError(dir_name)
+        if entry["enabled"] != enabled:
+            entry["enabled"] = enabled
+            save_store(username, store, config)
+            logger.info(f"公共技能{'启用' if enabled else '停用'} | 用户: {username} | 技能: {dir_name}")
     root = builtin_root(config)
     return {"dir_name": dir_name, "path": (root / dir_name) if root else None, "enabled": enabled, "source": "builtin"}
 
 
 def remove(username: str, dir_name: str, config: Any = None) -> bool:
     """从清单移除（canonical 目录不动）；未添加返回 ``False``。"""
-    store = load_store(username, config)
-    if store["skills"].pop(dir_name, None) is None:
-        return False
-    save_store(username, store, config)
+    with store_lock(username, config):
+        store = load_store(username, config)
+        if store["skills"].pop(dir_name, None) is None:
+            return False
+        save_store(username, store, config)
     logger.info(f"公共技能移除 | 用户: {username} | 技能: {dir_name}")
     return True

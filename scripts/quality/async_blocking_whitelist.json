@@ -1,9 +1,6 @@
 {
   "_comment": "async def 里同步数据库调用的基线：allowed 是 文件 → 「异步函数() -> 被调用项」→ 次数，reasons 是每个文件留在事件循环上的原因。只减不增；能挪进线程（def 路由 / to_thread / run_blocking）的不要加。",
   "allowed": {
-    "easy_agent/api/chat.py": {
-      "chat_stream() -> skill_provision.provision_expert_skills": 1
-    },
     "easy_agent/app.py": {
       "lifespan() -> _init_database_and_state": 1,
       "lifespan() -> _start_scheduler": 1
@@ -24,7 +21,6 @@
     }
   },
   "reasons": {
-    "easy_agent/api/chat.py": "provision_expert_skills 对 builtin-skills.json 做无锁的读改写，留在事件循环上与其他请求串行；放进线程会和并发请求互相覆盖",
     "easy_agent/app.py": "lifespan 启动阶段，还没有接流量",
     "easy_agent/knowledges/scripts/migrate_knowledge_to_shared.py": "命令行脚本（asyncio.run），没有并发请求",
     "easy_agent/knowledges/scripts/sync_source_docs.py": "命令行脚本（asyncio.run），没有并发请求",
