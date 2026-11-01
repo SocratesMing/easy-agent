@@ -32,6 +32,7 @@ def _load_script(name: str):
 import_graph = _load_script("quality/import_graph")
 double_write = _load_script("quality/check_double_write")
 env_usage = _load_script("quality/check_env_usage")
+async_blocking = _load_script("quality/check_async_blocking")
 
 
 def _write(root: Path, relative: str, content: str) -> Path:
@@ -568,3 +569,85 @@ def test_repository_env_usage_gate_is_green():
         env_usage.current_baseline(), env_usage.load_baseline()
     )
     assert errors == [], "\n".join(errors)
+
+
+# --- async 里的同步数据库调用 ---------------------------------------------------
+
+
+def _blocking_keys(root: Path) -> set[str]:
+    modules = async_blocking.iter_modules(root / "easy_agent")
+    return {key for _rel, _line, key in async_blocking.find_blocking_calls(modules)}
+
+
+def test_async_blocking_flags_db_calls_left_on_the_event_loop(tmp_path):
+    _write(
+        tmp_path,
+        "easy_agent/store.py",
+        "def load_row(db, key):\n"
+        "    return db.fetch(key)\n"
+        "\n"
+        "def load_twice(db, key):\n"
+        "    return load_row(db, key), load_row(db, key)\n"
+        "\n"
+        "public_load = load_row\n"
+        "\n"
+        "def ensure(check):\n"
+        "    return check()\n",
+    )
+    _write(
+        tmp_path,
+        "easy_agent/handlers.py",
+        "import asyncio\n"
+        "from easy_agent.store import ensure, load_row, load_twice, public_load\n"
+        "\n"
+        "async def handler(repo, db, config):\n"
+        "    repo.add_message('s', {})\n"
+        "    load_twice(db, 'k')\n"
+        "    public_load(db, 'k')\n"
+        "    ensure(lambda: load_row(db, 'k'))\n"
+        "    await repo.aget('k')\n"
+        "    await asyncio.to_thread(load_row, db, 'k')\n"
+        "    await asyncio.to_thread(lambda: load_row(db, 'k'))\n"
+        "    config.mysql.database.strip()\n"
+        "    {}.get('k')\n"
+        "\n"
+        "    def later():\n"
+        "        return load_row(db, 'k')\n"
+        "\n"
+        "    return later\n",
+    )
+
+    # 直接调用句柄、传递调用、别名、交给同步函数当场调用的 lambda 都算；await、传进线程的
+    # 函数引用和 lambda、配置字段、通用方法名、嵌套 def 都不算
+    assert _blocking_keys(tmp_path) == {
+        "handler() -> repo.add_message",
+        "handler() -> load_twice",
+        "handler() -> public_load",
+        "handler() -> load_row",
+    }
+
+
+def test_async_blocking_compare_reports_new_and_stale():
+    errors, stale = async_blocking.compare(
+        {"easy_agent/a.py": {"f() -> repo.x": 2}},
+        {"easy_agent/a.py": {"f() -> repo.x": 1}, "easy_agent/b.py": {"g() -> db.y": 1}},
+    )
+    assert errors == ["easy_agent/a.py: 新增 async 里的同步数据库调用 -> f() -> repo.x"]
+    assert stale == ["easy_agent/b.py: 基线条目可删除 -> g() -> db.y"]
+
+
+def test_repository_async_blocking_gate_is_green():
+    """与 CI 的 ``check_async_blocking.py --check`` 同口径；另外要求基线没有过期条目（只减不增）。"""
+    errors, stale = async_blocking.compare(
+        async_blocking.current_baseline(), async_blocking.load_baseline()
+    )
+    assert errors == [], "\n".join(errors)
+    assert stale == [], "调用已挪进线程，请执行 check_async_blocking.py --update 收缩基线：\n" + "\n".join(stale)
+
+
+def test_async_blocking_whitelist_explains_every_file():
+    reasons = async_blocking.load_reasons()
+    missing = sorted(
+        rel for rel in async_blocking.load_baseline() if not reasons.get(rel, "").strip()
+    )
+    assert missing == [], f"基线里这些文件没写留在事件循环上的原因：{missing}"

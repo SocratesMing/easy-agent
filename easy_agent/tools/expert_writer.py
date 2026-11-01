@@ -50,6 +50,7 @@ from easy_agent.services.expert_service import (
     validate_create_params,
     write_expert_version,
 )
+from easy_agent.utils.blocking import run_blocking
 
 logger = logging.getLogger("easy_agent.tools.expert_writer")
 
@@ -399,12 +400,14 @@ class SaveExpertTool(BaseTool):
         if config is None:
             return "错误：服务端配置未初始化，暂时无法创建专家，请稍后再试。"
 
+        # 数据库层是同步的：查库 / 写库（含版本目录落盘）经 run_blocking 放进线程；
+        # 本轮技能暂存、待修改专家绑定和 Agent 缓存是进程内状态，留在事件循环上。
         db = get_database()
-        user_id = _current_user_id(db, self.username)
+        user_id = await run_blocking(_current_user_id, db, self.username)
         store = ExpertStore(db)
         name_cn = args.name_cn.strip()
 
-        conflict = store.find_by_name_cn(user_id, name_cn)
+        conflict = await run_blocking(store.find_by_name_cn, user_id, name_cn)
         if conflict:
             return (
                 f"错误：已有同名的专家Agent「{conflict.get('export_name_cn') or name_cn}」，"
@@ -417,7 +420,8 @@ class SaveExpertTool(BaseTool):
         selected_skills = self._selected_skill_dirs()
 
         # 先落 building 占位行：生成途中崩溃也能查到记录，前端列表可见「生成中」
-        store.create(
+        await run_blocking(
+            store.create,
             {
                 "export_agent_id": expert_agent_id,
                 "session_id": self.session_id or "",
@@ -432,20 +436,21 @@ class SaveExpertTool(BaseTool):
                 "export_file_path": "",
                 "agent_status": STATUS_BUILDING,
                 "export_version": 1,
-            }
+            },
         )
 
         try:
             generated, source = await self._resolve_config(args, config, name_cn, args.prompt)
         except Exception as exc:  # noqa: BLE001
-            store.update_fields(expert_agent_id, {"agent_status": STATUS_FAILED})
+            await run_blocking(store.update_fields, expert_agent_id, {"agent_status": STATUS_FAILED})
             logger.error("专家配置生成失败 | %s | %s", expert_agent_id, exc)
             return (
                 f"错误：专家配置生成失败（{exc}）。已保留一条「生成失败」记录，"
                 "请稍后重试或改用更明确的专家描述。"
             )
 
-        ok = self._persist(
+        ok = await run_blocking(
+            self._persist,
             store=store,
             config=config,
             username=self.username,
@@ -464,7 +469,7 @@ class SaveExpertTool(BaseTool):
         # 技能暂存使命完成：清掉，避免下一轮无关的创建/修改误用上一轮的选择
         self._clear_turn_skills()
 
-        record = store.get(expert_agent_id) or {}
+        record = await run_blocking(store.get, expert_agent_id) or {}
         logger.info(
             "对话内创建专家成功 | user=%s | expert=%s | 来源=%s | tag=%s | 技能包=%s",
             self.username,
@@ -505,10 +510,10 @@ class SaveExpertTool(BaseTool):
             return "错误：服务端配置未初始化，暂时无法修改专家，请稍后再试。"
 
         db = get_database()
-        user_id = _current_user_id(db, self.username)
+        user_id = await run_blocking(_current_user_id, db, self.username)
         store = ExpertStore(db)
 
-        record = store.get_owned(expert_agent_id, user_id)
+        record = await run_blocking(store.get_owned, expert_agent_id, user_id)
         if record is None:
             return (
                 f"错误：专家「{expert_agent_id}」不存在，或不属于当前用户，无法修改。"
@@ -522,7 +527,9 @@ class SaveExpertTool(BaseTool):
         except ValueError as exc:
             return f"错误：{exc}。请补齐信息后重试。"
 
-        conflict = store.find_by_name_cn(user_id, name_cn, exclude_agent_id=expert_agent_id)
+        conflict = await run_blocking(
+            store.find_by_name_cn, user_id, name_cn, exclude_agent_id=expert_agent_id
+        )
         if conflict:
             return (
                 f"错误：已有同名的专家Agent「{conflict.get('export_name_cn') or name_cn}」，"
@@ -555,7 +562,8 @@ class SaveExpertTool(BaseTool):
             logger.error("专家配置生成失败（修改）| %s | %s", expert_agent_id, exc)
             return f"错误：专家配置生成失败（{exc}）。原专家保持不变，请稍后重试。"
 
-        ok = self._persist(
+        ok = await run_blocking(
+            self._persist,
             store=store,
             config=config,
             username=self.username,
@@ -568,8 +576,10 @@ class SaveExpertTool(BaseTool):
         if not ok:
             return "错误：专家配置落盘失败（版本目录写入异常）。原专家保持不变，请稍后重试。"
 
-        store.update_fields(
-            expert_agent_id, {"export_name_cn": name_cn, "export_prompt": user_prompt}
+        await run_blocking(
+            store.update_fields,
+            expert_agent_id,
+            {"export_name_cn": name_cn, "export_prompt": user_prompt},
         )
 
         # 该用户所有缓存 Agent 失效，下次请求用新版本提示词重建
@@ -582,7 +592,7 @@ class SaveExpertTool(BaseTool):
 
         self._clear_turn_skills()
 
-        updated = store.get_owned(expert_agent_id, user_id) or {}
+        updated = await run_blocking(store.get_owned, expert_agent_id, user_id) or {}
         logger.info(
             "对话内修改专家成功 | user=%s | expert=%s | v%s | 来源=%s | 技能包=%s",
             self.username,

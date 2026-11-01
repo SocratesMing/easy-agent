@@ -7,6 +7,7 @@
 
 import asyncio
 import logging
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -225,3 +226,42 @@ async def test_execute_task_marked_cancelled_when_lock_lost(db, monkeypatch, pat
     runs = db.list_scheduled_task_runs(task.task_id)
     assert [run.status for run in runs] == ["cancelled"]
     assert "分布式锁" in runs[0].error_message
+
+
+class _ThreadRecordingDB:
+    """转发到真实 db，并记下每次方法调用是否发生在事件循环线程上。"""
+
+    def __init__(self, db, loop_thread: int):
+        self._db = db
+        self._loop_thread = loop_thread
+        self.calls: list[tuple[str, bool]] = []
+
+    def __getattr__(self, name):
+        attr = getattr(self._db, name)
+        if not callable(attr):
+            return attr
+
+        def _call(*args, **kwargs):
+            self.calls.append((name, threading.get_ident() == self._loop_thread))
+            return attr(*args, **kwargs)
+
+        return _call
+
+
+@pytest.mark.asyncio
+async def test_execute_task_keeps_database_calls_off_the_event_loop(db, monkeypatch, patched):
+    """查库 / 写库（含分布式锁的抢锁、续约、释放）都在线程里执行，不占事件循环。"""
+    fake_agent, _ = patched
+    task = _create_task(db)
+    recording = _ThreadRecordingDB(db, threading.get_ident())
+    monkeypatch.setattr(sched, "get_database", lambda: recording)
+    monkeypatch.setattr(sched, "get_distributed_lock", lambda: _use_lock(recording, "pod-self"))
+
+    await sched._execute_task(task.task_id)
+
+    assert len(fake_agent.agent.calls) == 1
+    assert [run.status for run in db.list_scheduled_task_runs(task.task_id)] == ["succeeded"]
+    names = {name for name, _on_loop in recording.calls}
+    assert {"get_scheduled_task", "create_session", "add_message", "get_connection"} <= names
+    assert [name for name, on_loop in recording.calls if on_loop] == []
+    assert sched.running_tasks == {}

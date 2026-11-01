@@ -8,6 +8,9 @@
   白名单只减不增：条目不再命中（已改成 def 或已有 await）时也会失败，提醒删掉它。
 
 依赖同理：鉴权依赖 ``get_current_username`` 每个需要登录的请求都要查库，必须保持同步函数。
+
+路由以外的代码（服务、工具、帮助函数），以及 async 路由里夹在 await 之间的同步查库，由
+``scripts/quality/check_async_blocking.py``（CI 架构门禁）按基线检查。
 """
 
 from __future__ import annotations
@@ -37,20 +40,27 @@ CONVERTED = {
         "get_task_workspace",
         "get_task_workspace_file",
     ],
+    "easy_agent.api.sessions": [
+        "create_session",
+        "list_sessions",
+        "count_sessions",
+        "get_session",
+        "update_title",
+        "toggle_pin",
+        "get_chat_history",
+        "add_message",
+    ],
+    "easy_agent.api.files": [
+        "get_session_generated_files",
+        "get_workspace_tree",
+    ],
 }
 
-#: 仍为 async、不 await 却查库的路由；必须在事件循环线程上执行的才放这里
-ALLOWED = {
-    ("expert.py", "delete_expert"): "调用 invalidate_user_agents 改进程内 Agent 缓存",
-    ("scheduled_tasks.py", "delete_scheduled_task"): "注销调度任务：改 stopping_tasks、取消运行中的 asyncio 任务",
-    ("scheduled_tasks.py", "toggle_scheduled_task"): "同上（停用时注销调度任务）",
-    ("scheduled_tasks.py", "run_scheduled_task_now"): "向 AsyncIOScheduler 提交任务",
-}
+#: 仍为 async、不 await 却查库的路由；必须在事件循环线程上执行的才放这里。
+#: 改进程内状态（Agent 缓存、调度任务）的路由保持 async，查库用 asyncio.to_thread 放进线程。
+ALLOWED: dict[tuple[str, str], str] = {}
 #: 整个模块暂不检查：另一路会话正在修改，提交后按同一规则处理
-MODULES_PENDING = {
-    "files.py": "另一路会话在改（2026-10-20）",
-    "sessions.py": "另一路会话在改（2026-10-20）",
-}
+MODULES_PENDING: dict[str, str] = {}
 
 _DB_HINTS = ("get_database", "Repository", "repo.", "database", "db.")
 _ROUTE_METHODS = {"get", "post", "put", "delete", "patch"}

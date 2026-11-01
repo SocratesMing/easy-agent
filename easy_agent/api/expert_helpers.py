@@ -13,6 +13,7 @@
 ``services.expert_runtime`` 原样转发，历史调用点（``_load_expert_prompt`` 等）不破。
 """
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -161,7 +162,7 @@ async def _generate_and_store(
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("专家配置生成失败 | expert=%s | %s", expert_agent_id, exc)
-        store.update_fields(expert_agent_id, {"agent_status": STATUS_FAILED})
+        await asyncio.to_thread(store.update_fields, expert_agent_id, {"agent_status": STATUS_FAILED})
         raise HTTPException(status_code=500, detail=f"专家配置生成失败：{exc}") from exc
 
     # 英文标识名：优先用 LLM 生成的 name_en（如 stock-invest-advisor），
@@ -181,13 +182,13 @@ async def _generate_and_store(
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("专家版本目录写入失败 | expert=%s | %s", expert_agent_id, exc)
-        store.update_fields(expert_agent_id, {"agent_status": STATUS_FAILED})
+        await asyncio.to_thread(store.update_fields, expert_agent_id, {"agent_status": STATUS_FAILED})
         raise HTTPException(status_code=500, detail=f"专家配置落盘失败：{exc}") from exc
 
     # 大模型自动归类：生成的 tag_id 有效时覆盖创建时传入的值；
     # 无效/缺失（模型没选或选了候选之外的标签）时保留原值不动。
     generated_tag = generated.get("tag_id") or ""
-    current_tag = (store.get(expert_agent_id) or {}).get("tag_id", "")
+    current_tag = (await asyncio.to_thread(store.get, expert_agent_id) or {}).get("tag_id", "")
 
     fields = {
         "export_file_path": file_path,
@@ -202,6 +203,6 @@ async def _generate_and_store(
     if name_en:
         # LLM 生成了更贴切的英文标识名，回写覆盖创建时的占位 slug
         fields["export_name_en"] = name_en
-    store.update_fields(expert_agent_id, fields)
-    return store.get(expert_agent_id) or {}
+    await asyncio.to_thread(store.update_fields, expert_agent_id, fields)
+    return await asyncio.to_thread(store.get, expert_agent_id) or {}
 

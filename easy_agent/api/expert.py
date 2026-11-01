@@ -19,6 +19,7 @@
 re-export 继续可用。
 """
 
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -166,12 +167,13 @@ async def add_expert(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    user_id = _current_user_id(repo, username)
+    # 数据库层是同步的：查库 / 写库都放进线程，不占事件循环
+    user_id = await asyncio.to_thread(_current_user_id, repo, username)
     name_cn = request.name_cn.strip()
     store = repo
 
     # 中文名唯一：同一用户下不允许出现同名专家（含已软删除的记录）
-    _ensure_name_available(store, user_id, name_cn)
+    await asyncio.to_thread(_ensure_name_available, store, user_id, name_cn)
 
     expert_agent_id, name_en = build_expert_ids(request.name_cn)
 
@@ -193,7 +195,8 @@ async def add_expert(
 
     # 先落 building 占位行：即使生成途中进程崩溃，也能查到一条记录供前端重试。
     # tag_id 不收前端传参，先置空，由大模型自动归类后回写。
-    store.create(
+    await asyncio.to_thread(
+        store.create,
         {
             "export_agent_id": expert_agent_id,
             "session_id": request.session_id or "",
@@ -208,7 +211,7 @@ async def add_expert(
             "export_file_path": "",
             "agent_status": STATUS_BUILDING,
             "export_version": 1,
-        }
+        },
     )
 
     record = await _generate_and_store(
@@ -232,9 +235,9 @@ async def update_expert(
     username: Annotated[str, Depends(get_current_username)],
 ):
     repo = _as_expert_repository(db)
-    user_id = _current_user_id(repo, username)
+    user_id = await asyncio.to_thread(_current_user_id, repo, username)
     store = repo
-    record = store.get_owned(request.export_agent_id, user_id)
+    record = await asyncio.to_thread(store.get_owned, request.export_agent_id, user_id)
     if record is None:
         raise HTTPException(status_code=404, detail="专家不存在")
 
@@ -246,7 +249,8 @@ async def update_expert(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # 改名时同样要求唯一（排除自己，否则原样保存也会被拦下）
-    _ensure_name_available(
+    await asyncio.to_thread(
+        _ensure_name_available,
         store,
         user_id,
         name_cn,
@@ -290,12 +294,12 @@ async def update_expert(
             request.export_agent_id,
             kept or "（清空 → 技能库全量可见）",
         )
-    store.update_fields(request.export_agent_id, meta)
+    await asyncio.to_thread(store.update_fields, request.export_agent_id, meta)
 
     # 让该用户所有缓存 Agent 失效，下次请求用新版本的提示词重建
     invalidate_user_agents(username)
 
-    updated = store.get_owned(request.export_agent_id, user_id) or {}
+    updated = await asyncio.to_thread(store.get_owned, request.export_agent_id, user_id) or {}
     logger.info("专家修改成功 | %s | v%s", request.export_agent_id, new_version)
     return _to_public(updated)
 
@@ -548,15 +552,17 @@ async def delete_expert(
     username: Annotated[str, Depends(get_current_username)],
 ):
     repo = _as_expert_repository(db)
-    user_id = _current_user_id(repo, username)
+    user_id = await asyncio.to_thread(_current_user_id, repo, username)
     store = repo
-    record = store.get_owned(request.export_agent_id, user_id)
+    record = await asyncio.to_thread(store.get_owned, request.export_agent_id, user_id)
     if record is None:
         raise HTTPException(status_code=404, detail="专家不存在")
 
-    removed = store.delete(request.export_agent_id, user_id, hard=request.hard)
+    removed = await asyncio.to_thread(
+        store.delete, request.export_agent_id, user_id, hard=request.hard
+    )
     if request.hard:
-        remove_expert_dir(username, request.export_agent_id)
+        await asyncio.to_thread(remove_expert_dir, username, request.export_agent_id)
 
     invalidate_user_agents(username)
     logger.info(

@@ -300,7 +300,12 @@ async def _authenticate_admin(websocket: WebSocket, users: UserRepository) -> st
     except (asyncio.TimeoutError, WebSocketDisconnect, KeyError, RuntimeError, ValueError):
         message = None
     token = message.get("token") if isinstance(message, dict) and message.get("type") == "auth" else None
-    username = verify_token_sso(token, users) if isinstance(token, str) and token else None
+    # 校验要查库（token_version / 停用状态），放进线程，不占事件循环
+    username = (
+        await asyncio.to_thread(verify_token_sso, token, users)
+        if isinstance(token, str) and token
+        else None
+    )
     if username is None:
         await _reject(websocket, _CLOSE_UNAUTHENTICATED, "未登录或登录已过期")
         return None

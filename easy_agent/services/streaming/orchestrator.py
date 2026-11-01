@@ -408,7 +408,8 @@ async def finalize_stream(
 
     if not is_resume:
         # 调试用 context 快照（默认关闭，EASY_WRITE_SESSION_CONTEXT=1 开启）
-        write_session_context_snapshot(
+        await run_blocking(
+            write_session_context_snapshot,
             db=db,
             session_id=session_id,
             message_id=message_id,
@@ -558,7 +559,9 @@ async def chat_stream_generator(
             f"补回半截回复: {plan.restored_tail} | 压缩: 官方 SummarizationMiddleware"
         )
         if plan.checkpoint_id:
-            record_turn_checkpoint(db, session_id, message_id, plan.checkpoint_id, sid)
+            await run_blocking(
+                record_turn_checkpoint, db, session_id, message_id, plan.checkpoint_id, sid
+            )
 
         # ── 启动流式输出 (stream_mode=['messages', 'updates']) ─────────
         logger.info(f"[{sid}] 🚀 使用 stream_mode=['messages', 'updates'] 流式接口")

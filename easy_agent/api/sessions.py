@@ -169,7 +169,7 @@ router = APIRouter(
 
 
 @router.post("", summary="创建新会话", response_model=CreateSessionResponse)
-async def create_session(
+def create_session(
     request: CreateSessionRequest,
     db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
@@ -209,7 +209,7 @@ async def create_session(
 
 
 @router.get("", summary="获取会话列表", response_model=list[SessionInfo])
-async def list_sessions(
+def list_sessions(
     db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
     limit: int = Query(default=50, ge=1, le=100),
@@ -233,7 +233,7 @@ async def list_sessions(
 
 
 @router.get("/count", summary="获取会话总数", response_model=SessionCountResponse)
-async def count_sessions(
+def count_sessions(
     db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
@@ -244,7 +244,7 @@ async def count_sessions(
 
 
 @router.get("/{session_id}", summary="获取会话详情", response_model=SessionDetail)
-async def get_session(
+def get_session(
     session_id: str,
     db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
@@ -269,7 +269,7 @@ async def get_session(
 
 
 @router.put("/{session_id}/title", summary="更新会话标题", response_model=SessionTitleUpdateResponse)
-async def update_title(
+def update_title(
     session_id: str,
     request: UpdateTitleRequest,
     db: Annotated[SessionRepository, Depends(get_session_repository)],
@@ -288,7 +288,7 @@ async def update_title(
 
 
 @router.put("/{session_id}/pin", summary="切换会话置顶", response_model=SessionPinUpdateResponse)
-async def toggle_pin(
+def toggle_pin(
     session_id: str,
     db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
@@ -314,17 +314,10 @@ async def delete_session(
 ):
     repo = _as_session_repository(db)
 
-    session = repo.get_owned_session(session_id, username)
+    # 查库和删文件都放进线程；Agent 缓存、连接器开关和 checkpoint thread 留在事件循环上处理
+    session = await asyncio.to_thread(repo.get_owned_session, session_id, username)
 
-    session_files = repo.get_session_files(session_id)
-    for f in session_files:
-        file_path = Path(f["file_path"])
-        if file_path.exists():
-            try:
-                file_path.unlink()
-                logger.info(f"删除会话文件 | 路径: {file_path}")
-            except Exception as e:
-                logger.warning(f"删除会话文件失败: {file_path} | {e}")
+    await asyncio.to_thread(_delete_session_uploads, repo, session_id)
 
     # 先移除缓存 Agent 实例，避免后台记忆更新线程在删除后用 mkdir 重建工作区目录
     try:
@@ -341,7 +334,7 @@ async def delete_session(
     # 删除该会话的 checkpoint：官方 saver 里的会话 thread 与每条消息一个的旧 thread
     # （message_id 取自 agent_runs），以及 legacy 快照（DA-03）
     try:
-        message_ids = repo.list_run_message_ids(session_id)
+        message_ids = await asyncio.to_thread(repo.list_run_message_ids, session_id)
     except Exception as e:
         logger.warning(f"读取会话 run 记录失败，只删除会话 thread: {e}")
         message_ids = []
@@ -350,6 +343,29 @@ async def delete_session(
     except Exception as e:
         logger.warning(f"删除会话 checkpoint 失败: {e}")
 
+    await asyncio.to_thread(_delete_session_dirs, username, session, session_id)
+
+    await asyncio.to_thread(repo.delete_session, session_id)
+
+    logger.info(f"删除会话 | ID: {session_id}")
+
+    return DeleteSessionResponse(session_id=session_id)
+
+
+def _delete_session_uploads(repo: SessionRepository, session_id: str) -> None:
+    """删除会话上传的文件（查库 + 文件 IO，调用方放进线程执行）。"""
+    for f in repo.get_session_files(session_id):
+        file_path = Path(f["file_path"])
+        if file_path.exists():
+            try:
+                file_path.unlink()
+                logger.info(f"删除会话文件 | 路径: {file_path}")
+            except Exception as e:
+                logger.warning(f"删除会话文件失败: {file_path} | {e}")
+
+
+def _delete_session_dirs(username: str, session: SessionModel, session_id: str) -> None:
+    """删除会话工作区目录与框架产物目录（rmtree，调用方放进线程执行）。"""
     user_workspace_dir = Config.get_user_workspace_dir(username)
     # 候选工作区目录名：workspace_name（首轮/重命名后）与 session_id（旧会话回退）
     # agent.py 在 workspace_name 为空时会用 session_id 作目录名，故两者都尝试。
@@ -390,19 +406,13 @@ async def delete_session(
         except Exception as e:
             logger.warning(f"删除会话产物目录失败: {artifacts_dir} | {e}")
 
-    repo.delete_session(session_id)
-
-    logger.info(f"删除会话 | ID: {session_id}")
-
-    return DeleteSessionResponse(session_id=session_id)
-
 
 @router.get(
     "/{session_id}/history",
     summary="获取聊天历史",
     response_model=GetChatHistoryResponse,
 )
-async def get_chat_history(
+def get_chat_history(
     session_id: str,
     db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
@@ -428,7 +438,7 @@ async def get_chat_history(
 @router.post(
     "/{session_id}/messages", summary="添加消息", response_model=AddMessageResponse
 )
-async def add_message(
+def add_message(
     session_id: str,
     request: AddMessageRequest,
     db: Annotated[SessionRepository, Depends(get_session_repository)],
@@ -460,7 +470,7 @@ async def upload_session_file(
 ):
     repo = _as_session_repository(db)
 
-    repo.get_owned_session(session_id, username)
+    await asyncio.to_thread(repo.get_owned_session, session_id, username)
 
     Config.sanitize_username(username)
     upload_dir = Config.get_user_workspace_dir(username) / "uploadfiles"
@@ -498,7 +508,8 @@ async def upload_session_file(
 
     ext = os.path.splitext(safe_filename)[1].lstrip(".") or "unknown"
 
-    repo.add_session_file(
+    await asyncio.to_thread(
+        repo.add_session_file,
         session_id=session_id,
         filename=safe_filename,
         file_path=str(file_path),

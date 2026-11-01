@@ -64,44 +64,44 @@ def test_get_owned_session_404_for_missing(two_user_sessions):
 # ---------------------------------------------------------------------------
 
 
-async def test_get_session_denies_cross_user(two_user_sessions):
+def test_get_session_denies_cross_user(two_user_sessions):
     from easy_agent.api.sessions import get_session
 
     # userA reads own session -> OK
-    detail = await get_session("sess-A", db=two_user_sessions, username="userA")
+    detail = get_session("sess-A", db=two_user_sessions, username="userA")
     assert detail.session_id == "sess-A"
 
     # userB reads userA's session -> 404
     with pytest.raises(HTTPException) as exc:
-        await get_session("sess-A", db=two_user_sessions, username="userB")
+        get_session("sess-A", db=two_user_sessions, username="userB")
     assert exc.value.status_code == 404
 
 
-async def test_get_chat_history_denies_cross_user(two_user_sessions):
+def test_get_chat_history_denies_cross_user(two_user_sessions):
     from easy_agent.api.sessions import get_chat_history
 
     with pytest.raises(HTTPException) as exc:
-        await get_chat_history("sess-A", db=two_user_sessions, username="userB")
+        get_chat_history("sess-A", db=two_user_sessions, username="userB")
     assert exc.value.status_code == 404
 
 
-async def test_update_title_denies_cross_user(two_user_sessions):
+def test_update_title_denies_cross_user(two_user_sessions):
     from easy_agent.api.sessions import update_title
     from easy_agent.models.api import UpdateTitleRequest
 
     req = UpdateTitleRequest(title="hacked")
     with pytest.raises(HTTPException) as exc:
-        await update_title("sess-A", req, db=two_user_sessions, username="userB")
+        update_title("sess-A", req, db=two_user_sessions, username="userB")
     assert exc.value.status_code == 404
     # 标题未被篡改
     assert two_user_sessions.get_session("sess-A").title == "title-sess-A"
 
 
-async def test_toggle_pin_denies_cross_user(two_user_sessions):
+def test_toggle_pin_denies_cross_user(two_user_sessions):
     from easy_agent.api.sessions import toggle_pin
 
     with pytest.raises(HTTPException) as exc:
-        await toggle_pin("sess-A", db=two_user_sessions, username="userB")
+        toggle_pin("sess-A", db=two_user_sessions, username="userB")
     assert exc.value.status_code == 404
 
 
@@ -115,13 +115,13 @@ async def test_delete_session_denies_cross_user(two_user_sessions):
     assert two_user_sessions.get_session("sess-A") is not None
 
 
-async def test_add_message_denies_cross_user(two_user_sessions):
+def test_add_message_denies_cross_user(two_user_sessions):
     from easy_agent.api.sessions import add_message
     from easy_agent.models.api import AddMessageRequest
 
     req = AddMessageRequest(role="user", content="injected")
     with pytest.raises(HTTPException) as exc:
-        await add_message("sess-A", req, db=two_user_sessions, username="userB")
+        add_message("sess-A", req, db=two_user_sessions, username="userB")
     assert exc.value.status_code == 404
 
 
@@ -130,17 +130,17 @@ async def test_add_message_denies_cross_user(two_user_sessions):
 # ---------------------------------------------------------------------------
 
 
-async def test_get_session_generated_files_denies_cross_user(two_user_sessions):
+def test_get_session_generated_files_denies_cross_user(two_user_sessions):
     from easy_agent.api.files import get_session_generated_files
 
     with pytest.raises(HTTPException) as exc:
-        await get_session_generated_files(
+        get_session_generated_files(
             "sess-A", db=two_user_sessions, username="userB"
         )
     assert exc.value.status_code == 404
 
 
-async def test_get_workspace_tree_denies_cross_user(two_user_sessions, monkeypatch):
+def test_get_workspace_tree_denies_cross_user(two_user_sessions, monkeypatch):
     from easy_agent.api.files import get_workspace_tree
     from easy_agent.bootstrap.config import Config
 
@@ -155,7 +155,7 @@ async def test_get_workspace_tree_denies_cross_user(two_user_sessions, monkeypat
     )
 
     with pytest.raises(HTTPException) as exc:
-        await get_workspace_tree(
+        get_workspace_tree(
             username="userB", session_id="sess-A", db=two_user_sessions
         )
     assert exc.value.status_code == 404

@@ -20,6 +20,7 @@ from easy_agent.db import get_database
 from easy_agent.models.db import ScheduledTaskModel, ScheduledTaskRunModel, SessionModel
 from easy_agent.utils.deployment import detect_worker_count as _detect_worker_count
 from easy_agent.persistence.distributed_lock import get_distributed_lock
+from easy_agent.utils.blocking import run_blocking
 from easy_agent.utils.task_logger import log_task_event
 from langchain_core.callbacks import BaseCallbackHandler
 
@@ -97,7 +98,7 @@ async def _renew_task_lock(handle, task_id: str, running: "asyncio.Task | None")
     try:
         while True:
             await asyncio.sleep(handle.renew_interval_seconds)
-            if not handle.renew():
+            if not await run_blocking(handle.renew):
                 logger.error(
                     f"[{task_id[-5:]}] 分布式锁已丢失（过期后被其它实例接管），中止本次执行"
                 )
@@ -362,14 +363,16 @@ async def _execute_task(task_id: str):
 
     get_or_create_agent_for_session, remove_session_agent = _require_agent_lifecycle()
 
+    # 数据库层是同步的：查库 / 写库都经 run_blocking 放进线程，不占事件循环；
+    # running_tasks 等进程内状态只在事件循环上读写。
     db = get_database()
-    task = db.get_scheduled_task(task_id)
+    task = await run_blocking(db.get_scheduled_task, task_id)
     if not task or not task.enabled:
         return
 
     # 多实例部署：同一 cron 会在每个 pod 各触发一次，先抢分布式锁，只有抢到的实例
     # 真正执行。未启用分布式锁（单实例部署）时 acquired 恒为 True，行为与之前一致。
-    lock_handle = get_distributed_lock().acquire(task_lock_name(task_id))
+    lock_handle = await run_blocking(get_distributed_lock().acquire, task_lock_name(task_id))
     if not lock_handle.acquired:
         logger.info(
             f"[{task_id[-5:]}] 任务已在其它实例执行中，本次触发跳过（分布式锁）| owner={lock_handle.owner}"
@@ -390,18 +393,6 @@ async def _execute_task(task_id: str):
             f"owner={lock_handle.owner} | ttl={lock_handle.ttl_seconds}s"
         )
 
-    # 登记在途运行，便于暂停/删除时中断
-    running = asyncio.current_task()
-    running_tasks[task_id] = running
-    cancelled = False
-
-    # 执行时长可能超过锁的 TTL，需周期性续约；续约失败说明锁已被其它实例接管
-    lock_heartbeat = (
-        asyncio.create_task(_renew_task_lock(lock_handle, task_id, running))
-        if lock_handle.enabled
-        else None
-    )
-
     run_id = str(uuid.uuid4())
     now = datetime.now()
     started_at = now.isoformat()
@@ -410,8 +401,8 @@ async def _execute_task(task_id: str):
     # 创建新 session 用于此次执行，但工作目录与任务绑定（复用创建会话的目录或独立目录），
     # 确保多次运行都写入同一工作目录，不再为每次运行新建目录。
     session_id = str(uuid.uuid4())
-    workspace_name = get_task_workspace_name(db, task)
-    db.update_scheduled_task_workspace(task.task_id, workspace_name)
+    workspace_name = await run_blocking(get_task_workspace_name, db, task)
+    await run_blocking(db.update_scheduled_task_workspace, task.task_id, workspace_name)
     session_title = f"[定时任务] {task.name} - {ts_label}"
     session_data = SessionModel(
         session_id=session_id,
@@ -422,8 +413,8 @@ async def _execute_task(task_id: str):
         username=task.username,
         workspace_name=workspace_name,
     )
-    db.create_session(session_data)
-    db.update_session_workspace_name(session_id, workspace_name)
+    await run_blocking(db.create_session, session_data)
+    await run_blocking(db.update_session_workspace_name, session_id, workspace_name)
 
     # 创建 run 记录
     run = ScheduledTaskRunModel(
@@ -433,7 +424,7 @@ async def _execute_task(task_id: str):
         status="running",
         started_at=started_at,
     )
-    db.add_scheduled_task_run(run)
+    await run_blocking(db.add_scheduled_task_run, run)
 
     # 保存 user 消息
     user_msg = {
@@ -441,7 +432,7 @@ async def _execute_task(task_id: str):
         "content": task.task_prompt,
         "timestamp": started_at,
     }
-    db.add_message(session_id, user_msg)
+    await run_blocking(db.add_message, session_id, user_msg)
 
     logger.info(f"[{task_id[-5:]}] 定时任务开始执行 | run_id={run_id[-5:]} | session={session_id[-5:]} | prompt={task.task_prompt[:80]}")
     log_task_event(
@@ -454,6 +445,20 @@ async def _execute_task(task_id: str):
         started_at=started_at,
     )
 
+    # 登记在途运行，便于暂停/删除时中断。放在上面的建档写库之后：那几处 await 不在
+    # try/finally 里，此前登记的话，被暂停/删除取消或建档出错时都走不到收尾（锁不释放、
+    # 心跳一直续约）；登记之前被暂停的，try 里的二次校验会拦下。
+    running = asyncio.current_task()
+    running_tasks[task_id] = running
+    cancelled = False
+
+    # 执行时长可能超过锁的 TTL，需周期性续约；续约失败说明锁已被其它实例接管
+    lock_heartbeat = (
+        asyncio.create_task(_renew_task_lock(lock_handle, task_id, running))
+        if lock_handle.enabled
+        else None
+    )
+
     agent = None
     thread_id = None
     try:
@@ -461,7 +466,7 @@ async def _execute_task(task_id: str):
             session_id, task.username, workspace_name, enable_hitl=False
         )
         # 调用 agent 前再次确认任务未被暂停/删除（初始守卫之后、agent 调用之前仍可能被暂停）
-        pre = db.get_scheduled_task(task_id)
+        pre = await run_blocking(db.get_scheduled_task, task_id)
         if not pre or not pre.enabled or task_id in stopping_tasks:
             raise _TaskAborted(f"任务已被暂停/删除: {task_id}")
         thread_id = f"sched-{task_id}-{run_id}"
@@ -491,7 +496,7 @@ async def _execute_task(task_id: str):
 
         # 运行结束后再次校验：若任务在本次执行过程中被暂停/删除（DB 已禁用或已标记停止中），
         # 则中止提交，标记为取消，避免一个「已暂停」的任务记录为执行成功。
-        current = db.get_scheduled_task(task_id)
+        current = await run_blocking(db.get_scheduled_task, task_id)
         if not current or not current.enabled or task_id in stopping_tasks:
             cancelled = True
             logger.info(
@@ -504,10 +509,11 @@ async def _execute_task(task_id: str):
                 "content": final_content,
                 "timestamp": datetime.now().isoformat(),
             }
-            db.add_message(session_id, assistant_msg)
+            await run_blocking(db.add_message, session_id, assistant_msg)
 
             finished_at = datetime.now().isoformat()
-            db.update_scheduled_task_run(
+            await run_blocking(
+                db.update_scheduled_task_run,
                 run_id, status="succeeded", finished_at=finished_at,
                 result_summary=result_summary,
             )
@@ -535,7 +541,8 @@ async def _execute_task(task_id: str):
         error_msg = str(e)[:2000]
         logger.error(f"[{task_id[-5:]}] 定时任务执行失败: {e}", exc_info=True)
         finished_at = datetime.now().isoformat()
-        db.update_scheduled_task_run(
+        await run_blocking(
+            db.update_scheduled_task_run,
             run_id, status="failed", finished_at=finished_at,
             error_message=error_msg,
         )
@@ -571,20 +578,21 @@ async def _execute_task(task_id: str):
         job = scheduler.get_job(task_id)
         nrt = getattr(job, "next_run_time", None) if job else None
         next_run = nrt.strftime("%Y-%m-%d %H:%M:%S") if nrt else ""
-        db.update_scheduled_task_run_times(task_id, started_at, next_run)
+        await run_blocking(db.update_scheduled_task_run_times, task_id, started_at, next_run)
         if cancelled:
             cancel_reason = (
                 "分布式锁已丢失（可能已被其它实例接管），在途执行已取消"
                 if lock_lost
                 else "任务被暂停/删除，在途执行已取消"
             )
-            db.update_scheduled_task_run(
+            await run_blocking(
+                db.update_scheduled_task_run,
                 run_id, status="cancelled", finished_at=datetime.now().isoformat(),
                 error_message=cancel_reason,
             )
         # 最后释放锁：等本次运行的记录都写完之后，其它实例才能接管这个任务
         try:
-            released = lock_handle.release()
+            released = await run_blocking(lock_handle.release)
             if released and lock_handle.enabled:
                 logger.info(f"[{task_id[-5:]}] 🔓 已释放分布式锁 | task={task.name}")
         except Exception as e:

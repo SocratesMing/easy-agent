@@ -1,5 +1,6 @@
 """Scheduled tasks API routes - CRUD + execution records."""
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Annotated, Optional
@@ -108,7 +109,7 @@ async def delete_scheduled_task(
     username: Annotated[str, Depends(get_current_username)],
 ):
     repo = _as_scheduled_task_repository(db)
-    task = repo.get_scheduled_task(task_id)
+    task = await asyncio.to_thread(repo.get_scheduled_task, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     if task.username != username:
@@ -117,7 +118,7 @@ async def delete_scheduled_task(
         unregister_scheduled_task(task_id, task=task)
     except Exception as e:
         logger.warning(f"移除 scheduler job 失败: {e}")
-    repo.delete_scheduled_task(task_id)
+    await asyncio.to_thread(repo.delete_scheduled_task, task_id)
     try:
         reconcile_scheduled_tasks()
     except Exception as exc:  # noqa: BLE001
@@ -139,13 +140,13 @@ async def toggle_scheduled_task(
     username: Annotated[str, Depends(get_current_username)],
 ):
     repo = _as_scheduled_task_repository(db)
-    task = repo.get_scheduled_task(task_id)
+    task = await asyncio.to_thread(repo.get_scheduled_task, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     if task.username != username:
         raise HTTPException(status_code=403, detail="无权操作此任务")
     new_enabled = not bool(task.enabled)
-    repo.update_scheduled_task_status(task_id, new_enabled)
+    await asyncio.to_thread(repo.update_scheduled_task_status, task_id, new_enabled)
     if not new_enabled:
         try:
             unregister_scheduled_task(task_id, task=task)
@@ -173,7 +174,7 @@ async def run_scheduled_task_now(
     username: Annotated[str, Depends(get_current_username)],
 ):
     repo = _as_scheduled_task_repository(db)
-    task = repo.get_scheduled_task(task_id)
+    task = await asyncio.to_thread(repo.get_scheduled_task, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     if task.username != username:

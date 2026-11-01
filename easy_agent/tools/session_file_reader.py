@@ -21,6 +21,7 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
 from easy_agent.services.session_uploads import ensure_parsed_text
+from easy_agent.utils.blocking import run_blocking
 
 logger = logging.getLogger("easy_agent.tools.session_file_reader")
 
@@ -71,7 +72,10 @@ class ReadUploadedFileTool(BaseTool):
 
         db = get_database()
         try:
-            parsed = ensure_parsed_text(self.session_id, self.username, filename, db)
+            # 解析文件 + 查库都是同步的，放进线程，不占事件循环
+            parsed = await run_blocking(
+                ensure_parsed_text, self.session_id, self.username, filename, db
+            )
         except Exception as e:
             logger.warning(
                 f"[{self.session_id[-5:]}] read_uploaded_file 异常 | {filename} | {e}"

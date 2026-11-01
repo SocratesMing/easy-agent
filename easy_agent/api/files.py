@@ -262,7 +262,7 @@ def serve_pdf_preview(full_path: Path, file_path: str) -> FileResponse:
 
 
 @router.get("/session/{session_id}", summary="获取会话生成的文件列表", response_model=list[SessionGeneratedFileInfo])
-async def get_session_generated_files(
+def get_session_generated_files(
     session_id: str,
     db: Annotated[FileRepository, Depends(get_file_repository)],
     username: Annotated[str, Depends(get_current_username)],
@@ -305,7 +305,7 @@ async def upload_file(
 
     # 归属校验前置：被拒绝的上传不应留下本地文件或 Store 对象（孤儿副本）。
     if session_id:
-        repo.get_owned_session_meta(session_id, username)
+        await asyncio.to_thread(repo.get_owned_session_meta, session_id, username)
 
     try:
         store_mode = store_mode_enabled()
@@ -345,7 +345,8 @@ async def upload_file(
 
     file_id = None
     if session_id:
-        file_id = repo.add_session_file(
+        file_id = await asyncio.to_thread(
+            repo.add_session_file,
             session_id=session_id,
             filename=safe_filename,
             file_path=stored_path,
@@ -404,8 +405,8 @@ async def delete_file(
 ):
     repo = _as_file_repository(db)
     # 先取记录：DB 行删除后还要凭 file_path 判断是否需要清理 Store 对象。
-    record = repo.get_file_record(file_id, username=username)
-    success = repo.delete_file(file_id, username=username)
+    record = await asyncio.to_thread(repo.get_file_record, file_id, username=username)
+    success = await asyncio.to_thread(repo.delete_file, file_id, username=username)
     if not success:
         raise HTTPException(status_code=404, detail="文件不存在")
 
@@ -466,20 +467,20 @@ async def preview_file(
     if auth_header and auth_header.startswith("Bearer "):
         from easy_agent.middleware.auth import verify_token_sso
 
-        username = verify_token_sso(auth_header[7:], user_repo)
+        username = await asyncio.to_thread(verify_token_sso, auth_header[7:], user_repo)
     if not username and token:
         from easy_agent.middleware.auth import verify_token_sso
 
-        username = verify_token_sso(token, user_repo)
+        username = await asyncio.to_thread(verify_token_sso, token, user_repo)
     if not username:
-        default_user = repo.get_or_create_default_user()
+        default_user = await asyncio.to_thread(repo.get_or_create_default_user)
         username = default_user.username
 
     workspace_dir = Config.get_user_workspace_dir(username)
 
     if session_id and repo:
         # 校验会话归属，防止通过他人 session_id 访问其工作区文件
-        session_meta = repo.get_owned_session_meta(session_id, username)
+        session_meta = await asyncio.to_thread(repo.get_owned_session_meta, session_id, username)
         if session_meta["workspace_name"]:
             workspace_dir = workspace_dir / "session" / session_meta["workspace_name"]
         else:
@@ -522,7 +523,7 @@ async def preview_file(
 
 
 @router.get("/workspace/tree", summary="获取工作区文件树")
-async def get_workspace_tree(
+def get_workspace_tree(
     username: Annotated[str, Depends(get_current_username)],
     path: str = Query(default="", description="目录路径"),
     session_id: Optional[str] = Query(
