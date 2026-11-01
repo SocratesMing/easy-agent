@@ -33,13 +33,14 @@ from typing import Any, Literal, Optional
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, SkipValidation
 
-from easy_agent.db import Database, get_database
 from easy_agent.db.expert_store import (
     STATUS_ACTIVE,
     STATUS_BUILDING,
     STATUS_FAILED,
-    ExpertStore,
 )
+from easy_agent.db.providers import get_expert_repository
+from easy_agent.db.repositories.expert_repository import ExpertRepository
+from easy_agent.db.repositories.user_repository import UserRepository
 from easy_agent.services.expert_service import (
     MAX_DESCRIPTION_LEN,
     build_expert_ids,
@@ -149,10 +150,10 @@ def _to_public(record: dict) -> dict:
     }
 
 
-def _current_user_id(db: Database, username: str) -> str:
+def _current_user_id(users: UserRepository | ExpertRepository, username: str) -> str:
     """取归属键 ``user_id``；查不到时回退用户名（与接口层同一口径）。"""
     try:
-        user = db.get_user_by_username(username)
+        user = users.get_user_by_username(username)
         if user and getattr(user, "user_id", ""):
             return user.user_id
     except Exception as exc:  # noqa: BLE001
@@ -160,7 +161,9 @@ def _current_user_id(db: Database, username: str) -> str:
     return username
 
 
-def resolve_owned_expert(db: Database, username: str, expert_agent_id: str):
+def resolve_owned_expert(
+    experts: ExpertRepository, username: str, expert_agent_id: str
+):
     """校验 ``expert_agent_id`` 是否为 ``username`自己创建的可用专家。
 
     供聊天接口在绑定「待修改专家」时调用（请求字段 ``pending_expert_id`` 来自
@@ -177,8 +180,9 @@ def resolve_owned_expert(db: Database, username: str, expert_agent_id: str):
     if not expert_agent_id:
         return None
     try:
-        store = ExpertStore(db)
-        record = store.get_owned(expert_agent_id, _current_user_id(db, username))
+        record = experts.get_owned(
+            expert_agent_id, _current_user_id(experts, username)
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("校验待修改专家归属失败 | %s | %s", expert_agent_id, exc)
         return None
@@ -403,9 +407,11 @@ class SaveExpertTool(BaseTool):
 
         # 数据库层是同步的：查库 / 写库（含版本目录落盘）经 run_blocking 放进线程；
         # 本轮技能暂存、待修改专家绑定和 Agent 缓存是进程内状态，留在事件循环上。
-        db = get_database()
-        user_id = await run_blocking(_current_user_id, db, self.username)
-        store = ExpertStore(db)
+        expert_repo = get_expert_repository()
+        user_id = await run_blocking(
+            _current_user_id, expert_repo, self.username
+        )
+        store = expert_repo
         name_cn = args.name_cn.strip()
 
         conflict = await run_blocking(store.find_by_name_cn, user_id, name_cn)
@@ -510,9 +516,11 @@ class SaveExpertTool(BaseTool):
         if config is None:
             return "错误：服务端配置未初始化，暂时无法修改专家，请稍后再试。"
 
-        db = get_database()
-        user_id = await run_blocking(_current_user_id, db, self.username)
-        store = ExpertStore(db)
+        expert_repo = get_expert_repository()
+        user_id = await run_blocking(
+            _current_user_id, expert_repo, self.username
+        )
+        store = expert_repo
 
         record = await run_blocking(store.get_owned, expert_agent_id, user_id)
         if record is None:
@@ -614,7 +622,7 @@ class SaveExpertTool(BaseTool):
     def _persist(
         self,
         *,
-        store: ExpertStore,
+        store: ExpertRepository,
         config: Any,
         username: str,
         expert_agent_id: str,

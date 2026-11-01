@@ -33,7 +33,6 @@ from datetime import datetime
 from typing import Any, AsyncGenerator
 
 from easy_agent.db.repositories.chat_repository import ChatRepository
-from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.knowledges.facade import (
     authorize_scoped_chat,
     chat_stream_generator,
@@ -474,7 +473,7 @@ async def prepare_turn(
     # 顺序不能动：预检必须早于文件解析与知识库检索——被拒答的消息不该为这些付成本，
     # 更重要的是「Agent 未创建」时任何工具都不可达（提示词层面的边界块做不到这点）。
     # 专家对话只有这一个入口（``/agent/chat/stream``），不再有独立的专家执行接口。
-    expert_repo = ExpertRepository(repo.database)
+    expert_repo = repo.experts
     expert_id = ""
     expert_prompt = ""
     skill_notice = ""
@@ -587,7 +586,7 @@ async def prepare_turn(
         from easy_agent.tools.expert_writer import resolve_owned_expert
 
         owned = await asyncio.to_thread(
-            resolve_owned_expert, repo.database, username, request.pending_expert_id
+            resolve_owned_expert, repo.experts, username, request.pending_expert_id
         )
         if owned is not None:
             await agent_manager.aset_session_edit_target(session_id, request.pending_expert_id)

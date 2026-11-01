@@ -95,7 +95,9 @@ def env(monkeypatch):
     def fake_unregister(task_id: str, task=None) -> None:
         unregistered.append(task_id)
 
-    monkeypatch.setattr(sched, "get_database", lambda: db)
+    monkeypatch.setattr(sched, "get_scheduled_task_repository", lambda: db)
+    monkeypatch.setattr(sched, "get_session_repository", lambda: db)
+    monkeypatch.setattr(sched, "get_message_repository", lambda: db)
     monkeypatch.setattr(sched, "register_scheduled_task", fake_register)
     monkeypatch.setattr(sched, "unregister_scheduled_task", fake_unregister)
     monkeypatch.setattr(sched, "_scheduler_instance", scheduler)

@@ -122,10 +122,10 @@ def test_repository_data_access_counters_are_at_or_under_the_limits():
         <= allowlists.MAX_DATABASE_ESCAPE_HATCH_REFS
     )
     # 下限：防止扫描器静默失效（什么都数不到时上面的「超上限」断言会假通过）
-    assert stats["database_methods"] >= 75
-    assert stats["database_delegations"] >= 40
-    assert stats["get_database_calls_outside_db"] >= 10
-    assert stats["database_escape_hatch_refs"] >= 5
+    assert stats["database_methods"] >= 45
+    assert stats["database_delegations"] >= 10
+    assert stats["get_database_calls_outside_db"] >= 3
+    assert stats["database_escape_hatch_refs"] >= 3
 
 
 def test_raising_a_limit_immediately_fails_the_gate(monkeypatch):
@@ -158,6 +158,38 @@ def test_deleted_session_domain_delegations_stay_deleted():
         "delete_session",
         "update_session_todos",
         "delete_stream_events_before",
+        # T3c 定时任务/专家/agent_state/流运行时等收尾
+        "append_stream_event",
+        "list_stream_events",
+        "get_session_runtime",
+        "try_acquire_session_stream",
+        "renew_session_stream",
+        "upsert_session_runtime",
+        "update_last_assistant_message_row",
+        "add_generated_file",
+        "get_generated_files",
+        "delete_generated_file",
+        "update_generated_file_paths",
+        "issue_mcp_api_key",
+        "revoke_mcp_api_key",
+        "get_mcp_api_keys",
+        "create_scheduled_task",
+        "get_scheduled_task",
+        "list_scheduled_tasks",
+        "list_all_enabled_scheduled_tasks",
+        "delete_scheduled_task",
+        "update_scheduled_task_status",
+        "update_scheduled_task_run_times",
+        "update_scheduled_task_workspace",
+        "add_scheduled_task_run",
+        "update_scheduled_task_run",
+        "list_scheduled_task_runs",
+        "add_message",
+        "store_get",
+        "store_put",
+        "store_delete",
+        "store_search",
+        "store_list_namespaces",
         # T3b 文件/用户域
         "add_session_file",
         "get_session_files",

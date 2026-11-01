@@ -14,7 +14,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from easy_agent.db.repositories.chat_repository import ChatRepository
-from easy_agent.db.repositories.stream_events import list_stream_events
 from easy_agent.api.sse_response import sse_response
 from easy_agent.api.deps import (
     as_chat_repository as _as_chat_repository,
@@ -65,7 +64,7 @@ async def chat_stream_status(
     # 都能得到一致答案（本 Pod 的 hub 只代表本进程状态，不能用于跨 Pod 判断）。
     try:
         active = await asyncio.to_thread(
-            is_stream_active, repo.database, session_id
+            is_stream_active, repo.runtime, session_id
         )
     except Exception as exc:  # noqa: BLE001 - 状态查询失败按“未活跃”处理
         logger.error(f"[{session_id[-5:]}] 查询流状态失败: {exc}")
@@ -91,13 +90,12 @@ async def chat_stream_live(
     # 校验会话归属
     repo = _as_chat_repository(db)
     await asyncio.to_thread(repo.get_owned_session_meta, session_id, username)
-    database = repo.database
+    event_store = repo.stream_events
     emitter = SSEEmitter(session_id)
 
     async def _fetch(after_id: int) -> list[dict]:
         return await asyncio.to_thread(
-            list_stream_events,
-            database,
+            event_store.list_stream_events,
             session_id,
             after_id,
             _LIVE_PAGE_LIMIT,
@@ -139,7 +137,7 @@ async def chat_stream_live(
 
             try:
                 active = await asyncio.to_thread(
-                    is_stream_active, database, session_id
+                    is_stream_active, repo.runtime, session_id
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[{session_id[-5:]}] 查询流活跃状态失败: {exc}")

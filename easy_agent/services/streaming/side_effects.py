@@ -12,9 +12,35 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
+from easy_agent.db.database import Database
+from easy_agent.db.repositories.file_repository import FileRepository
+from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.utils.blocking import run_blocking
 
 logger = logging.getLogger("easy_agent.chat_service")
+
+
+def _file_port(db):
+    """文件域数据端口：``FileRepository``、``Database`` 连接或测试替身。
+
+    T3c 起 orchestrator 以 ``db=`` 传入的 ``Database`` 在这里被包成领域
+    repository（它仍留在流式引擎边界，见 T3 遗留清单）；测试替身直接实现
+    同名方法时按 duck typing 使用，行为不变。
+    """
+    if isinstance(db, FileRepository):
+        return db
+    if isinstance(db, Database):
+        return FileRepository(db)
+    return db
+
+
+def _session_port(db):
+    """会话域数据端口：``SessionRepository``、``Database`` 连接或测试替身。"""
+    if isinstance(db, SessionRepository):
+        return db
+    if isinstance(db, Database):
+        return SessionRepository(db)
+    return db
 
 # 记忆更新会同步调用 LLM（每次 1~2 次），不能占用默认 executor（默认线程池
 # 同时服务文件解析/终端 select 等，慢 LLM 调用会拖住其它 to_thread 任务）。
@@ -63,8 +89,9 @@ async def maybe_rename_workspace(agent, db, session_id, tool_call_records, sid):
 
 
 def _save_workspace_rename(db, session_id, old_ws_path, new_ws_path, new_ws_name):
-    db.update_generated_file_paths(session_id, old_ws_path, new_ws_path)
-    db.update_session_workspace_name(session_id, new_ws_name)
+    sessions = _session_port(db)
+    sessions.update_generated_file_paths(session_id, old_ws_path, new_ws_path)
+    sessions.update_session_workspace_name(session_id, new_ws_name)
 
 
 def resolve_recorded_path(agent, raw_path: str, skills_root: Path) -> Path:
@@ -91,14 +118,15 @@ def drop_generated_records(
     """删除落在 target_dir 内的生成文件记录（文件已移出工作区，文件面板不该再显示）。"""
     removed = 0
     try:
-        for row in db.get_generated_files(session_id) or []:
+        files = _file_port(db)
+        for row in files.get_generated_files(session_id) or []:
             real = resolve_recorded_path(agent, row.get("file_path", ""), skills_root)
             try:
                 inside = target_dir.resolve() in real.resolve().parents
             except (OSError, ValueError):
                 inside = False
             if inside:
-                db.delete_generated_file(row.get("id"))
+                files.delete_generated_file(row.get("id"))
                 removed += 1
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[{session_id[-5:]}] 清理生成文件记录失败: {e}")
@@ -135,7 +163,7 @@ async def register_session_skills(agent, db, session_id, sid) -> list[dict]:
         skills_root = skill_library.user_skills_dir(username)
         seen: set[str] = set()
 
-        rows = await run_blocking(db.get_generated_files, session_id)
+        rows = await run_blocking(_file_port(db).get_generated_files, session_id)
         for row in rows or []:
             real = resolve_recorded_path(agent, row.get("file_path", ""), skills_root)
             # 只以 SKILL.md 识别技能目录（其余文件随目录一起迁移）

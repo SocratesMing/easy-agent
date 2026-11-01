@@ -27,7 +27,10 @@ class _FakeLock:
 
 @pytest.fixture
 def fake_env(monkeypatch):
-    monkeypatch.setattr(sched, "get_database", lambda: _FakeDB())
+    fake_db = _FakeDB()
+    monkeypatch.setattr(sched, "get_scheduled_task_repository", lambda: fake_db)
+    monkeypatch.setattr(sched, "get_session_repository", lambda: fake_db)
+    monkeypatch.setattr(sched, "get_message_repository", lambda: fake_db)
     monkeypatch.setattr(sched, "get_distributed_lock", lambda: _FakeLock())
     monkeypatch.setattr(sched, "log_task_event", lambda **kwargs: None)
     calls = []

@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from easy_agent.bootstrap.env import env_bool
+from easy_agent.db.database import Database
 from easy_agent.db.repositories.file_repository import FileRepository
 from easy_agent.db.repositories.message_repository import MessageRepository
 from easy_agent.db.repositories.session_repository import SessionRepository
@@ -24,15 +25,17 @@ logger = logging.getLogger("easy_agent.chat_service")
 
 
 def _message_port(db):
-    """消息域数据端口：``MessageRepository``，或提供同名方法的旧数据端口。
+    """消息域数据端口：``MessageRepository``、``Database`` 连接或测试替身。
 
-    T3 之后生产路径应传 ``MessageRepository``；迁移期 orchestrator 仍以 ``db=``
-    传入进程级 ``Database``（其消息方法保留给知识库域），测试替身则直接实现这几个
-    方法。本适配只统一调用写法，不改变任何持久化语义与异常策略。
+    T3c 起 orchestrator 以 ``db=`` 传入的 ``Database`` 在这里被包成
+    ``MessageRepository``（Database 上的消息转发已随 T3c 删除）；测试替身直接
+    实现同名方法时按 duck typing 使用。本适配不改变持久化语义与异常策略。
     """
-    if callable(getattr(db, "update_last_assistant_message", None)):
+    if isinstance(db, MessageRepository):
         return db
-    return MessageRepository(db)
+    if isinstance(db, Database):
+        return MessageRepository(db)
+    return db
 
 
 def _session_port(db):
@@ -51,9 +54,9 @@ def _file_port(db):
     """
     if isinstance(db, FileRepository):
         return db
-    if callable(getattr(db, "add_generated_file", None)):
-        return db
-    return FileRepository(db)
+    if isinstance(db, Database):
+        return FileRepository(db)
+    return db
 
 
 def persist_incremental(

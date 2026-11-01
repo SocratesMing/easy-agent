@@ -110,56 +110,24 @@ class DBRateLimitCounter:
         self._fallback = InMemorySlidingWindowCounter()
         self._db_failed = False
 
-    def _db(self):
+    def _repo(self):
         if self._db_provider is not None:
             return self._db_provider()
-        from easy_agent.db import get_database
+        from easy_agent.db.providers import get_rate_limit_repository
 
-        return get_database()
-
-    @staticmethod
-    def _window_start(now: float, window_seconds: float) -> int:
-        width = max(1, int(window_seconds))
-        return int(now // width) * width
+        return get_rate_limit_repository()
 
     def allow(self, key: str, limit: int, window_seconds: float) -> bool:
         now = time.time()
-        window_start = self._window_start(now, window_seconds)
         try:
-            db = self._db()
-            with db.get_connection() as conn:
-                cursor = conn.cursor()
-                # 清理本 bucket 的过期窗口，避免公网大基数下无界增长
-                db._execute(
-                    cursor,
-                    "DELETE FROM rate_limit_counters WHERE bucket=? AND window_start < ?",
-                    (key, window_start - max(1, int(window_seconds))),
-                )
-                db._execute(
-                    cursor,
-                    "UPDATE rate_limit_counters SET count=count+1, updated_at=? "
-                    "WHERE bucket=? AND window_start=? AND count < ?",
-                    (time.strftime("%Y-%m-%d %H:%M:%S"), key, window_start, limit),
-                )
-                if cursor.rowcount > 0:
-                    return True
-                try:
-                    db._execute(
-                        cursor,
-                        "INSERT INTO rate_limit_counters "
-                        "(bucket, window_start, count, updated_at) VALUES (?, ?, 1, ?)",
-                        (key, window_start, time.strftime("%Y-%m-%d %H:%M:%S")),
-                    )
-                    return True
-                except Exception:
-                    # 并发 INSERT 冲突：对方刚创建窗口，重试条件 UPDATE。
-                    db._execute(
-                        cursor,
-                        "UPDATE rate_limit_counters SET count=count+1, updated_at=? "
-                        "WHERE bucket=? AND window_start=? AND count < ?",
-                        (time.strftime("%Y-%m-%d %H:%M:%S"), key, window_start, limit),
-                    )
-                    return cursor.rowcount > 0
+            port = self._repo()
+            try_allow = getattr(port, "try_allow", None)
+            if callable(try_allow):
+                return try_allow(key, limit, window_seconds, now)
+            # 迁移期兼容：直接传进来的 Database / 旧测试替身走模块级 SQL 入口
+            from easy_agent.db.repositories.rate_limits import try_allow
+
+            return try_allow(port, key, limit, window_seconds, now)
         except Exception as exc:  # 计数器故障不阻断业务
             if not self._db_failed:
                 self._db_failed = True

@@ -117,6 +117,14 @@ class SessionRepository:
         """更新会话的 Todo list（整表覆盖）。"""
         sessions_repo.update_session_todos(self._db, session_id, todos)
 
+    def update_generated_file_paths(
+        self, session_id: str, old_prefix: str, new_prefix: str
+    ) -> None:
+        """工作区改名后批量平移该会话生成文件的 ``file_path`` 前缀。"""
+        sessions_repo.update_generated_file_paths(
+            self._db, session_id, old_prefix, new_prefix
+        )
+
     def delete_session(self, session_id: str) -> bool:
         """删除会话及其 ``session_messages`` 行；返回是否删除了会话行。"""
         return sessions_repo.delete_session(self._db, session_id)

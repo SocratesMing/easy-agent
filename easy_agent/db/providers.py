@@ -20,7 +20,13 @@ from __future__ import annotations
 
 from easy_agent.db.database import get_database
 from easy_agent.db.repositories.agent_runs import AgentRunRepository
+from easy_agent.db.repositories.agent_state import AgentStateRepository
+from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.db.repositories.file_repository import FileRepository
+from easy_agent.db.repositories.rate_limits import RateLimitRepository
+from easy_agent.db.repositories.scheduled_task_repository import (
+    ScheduledTaskRepository,
+)
 from easy_agent.db.repositories.message_repository import MessageRepository
 from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.db.repositories.session_runtime import SessionRuntimeRepository
@@ -29,10 +35,14 @@ from easy_agent.db.repositories.user_repository import UserRepository
 
 __all__ = [
     "get_agent_run_repository",
+    "get_agent_state_repository",
+    "get_expert_repository",
     "get_file_repository",
     "get_message_repository",
     "get_session_repository",
     "get_session_runtime_repository",
+    "get_rate_limit_repository",
+    "get_scheduled_task_repository",
     "get_stream_event_repository",
     "get_user_repository",
 ]
@@ -70,3 +80,23 @@ def get_file_repository() -> FileRepository:
 def get_user_repository() -> UserRepository:
     """进程级 ``Database`` 上的用户域 repository（服务层 / 工具层用）。"""
     return UserRepository(get_database())
+
+
+def get_expert_repository() -> ExpertRepository:
+    """进程级 ``Database`` 上的专家域 repository（专家记录 / 归属 / 专家会话）。"""
+    return ExpertRepository(get_database())
+
+
+def get_scheduled_task_repository() -> ScheduledTaskRepository:
+    """进程级 ``Database`` 上的定时任务领域 repository（任务 / 执行记录 / 工作目录）。"""
+    return ScheduledTaskRepository(get_database())
+
+
+def get_agent_state_repository() -> AgentStateRepository:
+    """进程级 ``Database`` 上的 LangGraph store 键值 repository。"""
+    return AgentStateRepository(get_database())
+
+
+def get_rate_limit_repository() -> RateLimitRepository:
+    """进程级 ``Database`` 上的限流共享计数 repository。"""
+    return RateLimitRepository(get_database())

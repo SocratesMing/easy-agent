@@ -25,6 +25,18 @@ from langgraph.store.base import (
 
 _NS_SEP = "\x1f"
 
+def _state_port(db):
+    """LangGraph store 数据端口：``AgentStateRepository``、``Database`` 连接或测试替身。"""
+    from easy_agent.db.database import Database
+    from easy_agent.db.repositories.agent_state import AgentStateRepository
+
+    if isinstance(db, AgentStateRepository):
+        return db
+    if isinstance(db, Database):
+        return AgentStateRepository(db)
+    return db
+
+
 _store: BaseStore | None = None
 
 # 单次 search 最多扫描的行数（filter 只在内存执行，防止超大表无界扫描）
@@ -45,7 +57,7 @@ class SqlStore(BaseStore):
     """Durable cross-thread store. Official Deep Agents `store=` argument."""
 
     def __init__(self, db):
-        self._db = db
+        self._port = _state_port(db)
 
     def batch(self, ops: Iterable[Op]) -> list[Result]:
         return [self._run_op(op) for op in ops]
@@ -60,9 +72,9 @@ class SqlStore(BaseStore):
             return self._get(op.namespace, op.key)
         if isinstance(op, PutOp):
             if op.value is None:
-                self._db.store_delete(_ns_key(op.namespace), op.key)
+                self._port.store_delete(_ns_key(op.namespace), op.key)
             else:
-                self._db.store_put(
+                self._port.store_put(
                     _ns_key(op.namespace),
                     op.key,
                     json.dumps(op.value, ensure_ascii=False),
@@ -97,7 +109,7 @@ class SqlStore(BaseStore):
         )
 
     def _get(self, namespace: tuple[str, ...], key: str) -> Item | None:
-        row = self._db.store_get(_ns_key(namespace), key)
+        row = self._port.store_get(_ns_key(namespace), key)
         return self._row_item(row) if row else None
 
     @staticmethod
@@ -146,7 +158,7 @@ class SqlStore(BaseStore):
         scanned = 0
         offset = 0
         while len(matched) < wanted and scanned < _SEARCH_SCAN_LIMIT:
-            rows = self._db.store_search(prefix, limit=batch, offset=offset)
+            rows = self._port.store_search(prefix, limit=batch, offset=offset)
             if not rows:
                 break
             scanned += len(rows)
@@ -161,7 +173,9 @@ class SqlStore(BaseStore):
         return matched[op.offset : op.offset + op.limit]
 
     def _list_namespaces(self, op: ListNamespacesOp) -> list[tuple[str, ...]]:
-        namespaces = [_ns_tuple(raw) for raw in self._db.store_list_namespaces()]
+        namespaces = [
+            _ns_tuple(raw) for raw in self._port.store_list_namespaces()
+        ]
         if op.match_conditions:
             filtered = []
             for ns in namespaces:
@@ -190,9 +204,9 @@ def get_agent_store(db=None) -> BaseStore:
     if _store is not None:
         return _store
     if db is None:
-        from easy_agent.db import get_database
+        from easy_agent.db.providers import get_agent_state_repository
 
-        db = get_database()
+        db = get_agent_state_repository()
     _store = SqlStore(db)
     return _store
 

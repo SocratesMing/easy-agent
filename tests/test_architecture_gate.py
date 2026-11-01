@@ -545,12 +545,12 @@ def test_repository_double_write_gate_is_green():
     result = double_write.check_repository(REPO_ROOT)
     assert result.ok, "\n".join(violation.format() for violation in result.violations)
     # 下限只用来发现扫描器失效（认不出方法或纯委托），不是精确值；
-    # T3a/T3b 删除会话/消息/run/流事件域与文件/用户域的 Database 转发后是 78 / 43。
-    assert result.stats.get("database_methods", 0) >= 75
-    assert result.stats.get("database_delegations", 0) >= 40
+    # T3a/T3b/T3c 收敛后 Database 只剩 47 方法 / 12 纯委托（knowledges 保留项）。
+    assert result.stats.get("database_methods", 0) >= 45
+    assert result.stats.get("database_delegations", 0) >= 10
     # T3 新增的两个计数也在门禁结果里（上限见 double_write_allowlists）。
-    assert result.stats.get("get_database_calls_outside_db", 0) >= 10
-    assert result.stats.get("database_escape_hatch_refs", 0) >= 5
+    assert result.stats.get("get_database_calls_outside_db", 0) >= 3
+    assert result.stats.get("database_escape_hatch_refs", 0) >= 3
 
 
 # --- bare os.getenv baseline -------------------------------------------------

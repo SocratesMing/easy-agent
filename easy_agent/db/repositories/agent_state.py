@@ -96,3 +96,36 @@ def store_list_namespaces(db) -> list[str]:
         else:
             out.append(row[0])
     return out
+
+
+class AgentStateRepository:
+    """LangGraph ``store`` 键值表（``langgraph_store``）的领域入口。
+
+    ``persistence/stores.py`` 的 ``SqlStore`` 从 T3c 起只依赖本对象；SQL 与
+    upsert 语义仍在模块级函数里，本类不改行为。
+    """
+
+    def __init__(self, db):
+        self._db = db
+
+    def store_get(self, namespace: str, item_key: str) -> dict | None:
+        return store_get(self._db, namespace, item_key)
+
+    def store_put(self, namespace: str, item_key: str, value: str) -> None:
+        store_put(self._db, namespace, item_key, value)
+
+    def store_delete(self, namespace: str, item_key: str) -> None:
+        store_delete(self._db, namespace, item_key)
+
+    def store_search(
+        self, namespace_prefix: str, *, limit: int = 10, offset: int = 0
+    ) -> list[dict]:
+        return store_search(
+            self._db, namespace_prefix, limit=limit, offset=offset
+        )
+
+    def store_list_namespaces(self) -> list[str]:
+        return store_list_namespaces(self._db)
+
+
+__all__ = ["AgentStateRepository"]

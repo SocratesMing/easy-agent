@@ -56,12 +56,18 @@ def _is_tool_call_delta(payload: str) -> bool:
 
 
 class StreamEventWriter:
-    """单会话 SSE frame 的异步批量写入器。"""
+    """单会话 SSE frame 的异步批量写入器。
 
-    def __init__(self, session_id: str, db=None):
+    ``repository`` 是 ``StreamEventRepository``（T3c 起的生产路径）；迁移期仍可传
+    ``db=``（``Database`` 或提供同名 ``append_stream_event`` 的测试替身），
+    由 :meth:`_resolve_store` 统一解析，写入批次与异常策略完全不变。
+    """
+
+    def __init__(self, session_id: str, db=None, repository=None):
         self.session_id = session_id
         self._db = db
-        self._resolved_db = None
+        self._repository = repository
+        self._resolved_store = None
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_MAXSIZE)
         self._task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -275,8 +281,8 @@ class StreamEventWriter:
     async def _flush(self, batch: list[str]) -> None:
         if not batch:
             return
-        db = self._resolve_db()
-        if db is None:
+        store = self._resolve_store()
+        if store is None:
             if not self._db_missing_warned:
                 self._db_missing_warned = True
                 logger.error(
@@ -286,7 +292,7 @@ class StreamEventWriter:
             return
         try:
             # DB 是同步驱动（SQLite/MySQL），放线程池避免阻塞事件循环。
-            await asyncio.to_thread(self._write_batch, db, batch)
+            await asyncio.to_thread(self._write_batch, store, batch)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - 持久化失败不得中断 SSE 主链路
@@ -295,21 +301,26 @@ class StreamEventWriter:
                 f"{type(exc).__name__}: {exc}"
             )
 
-    def _write_batch(self, db, batch: list[str]) -> None:
+    def _write_batch(self, store, batch: list[str]) -> None:
+        append = getattr(store, "append_stream_event", None)
+        if callable(append):
+            for payload in batch:
+                append(self.session_id, payload)
+            return
         for payload in batch:
-            append_stream_event(db, self.session_id, payload)
+            append_stream_event(store, self.session_id, payload)
 
-    def _resolve_db(self):
-        if self._resolved_db is not None:
-            return self._resolved_db
-        db = self._db
-        if db is None:
+    def _resolve_store(self):
+        if self._resolved_store is not None:
+            return self._resolved_store
+        store = self._repository if self._repository is not None else self._db
+        if store is None:
             # 延迟解析进程级 Database；不主动 init，避免测试/工具导入时产生副作用。
             from easy_agent.db import database as database_module
 
-            db = database_module._db_instance
-        self._resolved_db = db
-        return db
+            store = database_module._db_instance
+        self._resolved_store = store
+        return store
 
 
 async def flush_all_stream_events(

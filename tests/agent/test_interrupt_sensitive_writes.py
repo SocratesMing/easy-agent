@@ -17,6 +17,19 @@ from types import SimpleNamespace
 from easy_agent.agent import EasyAgent
 
 
+def _scheduled(db):
+    """T3c：定时任务/执行记录走领域 repository（Database 转发方法已删除）。"""
+    from easy_agent.db.repositories.scheduled_task_repository import (
+        ScheduledTaskRepository,
+    )
+
+    if isinstance(db, ScheduledTaskRepository):
+        return db
+    if hasattr(db, "create_scheduled_task") and not hasattr(db, "get_connection"):
+        return db
+    return ScheduledTaskRepository(db)
+
+
 def _agent(tmp_path: Path, *, enabled: bool, skills_mounted: bool = True) -> EasyAgent:
     agent = EasyAgent.__new__(EasyAgent)
     agent.config = SimpleNamespace(
@@ -220,7 +233,23 @@ def scheduled_run(tmp_path, db, monkeypatch):
 
         monkeypatch.setattr(agent_manager, "get_or_create_agent_for_session", fake_get_agent)
         monkeypatch.setattr(agent_manager, "remove_session_agent", lambda session_id: None)
-        monkeypatch.setattr(sched, "get_database", lambda: db)
+        from easy_agent.db.repositories.message_repository import MessageRepository
+        from easy_agent.db.repositories.scheduled_task_repository import (
+            ScheduledTaskRepository,
+        )
+        from easy_agent.db.repositories.session_repository import SessionRepository
+
+        monkeypatch.setattr(
+            sched,
+            "get_scheduled_task_repository",
+            lambda: ScheduledTaskRepository(db),
+        )
+        monkeypatch.setattr(
+            sched, "get_session_repository", lambda: SessionRepository(db)
+        )
+        monkeypatch.setattr(
+            sched, "get_message_repository", lambda: MessageRepository(db)
+        )
         monkeypatch.setattr(sched, "get_scheduler", lambda: type("S", (), {"get_job": lambda self, tid: None})())
         monkeypatch.setattr(sched, "log_task_event", lambda **kwargs: None)
         monkeypatch.setattr(
@@ -228,7 +257,7 @@ def scheduled_run(tmp_path, db, monkeypatch):
             "get_distributed_lock",
             lambda: DistributedLock(config=DistributedLockConfig(enabled=False), db=db, owner="pod"),
         )
-        db.create_scheduled_task(
+        _scheduled(db).create_scheduled_task(
             ScheduledTaskModel(
                 task_id="task-d7",
                 username="testuser",
@@ -241,7 +270,7 @@ def scheduled_run(tmp_path, db, monkeypatch):
             )
         )
         await sched._execute_task("task-d7")
-        return db.list_scheduled_task_runs("task-d7")
+        return _scheduled(db).list_scheduled_task_runs("task-d7")
 
     run.memory_file = memory_file
     yield run

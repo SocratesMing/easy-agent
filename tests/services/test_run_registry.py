@@ -25,6 +25,15 @@ from easy_agent.db.repositories.agent_runs import (
 from easy_agent.db.repositories.stream_events import list_stream_events
 
 
+
+
+def _runtime(db):
+    """T3c：会话运行期状态走领域 repository（Database 转发方法已删除）。"""
+    from easy_agent.db.repositories.session_runtime import SessionRuntimeRepository
+
+    return SessionRuntimeRepository(db)
+
+
 def _iso(dt: datetime) -> str:
     return dt.isoformat(timespec="seconds")
 
@@ -237,7 +246,7 @@ def test_recover_truncates_and_keeps_other_runs_on_append_failure(db, monkeypatc
 
 
 def _hold_stream_lock(db, session_id: str, owner: str, until: str) -> None:
-    db.upsert_session_runtime(session_id, stream_owner=owner, stream_until=until)
+    _runtime(db).upsert_session_runtime(session_id, stream_owner=owner, stream_until=until)
 
 
 def test_recover_releases_the_stream_lock_the_crashed_run_left(db, monkeypatch):
@@ -254,10 +263,10 @@ def test_recover_releases_the_stream_lock_the_crashed_run_left(db, monkeypatch):
     assert [_error_event(f["payload"]) for f in frames] == [
         {"type": "error", "content": RECOVER_ERROR_MESSAGE}
     ]
-    assert is_stream_active(db, "sess-crashed") is False
+    assert is_stream_active(_runtime(db), "sess-crashed") is False
     # 用户照提示重发：别的实例能拿到这个会话的流锁
     monkeypatch.setattr(session_runtime, "instance_owner", lambda: "pod-b:2")
-    session_runtime.acquire_stream(db, "sess-crashed")
+    session_runtime.acquire_stream(_runtime(db), "sess-crashed")
 
 
 def test_recover_leaves_a_lock_another_instance_took_over(db):
@@ -270,7 +279,7 @@ def test_recover_leaves_a_lock_another_instance_took_over(db):
 
     assert get_run(db, "run-old")["status"] == STATUS_INTERRUPTED
     assert list_stream_events(db, "sess-taken") == []
-    assert db.get_session_runtime("sess-taken")["stream_owner"] == "pod-b:2"
+    assert _runtime(db).get_session_runtime("sess-taken")["stream_owner"] == "pod-b:2"
 
 
 def test_recover_leaves_a_newer_run_of_the_same_instance_alone(db):
@@ -286,7 +295,7 @@ def test_recover_leaves_a_newer_run_of_the_same_instance_alone(db):
     assert get_run(db, "run-old")["status"] == STATUS_INTERRUPTED
     assert get_run(db, "run-new")["status"] == STATUS_RUNNING
     assert list_stream_events(db, "sess-newer") == []
-    assert db.get_session_runtime("sess-newer")["stream_owner"] == "pod-a:1"
+    assert _runtime(db).get_session_runtime("sess-newer")["stream_owner"] == "pod-a:1"
 
 
 # ── 周期恢复 ────────────────────────────────────────────────────────────

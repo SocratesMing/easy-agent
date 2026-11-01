@@ -8,6 +8,7 @@
 - ``runs``：:class:`AgentRunRepository`（run 租约 / 终态）
 - ``runtime``：:class:`SessionRuntimeRepository`（跨副本流锁 / 连接器 / 待修改专家）
 - ``stream_events``：:class:`StreamEventRepository`（SSE 事件持久化 / 回放）
+- ``experts``：:class:`ExpertRepository`（专家记录 / 归属 / 专家会话）
 
 T3 之前这里是一组手写薄委托方法；现在只是组合门面。为兼容既有调用方与测试，
 下方同名方法保留（实现全部委托给组合出来的领域 repository）。新代码请直接用
@@ -25,6 +26,7 @@ from typing import TYPE_CHECKING
 from easy_agent.models.db import SessionModel
 from easy_agent.utils.deployment import instance_owner
 from easy_agent.db.repositories.agent_runs import AgentRunRepository
+from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.db.repositories.message_repository import MessageRepository
 from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.db.repositories.session_runtime import SessionRuntimeRepository
@@ -44,6 +46,7 @@ class ChatRepository:
         self.runs = AgentRunRepository(db)
         self.runtime = SessionRuntimeRepository(db)
         self.stream_events = StreamEventRepository(db)
+        self.experts = ExpertRepository(db)
 
     @property
     def database(self) -> "Database":

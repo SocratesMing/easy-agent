@@ -28,6 +28,7 @@ import pytest
 from easy_agent.bootstrap.config import Config
 from easy_agent.db.expert_store import STATUS_ACTIVE, STATUS_FAILED, ExpertStore
 from easy_agent.db import init_database
+from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.services.expert_service import get_expert_dir
 import easy_agent.tools.expert_writer as writer
 
@@ -62,7 +63,8 @@ def env(db, monkeypatch, tmp_path):
         "get_user_workspace_dir",
         staticmethod(lambda username, config=None: tmp_path / "users" / username),
     )
-    monkeypatch.setattr(writer, "get_database", lambda: db)
+    repo = ExpertRepository(db)
+    monkeypatch.setattr(writer, "get_expert_repository", lambda: repo)
     monkeypatch.setattr(
         writer,
         "_agent_config",
@@ -72,7 +74,7 @@ def env(db, monkeypatch, tmp_path):
     import easy_agent.agent.model as model_mod
 
     monkeypatch.setattr(model_mod, "create_model", lambda *a, **k: object())
-    return SimpleNamespace(db=db, tmp=tmp_path)
+    return SimpleNamespace(db=db, repo=repo, tmp=tmp_path)
 
 
 def _make_tool(**kwargs) -> writer.SaveExpertTool:
@@ -486,13 +488,13 @@ def test_resolve_owned_expert_rejects_foreign_or_inactive(env):
     expert_id = _expert_id_from(_create(_make_tool()))
     store = ExpertStore(env.db)
 
-    assert writer.resolve_owned_expert(env.db, "testuser", expert_id) is not None
+    assert writer.resolve_owned_expert(env.repo, "testuser", expert_id) is not None
     # 不存在的 ID（预置专家不落库，同样查不到）
-    assert writer.resolve_owned_expert(env.db, "testuser", "expert_nope") is None
-    assert writer.resolve_owned_expert(env.db, "testuser", "") is None
+    assert writer.resolve_owned_expert(env.repo, "testuser", "expert_nope") is None
+    assert writer.resolve_owned_expert(env.repo, "testuser", "") is None
     # 已停用的专家不可作为修改目标
     store.update_fields(expert_id, {"agent_status": "disabled"})
-    assert writer.resolve_owned_expert(env.db, "testuser", expert_id) is None
+    assert writer.resolve_owned_expert(env.repo, "testuser", expert_id) is None
 
 
 def test_created_prompt_md_contains_boundary_section(env):

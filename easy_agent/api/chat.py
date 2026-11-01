@@ -143,17 +143,24 @@ async def _stop_heartbeat(heartbeat: "asyncio.Task | None") -> None:
         pass
 
 
-async def _clear_previous_events(db, session_id: str, sid: str) -> None:
+async def _clear_previous_events(stream_events, db, session_id: str, sid: str) -> None:
     # 拿到跨副本流锁后再清旧轮次事件：避免把另一个 Pod 正在写的流删掉。
+    store = stream_events if stream_events is not None else db
+    if store is None:
+        return
     try:
-        await asyncio.to_thread(clear_stream_events, db, session_id)
+        clear = getattr(store, "clear_stream_events", None)
+        if callable(clear):
+            await asyncio.to_thread(clear, session_id)
+        else:
+            await asyncio.to_thread(clear_stream_events, store, session_id)
     except Exception as exc:  # noqa: BLE001 - 清理失败不影响本轮流
         logger.warning(f"[{sid}] 清理旧 stream_events 失败: {exc}")
 
 
 async def _drive_stream(
     gen, hub, queue: asyncio.Queue, emitter: SSEEmitter,
-    session_id: str, sid: str, renew_stream, db, runs, run_id,
+    session_id: str, sid: str, renew_stream, db, runs, stream_events, run_id,
 ) -> None:
     """后台任务：推进生成器，把每个 SSE 分片广播给 hub 的全部订阅者（原始客户端队列也是其一）。
 
@@ -168,8 +175,8 @@ async def _drive_stream(
     try:
         await aregister_stream_task(session_id, bg)
         registered = True
-        if db is not None:
-            await _clear_previous_events(db, session_id, sid)
+        if db is not None or stream_events is not None:
+            await _clear_previous_events(stream_events, db, session_id, sid)
         if renew_stream is not None or (run_id is not None and runs is not None):
             heartbeat = asyncio.create_task(
                 _stream_heartbeat(session_id, sid, renew_stream, runs, run_id)
@@ -211,7 +218,8 @@ async def _drive_stream(
 
 
 async def _detached_event_stream(
-    gen, session_id: str, sid: str, renew_stream=None, db=None, runs=None, run_id=None
+    gen, session_id: str, sid: str, renew_stream=None, db=None, runs=None,
+    stream_events=None, run_id=None,
 ):
     """以「后台任务 + 事件中枢」驱动流式生成器，与客户端断开解耦。
 
@@ -241,13 +249,14 @@ async def _detached_event_stream(
 
     hub = _session_stream_hubs.get(session_id)
     if hub is None or hub.done:
-        hub = _StreamHub(session_id, db=db)
+        hub = _StreamHub(session_id, db=db, stream_events=stream_events)
         _session_stream_hubs[session_id] = hub
     queue: asyncio.Queue = hub.subscribe()
 
     bg_task = asyncio.create_task(
         _drive_stream(
-            gen, hub, queue, emitter, session_id, sid, renew_stream, db, run_store, run_id
+            gen, hub, queue, emitter, session_id, sid, renew_stream, db,
+            run_store, stream_events, run_id,
         )
     )
     _detached_bg_tasks.add(bg_task)
@@ -292,7 +301,7 @@ async def chat_stream(
                 plan.session_id,
                 plan.sid,
                 renew_stream=repo.renew_stream,
-                db=repo.database,
+                stream_events=repo.stream_events,
                 runs=repo.runs,
             )
         )
@@ -302,7 +311,7 @@ async def chat_stream(
             plan.session_id,
             plan.sid,
             renew_stream=repo.renew_stream,
-            db=repo.database,
+            stream_events=repo.stream_events,
             runs=repo.runs,
             run_id=plan.run_id,
         )
@@ -362,7 +371,7 @@ async def chat_resume(
             plan.session_id,
             plan.sid,
             renew_stream=repo.renew_stream,
-            db=repo.database,
+            stream_events=repo.stream_events,
             runs=repo.runs,
             run_id=plan.run_id,
         )

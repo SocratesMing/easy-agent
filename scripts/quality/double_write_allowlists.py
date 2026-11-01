@@ -73,6 +73,17 @@ INFRA_DATABASE_METHODS = {
 # verify_user_password / get_or_create_passwordless_user / update_user_password /
 # increment_user_token_version 仍被 knowledges 域与 personnel 调用（后续批次）。
 # 这些名字不再出现在下面的冻结集合里：再加回 Database 会被 DW201 拦下。
+#
+# T3c（2026-11-01，收尾）删除：stream_events append/list、session_runtime 4 个、
+#   update_last_assistant_message_row、files generated 4 个、mcp_api_keys 3 个、
+#   scheduled_tasks 11 个、add_message、agent_state store_* 5 个。
+# T3c 保留（原因）：
+#   - sessions 4 个（create_session / get_session / update_session_workspace_name /
+#     update_last_assistant_message）：knowledges/api.py 与 knowledges/chat/streaming.py、
+#     streaming/orchestrator.py（本批不允许改、或属 T8b 范围）仍以 Database 直连；
+#   - users 8 个：knowledges/personnel（人员管理纵向切片）与 knowledges/runtime 仍直连，
+#     待 T8b/后续批次迁移；
+#   - 其余为连接 / 事务 / 迁移（connection/transaction/DDL）与 ping 健康探针。
 # Frozen set of every method that exists on Database at the time phase 0 lands
 # (ARCH-03 phase 2 extracted the SQL into db/repositories/*).  Non-infrastructure
 # entries must stay pure delegations; see _is_pure_delegation.
@@ -112,12 +123,9 @@ FROZEN_DATABASE_METHODS = {
     "_ensure_unique_index",
     "_create_unique_index",
     "create_session",
-    "add_message",
     "get_session",
     "update_session_workspace_name",
-    "update_generated_file_paths",
     "update_last_assistant_message",
-    "update_last_assistant_message_row",
     "create_user",
     "get_user_by_username",
     "get_user_by_id",
@@ -126,35 +134,7 @@ FROZEN_DATABASE_METHODS = {
     "verify_user_password",
     "get_or_create_passwordless_user",
     "update_user_password",
-    "issue_mcp_api_key",
-    "revoke_mcp_api_key",
-    "get_mcp_api_keys",
-    "add_generated_file",
-    "get_generated_files",
-    "delete_generated_file",
-    "create_scheduled_task",
-    "get_scheduled_task",
-    "list_scheduled_tasks",
-    "list_all_enabled_scheduled_tasks",
-    "delete_scheduled_task",
-    "update_scheduled_task_status",
-    "update_scheduled_task_run_times",
-    "update_scheduled_task_workspace",
-    "add_scheduled_task_run",
-    "update_scheduled_task_run",
-    "list_scheduled_task_runs",
     "ping",
-    "store_get",
-    "store_put",
-    "store_delete",
-    "store_search",
-    "store_list_namespaces",
-    "get_session_runtime",
-    "try_acquire_session_stream",
-    "renew_session_stream",
-    "upsert_session_runtime",
-    "append_stream_event",
-    "list_stream_events",
 }
 
 
@@ -173,8 +153,11 @@ FROZEN_DATABASE_METHODS = {
 #   ``repo.database`` / ``repository.database`` / ``db.database`` 属性访问次数
 #   （``Database`` 逃生口）。
 #
-# T3b（2026-11-01 文件/用户域）实测：78 / 43 / 15 / 12。
-MAX_DATABASE_METHODS = 78
-MAX_DATABASE_PURE_DELEGATIONS = 43
-MAX_GET_DATABASE_CALLS_OUTSIDE_DB = 15
+# T3c（2026-11-01 定时任务/专家/agent_state/流运行时等收尾）实测：47 / 12 / 4 / 5。
+# 保留的 12 个纯委托全部是 knowledges / personnel 纵向切片仍在直连的
+# sessions 4 个 + users 8 个（见下方 T3c 说明）；其余为连接/事务/迁移。
+MAX_DATABASE_METHODS = 47
+MAX_DATABASE_PURE_DELEGATIONS = 12
+MAX_GET_DATABASE_CALLS_OUTSIDE_DB = 4
+MAX_DATABASE_ESCAPE_HATCH_REFS = 5
 MAX_DATABASE_ESCAPE_HATCH_REFS = 12

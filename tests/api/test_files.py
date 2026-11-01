@@ -121,11 +121,10 @@ def test_session_files_list(client):
 
 def test_session_generated_files(client):
     # /agent/files/session/{id} 返回智能体生成的文件（generated_files）
-    from easy_agent.db import get_database
+    from easy_agent.db.providers import get_file_repository
 
     sess = client.post("/agent/sessions", json={}).json()["session_id"]
-    db = get_database()
-    db.add_generated_file(
+    get_file_repository().add_generated_file(
         session_id=sess,
         message_id="m1",
         filename="result.txt",

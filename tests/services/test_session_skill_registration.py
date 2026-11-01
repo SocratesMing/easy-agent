@@ -12,6 +12,7 @@ import time
 import pytest
 
 from easy_agent.agent import EasyAgent
+from easy_agent.db.repositories.file_repository import FileRepository
 from easy_agent.bootstrap.config import Config
 from easy_agent.services import skill_categories, skill_library
 from easy_agent.services.streaming.side_effects import register_session_skills
@@ -51,7 +52,7 @@ def agent(monkeypatch, tmp_path, users_root):
 
 
 def _record(db, file_path: str):
-    db.add_generated_file(
+    FileRepository(db).add_generated_file(
         session_id=SESSION_ID,
         message_id="msg-1",
         filename=str(file_path).rsplit("/", 1)[-1],
@@ -81,7 +82,7 @@ async def test_workspace_skill_is_registered_and_cleaned(agent, db):
     target = skill_library.user_skills_dir(USERNAME) / "pdf-report"
     assert (target / "SKILL.md").is_file()
     assert not source.exists(), "工作区不应保留技能副本"
-    assert db.get_generated_files(SESSION_ID) == [], "记录应随文件一起清理"
+    assert FileRepository(db).get_generated_files(SESSION_ID) == [], "记录应随文件一起清理"
     assert _assignments(USERNAME).get("pdf-report"), "入库后应完成自动归类"
 
 
@@ -100,7 +101,7 @@ async def test_direct_library_write_is_categorized_only(agent, db):
     assert registered[0]["source"] == "direct"
     assert (skill_dir / "SKILL.md").is_file()
     assert _assignments(USERNAME).get("pdf-report") == "doc"
-    assert db.get_generated_files(SESSION_ID) == []
+    assert FileRepository(db).get_generated_files(SESSION_ID) == []
 
 
 async def test_direct_write_with_ambiguous_content_keeps_default_category(agent, db):
@@ -128,7 +129,7 @@ async def test_non_skill_writes_are_ignored(agent, db):
 
     assert await register_session_skills(agent, db, SESSION_ID, "test") == []
     assert work.exists()
-    assert len(db.get_generated_files(SESSION_ID)) == 1
+    assert len(FileRepository(db).get_generated_files(SESSION_ID)) == 1
 
 
 async def test_no_records_returns_empty(agent, db):
@@ -198,8 +199,16 @@ async def test_records_are_read_and_dropped_off_the_event_loop(agent, db, monkey
 
         return wrapped
 
-    monkeypatch.setattr(db, "get_generated_files", recorded("get_generated_files", db.get_generated_files))
-    monkeypatch.setattr(db, "delete_generated_file", recorded("delete_generated_file", db.delete_generated_file))
+    monkeypatch.setattr(
+        FileRepository,
+        "get_generated_files",
+        recorded("get_generated_files", FileRepository.get_generated_files),
+    )
+    monkeypatch.setattr(
+        FileRepository,
+        "delete_generated_file",
+        recorded("delete_generated_file", FileRepository.delete_generated_file),
+    )
     monkeypatch.setattr(
         agent_manager, "invalidate_user_agents", recorded("invalidate_user_agents", lambda username: 0)
     )
@@ -220,14 +229,14 @@ async def test_cancel_while_dropping_records_still_reloads_agents(agent, db, mon
     reloaded: list[str] = []
     monkeypatch.setattr(agent_manager, "invalidate_user_agents", lambda username: reloaded.append(username))
     started = threading.Event()
-    delete = db.delete_generated_file
+    delete = FileRepository(db).delete_generated_file
 
-    def slow_delete(file_id):
+    def slow_delete(self, file_id):
         started.set()
         time.sleep(0.2)
         return delete(file_id)
 
-    monkeypatch.setattr(db, "delete_generated_file", slow_delete)
+    monkeypatch.setattr(FileRepository, "delete_generated_file", slow_delete)
     _record(db, _workspace_skill(agent) / "SKILL.md")
 
     task = asyncio.create_task(register_session_skills(agent, db, SESSION_ID, "test"))
@@ -239,4 +248,4 @@ async def test_cancel_while_dropping_records_still_reloads_agents(agent, db, mon
 
     assert reloaded == [USERNAME]
     assert (skill_library.user_skills_dir(USERNAME) / "pdf-report" / "SKILL.md").is_file()
-    assert db.get_generated_files(SESSION_ID) == [], "在途的删除照样写完"
+    assert FileRepository(db).get_generated_files(SESSION_ID) == [], "在途的删除照样写完"

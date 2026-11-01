@@ -6,10 +6,31 @@
 
 from __future__ import annotations
 
+from easy_agent.db.database import Database
+from easy_agent.db.repositories.message_repository import MessageRepository
+from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.services.sse import is_terminal_event
 from easy_agent.services.sse_emitter import SSEEmitter, sse_stream
 from easy_agent.knowledges.chat.host_port import get_host_capabilities
 from easy_agent.utils.blocking import run_blocking
+
+
+def _session_port(db) -> SessionRepository:
+    """会话域数据端口：``SessionRepository``、``Database`` 连接或测试替身（T3c）。"""
+    if isinstance(db, SessionRepository):
+        return db
+    if isinstance(db, Database):
+        return SessionRepository(db)
+    return db
+
+
+def _message_port(db) -> MessageRepository:
+    """消息域数据端口：``MessageRepository``、``Database`` 连接或测试替身（T3c）。"""
+    if isinstance(db, MessageRepository):
+        return db
+    if isinstance(db, Database):
+        return MessageRepository(db)
+    return db
 
 
 def _persist_assistant_metadata(db, session_id: str, assistant_metadata) -> None:
@@ -20,11 +41,12 @@ def _persist_assistant_metadata(db, session_id: str, assistant_metadata) -> None
 
     if not assistant_metadata:
         return
-    session = db.get_session(session_id)
+    session = _session_port(db).get_session(session_id)
     if session and session.messages and session.messages[-1].get("role") == "assistant":
         message = {**session.messages[-1], **assistant_metadata}
-        db.update_last_assistant_message(session_id, message)
-        db.update_last_assistant_message_row(session_id, message)
+        messages = _message_port(db)
+        messages.update_last_assistant_message(session_id, message)
+        messages.update_last_assistant_message_row(session_id, message)
 
 
 # ---------------------------------------------------------------------------

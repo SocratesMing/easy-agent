@@ -17,6 +17,13 @@ async def _async_noop(*args, **kwargs):
     """替换写流锁的异步函数（aregister / aunregister_stream_task）。"""
     return None
 
+def _runtime(db):
+    """T3c：会话运行期状态走领域 repository（Database 转发方法已删除）。"""
+    from easy_agent.db.repositories.session_runtime import SessionRuntimeRepository
+
+    return SessionRuntimeRepository(db)
+
+
 SESSION_ID = "sess-cross-pod"
 
 
@@ -143,7 +150,7 @@ def test_stream_status_uses_db_stream_owner(client, db):
     future = (datetime.now(UTC) + timedelta(minutes=5)).isoformat(timespec="seconds")
     past = (datetime.now(UTC) - timedelta(minutes=5)).isoformat(timespec="seconds")
 
-    db.upsert_session_runtime(
+    _runtime(db).upsert_session_runtime(
         SESSION_ID, stream_owner="pod-a:123", stream_until=future
     )
     active = client.get(
@@ -152,7 +159,7 @@ def test_stream_status_uses_db_stream_owner(client, db):
     assert active.status_code == 200
     assert active.json() == {"session_id": SESSION_ID, "active": True}
 
-    db.upsert_session_runtime(
+    _runtime(db).upsert_session_runtime(
         SESSION_ID, stream_owner="pod-a:123", stream_until=past
     )
     expired = client.get(

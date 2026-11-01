@@ -41,11 +41,14 @@ class _StreamHub:
     客户端仍能拿到 done/error 收尾事件。
     """
 
-    def __init__(self, session_id: str, db=None):
+    def __init__(self, session_id: str, db=None, stream_events=None):
         self.session_id = session_id
         # 每个流一个 DB 写入器（懒启动后台任务）：同 Pod 低延迟仍走内存广播，
-        # 跨 Pod 正确性由 stream_events 表提供。
-        self.writer = StreamEventWriter(session_id, db=db)
+        # 跨 Pod 正确性由 stream_events 表提供。``stream_events`` 是领域
+        # repository（T3c 生产路径）；``db`` 仅为迁移期兼容参数。
+        self.writer = StreamEventWriter(
+            session_id, db=db, repository=stream_events
+        )
         self.history: deque[str] = deque()
         self._history_chars = 0
         self.done = False
@@ -136,11 +139,11 @@ def session_stream_hubs() -> "dict[str, _StreamHub]":
     return _session_stream_hubs
 
 
-def get_stream_hub(session_id: str, db=None) -> "_StreamHub":
+def get_stream_hub(session_id: str, db=None, stream_events=None) -> "_StreamHub":
     """取会话当前 hub；不存在或已结束时新建一个。"""
     hub = _session_stream_hubs.get(session_id)
     if hub is None or hub.done:
-        hub = _StreamHub(session_id, db=db)
+        hub = _StreamHub(session_id, db=db, stream_events=stream_events)
         _session_stream_hubs[session_id] = hub
     return hub
 

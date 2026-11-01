@@ -21,14 +21,7 @@ try:
 except ImportError:
     PooledDB = None
 
-from easy_agent.models.db import ScheduledTaskModel, ScheduledTaskRunModel
-from easy_agent.db.repositories import session_runtime as session_runtime_repo
-from easy_agent.db.repositories import stream_events as stream_events_repo
-from easy_agent.db.repositories import agent_state as agent_state_repo
-from easy_agent.db.repositories import scheduled_tasks as scheduled_tasks_repo
 from easy_agent.db.repositories import sessions as sessions_repo
-from easy_agent.db.repositories import files as files_repo
-from easy_agent.db.repositories import mcp_api_keys as mcp_api_keys_repo
 from easy_agent.db.repositories import users as users_repo
 from easy_agent.db import schema
 from easy_agent.bootstrap.env import env_bool, env_str
@@ -348,22 +341,8 @@ class Database:
     def update_session_workspace_name(self, *args, **kwargs):
         return sessions_repo.update_session_workspace_name(self, *args, **kwargs)
 
-    def update_generated_file_paths(self, *args, **kwargs):
-        return sessions_repo.update_generated_file_paths(self, *args, **kwargs)
-
-    def add_message(self, session_id: str, message: dict) -> None:
-        """追加消息（A2：只写 session_messages 行表）。
-
-        T3a 仍保留：``services/scheduler.py``（定时任务域，不在本批范围）直接调用；
-        待定时任务域迁移到 ``MessageRepository`` 后在 T3c 删除。
-        """
-        sessions_repo.add_message(self, session_id, message)
-
     def update_last_assistant_message(self, *args, **kwargs):
         return sessions_repo.update_last_assistant_message(self, *args, **kwargs)
-
-    def update_last_assistant_message_row(self, *args, **kwargs):
-        return sessions_repo.update_last_assistant_message_row(self, *args, **kwargs)
 
     # ARCH-03 Phase 2: users SQL 已抽到 db/repositories/users.py
     # T3b 起用户的登录/资料/管理员接口走 UserRepository；下列方法保留给
@@ -393,68 +372,12 @@ class Database:
         return users_repo.update_user_password(self, *args, **kwargs)
 
     # ARCH-03 Phase 2: MCP API Key SQL 已抽到 db/repositories/mcp_api_keys.py
-    def issue_mcp_api_key(self, *args, **kwargs):
-        return mcp_api_keys_repo.issue_mcp_api_key(self, *args, **kwargs)
-
-    def revoke_mcp_api_key(self, *args, **kwargs):
-        return mcp_api_keys_repo.revoke_mcp_api_key(self, *args, **kwargs)
-
-    def get_mcp_api_keys(self, *args, **kwargs):
-        return mcp_api_keys_repo.get_mcp_api_keys(self, *args, **kwargs)
 
     # ARCH-03 Phase 2: 文件 SQL 已抽到 db/repositories/files.py
     # T3b 起上传/生成文件接口走 FileRepository；下列生成文件方法保留给
     # streaming/side_effects.py（T3c 迁移）。
 
-    def add_generated_file(self, *args, **kwargs):
-        return files_repo.add_generated_file(self, *args, **kwargs)
-
-    def get_generated_files(self, session_id: str) -> list[dict]:
-        return files_repo.get_generated_files(self, session_id)
-
-    def delete_generated_file(self, file_id: int) -> bool:
-        return files_repo.delete_generated_file(self, file_id)
-
     # ARCH-03 Phase 2: 定时任务 SQL 已抽到 db/repositories/scheduled_tasks.py
-    def create_scheduled_task(self, task: ScheduledTaskModel) -> ScheduledTaskModel:
-        return scheduled_tasks_repo.create_scheduled_task(self, task)
-
-    def get_scheduled_task(self, task_id: str) -> ScheduledTaskModel | None:
-        return scheduled_tasks_repo.get_scheduled_task(self, task_id)
-
-    def list_scheduled_tasks(self, username: str, enabled_only: bool = False) -> list[ScheduledTaskModel]:
-        return scheduled_tasks_repo.list_scheduled_tasks(self, username, enabled_only=enabled_only)
-
-    def list_all_enabled_scheduled_tasks(self) -> list[ScheduledTaskModel]:
-        return scheduled_tasks_repo.list_all_enabled_scheduled_tasks(self)
-
-    def delete_scheduled_task(self, task_id: str) -> bool:
-        return scheduled_tasks_repo.delete_scheduled_task(self, task_id)
-
-    def update_scheduled_task_status(self, task_id: str, enabled: bool):
-        return scheduled_tasks_repo.update_scheduled_task_status(self, task_id, enabled)
-
-    def update_scheduled_task_run_times(self, task_id: str, last_run_at: str, next_run_at: str):
-        return scheduled_tasks_repo.update_scheduled_task_run_times(
-            self, task_id, last_run_at, next_run_at
-        )
-
-    def update_scheduled_task_workspace(self, task_id: str, workspace_name: str):
-        return scheduled_tasks_repo.update_scheduled_task_workspace(
-            self, task_id, workspace_name
-        )
-
-    def add_scheduled_task_run(self, run: ScheduledTaskRunModel) -> ScheduledTaskRunModel:
-        return scheduled_tasks_repo.add_scheduled_task_run(self, run)
-
-    def update_scheduled_task_run(self, run_id: str, status: str, finished_at: str,
-                                  result_summary: str = "", error_message: str = ""):
-        return scheduled_tasks_repo.update_scheduled_task_run(
-            self, run_id, status, finished_at, result_summary, error_message
-        )
-
-    def list_scheduled_task_runs(self, task_id: str, limit: int = 50) -> list[ScheduledTaskRunModel]:
-        return scheduled_tasks_repo.list_scheduled_task_runs(self, task_id, limit)
 
     def ping(self) -> bool:
         with self.get_connection() as conn:
@@ -464,73 +387,10 @@ class Database:
         return True
 
     # ARCH-03 Phase 2: store SQL 已抽到 db/repositories/agent_state.py（业务库不再存 checkpoint）
-    def store_get(self, namespace: str, item_key: str) -> dict | None:
-        return agent_state_repo.store_get(self, namespace, item_key)
-
-    def store_put(self, namespace: str, item_key: str, value: str) -> None:
-        return agent_state_repo.store_put(self, namespace, item_key, value)
-
-    def store_delete(self, namespace: str, item_key: str) -> None:
-        return agent_state_repo.store_delete(self, namespace, item_key)
-
-    def store_search(self, namespace_prefix: str, *, limit: int = 10, offset: int = 0) -> list[dict]:
-        return agent_state_repo.store_search(
-            self, namespace_prefix, limit=limit, offset=offset
-        )
-
-    def store_list_namespaces(self) -> list[str]:
-        return agent_state_repo.store_list_namespaces(self)
 
     # ARCH-03 Phase 2: session_runtime SQL 已抽到 db/repositories/session_runtime.py
-    def get_session_runtime(self, session_id: str) -> dict | None:
-        return session_runtime_repo.get_session_runtime(self, session_id)
-
-    def try_acquire_session_stream(
-        self, session_id: str, owner: str, until_iso: str, now_iso: str
-    ) -> tuple[bool, dict | None]:
-        return session_runtime_repo.try_acquire_session_stream(
-            self, session_id, owner, until_iso, now_iso
-        )
-
-    def renew_session_stream(
-        self, session_id: str, owner: str, until_iso: str, now_iso: str
-    ) -> bool:
-        return session_runtime_repo.renew_session_stream(
-            self, session_id, owner, until_iso, now_iso
-        )
-
-    def upsert_session_runtime(
-        self,
-        session_id: str,
-        *,
-        connectors=None,
-        edit_target=None,
-        stream_owner=None,
-        stream_until=None,
-        cancel_requested=None,
-        clear_connectors: bool = False,
-    ) -> None:
-        session_runtime_repo.upsert_session_runtime(
-            self,
-            session_id,
-            connectors=connectors,
-            edit_target=edit_target,
-            stream_owner=stream_owner,
-            stream_until=stream_until,
-            cancel_requested=cancel_requested,
-            clear_connectors=clear_connectors,
-        )
 
     # 多副本 Phase 2A: SSE 事件持久化已抽到 db/repositories/stream_events.py
-    def append_stream_event(self, session_id: str, payload: str) -> int:
-        return stream_events_repo.append_stream_event(self, session_id, payload)
-
-    def list_stream_events(
-        self, session_id: str, after_id: int = 0, limit: int = 500
-    ) -> list[dict]:
-        return stream_events_repo.list_stream_events(
-            self, session_id, after_id=after_id, limit=limit
-        )
 
 _db_instance = None
 

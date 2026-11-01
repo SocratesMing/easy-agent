@@ -16,7 +16,11 @@ from typing import Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from easy_agent.db import get_database
+from easy_agent.db.providers import (
+    get_message_repository,
+    get_scheduled_task_repository,
+    get_session_repository,
+)
 from easy_agent.models.db import ScheduledTaskModel, ScheduledTaskRunModel, SessionModel
 from easy_agent.utils.deployment import detect_worker_count as _detect_worker_count
 from easy_agent.persistence.distributed_lock import get_distributed_lock
@@ -166,12 +170,12 @@ def _read_enabled_scheduled_tasks() -> list[ScheduledTaskModel]:
     只碰数据库、不碰进程内状态；只应通过 ``asyncio.to_thread`` 调用，避免同步驱动
     （SQLite 单连接 + RLock、MySQL 连接池）占住事件循环。
     """
-    return get_database().list_all_enabled_scheduled_tasks()
+    return get_scheduled_task_repository().list_all_enabled_scheduled_tasks()
 
 
 def _read_scheduled_task(task_id: str) -> ScheduledTaskModel | None:
     """同步查库：按任务 ID 读取任务的最新状态（对账复核用，只应通过 asyncio.to_thread 调用）。"""
-    return get_database().get_scheduled_task(task_id)
+    return get_scheduled_task_repository().get_scheduled_task(task_id)
 
 
 def _is_stopping_in_flight(task_id: str) -> bool:
@@ -233,7 +237,7 @@ async def reconcile_scheduled_tasks() -> int:
         if next_run:
             # 写库同样放进线程，不占事件循环
             await asyncio.to_thread(
-                get_database().update_scheduled_task_run_times,
+                get_scheduled_task_repository().update_scheduled_task_run_times,
                 task_id,
                 latest.last_run_at or "",
                 next_run,
@@ -343,7 +347,7 @@ def unregister_scheduled_task(task_id: str, task: ScheduledTaskModel | None = No
 
 def reload_all_tasks():
     """启动时从 DB 加载所有 enabled 的定时任务。"""
-    db = get_database()
+    scheduled_repo = get_scheduled_task_repository()
     lock = get_distributed_lock()
     try:
         lock.cleanup_expired()
@@ -370,12 +374,14 @@ def reload_all_tasks():
         logger.info(
             "🔒 分布式锁未启用（单实例部署无需开启；多 pod 部署请设置 distributed_lock.enabled）"
         )
-    tasks = db.list_all_enabled_scheduled_tasks()
+    tasks = scheduled_repo.list_all_enabled_scheduled_tasks()
     count = 0
     for task in tasks:
         next_run = register_scheduled_task(task)
         if next_run:
-            db.update_scheduled_task_run_times(task.task_id, task.last_run_at, next_run)
+            scheduled_repo.update_scheduled_task_run_times(
+                task.task_id, task.last_run_at, next_run
+            )
             count += 1
             log_task_event(
                 username=task.username,
@@ -420,8 +426,10 @@ async def _execute_task(task_id: str):
 
     # 数据库层是同步的：查库 / 写库都经 run_blocking 放进线程，不占事件循环；
     # running_tasks 等进程内状态只在事件循环上读写。
-    db = get_database()
-    task = await run_blocking(db.get_scheduled_task, task_id)
+    scheduled_repo = get_scheduled_task_repository()
+    session_repo = get_session_repository()
+    message_repo = get_message_repository()
+    task = await run_blocking(scheduled_repo.get_scheduled_task, task_id)
     if not task or not task.enabled:
         return
 
@@ -456,8 +464,12 @@ async def _execute_task(task_id: str):
     # 创建新 session 用于此次执行，但工作目录与任务绑定（复用创建会话的目录或独立目录），
     # 确保多次运行都写入同一工作目录，不再为每次运行新建目录。
     session_id = str(uuid.uuid4())
-    workspace_name = await run_blocking(get_task_workspace_name, db, task)
-    await run_blocking(db.update_scheduled_task_workspace, task.task_id, workspace_name)
+    workspace_name = await run_blocking(
+        get_task_workspace_name, session_repo, task
+    )
+    await run_blocking(
+        scheduled_repo.update_scheduled_task_workspace, task.task_id, workspace_name
+    )
     session_title = f"[定时任务] {task.name} - {ts_label}"
     session_data = SessionModel(
         session_id=session_id,
@@ -468,8 +480,10 @@ async def _execute_task(task_id: str):
         username=task.username,
         workspace_name=workspace_name,
     )
-    await run_blocking(db.create_session, session_data)
-    await run_blocking(db.update_session_workspace_name, session_id, workspace_name)
+    await run_blocking(session_repo.create_session, session_data)
+    await run_blocking(
+        session_repo.update_session_workspace_name, session_id, workspace_name
+    )
 
     # 创建 run 记录
     run = ScheduledTaskRunModel(
@@ -479,7 +493,7 @@ async def _execute_task(task_id: str):
         status="running",
         started_at=started_at,
     )
-    await run_blocking(db.add_scheduled_task_run, run)
+    await run_blocking(scheduled_repo.add_scheduled_task_run, run)
 
     # 保存 user 消息
     user_msg = {
@@ -487,7 +501,7 @@ async def _execute_task(task_id: str):
         "content": task.task_prompt,
         "timestamp": started_at,
     }
-    await run_blocking(db.add_message, session_id, user_msg)
+    await run_blocking(message_repo.add_message, session_id, user_msg)
 
     logger.info(f"[{task_id[-5:]}] 定时任务开始执行 | run_id={run_id[-5:]} | session={session_id[-5:]} | prompt={task.task_prompt[:80]}")
     log_task_event(
@@ -521,7 +535,7 @@ async def _execute_task(task_id: str):
             session_id, task.username, workspace_name, enable_hitl=False
         )
         # 调用 agent 前再次确认任务未被暂停/删除（初始守卫之后、agent 调用之前仍可能被暂停）
-        pre = await run_blocking(db.get_scheduled_task, task_id)
+        pre = await run_blocking(scheduled_repo.get_scheduled_task, task_id)
         if not pre or not pre.enabled or task_id in stopping_tasks:
             raise _TaskAborted(f"任务已被暂停/删除: {task_id}")
         thread_id = f"sched-{task_id}-{run_id}"
@@ -551,7 +565,7 @@ async def _execute_task(task_id: str):
 
         # 运行结束后再次校验：若任务在本次执行过程中被暂停/删除（DB 已禁用或已标记停止中），
         # 则中止提交，标记为取消，避免一个「已暂停」的任务记录为执行成功。
-        current = await run_blocking(db.get_scheduled_task, task_id)
+        current = await run_blocking(scheduled_repo.get_scheduled_task, task_id)
         if not current or not current.enabled or task_id in stopping_tasks:
             cancelled = True
             logger.info(
@@ -564,11 +578,11 @@ async def _execute_task(task_id: str):
                 "content": final_content,
                 "timestamp": datetime.now().isoformat(),
             }
-            await run_blocking(db.add_message, session_id, assistant_msg)
+            await run_blocking(message_repo.add_message, session_id, assistant_msg)
 
             finished_at = datetime.now().isoformat()
             await run_blocking(
-                db.update_scheduled_task_run,
+                scheduled_repo.update_scheduled_task_run,
                 run_id, status="succeeded", finished_at=finished_at,
                 result_summary=result_summary,
             )
@@ -597,7 +611,7 @@ async def _execute_task(task_id: str):
         logger.error(f"[{task_id[-5:]}] 定时任务执行失败: {e}", exc_info=True)
         finished_at = datetime.now().isoformat()
         await run_blocking(
-            db.update_scheduled_task_run,
+            scheduled_repo.update_scheduled_task_run,
             run_id, status="failed", finished_at=finished_at,
             error_message=error_msg,
         )
@@ -633,7 +647,10 @@ async def _execute_task(task_id: str):
         job = scheduler.get_job(task_id)
         nrt = getattr(job, "next_run_time", None) if job else None
         next_run = nrt.strftime("%Y-%m-%d %H:%M:%S") if nrt else ""
-        await run_blocking(db.update_scheduled_task_run_times, task_id, started_at, next_run)
+        await run_blocking(
+            scheduled_repo.update_scheduled_task_run_times,
+            task_id, started_at, next_run,
+        )
         if cancelled:
             cancel_reason = (
                 "分布式锁已丢失（可能已被其它实例接管），在途执行已取消"
@@ -641,7 +658,7 @@ async def _execute_task(task_id: str):
                 else "任务被暂停/删除，在途执行已取消"
             )
             await run_blocking(
-                db.update_scheduled_task_run,
+                scheduled_repo.update_scheduled_task_run,
                 run_id, status="cancelled", finished_at=datetime.now().isoformat(),
                 error_message=cancel_reason,
             )
