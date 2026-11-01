@@ -216,6 +216,64 @@ def _resolve_download_file(upload_dir: Path, workspace_dir: Path, file_path: str
     raise HTTPException(status_code=404, detail="文件不存在")
 
 
+def _user_file_roots(username: str) -> tuple[Path, ...]:
+    """调用者自己的上传目录 / 工作区目录（SEC-06 允许解析的本地范围）。
+
+    ``get_user_dirs`` 给出 ``uploads/`` 与 ``workspace/``，运行期配置的工作区
+    （``Config.get_user_workspace_dir``）也接受（会话工作区在其 ``session/`` 子目录下）。
+    """
+    upload_dir, workspace_dir = get_user_dirs(username)
+    roots = (upload_dir, workspace_dir, Config.get_user_workspace_dir(username))
+    resolved = []
+    for root in roots:
+        try:
+            resolved.append(Path(root).resolve())
+        except OSError:  # 单个目录不可解析时跳过，不影响其余根目录
+            continue
+    return tuple(resolved)
+
+
+def _is_inside_any(path: Path, roots: tuple[Path, ...]) -> bool:
+    return any(path == root or root in path.parents for root in roots)
+
+
+def resolve_local_parse_file(username: str, file_path: str) -> Path:
+    """校验并解析「允许解析」的本地文件（SEC-06）。
+
+    只允许调用者 ``uploads/`` / 工作区目录内的文件：
+    - 含 ``..`` 穿越、NUL 等非法输入 → 400「非法的文件路径」；
+    - 解析后落在调用者目录外（如 ``/etc/hostname``、其他用户的文件）→ 403「无权访问该文件」；
+    - 目录内但不存在 → 404「文件不存在」。
+    """
+    raw = (file_path or "").strip()
+    if not raw or "\x00" in raw:
+        raise HTTPException(status_code=400, detail="非法的文件路径")
+    # 反斜杠在 Linux 上不是分隔符，但 Windows 客户端可能传；统一按 / 判断穿越。
+    if ".." in Path(raw.replace("\\", "/")).parts:
+        logger.warning(f"拒绝解析含路径穿越的文件 | user={username} | path={raw}")
+        raise HTTPException(status_code=400, detail="非法的文件路径")
+
+    roots = _user_file_roots(username)
+    candidates: list[Path] = []
+    try:
+        candidates.append(Path(raw).resolve())
+    except OSError:
+        pass
+    if not Path(raw).is_absolute():
+        for root in roots:
+            candidates.append((root / raw).resolve())
+    allowed = [candidate for candidate in candidates if _is_inside_any(candidate, roots)]
+    if not allowed:
+        logger.warning(f"拒绝解析用户目录外的文件 | user={username} | path={raw}")
+        raise HTTPException(status_code=403, detail="无权访问该文件")
+    for candidate in allowed:
+        if candidate.exists():
+            if not candidate.is_file():
+                raise HTTPException(status_code=400, detail="路径不是文件")
+            return candidate
+    raise HTTPException(status_code=404, detail="文件不存在")
+
+
 def serve_workspace_file(
     workspace_dir: Path, file_path: str, download: bool = False
 ) -> FileResponse:
@@ -428,15 +486,20 @@ async def parse_file(
     username: Annotated[str, Depends(get_current_username)],
     file_path: str = Query(..., description="文件路径"),
 ):
-    local_path = file_path
     if is_store_uri(file_path):
-        # 对象存储里的原始文件不在本地：先 materialize 再解析。
+        # 对象存储里的原始文件不在本地：先 materialize 再解析（URI 里的用户名
+        # 必须与调用者一致，跨用户由 materialize_upload 拒绝）。
         try:
             local_path = str(
                 await asyncio.to_thread(materialize_upload, file_path, username)
             )
         except UploadStorageError as exc:
             raise _store_http_error(exc) from exc
+    else:
+        # SEC-06：本地路径只允许调用者自己的上传目录 / 工作区，越界 403、穿越 400。
+        local_path = str(
+            await asyncio.to_thread(resolve_local_parse_file, username, file_path)
+        )
     content = await asyncio.to_thread(parse_file_content, local_path)
     return {"file_path": file_path, "content": content}
 
@@ -473,8 +536,9 @@ async def preview_file(
 
         username = await asyncio.to_thread(verify_token_sso, token, user_repo)
     if not username:
-        default_user = await asyncio.to_thread(repo.get_or_create_default_user)
-        username = default_user.username
+        # SEC-07：删除 get_or_create_default_user 回退，未登录不能再读默认用户工作区。
+        # iframe 等无法设置 Header 的场景仍可用 token 查询参数（同样走 SSO 校验）。
+        raise HTTPException(status_code=401, detail="未认证，请先登录")
 
     workspace_dir = Config.get_user_workspace_dir(username)
 

@@ -160,3 +160,115 @@ def test_download_accepts_the_stored_upload_path(tmp_path, monkeypatch):
     with pytest.raises(HTTPException) as other_user:
         _resolve_download_file(upload_dir, workspace_dir, "data/uploads/bob/secret.txt")
     assert other_user.value.status_code == 404
+
+# ── SEC-06：/agent/files/parse 只解析 store URI 或调用者目录内文件 ──────
+
+
+def test_parse_rejects_paths_outside_user_dirs(client, tmp_path):
+    """SEC-06：``/etc/hostname`` 等调用者目录外的绝对路径 → 403「无权访问该文件」。"""
+    secret = tmp_path / "sec06_outside_secret.txt"
+    secret.write_text("sec06-outside-secret", encoding="utf-8")
+    for path in ("/etc/hostname", str(secret)):
+        resp = client.post("/agent/files/parse", params={"file_path": path})
+        assert resp.status_code == 403, path
+        assert resp.json()["detail"] == "无权访问该文件"
+        assert "sec06-outside-secret" not in resp.text
+
+
+def test_parse_rejects_other_users_upload(client):
+    """SEC-06：其他用户上传目录内的文件 → 403，且不回显内容。"""
+    other = Path(os.environ["TEST_UPLOADS_DIR"]) / "sec06_bob" / "secret.txt"
+    other.parent.mkdir(parents=True, exist_ok=True)
+    other.write_text("sec06-bob-secret", encoding="utf-8")
+    try:
+        resp = client.post("/agent/files/parse", params={"file_path": str(other)})
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "无权访问该文件"
+        assert "sec06-bob-secret" not in resp.text
+    finally:
+        other.unlink()
+        other.parent.rmdir()
+
+
+def test_parse_rejects_path_traversal(client):
+    """SEC-06：``..`` 穿越 → 400「非法的文件路径」。"""
+    for path in ("../escape.txt", "sub/../../escape.txt"):
+        resp = client.post("/agent/files/parse", params={"file_path": path})
+        assert resp.status_code == 400, path
+        assert resp.json()["detail"] == "非法的文件路径"
+
+
+def test_parse_rejects_other_users_store_uri(client):
+    """SEC-06：跨用户 store:// URI → 403（materialize_upload 归属校验）。"""
+    resp = client.post(
+        "/agent/files/parse", params={"file_path": "store://uploads/sec06_bob/x.txt"}
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "UPLOAD_STORE_ACCESS_DENIED"
+
+
+def test_parse_accepts_workspace_relative_file(client):
+    """SEC-06：调用者工作区内的相对路径仍可解析。"""
+    ws_file = (
+        Path(os.environ["TEST_WORKSPACE_DIR"]) / "users" / "testuser" / "parse-me.txt"
+    )
+    ws_file.parent.mkdir(parents=True, exist_ok=True)
+    ws_file.write_text("workspace parse content", encoding="utf-8")
+
+    resp = client.post("/agent/files/parse", params={"file_path": "parse-me.txt"})
+    assert resp.status_code == 200
+    assert "workspace parse content" in resp.json()["content"]
+
+
+# ── SEC-07：/agent/files/preview 未认证不再回退默认用户 ─────────────────
+
+
+def test_preview_requires_auth(client):
+    """SEC-07：既无 Authorization 也无 token 查询参数 → 401。"""
+    resp = client.get("/agent/files/preview", params={"file_path": "preview.md"})
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "未认证，请先登录"
+
+
+def test_preview_rejects_invalid_token(client):
+    """SEC-07：无效 token（查询参数或 Header）→ 401，不回退默认用户。"""
+    for params, headers in (
+        ({"file_path": "preview.md", "token": "not-a-valid-token"}, {}),
+        ({"file_path": "preview.md"}, {"Authorization": "Bearer not-a-valid-token"}),
+    ):
+        resp = client.get("/agent/files/preview", params=params, headers=headers)
+        assert resp.status_code == 401
+        assert resp.json()["detail"] == "未认证，请先登录"
+
+
+def test_preview_accepts_authorization_header(client):
+    """SEC-07：有效 Bearer Header 仍可预览。"""
+    registered = client.post(
+        "/api/auth/register",
+        json={
+            "username": "testuser",
+            "password": "secret123",
+            "organization_id": "test-org",
+            "employee_id": "E-preview-header-testuser",
+        },
+    )
+    assert registered.status_code == 200
+    token = registered.json()["access_token"]
+
+    ws_file = (
+        Path(os.environ["TEST_WORKSPACE_DIR"])
+        / "users"
+        / "testuser"
+        / "header-preview.md"
+    )
+    ws_file.parent.mkdir(parents=True, exist_ok=True)
+    ws_file.write_text("header preview content", encoding="utf-8")
+
+    resp = client.get(
+        "/agent/files/preview",
+        params={"file_path": "header-preview.md"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.content == b"header preview content"
+

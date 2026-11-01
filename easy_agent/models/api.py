@@ -156,16 +156,25 @@ class ChatResponse(BaseModel):
 
 
 class ChatCompletionMessage(BaseModel):
-    role: str = Field(..., description="消息角色: system / user / assistant")
-    content: str = Field(..., description="消息内容")
+    # SEC-09：限制单条消息长度（消息总长度由 /agent/completion/chat 再兜一层）。
+    role: str = Field(
+        ..., max_length=32, description="消息角色: system / user / assistant"
+    )
+    content: str = Field(..., max_length=100_000, description="消息内容")
 
 
 class ChatCompletionRequest(BaseModel):
     messages: List[ChatCompletionMessage] = Field(
-        ..., description="对话消息数组，例如 [{role: system, content: ...}, {role: user, content: ...}]"
+        ...,
+        max_length=50,
+        description=(
+            "对话消息数组（最多 50 条），例如 "
+            "[{role: system, content: ...}, {role: user, content: ...}]"
+        ),
     )
     model: Optional[str] = Field(
         default=None,
+        max_length=128,
         description="模型名称（config.models 的 key，如 deepseek/glm）。为空时使用当前激活模型",
     )
 

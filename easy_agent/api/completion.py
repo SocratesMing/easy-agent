@@ -2,22 +2,31 @@
 
 传入消息数组（system/user/assistant 角色 + 内容），调用大模型后返回完整对话上下文
 （含本轮 assistant 回复），便于外部业务以无状态方式集成大模型能力。
+
+SEC-09：接口必须登录后调用，并由限流中间件限制频率（见
+``middleware/rate_limit._DEFAULT_RULES``）；入口处限制消息条数与内容总长度，
+避免被匿名或单账号当作免费 LLM 代理刷额度。
 """
 
 import logging
 import time
-from typing import Optional
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from easy_agent.agent.model import create_model, extract_reasoning
+from easy_agent.middleware import get_current_username
 from easy_agent.models.api import ChatCompletionRequest
 from easy_agent.services.agent_manager import get_agent_config
 
 logger = logging.getLogger("easy_agent.completion")
 
 router = APIRouter(prefix="/agent/completion", tags=["Completion"])
+
+# 输入上限（SEC-09）：消息条数 / 单条长度在 ChatCompletionRequest 上由 Pydantic
+# 限制（50 条、单条 100000 字符），这里再兜住所有消息 content 的总长度。
+MAX_TOTAL_CONTENT_CHARS = 100_000
 
 _ROLE_TO_MESSAGE = {
     "system": SystemMessage,
@@ -71,12 +80,23 @@ def _to_lc_messages(messages):
     summary="公共对话补全",
     description=(
         "传入消息数组（如 system 提示词 + user 需求），调用大模型后返回完整对话上下文"
-        "（含本轮 assistant 回复）。供其他业务系统直接调用。"
+        "（含本轮 assistant 回复）。供其他业务系统直接调用。需要登录（Bearer token），"
+        "并受 30 次/分钟限流；消息最多 50 条、内容总长最多 100000 字符。"
     ),
 )
-async def chat_completion(request: ChatCompletionRequest):
+async def chat_completion(
+    request: ChatCompletionRequest,
+    username: Annotated[str, Depends(get_current_username)],
+) -> list:
     if not request.messages:
         raise HTTPException(status_code=400, detail="消息列表不能为空")
+
+    total_chars = sum(len(m.content or "") for m in request.messages)
+    if total_chars > MAX_TOTAL_CONTENT_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"消息内容总长度不能超过 {MAX_TOTAL_CONTENT_CHARS} 字符",
+        )
 
     lc_messages = _to_lc_messages(request.messages)
     llm = _get_llm(request.model)
@@ -102,7 +122,8 @@ async def chat_completion(request: ChatCompletionRequest):
     context.append(assistant_message)
 
     logger.info(
-        "对话补全完成 | 消息数=%d | 耗时=%ss | model=%s",
+        "对话补全完成 | 用户=%s | 消息数=%d | 耗时=%ss | model=%s",
+        username,
         len(context),
         elapsed,
         request.model or "(active)",
