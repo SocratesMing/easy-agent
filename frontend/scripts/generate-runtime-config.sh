@@ -11,6 +11,9 @@
 #   本脚本读取各 .env.<mode> 中的 VITE_API_BASE_URL，构造 ENV_CONFIG 表写入
 #   runtime-config.js，前端运行时用 AGENT_ENV 索引对应环境的后端地址。
 #
+# 转义：值里可能包含引号、反斜杠、换行等字符，JS 字符串字面量不再由本脚本手拼，
+#   而是交给 node（JSON.stringify）序列化后写盘，避免生成非法 JS / 注入代码。
+#
 # 环境变量：
 #   API_BASE_URL  显式后端地址（推荐，容器/serve 分离部署必填，优先级最高）
 #                例：http://easy-agent-backend:8000
@@ -28,6 +31,15 @@
 # ============================================================
 set -e
 
+# 生成与末尾语法校验都依赖 node：缺失时直接失败，避免产出无法校验的配置文件。
+if ! command -v node >/dev/null 2>&1; then
+  echo "未找到 node，无法生成运行期前端配置（JSON 转义与语法校验需要 node）" >&2
+  exit 1
+fi
+
+# 脚本自身目录：保证从任意 cwd（如 frontend/）调用都能找到 write-runtime-config.mjs。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 DIST_DIR="${DIST_DIR:-dist}"
 OUT_FILE="$DIST_DIR/runtime-config.js"
 mkdir -p "$DIST_DIR"
@@ -41,8 +53,8 @@ AGENT_ENV_VAL="${AGENT_ENV_SET:-prod}"
 
 # 读取各环境 .env.<mode> 中的 VITE_API_BASE_URL，作为该环境默认后端地址。
 # 这是“按 AGENT_ENV 加载不同环境配置”的唯一数据源（与构建期保持一致）。
-# .env.* 是 CRLF 行尾：去引号前先删掉 \r，否则它会落进下面的 JS 字符串字面量，
-# 浏览器加载 runtime-config.js 即 SyntaxError（页面白屏）。
+# .env.* 是 CRLF 行尾：先去掉 \r 再参与判断，否则 \r 会混进后端地址
+# （JSON.stringify 之后虽仍是合法 JS，但地址里多了不可见字符，请求会失败）。
 read_env_api() {
   local env="$1"
   local env_file=".env.${env}"
@@ -79,31 +91,22 @@ else
   RT_API_SRC="相对路径 / (同源访问，无需跨域)"
 fi
 
-cat > "$OUT_FILE" <<EOF
-// 本文件由启动脚本根据运行期环境变量自动生成，请勿手工编辑。
-// 前端运行时根据 AGENT_ENV 值从 ENV_CONFIG 加载对应环境配置。
-window.__RUNTIME_CONFIG__ = {
-  AGENT_ENV: "${AGENT_ENV_VAL}",
-  API_BASE_URL: "${RT_API}",
-  APP_TITLE: "${APP_TITLE}",
-  APP_WELCOME_TITLE: "${APP_WELCOME_TITLE}",
-  ENV_CONFIG: {
-    dev:  { API_BASE_URL: "${DEV_API:-}" },
-    test: { API_BASE_URL: "${TEST_API:-}" },
-    prod: { API_BASE_URL: "${PROD_API:-}" }
-  }
-};
-EOF
+# 值交给 node 用 JSON.stringify 序列化成 JS：引号 / 反斜杠 / 换行等由 JSON 负责转义，
+# shell 不再拼接字符串字面量。各值通过 RT_* 环境变量传入，不经过 shell 二次解析。
+RT_AGENT_ENV="$AGENT_ENV_VAL" \
+RT_API_BASE_URL="$RT_API" \
+RT_APP_TITLE="$APP_TITLE" \
+RT_APP_WELCOME_TITLE="$APP_WELCOME_TITLE" \
+RT_ENV_DEV="$DEV_API" \
+RT_ENV_TEST="$TEST_API" \
+RT_ENV_PROD="$PROD_API" \
+  node "$SCRIPT_DIR/write-runtime-config.mjs" "$OUT_FILE"
 
-# 生成结果必须是合法 JS：取值里混进 \r、换行或引号都会让页面加载即白屏，
+# 生成结果必须是合法 JS：取值里混进未转义内容会让页面加载即白屏，
 # 这里直接让 build / serve 失败，而不是静默产出坏文件。
-if command -v node >/dev/null 2>&1; then
-  if ! node --check "$OUT_FILE"; then
-    echo "$OUT_FILE 不是合法 JavaScript，请检查注入的环境变量 / .env.* 取值" >&2
-    exit 1
-  fi
-else
-  echo "未找到 node，跳过 $OUT_FILE 语法校验" >&2
+if ! node --check "$OUT_FILE"; then
+  echo "$OUT_FILE 不是合法 JavaScript，请检查注入的环境变量 / .env.* 取值" >&2
+  exit 1
 fi
 
 echo "==> 已生成运行期前端配置: $OUT_FILE"

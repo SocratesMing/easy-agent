@@ -7,6 +7,9 @@
  *   2) 读取 dist/runtime-config.js（运行期配置，由 generate-runtime-config.sh
  *      在启动时生成），展示真正生效的后端地址。
  *
+ * 生成文件是 `window.__RUNTIME_CONFIG__ = <JSON>;`：解析时去掉前缀与结尾分号后
+ * 直接 JSON.parse，不再用正则逐键抽取（值和键都可能含引号 / 反斜杠 / 换行）。
+ *
  * 用法（在 frontend/ 下）：
  *   npm run serve                  # 默认 prod
  *   AGENT_ENV=test npm run serve   # 加载 .env.test 信息
@@ -16,6 +19,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveEnvMode } from './env-mode.mjs'
+import { parseRuntimeConfig } from './runtime-config.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(__dirname, '..')
@@ -44,33 +48,21 @@ function loadEnvVars(file) {
 /** 解析 dist/runtime-config.js（运行期配置，启动脚本生成） */
 function loadRuntimeConfig() {
   const file = path.join(root, 'dist', 'runtime-config.js')
-  const cfg = { ENV_CONFIG: {} }
-  if (!fs.existsSync(file)) return cfg
-  const text = fs.readFileSync(file, 'utf-8')
-  const pick = (k) => {
-    const m = text.match(new RegExp(`${k}:\\s*"([^"]*)"`))
-    return m ? m[1] : undefined
+  const fallback = { ENV_CONFIG: {} }
+  if (!fs.existsSync(file)) return fallback
+  try {
+    const cfg = parseRuntimeConfig(fs.readFileSync(file, 'utf-8'))
+    return { ...cfg, ENV_CONFIG: cfg.ENV_CONFIG || {} }
+  } catch (err) {
+    // 未构建时 dist 里可能仍是 public/ 的占位文件；文件被改坏也不阻塞 serve，只提示回退
+    console.warn(`[警告] 无法解析 ${path.relative(root, file)}：${err.message}`)
+    return fallback
   }
-  const api = pick('API_BASE_URL')
-  const title = pick('APP_TITLE')
-  const welcomeTitle = pick('APP_WELCOME_TITLE')
-  const env = pick('AGENT_ENV')
-  if (api !== undefined) cfg.API_BASE_URL = api
-  if (title !== undefined) cfg.APP_TITLE = title
-  if (welcomeTitle !== undefined) cfg.APP_WELCOME_TITLE = welcomeTitle
-  if (env !== undefined) cfg.AGENT_ENV = env
+}
 
-  // 解析 ENV_CONFIG 表：ENV_CONFIG: { dev: { API_BASE_URL: "..." }, ... }
-  const block = text.match(/ENV_CONFIG:\s*\{([\s\S]*?)\}\s*\}/)
-  if (block) {
-    for (const envKey of ['dev', 'test', 'prod']) {
-      const eb = block[1].match(
-        new RegExp(`${envKey}:\\s*\\{\\s*API_BASE_URL:\\s*"([^"]*)"`)
-      )
-      if (eb) cfg.ENV_CONFIG[envKey] = eb[1]
-    }
-  }
-  return cfg
+/** 取 ENV_CONFIG.<env>.API_BASE_URL（每项是 { API_BASE_URL } 对象） */
+function envApi(cfg, envKey) {
+  return cfg.ENV_CONFIG?.[envKey]?.API_BASE_URL || '<空>'
 }
 
 const env = loadEnvVars(envFile)
@@ -88,7 +80,7 @@ const rows = [
   `  应用名称        : ${runtime.APP_TITLE || env.VITE_APP_TITLE || 'Easy Agent'}`,
   `  首页欢迎语      : ${runtime.APP_WELCOME_TITLE || env.VITE_APP_WELCOME_TITLE || 'Easy Agent，让工作更简单'}`,
   `  静态目录        : dist/`,
-  `  环境配置表      : dev=${runtime.ENV_CONFIG.dev || '<空>'}  test=${runtime.ENV_CONFIG.test || '<空>'}  prod=${runtime.ENV_CONFIG.prod || '<空>'}`,
+  `  环境配置表      : dev=${envApi(runtime, 'dev')}  test=${envApi(runtime, 'test')}  prod=${envApi(runtime, 'prod')}`,
 ]
 
 const width = 60
