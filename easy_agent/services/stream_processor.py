@@ -325,136 +325,166 @@ class StreamProcessor:
         self._step_advanced_this_turn = False
         return events
 
+    def _should_skip_internal_call(self, metadata) -> bool:
+        """摘要等中间件内部模型调用的 token 不是回复：返回 True 表示本 chunk 跳过。"""
+        if not is_internal_model_call(metadata):
+            return False
+        source = str(metadata.get("lc_source") or "internal")
+        if source not in self._internal_sources_skipped:
+            self._internal_sources_skipped.add(source)
+            logger.info(
+                "[%s] 跳过中间件内部模型调用的流式输出 | lc_source=%s",
+                self.sid, source,
+            )
+        return True
+
+    def _deduplicate_reasoning(self, rc: str) -> str:
+        """去掉 provider/LangGraph 在流末尾重放的整段 reasoning（避免同一 step 重复渲染）。"""
+        if not self._step_advanced_this_turn:
+            return rc
+        # 去重：当前 turn 的思考块已存在（_step_advanced_this_turn=True，即继续
+        # 思考或重开同一 step）时，部分 provider/LangGraph 会在流末尾重放整段
+        # reasoning（聚合块），其内容等于本 turn 已累积的思考。直接追加会使同一
+        # step 的思考内容重复（前端表现为"分两次渲染"）。检测到整段重复时跳过。
+        # 新 turn 的首段思考（_step_advanced_this_turn=False）不在此列，不会被误跳过。
+        turn_thinking = self._thinking_step_content
+        # 命中条件：整段重复（聚合块等于本 turn 已累积思考），或大段重复块
+        #（>50 字符，前缀/后缀/中段均算，避免短增量误伤）。均为
+        # provider/LangGraph 流末尾重放，直接追加会让同一 step 的思考内容
+        # 重复渲染。
+        if _is_reemitted_reasoning(rc, turn_thinking):
+            logger.info(
+                "[%s] step%d 跳过重复 reasoning (rc_len=%d turn_len=%d)",
+                self.sid, self.current_step, len(rc), len(turn_thinking),
+            )
+            return ""
+        return rc
+
+    def _begin_thinking_block(self) -> list[dict]:
+        """本轮思考真正开始时初始化状态（每 step 一张思考卡片），返回 thinking_start 事件。"""
+        if self.is_in_thinking:
+            return []
+        self.is_in_thinking = True
+        self.thinking_start_time = time.time()
+        # 重新进入思考（同一 step 的分段）：强制下一包发送全量快照。
+        self._thinking_snapshot_ts = 0.0
+        self._thinking_snapshot_len = 0
+        self._thinking_snapshot_step = -1
+        _prev_step = self.current_step
+        self._advance_step_for_turn()
+        # 每个 model turn（step）一张思考卡片，按 step 递增存储。仅当当前
+        # step 已存在被结束的 thinking 块时复用它（同一 turn 内思考被分段：
+        # 如 思考->工具调用->继续思考，或 messages 模式的 reasoning 晚于
+        # updates 模式的 AIMessage 到达），累计耗时并继续追加内容--避免一个
+        # step 的思考被渲染成多张卡片。仅匹配当前 step，跨 turn 不合并。
+        reused = None
+        for blk in reversed(self.blocks):
+            if blk.get("type") == "thinking" and blk.get("step") == self.current_step:
+                reused = blk
+                break
+        if reused is not None:
+            self._thinking_duration_acc = reused.get("duration") or 0
+            self._thinking_step_content = reused.get("content", "") or ""
+            # 不重置 duration=None：避免卡片在"思考过程"与"正在思考"间闪烁、
+            # 也避免同一步骤思考被视觉上分成两段。最终 _end_thinking 写入累计耗时。
+            # thinking_step_start_len 保留该块创建时的起点，使累积内容正确
+        else:
+            self._thinking_duration_acc = 0.0
+            self.thinking_step_start_len = len(self.accumulated_thinking)
+            self._thinking_step_content = ""
+            # 进入新 step：先打印上一步汇总，再清空本步统计（供「stepN 结束」
+            # 汇总行按步重新累计）。(step 结束也会在工具边界/_on_tool_message
+            # 与 finalize 处打印，_step_end_logged 去重保证只打印一次)
+            if _prev_step != self.current_step:
+                self._log_step_end(_prev_step)
+            self._reset_step_stats()
+            self.blocks.append({"type": "thinking", "order": len(self.blocks),
+                                "content": "", "step": self.current_step, "duration": None})
+        # 仅在本轮思考「真正开始」时发送一次 thinking_start 事件（前端用），
+        # 日志改为在 _end_thinking 合并为一行（含推理内容预览），不在此单独打印。
+        return [{"type": SSEEvent.THINKING_START, "step": self.current_step}]
+
+    def _thinking_event(self, rc: str, step_content: str) -> dict:
+        """增量 thinking 事件；首包/周期/大增量时带全量快照（前端 SET 幂等覆盖）。"""
+        # 增量 content 每包都发（前端 append）；full_content 仅在首包/周期/大增量时
+        # 发送（前端 SET 幂等覆盖），避免 O(n²) 带宽与内存放大。
+        now = time.time()
+        need_snapshot = (
+            self._thinking_snapshot_step != self.current_step
+            or len(step_content) - self._thinking_snapshot_len >= self.THINKING_SNAPSHOT_MIN_GROWTH
+            or now - self._thinking_snapshot_ts >= self.THINKING_SNAPSHOT_INTERVAL
+        )
+        if need_snapshot:
+            self._thinking_snapshot_step = self.current_step
+            self._thinking_snapshot_ts = now
+            self._thinking_snapshot_len = len(step_content)
+            return {"type": SSEEvent.THINKING, "content": rc,
+                    "full_content": step_content, "step": self.current_step}
+        return {"type": SSEEvent.THINKING, "content": rc, "step": self.current_step}
+
+    def _process_reasoning(self, rc: str) -> list[dict]:
+        """处理一包 reasoning：去重 → 按需开思考卡片 → 累积并下发 thinking 事件。"""
+        events: list[dict] = []
+        rc = self._deduplicate_reasoning(rc)
+        if rc:
+            events.extend(self._begin_thinking_block())
+        self.accumulated_thinking += rc
+        self._thinking_step_content += rc
+        step_content = self._thinking_step_content
+        for blk in reversed(self.blocks):
+            if blk.get("type") == "thinking":
+                blk["content"] = step_content
+                break
+        events.append(self._thinking_event(rc, step_content))
+        return events
+
+    def _process_content(self, content: str) -> list[dict]:
+        """处理一包正文：结束思考 → 推进 step → 累积并下发 content 事件。"""
+        events = self._end_thinking()
+        # 正文也按 step 计入 blocks（与思考/工具一致），持久化后历史会话能按
+        # order 还原"思考->正文->工具"的真实顺序，而非把所有正文合并到最后。
+        _prev_step = self.current_step
+        self._advance_step_for_turn()
+        if self.current_step != _prev_step:
+            # 上一个 step（思考/工具）在本轮正文开始时结束：先打印其汇总，再清空本步统计。
+            self._log_step_end(_prev_step)
+            self._reset_step_stats()
+        # accumulated_response 始终累积原文（含空白），保证 DB 持久化正文完整、
+        # 代码块缩进/换行不丢失。
+        self.accumulated_response += content
+        self._step_content_len += len(content)
+        cblk = None
+        for b in reversed(self.blocks):
+            if b.get("type") == "content" and b.get("step") == self.current_step:
+                cblk = b
+                break
+        if cblk is None:
+            cblk = {"type": "content", "order": len(self.blocks),
+                    "content": "", "step": self.current_step}
+            self.blocks.append(cblk)
+        # 累积原文（含空白），保持正文/代码格式完整
+        cblk["content"] += content
+        # 空白 token（换行/缩进）同样下发事件：前端按 token 累积正文，
+        # 若丢弃纯空白 chunk，标题/表格/代码块之间的换行会缺失，
+        # 导致 markdown 实时渲染成原始文本（历史记录用的是完整文本所以正常）。
+        events.append({"type": SSEEvent.CONTENT, "content": content, "step": self.current_step})
+        return events
+
+
     def _handle_messages(self, data) -> list[dict]:
         chunk, metadata = data
         events = []
         if not isinstance(chunk, AIMessageChunk):
             return events
-        # 摘要等中间件内部模型调用的 token 不是回复：不推前端、不进正文/思考累计。
-        if is_internal_model_call(metadata):
-            source = str(metadata.get("lc_source") or "internal")
-            if source not in self._internal_sources_skipped:
-                self._internal_sources_skipped.add(source)
-                logger.info(
-                    "[%s] 跳过中间件内部模型调用的流式输出 | lc_source=%s",
-                    self.sid, source,
-                )
+        if self._should_skip_internal_call(metadata):
             return events
         rc = extract_reasoning(getattr(chunk, "additional_kwargs", {}))
         content = chunk.content or ""
         tcc = getattr(chunk, "tool_call_chunks", None) or []
         if rc:
-            # 去重：当前 turn 的思考块已存在（_step_advanced_this_turn=True，即继续
-            # 思考或重开同一 step）时，部分 provider/LangGraph 会在流末尾重放整段
-            # reasoning（聚合块），其内容等于本 turn 已累积的思考。直接追加会使同一
-            # step 的思考内容重复（前端表现为"分两次渲染"）。检测到整段重复时跳过。
-            # 新 turn 的首段思考（_step_advanced_this_turn=False）不在此列，不会被误跳过。
-            if self._step_advanced_this_turn:
-                turn_thinking = self._thinking_step_content
-                # 命中条件：整段重复（聚合块等于本 turn 已累积思考），或大段重复块
-                #（>50 字符，前缀/后缀/中段均算，避免短增量误伤）。均为
-                # provider/LangGraph 流末尾重放，直接追加会让同一 step 的思考内容
-                # 重复渲染。
-                if _is_reemitted_reasoning(rc, turn_thinking):
-                    logger.info(
-                        "[%s] step%d 跳过重复 reasoning (rc_len=%d turn_len=%d)",
-                        self.sid, self.current_step, len(rc), len(turn_thinking),
-                    )
-                    rc = ""
-            if rc:
-                if not self.is_in_thinking:
-                    self.is_in_thinking = True
-                    self.thinking_start_time = time.time()
-                    # 重新进入思考（同一 step 的分段）：强制下一包发送全量快照。
-                    self._thinking_snapshot_ts = 0.0
-                    self._thinking_snapshot_len = 0
-                    self._thinking_snapshot_step = -1
-                    _prev_step = self.current_step
-                    self._advance_step_for_turn()
-                    # 每个 model turn（step）一张思考卡片，按 step 递增存储。仅当当前
-                    # step 已存在被结束的 thinking 块时复用它（同一 turn 内思考被分段：
-                    # 如 思考->工具调用->继续思考，或 messages 模式的 reasoning 晚于
-                    # updates 模式的 AIMessage 到达），累计耗时并继续追加内容--避免一个
-                    # step 的思考被渲染成多张卡片。仅匹配当前 step，跨 turn 不合并。
-                    reused = None
-                    for blk in reversed(self.blocks):
-                        if blk.get("type") == "thinking" and blk.get("step") == self.current_step:
-                            reused = blk
-                            break
-                    if reused is not None:
-                        self._thinking_duration_acc = reused.get("duration") or 0
-                        self._thinking_step_content = reused.get("content", "") or ""
-                        # 不重置 duration=None：避免卡片在"思考过程"与"正在思考"间闪烁、
-                        # 也避免同一步骤思考被视觉上分成两段。最终 _end_thinking 写入累计耗时。
-                        # thinking_step_start_len 保留该块创建时的起点，使累积内容正确
-                    else:
-                        self._thinking_duration_acc = 0.0
-                        self.thinking_step_start_len = len(self.accumulated_thinking)
-                        self._thinking_step_content = ""
-                        # 进入新 step：先打印上一步汇总，再清空本步统计（供「stepN 结束」
-                        # 汇总行按步重新累计）。(step 结束也会在工具边界/_on_tool_message
-                        # 与 finalize 处打印，_step_end_logged 去重保证只打印一次)
-                        if _prev_step != self.current_step:
-                            self._log_step_end(_prev_step)
-                        self._reset_step_stats()
-                        self.blocks.append({"type": "thinking", "order": len(self.blocks),
-                                            "content": "", "step": self.current_step, "duration": None})
-                    # 仅在本轮思考「真正开始」时发送一次 thinking_start 事件（前端用），
-                    # 日志改为在 _end_thinking 合并为一行（含推理内容预览），不在此单独打印。
-                    events.append({"type": SSEEvent.THINKING_START, "step": self.current_step})
-            self.accumulated_thinking += rc
-            self._thinking_step_content += rc
-            step_content = self._thinking_step_content
-            for blk in reversed(self.blocks):
-                if blk.get("type") == "thinking":
-                    blk["content"] = step_content
-                    break
-            # 增量 content 每包都发（前端 append）；full_content 仅在首包/周期/大增量时
-            # 发送（前端 SET 幂等覆盖），避免 O(n²) 带宽与内存放大。
-            now = time.time()
-            need_snapshot = (
-                self._thinking_snapshot_step != self.current_step
-                or len(step_content) - self._thinking_snapshot_len >= self.THINKING_SNAPSHOT_MIN_GROWTH
-                or now - self._thinking_snapshot_ts >= self.THINKING_SNAPSHOT_INTERVAL
-            )
-            if need_snapshot:
-                self._thinking_snapshot_step = self.current_step
-                self._thinking_snapshot_ts = now
-                self._thinking_snapshot_len = len(step_content)
-                events.append({"type": SSEEvent.THINKING, "content": rc,
-                               "full_content": step_content, "step": self.current_step})
-            else:
-                events.append({"type": SSEEvent.THINKING, "content": rc,
-                               "step": self.current_step})
-        if content and not getattr(chunk, "tool_call_chunks", None):
-            events.extend(self._end_thinking())
-            # 正文也按 step 计入 blocks（与思考/工具一致），持久化后历史会话能按
-            # order 还原"思考->正文->工具"的真实顺序，而非把所有正文合并到最后。
-            _prev_step = self.current_step
-            self._advance_step_for_turn()
-            if self.current_step != _prev_step:
-                # 上一个 step（思考/工具）在本轮正文开始时结束：先打印其汇总，再清空本步统计。
-                self._log_step_end(_prev_step)
-                self._reset_step_stats()
-            # accumulated_response 始终累积原文（含空白），保证 DB 持久化正文完整、
-            # 代码块缩进/换行不丢失。
-            self.accumulated_response += content
-            self._step_content_len += len(content)
-            cblk = None
-            for b in reversed(self.blocks):
-                if b.get("type") == "content" and b.get("step") == self.current_step:
-                    cblk = b
-                    break
-            if cblk is None:
-                cblk = {"type": "content", "order": len(self.blocks),
-                        "content": "", "step": self.current_step}
-                self.blocks.append(cblk)
-            # 累积原文（含空白），保持正文/代码格式完整
-            cblk["content"] += content
-            # 空白 token（换行/缩进）同样下发事件：前端按 token 累积正文，
-            # 若丢弃纯空白 chunk，标题/表格/代码块之间的换行会缺失，
-            # 导致 markdown 实时渲染成原始文本（历史记录用的是完整文本所以正常）。
-            events.append({"type": SSEEvent.CONTENT, "content": content, "step": self.current_step})
+            events.extend(self._process_reasoning(rc))
+        if content and not tcc:
+            events.extend(self._process_content(content))
         # 大参数工具（write_file/edit_file）的 arguments 分片：边收边解析出当前
         # 快照，下发 tool_call_delta 供前端实时渲染正在写入的内容。
         if tcc:

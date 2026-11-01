@@ -139,70 +139,59 @@ class AgentWorkspaceMixin:
             result[vp] = str(real.absolute())
         return result
 
-    def _build_permissions(self, skills_paths: list[str] | None = None, safe_external: dict[str, str] | None = None) -> list[FilesystemPermission]:
-        """根据配置构建文件系统权限规则。
-
-        读取 config.agent.denied_dirs 中配置的虚拟路径目录列表，
-        为每个目录生成一条 deny 权限规则。
-
-        支持两种配置格式：
-        - 字符串 ``"/user-skills"``：默认禁止 read+write
-        - 字典 ``{path: "/user-skills", operations: ["write"]}``：只禁止指定操作
-
-        operations 可选值：``read``、``write``，默认两者都禁止。
-        paths 使用 glob 模式：自动为目录路径补充 /** 后缀以递归匹配子目录。
-        注意：使用 CompositeBackend + sandbox default 时，permission path
-        必须限定在已知 route 前缀下（如 /memories/、/user-skills/），
-        否则会抛出 NotImplementedError。
-
-        ``/user-skills`` 的 write 权限额外由 ``agent.skill_write`` 接管（默认
-        new-only：可新建技能、不可改写已有技能），见 ``_build_skill_write_permissions``。
-        规则顺序即优先级（框架取第一条命中），因此技能库规则排在最前。
-
-        Args:
-            skills_paths: 已解析的技能虚拟路径列表，用于判断 /user-skills/
-                路由是否已挂载。未挂载时跳过对应 deny 规则，避免
-                FilesystemMiddleware NotImplementedError。
-
-        Returns:
-            FilesystemPermission 列表，无配置且技能库未挂载时返回空列表。
-        """
-        denied = self.config.agent.denied_dirs or []
-        policy = self._skill_write_policy()
-        # 与 _build_backend 的挂载条件保持一致：技能目录存在即已挂载路由
-        skills_mounted = bool(skills_paths) or self.user_skills_dir.exists()
-
-        existing_prefixes = [
+    def _mounted_route_prefixes(
+        self,
+        *,
+        skills_mounted: bool,
+        builtin_mounted: bool,
+        safe_external: dict[str, str] | None,
+    ) -> list[str]:
+        """当前 backend 已挂载的虚拟路径前缀（deny 规则只能落在这些前缀下）。"""
+        prefixes = [
             f"{self.workspace_virtual_path}/",
         ]
         if skills_mounted:
-            existing_prefixes.append("/user-skills/")
-        builtin_mounted = bool(getattr(self, "builtin_skills_dir", None))
+            prefixes.append("/user-skills/")
         if builtin_mounted:
-            existing_prefixes.append(f"{BUILTIN_VIRTUAL_ROOT}/")
+            prefixes.append(f"{BUILTIN_VIRTUAL_ROOT}/")
         for vp in (safe_external or {}):
-            existing_prefixes.append(vp)
+            prefixes.append(vp)
+        return prefixes
 
+    @staticmethod
+    def _builtin_readonly_permissions(builtin_mounted: bool) -> list[FilesystemPermission]:
+        """公共技能只读规则（DA-13 S2）：backend 本身拒绝写入，这里再声明一遍。"""
+        if not builtin_mounted:
+            return []
+        return [
+            FilesystemPermission(
+                operations=["write"],
+                paths=[f"{BUILTIN_VIRTUAL_ROOT}/**", f"{BUILTIN_VIRTUAL_ROOT}/.**"],
+                mode="deny",
+            )
+        ]
+
+    def _skill_write_permissions(
+        self, skills_mounted: bool, policy: str
+    ) -> list[FilesystemPermission]:
+        """技能库写权限规则（必须排在通用 deny 规则之前）+ 可观测日志。"""
+        if not (skills_mounted and policy != "allow"):
+            return []
+        permissions = self._build_skill_write_permissions(policy)
+        logger.info(
+            f"[{self.sid}] 🔒 技能库写权限 | skill_write={policy} | "
+            f"已有技能 {len(self._discover_user_skill_names())} 个（其内容禁止改写）"
+        )
+        return permissions
+
+    def _denied_dir_permissions(
+        self,
+        denied: list,
+        existing_prefixes: list[str],
+        policy: str,
+    ) -> list[FilesystemPermission]:
+        """把 ``config.agent.denied_dirs`` 转成 deny 规则；未挂载路由的路径跳过并记日志。"""
         permissions: list[FilesystemPermission] = []
-
-        # 公共技能只读（DA-13 S2）：backend 本身拒绝写入，这里再声明一遍，让框架在工具层就拦下
-        if builtin_mounted:
-            permissions.append(
-                FilesystemPermission(
-                    operations=["write"],
-                    paths=[f"{BUILTIN_VIRTUAL_ROOT}/**", f"{BUILTIN_VIRTUAL_ROOT}/.**"],
-                    mode="deny",
-                )
-            )
-
-        # 技能库写权限规则排在最先：框架按列表顺序取第一条命中，细规则必须先于通用规则
-        if skills_mounted and policy != "allow":
-            permissions.extend(self._build_skill_write_permissions(policy))
-            logger.info(
-                f"[{self.sid}] 🔒 技能库写权限 | skill_write={policy} | "
-                f"已有技能 {len(self._discover_user_skill_names())} 个（其内容禁止改写）"
-            )
-
         for item in denied:
             if isinstance(item, dict):
                 path = str(item.get("path", "")).rstrip("/")
@@ -239,30 +228,84 @@ class AgentWorkspaceMixin:
                     mode="deny",
                 )
             )
+        return permissions
 
-        # D7：敏感路径写入走人工审批。放在所有 deny 之后，保证「已有技能不可改」
-        # 等硬禁令仍然优先命中；只有真正落到这里的写入才需要批准。
-        # 关闭了 HITL 的运行（定时任务）没人审批：中断只会让写入丢失（调度器把这次运行
-        # 记为结束、随后删掉 thread），所以这类运行不生成 interrupt 规则，行为与 D7 之前一致。
+    def _sensitive_write_permissions(
+        self, skills_mounted: bool
+    ) -> list[FilesystemPermission]:
+        """敏感路径写入走人工审批（放在所有 deny 之后，硬禁令仍然优先命中）。
+
+        关闭了 HITL 的运行（定时任务）没人审批：中断只会让写入丢失（调度器把这次运行
+        记为结束、随后删掉 thread），所以这类运行不生成 interrupt 规则，行为与 D7 之前一致。
+        """
         sensitive = getattr(self.config.agent, "interrupt_sensitive_writes", False)
-        if sensitive and not getattr(self, "enable_hitl", True):
+        if not sensitive:
+            return []
+        if not getattr(self, "enable_hitl", True):
             logger.info(f"[{self.sid}] 🔏 HITL 已关闭，敏感路径写入不走审批（无人可批）")
-        elif sensitive:
-            # /memories/ 路由总是挂载（backend.py），/user-skills/ 只在技能目录存在时挂载
-            interrupt_paths: list[str] = ["/memories/**"]
-            if skills_mounted:
-                interrupt_paths.append("/user-skills/**")
-            if interrupt_paths:
-                permissions.append(
-                    FilesystemPermission(
-                        operations=["write"],
-                        paths=interrupt_paths,
-                        mode="interrupt",
-                    )
-                )
-                logger.info(
-                    f"[{self.sid}] 🔏 敏感路径写入需审批 | {interrupt_paths}（需 checkpointer）"
-                )
+            return []
+        # /memories/ 路由总是挂载（backend.py），/user-skills/ 只在技能目录存在时挂载
+        interrupt_paths: list[str] = ["/memories/**"]
+        if skills_mounted:
+            interrupt_paths.append("/user-skills/**")
+        permissions = [
+            FilesystemPermission(
+                operations=["write"],
+                paths=interrupt_paths,
+                mode="interrupt",
+            )
+        ]
+        logger.info(
+            f"[{self.sid}] 🔏 敏感路径写入需审批 | {interrupt_paths}（需 checkpointer）"
+        )
+        return permissions
+
+
+    def _build_permissions(self, skills_paths: list[str] | None = None, safe_external: dict[str, str] | None = None) -> list[FilesystemPermission]:
+        """根据配置构建文件系统权限规则。
+
+        读取 config.agent.denied_dirs 中配置的虚拟路径目录列表，
+        为每个目录生成一条 deny 权限规则。
+
+        支持两种配置格式：
+        - 字符串 ``"/user-skills"``：默认禁止 read+write
+        - 字典 ``{path: "/user-skills", operations: ["write"]}``：只禁止指定操作
+
+        operations 可选值：``read``、``write``，默认两者都禁止。
+        paths 使用 glob 模式：自动为目录路径补充 /** 后缀以递归匹配子目录。
+        注意：使用 CompositeBackend + sandbox default 时，permission path
+        必须限定在已知 route 前缀下（如 /memories/、/user-skills/），
+        否则会抛出 NotImplementedError。
+
+        ``/user-skills`` 的 write 权限额外由 ``agent.skill_write`` 接管（默认
+        new-only：可新建技能、不可改写已有技能），见 ``_build_skill_write_permissions``。
+        规则顺序即优先级（框架取第一条命中），因此技能库规则排在最前。
+
+        Args:
+            skills_paths: 已解析的技能虚拟路径列表，用于判断 /user-skills/
+                路由是否已挂载。未挂载时跳过对应 deny 规则，避免
+                FilesystemMiddleware NotImplementedError。
+
+        Returns:
+            FilesystemPermission 列表，无配置且技能库未挂载时返回空列表。
+        """
+        denied = self.config.agent.denied_dirs or []
+        policy = self._skill_write_policy()
+        # 与 _build_backend 的挂载条件保持一致：技能目录存在即已挂载路由
+        skills_mounted = bool(skills_paths) or self.user_skills_dir.exists()
+        builtin_mounted = bool(getattr(self, "builtin_skills_dir", None))
+        existing_prefixes = self._mounted_route_prefixes(
+            skills_mounted=skills_mounted,
+            builtin_mounted=builtin_mounted,
+            safe_external=safe_external,
+        )
+
+        permissions = self._builtin_readonly_permissions(builtin_mounted)
+        permissions.extend(self._skill_write_permissions(skills_mounted, policy))
+        permissions.extend(
+            self._denied_dir_permissions(denied, existing_prefixes, policy)
+        )
+        permissions.extend(self._sensitive_write_permissions(skills_mounted))
 
         logger.info(
             f"[{self.sid}] 🔒 文件系统权限 | "

@@ -400,6 +400,252 @@ async def get_or_create_agent_for_session(
         )
 
 
+def _resolve_skill_scope(state, skill_whitelist) -> tuple[bool, tuple[str, ...] | None]:
+    """技能作用域：显式传入的优先并按会话记住；未指定沿用上次，都没有则全量可见。"""
+    scope_specified = skill_whitelist is not _SCOPE_UNSPECIFIED
+    if scope_specified:
+        current_scope = (
+            None
+            if skill_whitelist is None
+            else tuple(
+                str(name).strip() for name in skill_whitelist if str(name).strip()
+            )
+        )
+        state.skill_scope = current_scope
+    else:
+        saved_scope = state.skill_scope
+        current_scope = None if saved_scope is _SCOPE_UNSPECIFIED else saved_scope
+    return scope_specified, current_scope
+
+
+async def _resolve_session_connectors(state, session_id: str) -> list[str] | None:
+    """本会话启用的连接器；进程内没有缓存时回读 session_runtime 表（落库缓存）。"""
+    # None = 尚未设置 → 注入全部启用连接器；空元组 = 全部关闭 → []。
+    recorded_connectors = state.connectors
+    if recorded_connectors is None:
+        try:
+            from easy_agent.services.session_runtime import load_connectors
+
+            recorded_connectors = await run_blocking(
+                load_connectors, get_session_runtime_repository(), session_id
+            )
+            if recorded_connectors is not None:
+                state.connectors = recorded_connectors
+        except Exception:
+            recorded_connectors = None
+    return None if recorded_connectors is None else list(recorded_connectors)
+
+
+def _resolve_web_search_tool(
+    config, username: str, session_id: str, enable_web_search: bool | None
+) -> tuple[object | None, bool]:
+    """联网搜索工具：仅在本轮请求开启且 web_search 已配置时注入；否则静默降级并告警。"""
+    web_search_tool = (
+        create_web_search_tool(config, user_id=Config.sanitize_username(username))
+        if enable_web_search
+        else None
+    )
+    web_search_enabled = web_search_tool is not None
+    if enable_web_search and not web_search_enabled:
+        logger.warning(
+            f"[{session_id[-5:]}] 已请求联网搜索，但 web_search 未配置 api_url/api_key，本轮按未开启处理"
+        )
+    return web_search_tool, web_search_enabled
+
+
+def _try_reuse_cached_agent(
+    state,
+    session_id: str,
+    *,
+    cached,
+    effective_model: str,
+    web_search_enabled: bool,
+    enable_web_search: bool | None,
+    expert_key: str,
+    current_scope: tuple[str, ...] | None,
+    only_connectors: list[str] | None,
+    system_prompt_extra: str,
+):
+    """缓存命中判定：参数一致则返回缓存 Agent；参数变化则驱逐并返回 None。"""
+    if cached is None:
+        return None
+    cached_web_search = bool(getattr(cached, "enable_web_search", False))
+    # enable_web_search=None（如 HITL 恢复）：不比较开关，直接复用缓存 Agent
+    search_matches = (
+        enable_web_search is None or web_search_enabled == cached_web_search
+    )
+    # 专家变更同样必须驱逐：否则「换专家不生效」，且专家人设会黏在后续的
+    # 普通聊天上（模型与联网开关都没变，缓存会一直命中）。
+    # 连接器变更的驱逐不在这里：会话级开关（set_session_connectors）写入时
+    # 就已直接驱逐过该会话的缓存 Agent。
+    expert_changed = expert_key != state.expert_key
+    # 技能作用域变化同样必须驱逐：技能清单在 Agent 构造时注入，缓存命中会一直
+    # 沿用旧清单（专家 A 的白名单黏在专家 B 上 = 隔离失效）。
+    cached_scope = getattr(cached, "skill_whitelist", None)
+    cached_scope_key = None if cached_scope is None else tuple(cached_scope)
+    scope_changed = cached_scope_key != current_scope
+    if (
+        effective_model != getattr(cached, "model_name", None)
+        or not search_matches
+        or expert_changed
+        or scope_changed
+    ):
+        logger.info(
+            f"[{session_id[-5:]}] Agent 参数变化 | "
+            f"model: {getattr(cached, 'model_name', '?')} -> {effective_model} | "
+            f"web_search: {cached_web_search} -> {web_search_enabled} | "
+            f"expert: {state.expert_key or '(通用)'} -> "
+            f"{expert_key or '(通用)'} | "
+            f"skill_scope: {cached_scope_key or '全量'} -> {current_scope or '全量'} | "
+            f"connectors: {only_connectors if only_connectors is not None else '(全部)'} | "
+            f"驱逐旧 Agent 重建 | "
+            f"{describe_prompt('本轮 extra', system_prompt_extra)} | "
+            f"旧终稿指纹={prompt_fingerprint(getattr(cached, 'system_prompt', ''))}"
+        )
+        state.agent = None
+        return None
+    # 缓存命中：本轮传入的 extra 会被**忽略**（复用旧 Agent 的提示词）。
+    # 因此这里同时打印「本轮 extra」与「缓存 Agent 终稿」两组指纹：一致说明
+    # 复用的确实是本轮该用的提示词；若不一致，说明本轮内容被缓存吞掉了
+    # （专家内容变更时应由 /agent/update -> invalidate_user_agents 驱逐，
+    #  这两组指纹不一致即为「驱逐漏了」的告警信号）。
+    logger.info(
+        f"[{session_id[-5:]}] ♻️ Agent 缓存命中 | expert: {expert_key or '(通用)'} | "
+        f"{describe_prompt('本轮 extra', system_prompt_extra)} | "
+        f"{describe_prompt('缓存终稿', getattr(cached, 'system_prompt', ''))}"
+    )
+    _touch_agent_cache(session_id)
+    return cached
+
+
+async def _resolve_workspace_name(session_id: str, workspace_name: str) -> str:
+    """未显式传 workspace_name 时回读会话记录；读不到按空值继续建 Agent。"""
+    if workspace_name:
+        return workspace_name
+    try:
+        session_repo = get_session_repository()
+        session = await run_blocking(session_repo.get_session, session_id)
+        if session and session.workspace_name:
+            return session.workspace_name
+    except Exception as exc:  # noqa: BLE001 - 读不到就按空 workspace_name 继续建 Agent
+        logger.debug(f"[{session_id[-5:]}] 读取会话 workspace_name 失败: {exc}")
+    return workspace_name
+
+
+async def _resolve_organization_id(session_id: str, username: str) -> str:
+    """查询用户机构 ID（注入系统提示词）；失败按空值继续。"""
+    try:
+        user_repo = get_user_repository()
+        user = await run_blocking(user_repo.get_user_by_username, username)
+        if user:
+            return user.organization_id or ""
+    except Exception as e:
+        logger.warning(f"[{session_id[-5:]}] 获取用户机构ID失败: {e}")
+    return ""
+
+
+def _log_connector_scope(session_id: str, only_connectors: list[str] | None) -> None:
+    """本会话的连接器集合只读不写：写入由 set_session_connectors 负责（会话级开关）。"""
+    if only_connectors is None:
+        logger.info(f"[{session_id[-5:]}] 🔌 未限定连接器，注入全部启用连接器的 MCP 工具")
+    elif only_connectors:
+        logger.info(
+            f"[{session_id[-5:]}] 🔌 按会话开关限定 MCP 工具 | {only_connectors}"
+        )
+    else:
+        logger.info(f"[{session_id[-5:]}] 🔌 本会话连接器已全部关闭，不注入连接器工具")
+
+
+async def _load_mcp_tools(session_id: str, username: str, config, only_connectors: list[str] | None) -> list:
+    """MCP 工具：用户专属 mcp.json 优先，无则按需加载全局 mcp.json。"""
+    # server_names=only_connectors 时只加载这些连接器的工具（None = 全部启用项，[] = 不加载）。
+    user_mcp_path = Config.get_user_mcp_path(username, config)
+    if user_mcp_path.exists():
+        logger.info(f"[{session_id[-5:]}] 加载用户专属 MCP | {user_mcp_path}")
+        try:
+            # SEC-04：不为普通用户的自定义 stdio 连接器拉起进程
+            return await load_mcp_tools_for_user(
+                username, server_names=filter_server_names(username, only_connectors)
+            )
+        except Exception as e:
+            logger.warning(
+                f"[{session_id[-5:]}] 加载用户 MCP 失败，尝试全局: {e}"
+            )
+            return await load_mcp_tools_for_user(
+                None, server_names=only_connectors
+            )
+    # 无用户专属 mcp.json，按需加载全局 mcp.json（缓存命中时零开销）
+    logger.info(
+        f"[{session_id[-5:]}] 无用户专属 mcp.json，按需加载全局 MCP"
+    )
+    try:
+        return await load_mcp_tools_for_user(
+            None, server_names=only_connectors
+        )
+    except Exception as e:
+        logger.warning(
+            f"[{session_id[-5:]}] 加载全局 MCP 失败: {e}"
+        )
+        return []
+
+
+def _build_session_tools_for_agent(
+    config,
+    *,
+    username: str,
+    session_id: str,
+    workspace_name: str,
+    enable_hitl: bool,
+    model_name: str | None,
+    expert_key: str,
+    web_search_tool,
+    mcp_tools: list,
+) -> list:
+    """工具装配：MCP 工具作为基底，其余按工具注册表声明的条件/顺序追加。"""
+    # 工具元数据（是否内置/写操作/HITL/注入顺序）单一来源见 tools/registry.py；
+    # 本函数不再逐工具硬编码 if/append，新增工具只需改注册表。
+    return build_session_tools(
+        mcp_tools,
+        ToolBuildContext(
+            config=config,
+            username=username,
+            session_id=session_id,
+            workspace_name=workspace_name,
+            enable_hitl=enable_hitl,
+            model_name=model_name or "",
+            expert_session=bool(expert_key),
+            web_search_tool=web_search_tool,
+            edit_targets=_EDIT_TARGETS_VIEW,
+            turn_skills=_TURN_SKILLS_VIEW,
+            factories=_tool_factories(),
+        ),
+    )
+
+
+def _register_created_agent(
+    state,
+    session_id: str,
+    agent,
+    *,
+    expert_key: str,
+    current_scope: tuple[str, ...] | None,
+    system_prompt_extra: str,
+    tools: list,
+) -> None:
+    """登记缓存并打创建成功日志（LRU 淘汰在登记后立即执行）。"""
+    state.agent = agent
+    _touch_agent_cache(session_id)
+    state.expert_key = expert_key
+    _evict_agent_cache(session_id)
+    logger.info(
+        f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir} | "
+        f"model: {agent.model_name} | mcp_tools: {len(tools)} | "
+        f"expert: {expert_key or '(通用)'} | "
+        f"skill_scope: {list(current_scope) if current_scope is not None else '全量'} | "
+        f"{describe_prompt('本轮 extra', system_prompt_extra)} | "
+        f"{describe_prompt('终稿 system_prompt', getattr(agent, 'system_prompt', ''))}"
+    )
+
 async def _get_or_create_agent_unlocked(
     session_id: str, username: str = "default", workspace_name: str = "",
     enable_hitl: bool = True, model_name: str | None = None,
@@ -419,188 +665,50 @@ async def _get_or_create_agent_unlocked(
     # None 与 "" 等价：都表示「本次请求不挂专家（通用 Agent）」
     expert_key = expert_agent_id or ""
 
-    # 技能作用域：显式传入的优先并按会话记住；未指定（HITL 恢复等）沿用上次，
-    # 都没有则全量可见（= 改造前行为）。
-    scope_specified = skill_whitelist is not _SCOPE_UNSPECIFIED
-    if scope_specified:
-        current_scope = (
-            None
-            if skill_whitelist is None
-            else tuple(
-                str(name).strip() for name in skill_whitelist if str(name).strip()
-            )
-        )
-        state.skill_scope = current_scope
-    else:
-        saved_scope = state.skill_scope
-        current_scope = None if saved_scope is _SCOPE_UNSPECIFIED else saved_scope
-
-    # 本会话启用的连接器（mcp.json server 名，由输入框「+」面板的会话级开关写入）：
-    # 进程内没有缓存时回读 session_runtime 表（落库缓存）。
-    # None = 尚未设置 → 注入全部启用连接器；空元组 = 全部关闭 → []。
-    recorded_connectors = state.connectors
-    if recorded_connectors is None:
-        try:
-            from easy_agent.services.session_runtime import load_connectors
-
-            recorded_connectors = await run_blocking(
-                load_connectors, get_session_runtime_repository(), session_id
-            )
-            if recorded_connectors is not None:
-                state.connectors = recorded_connectors
-        except Exception:
-            recorded_connectors = None
-    only_connectors = None if recorded_connectors is None else list(recorded_connectors)
-
-    # 联网搜索：仅在「本轮请求开启」且「web_search 已配置 api_url + api_key」时注入。
-    # 未配置 api_key（或功能关闭）时静默降级为未开启，不影响其余功能。
-    web_search_tool = (
-        create_web_search_tool(config, user_id=Config.sanitize_username(username))
-        if enable_web_search
-        else None
+    # 技能作用域（显式传入优先并按会话记住）、会话级连接器（落库缓存回读）、联网搜索工具
+    _scope_specified, current_scope = _resolve_skill_scope(state, skill_whitelist)
+    only_connectors = await _resolve_session_connectors(state, session_id)
+    web_search_tool, web_search_enabled = _resolve_web_search_tool(
+        config, username, session_id, enable_web_search
     )
-    web_search_enabled = web_search_tool is not None
-    if enable_web_search and not web_search_enabled:
-        logger.warning(
-            f"[{session_id[-5:]}] 已请求联网搜索，但 web_search 未配置 api_url/api_key，本轮按未开启处理"
-        )
 
     # 模型切换 / 联网搜索开关变化 / 专家变更：缓存的 Agent 不匹配，驱逐后重建
-    cached = state.agent
+    cached = _try_reuse_cached_agent(
+        state,
+        session_id,
+        cached=state.agent,
+        effective_model=effective_model,
+        web_search_enabled=web_search_enabled,
+        enable_web_search=enable_web_search,
+        expert_key=expert_key,
+        current_scope=current_scope,
+        only_connectors=only_connectors,
+        system_prompt_extra=system_prompt_extra,
+    )
     if cached is not None:
-        cached_web_search = bool(getattr(cached, "enable_web_search", False))
-        # enable_web_search=None（如 HITL 恢复）：不比较开关，直接复用缓存 Agent
-        search_matches = (
-            enable_web_search is None or web_search_enabled == cached_web_search
-        )
-        # 专家变更同样必须驱逐：否则「换专家不生效」，且专家人设会黏在后续的
-        # 普通聊天上（模型与联网开关都没变，缓存会一直命中）。
-        # 连接器变更的驱逐不在这里：会话级开关（set_session_connectors）写入时
-        # 就已直接驱逐过该会话的缓存 Agent。
-        expert_changed = expert_key != state.expert_key
-        # 技能作用域变化同样必须驱逐：技能清单在 Agent 构造时注入，缓存命中会一直
-        # 沿用旧清单（专家 A 的白名单黏在专家 B 上 = 隔离失效）。
-        cached_scope = getattr(cached, "skill_whitelist", None)
-        cached_scope_key = None if cached_scope is None else tuple(cached_scope)
-        scope_changed = cached_scope_key != current_scope
-        if (
-            effective_model != getattr(cached, "model_name", None)
-            or not search_matches
-            or expert_changed
-            or scope_changed
-        ):
-            logger.info(
-                f"[{session_id[-5:]}] Agent 参数变化 | "
-                f"model: {getattr(cached, 'model_name', '?')} -> {effective_model} | "
-                f"web_search: {cached_web_search} -> {web_search_enabled} | "
-                f"expert: {state.expert_key or '(通用)'} -> "
-                f"{expert_key or '(通用)'} | "
-                f"skill_scope: {cached_scope_key or '全量'} -> {current_scope or '全量'} | "
-                f"connectors: {only_connectors if only_connectors is not None else '(全部)'} | "
-                f"驱逐旧 Agent 重建 | "
-                f"{describe_prompt('本轮 extra', system_prompt_extra)} | "
-                f"旧终稿指纹={prompt_fingerprint(getattr(cached, 'system_prompt', ''))}"
-            )
-            state.agent = None
-        else:
-            # 缓存命中：本轮传入的 extra 会被**忽略**（复用旧 Agent 的提示词）。
-            # 因此这里同时打印「本轮 extra」与「缓存 Agent 终稿」两组指纹：一致说明
-            # 复用的确实是本轮该用的提示词；若不一致，说明本轮内容被缓存吞掉了
-            # （专家内容变更时应由 /agent/update -> invalidate_user_agents 驱逐，
-            #  这两组指纹不一致即为「驱逐漏了」的告警信号）。
-            logger.info(
-                f"[{session_id[-5:]}] ♻️ Agent 缓存命中 | expert: {expert_key or '(通用)'} | "
-                f"{describe_prompt('本轮 extra', system_prompt_extra)} | "
-                f"{describe_prompt('缓存终稿', getattr(cached, 'system_prompt', ''))}"
-            )
-            _touch_agent_cache(session_id)
-            return cached
+        return cached
 
-    if not workspace_name:
-        try:
-            session_repo = get_session_repository()
-            session = await run_blocking(session_repo.get_session, session_id)
-            if session and session.workspace_name:
-                workspace_name = session.workspace_name
-        except Exception as exc:  # noqa: BLE001 - 读不到就按空 workspace_name 继续建 Agent
-            logger.debug(f"[{session_id[-5:]}] 读取会话 workspace_name 失败: {exc}")
-
-    effective_model = model_name or config.active_model
+    workspace_name = await _resolve_workspace_name(session_id, workspace_name)
     logger.info(
         f"[{session_id[-5:]}] 为会话创建 Agent 实例 | username={username} | session_id={session_id} | "
         f"workspace_name={workspace_name} | model={effective_model}"
     )
 
     # 查询用户机构ID，注入系统提示词
-    organization_id = ""
-    try:
-        user_repo = get_user_repository()
-        user = await run_blocking(user_repo.get_user_by_username, username)
-        if user:
-            organization_id = user.organization_id or ""
-    except Exception as e:
-        logger.warning(f"[{session_id[-5:]}] 获取用户机构ID失败: {e}")
+    organization_id = await _resolve_organization_id(session_id, username)
 
-    # 本会话的连接器集合只读不写：写入由 set_session_connectors 负责（会话级开关）。
-    if only_connectors is None:
-        logger.info(f"[{session_id[-5:]}] 🔌 未限定连接器，注入全部启用连接器的 MCP 工具")
-    elif only_connectors:
-        logger.info(
-            f"[{session_id[-5:]}] 🔌 按会话开关限定 MCP 工具 | {only_connectors}"
-        )
-    else:
-        logger.info(f"[{session_id[-5:]}] 🔌 本会话连接器已全部关闭，不注入连接器工具")
-
-    # MCP 工具：用户专属 mcp.json 优先，无则按需加载全局 mcp.json；
-    # server_names=only_connectors 时只加载这些连接器的工具（None = 全部启用项，[] = 不加载）。
-    user_mcp_path = Config.get_user_mcp_path(username, config)
-    if user_mcp_path.exists():
-        logger.info(f"[{session_id[-5:]}] 加载用户专属 MCP | {user_mcp_path}")
-        try:
-            # SEC-04：不为普通用户的自定义 stdio 连接器拉起进程
-            mcp_tools = await load_mcp_tools_for_user(
-                username, server_names=filter_server_names(username, only_connectors)
-            )
-        except Exception as e:
-            logger.warning(
-                f"[{session_id[-5:]}] 加载用户 MCP 失败，尝试全局: {e}"
-            )
-            mcp_tools = await load_mcp_tools_for_user(
-                None, server_names=only_connectors
-            )
-    else:
-        # 无用户专属 mcp.json，按需加载全局 mcp.json（缓存命中时零开销）
-        logger.info(
-            f"[{session_id[-5:]}] 无用户专属 mcp.json，按需加载全局 MCP"
-        )
-        try:
-            mcp_tools = await load_mcp_tools_for_user(
-                None, server_names=only_connectors
-            )
-        except Exception as e:
-            logger.warning(
-                f"[{session_id[-5:]}] 加载全局 MCP 失败: {e}"
-            )
-            mcp_tools = []
-
-    # 工具装配：MCP 工具作为基底，其余按工具注册表声明的条件/顺序追加。
-    # 工具元数据（是否内置/写操作/HITL/注入顺序）单一来源见 tools/registry.py；
-    # 本函数不再逐工具硬编码 if/append，新增工具只需改注册表。
-    tools = build_session_tools(
-        mcp_tools,
-        ToolBuildContext(
-            config=config,
-            username=username,
-            session_id=session_id,
-            workspace_name=workspace_name,
-            enable_hitl=enable_hitl,
-            model_name=model_name or "",
-            expert_session=bool(expert_key),
-            web_search_tool=web_search_tool,
-            edit_targets=_EDIT_TARGETS_VIEW,
-            turn_skills=_TURN_SKILLS_VIEW,
-            factories=_tool_factories(),
-        ),
+    _log_connector_scope(session_id, only_connectors)
+    mcp_tools = await _load_mcp_tools(session_id, username, config, only_connectors)
+    tools = _build_session_tools_for_agent(
+        config,
+        username=username,
+        session_id=session_id,
+        workspace_name=workspace_name,
+        enable_hitl=enable_hitl,
+        model_name=model_name,
+        expert_key=expert_key,
+        web_search_tool=web_search_tool,
+        mcp_tools=mcp_tools,
     )
 
     agent = EasyAgent(
@@ -612,24 +720,21 @@ async def _get_or_create_agent_unlocked(
         workspace_name=workspace_name,
         mcp_tools=tools,
         organization_id=organization_id,
-       enable_hitl=enable_hitl,
-       model_name=model_name,
+        enable_hitl=enable_hitl,
+        model_name=model_name,
         enable_web_search=web_search_enabled,
         system_prompt_extra=system_prompt_extra,
         # 技能作用域（专家技能硬隔离）：None = 全量，非 None = 只挂这些技能目录
         skill_whitelist=None if current_scope is None else list(current_scope),
-   )
-    state.agent = agent
-    _touch_agent_cache(session_id)
-    state.expert_key = expert_key
-    _evict_agent_cache(session_id)
-    logger.info(
-        f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir} | "
-        f"model: {agent.model_name} | mcp_tools: {len(tools)} | "
-        f"expert: {expert_key or '(通用)'} | "
-        f"skill_scope: {list(current_scope) if current_scope is not None else '全量'} | "
-        f"{describe_prompt('本轮 extra', system_prompt_extra)} | "
-        f"{describe_prompt('终稿 system_prompt', getattr(agent, 'system_prompt', ''))}"
+    )
+    _register_created_agent(
+        state,
+        session_id,
+        agent,
+        expert_key=expert_key,
+        current_scope=current_scope,
+        system_prompt_extra=system_prompt_extra,
+        tools=tools,
     )
     return agent
 

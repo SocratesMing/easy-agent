@@ -316,6 +316,189 @@ async def build_resume_command(
     return Command(resume=plan.resume)
 
 
+@dataclass(frozen=True)
+class _FinalizeStats:
+    """收尾阶段的一次性统计（纯计算，无副作用；chat / resume 共用）。"""
+
+    elapsed_time: float
+    thinking_time: float | None
+    tool_duration: float
+    inp_tokens: int
+    out_tokens: int
+    rea_tokens: int
+    sum_tokens: int
+
+
+def _finalize_stats(proc, tool_call_records: list, start_time: float, *, is_resume: bool) -> _FinalizeStats:
+    """汇总耗时与 token：展示/持久化口径是**最近一次模型调用**的用量（不跨步累加）。"""
+    elapsed_time = time.time() - start_time
+    # thinking_time / tool_duration 只在 chat 分支计算（resume 的历史 tool_call_records
+    # 允许 duration=None，原实现同样不在 resume 分支求和）。
+    thinking_time = None
+    tool_duration = 0.0
+    if not is_resume:
+        thinking_time = thinking_duration(proc.blocks)
+        tool_duration = (
+            sum(tc[5] for tc in tool_call_records) if tool_call_records else 0
+        )
+    last_usage = proc.last_usage
+    inp_tokens = last_usage["input_tokens"]
+    out_tokens = last_usage["output_tokens"]
+    rea_tokens = last_usage.get("reasoning_tokens", 0)
+    return _FinalizeStats(
+        elapsed_time=elapsed_time,
+        thinking_time=thinking_time,
+        tool_duration=tool_duration,
+        inp_tokens=inp_tokens,
+        out_tokens=out_tokens,
+        rea_tokens=rea_tokens,
+        sum_tokens=inp_tokens + out_tokens,
+    )
+
+
+def _log_stream_completion(sid: str, proc, stats: _FinalizeStats) -> None:
+    """chat 的完成日志（先于持久化，沿用原文案）。"""
+    logger.info(
+        f"[{sid}] ✅ 流式响应完成 | 总步骤: {proc.current_step} | "
+        f"总耗时: {stats.elapsed_time:.2f}s | 思考: {stats.thinking_time}s | "
+        f"回复: 0s | 工具: {stats.tool_duration:.2f}s | "
+        f"思考长度: {len(proc.accumulated_thinking)} | "
+        f"回复长度: {len(proc.accumulated_response)} 字符"
+    )
+
+
+def _log_token_usage(sid: str, proc, stats: _FinalizeStats) -> None:
+    """chat 的 token / 思考与回复预览日志（先于持久化）。"""
+    logger.info(
+        f"[{sid}] 📊 Token | 当前 step: ↑{stats.inp_tokens} ↓{stats.out_tokens}"
+        f"(思考{stats.rea_tokens}) Σ{stats.sum_tokens}"
+    )
+    if proc.accumulated_thinking:
+        logger.info(f"[{sid}] 🤔 思考内容(前200字):\n{proc.accumulated_thinking[:200]}")
+    if proc.accumulated_response:
+        logger.info(f"[{sid}] 💬 回复内容(前200字):\n{proc.accumulated_response[:200]}")
+
+
+def _build_final_message(
+    proc, stats: _FinalizeStats, tool_call_records: list, context_length
+) -> dict:
+    """组装最终 assistant 消息（纯计算）。"""
+    return build_assistant_message_dict(
+        content=proc.accumulated_response,
+        thinking=proc.accumulated_thinking,
+        thinking_duration=stats.thinking_time,
+        tool_call_records=tool_call_records,
+        blocks=proc.blocks,
+        input_tokens=stats.inp_tokens,
+        output_tokens=stats.out_tokens,
+        reasoning_tokens=stats.rea_tokens,
+        context_tokens=proc.last_context_tokens,
+        elapsed_time=stats.elapsed_time,
+        step_count=proc.current_step,
+        result_limit=None,
+        context_length=context_length,
+    )
+
+
+async def _persist_final_message(db, session_id: str, message: dict) -> None:
+    """最终消息落库（放进线程，避免阻塞事件循环）。"""
+    await run_blocking(persist_final_message, db, session_id, message)
+
+
+async def _write_debug_snapshot(
+    *,
+    db,
+    session_id: str,
+    message_id: str,
+    message_content: str,
+    proc,
+    stats: _FinalizeStats,
+    tool_call_records: list,
+    sid: str,
+) -> None:
+    """调试用 context 快照（默认关闭，EASY_WRITE_SESSION_CONTEXT=1 开启）。"""
+    await run_blocking(
+        write_session_context_snapshot,
+        db=db,
+        session_id=session_id,
+        message_id=message_id,
+        message_content=message_content,
+        accumulated_response=proc.accumulated_response,
+        accumulated_thinking=proc.accumulated_thinking,
+        thinking_time=stats.thinking_time,
+        tool_call_records=tool_call_records,
+        sid=sid,
+    )
+
+
+async def _run_post_stream_side_effects(
+    *,
+    agent,
+    db,
+    session_id: str,
+    sid: str,
+    tool_call_records: list,
+    raw_user_msg: str,
+    accumulated_response: str,
+    accumulated_thinking: str,
+    session_logger,
+    is_resume: bool,
+) -> None:
+    """收尾副作用：顺序固定为 workspace rename → 技能入库 → 记忆更新（chat / resume 一致）。"""
+    await maybe_rename_workspace(agent, db, session_id, tool_call_records, sid)
+    await register_session_skills(agent, db, session_id, sid)
+    submit_memory_updates(
+        agent, session_id, db, raw_user_msg, accumulated_response, sid
+    )
+
+    if not is_resume and session_logger:
+        session_logger.log_assistant_response(
+            content=accumulated_response,
+            thinking=accumulated_thinking or None,
+            tool_calls=tool_call_records_to_dicts(tool_call_records, 1000) or None,
+        )
+
+
+def _build_done_payload(
+    proc,
+    stats: _FinalizeStats,
+    *,
+    context_length,
+    auto_compress_tokens,
+    is_resume: bool,
+) -> tuple[dict, dict]:
+    """组装 usage 与 done 字段（键序与迁移前字面量一致）。"""
+    usage_payload = build_usage_payload(
+        last_usage=proc.last_usage,
+        context_length=context_length,
+        auto_compress_tokens=auto_compress_tokens,
+        last_context_tokens=proc.last_context_tokens,
+        step_count=proc.current_step,
+        elapsed_time=stats.elapsed_time if is_resume else None,
+    )
+    # 键序契约（与迁移前字面量一致）：type → session_id → elapsed_time →
+    # usage；resume 的 blocks 必须排在 usage 之后（chat 不带 blocks）。
+    done_fields = {
+        "elapsed_time": round(stats.elapsed_time, 2),
+        "usage": usage_payload,
+    }
+    if is_resume:
+        # 权威最终 blocks（含工具结果/耗时），前端据此替换内存 blocks，避免依赖
+        # tool_result 事件匹配（HITL 恢复流曾因匹配失败导致工具一直"执行中"）。
+        done_fields["blocks"] = proc._sse_blocks()
+    return usage_payload, done_fields
+
+
+def _log_resume_completion(sid: str, proc, stats: _FinalizeStats) -> None:
+    """resume 的完成日志（在副作用之后，沿用原文案）。"""
+    logger.info(
+        f"[{sid}] ✅ 流式响应完成 | 总步骤: {proc.current_step} | "
+        f"总耗时: {stats.elapsed_time:.2f}s | tokens={stats.sum_tokens} "
+        f"(in={stats.inp_tokens}, out={stats.out_tokens}, think={stats.rea_tokens})"
+    )
+
+
+
 async def finalize_stream(
     *,
     agent,
@@ -344,121 +527,53 @@ async def finalize_stream(
     """
     is_resume = mode == "resume"
     emitter = emitter or SSEEmitter(session_id)
-    accumulated_response = proc.accumulated_response
-    accumulated_thinking = proc.accumulated_thinking
-    blocks = proc.blocks
-    current_step = proc.current_step
-    last_context_tokens = proc.last_context_tokens
-    elapsed_time = time.time() - start_time
-
-    # 统计（chat 的完成日志先于持久化，resume 的完成日志在副作用之后，沿用原文案）
-    thinking_time = None
-    if not is_resume:
-        thinking_time = thinking_duration(blocks)
-        tool_duration = (
-            sum(tc[5] for tc in tool_call_records) if tool_call_records else 0
-        )
-        logger.info(
-            f"[{sid}] ✅ 流式响应完成 | 总步骤: {current_step} | "
-            f"总耗时: {elapsed_time:.2f}s | 思考: {thinking_time}s | "
-            f"回复: 0s | 工具: {tool_duration:.2f}s | "
-            f"思考长度: {len(accumulated_thinking)} | "
-            f"回复长度: {len(accumulated_response)} 字符"
-        )
-
-    # 展示/持久化口径：**最近一次模型调用**的用量（不跨步累加）；
-    # 日志里的"本轮累计"仍用累加值，便于核对计费与排查。
-    last_usage = proc.last_usage
-    inp_tokens = last_usage["input_tokens"]
-    out_tokens = last_usage["output_tokens"]
-    rea_tokens = last_usage.get("reasoning_tokens", 0)
-    sum_tokens = inp_tokens + out_tokens
-
-    if not is_resume:
-        logger.info(
-            f"[{sid}] 📊 Token | 当前 step: ↑{inp_tokens} ↓{out_tokens}"
-            f"(思考{rea_tokens}) Σ{sum_tokens}"
-        )
-        if accumulated_thinking:
-            logger.info(f"[{sid}] 🤔 思考内容(前200字):\n{accumulated_thinking[:200]}")
-        if accumulated_response:
-            logger.info(f"[{sid}] 💬 回复内容(前200字):\n{accumulated_response[:200]}")
-
-    # 持久化最终消息
-    await run_blocking(
-        persist_final_message,
-        db,
-        session_id,
-        build_assistant_message_dict(
-            content=accumulated_response,
-            thinking=accumulated_thinking,
-            thinking_duration=thinking_time,
-            tool_call_records=tool_call_records,
-            blocks=blocks,
-            input_tokens=inp_tokens,
-            output_tokens=out_tokens,
-            reasoning_tokens=rea_tokens,
-            context_tokens=last_context_tokens,
-            elapsed_time=elapsed_time,
-            step_count=current_step,
-            result_limit=None,
-            context_length=context_length,
-        ),
+    stats = _finalize_stats(
+        proc, tool_call_records, start_time, is_resume=is_resume
     )
 
     if not is_resume:
-        # 调试用 context 快照（默认关闭，EASY_WRITE_SESSION_CONTEXT=1 开启）
-        await run_blocking(
-            write_session_context_snapshot,
+        _log_stream_completion(sid, proc, stats)
+        _log_token_usage(sid, proc, stats)
+
+    # 持久化最终消息
+    await _persist_final_message(
+        db, session_id, _build_final_message(proc, stats, tool_call_records, context_length)
+    )
+
+    if not is_resume:
+        await _write_debug_snapshot(
             db=db,
             session_id=session_id,
             message_id=message_id,
             message_content=message_content,
-            accumulated_response=accumulated_response,
-            accumulated_thinking=accumulated_thinking,
-            thinking_time=thinking_time,
+            proc=proc,
+            stats=stats,
             tool_call_records=tool_call_records,
             sid=sid,
         )
 
-    # 收尾副作用顺序固定：workspace rename → 技能入库 → 记忆更新（chat / resume 一致）
-    await maybe_rename_workspace(agent, db, session_id, tool_call_records, sid)
-    await register_session_skills(agent, db, session_id, sid)
-    submit_memory_updates(
-        agent, session_id, db, raw_user_msg, accumulated_response, sid
+    await _run_post_stream_side_effects(
+        agent=agent,
+        db=db,
+        session_id=session_id,
+        sid=sid,
+        tool_call_records=tool_call_records,
+        raw_user_msg=raw_user_msg,
+        accumulated_response=proc.accumulated_response,
+        accumulated_thinking=proc.accumulated_thinking,
+        session_logger=session_logger,
+        is_resume=is_resume,
     )
 
-    if not is_resume and session_logger:
-        session_logger.log_assistant_response(
-            content=accumulated_response,
-            thinking=accumulated_thinking or None,
-            tool_calls=tool_call_records_to_dicts(tool_call_records, 1000) or None,
-        )
-
-    usage_payload = build_usage_payload(
-        last_usage=last_usage,
+    _usage_payload, done_fields = _build_done_payload(
+        proc,
+        stats,
         context_length=context_length,
         auto_compress_tokens=auto_compress_tokens,
-        last_context_tokens=last_context_tokens,
-        step_count=current_step,
-        elapsed_time=elapsed_time if is_resume else None,
+        is_resume=is_resume,
     )
     if is_resume:
-        logger.info(
-            f"[{sid}] ✅ 流式响应完成 | 总步骤: {current_step} | "
-            f"总耗时: {elapsed_time:.2f}s | tokens={sum_tokens} "
-            f"(in={inp_tokens}, out={out_tokens}, think={rea_tokens})"
-        )
-    # 键序契约（与迁移前字面量一致）：type → session_id → elapsed_time →
-    # usage；resume 的 blocks 必须排在 usage 之后（chat 不带 blocks）。
-    done_fields = {
-        "elapsed_time": round(elapsed_time, 2),
-        "usage": usage_payload,
-    }
-    if is_resume:
-        # 权威最终 blocks（含工具结果/耗时），前端据此替换内存 blocks，避免依赖
-        # tool_result 事件匹配（HITL 恢复流曾因匹配失败导致工具一直"执行中"）。
-        done_fields["blocks"] = proc._sse_blocks()
+        _log_resume_completion(sid, proc, stats)
     yield emitter.done(session_id=session_id, **done_fields)
 
 

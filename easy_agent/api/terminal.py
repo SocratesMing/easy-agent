@@ -324,31 +324,28 @@ async def _reject(websocket: WebSocket, code: int, reason: str) -> None:
         pass
 
 
-async def _run_shell_session(websocket: WebSocket, web_user: str) -> None:
-    """使用 pty 创建伪终端，支持交互式命令（ls, tail -f, top, vim 等）。
+def _shell_env(username: str, home: str) -> dict[str, str]:
+    """构造交互式 shell 的环境变量（``HOME`` 与 cwd 使用同一个展开后的用户目录）。"""
+    env = os.environ.copy()
+    env["TERM"] = "xterm-256color"
+    env["HOME"] = home
+    env["USER"] = username
+    env["LANG"] = "en_US.UTF-8"
+    env["LC_ALL"] = "en_US.UTF-8"
+    return env
 
-    默认工作目录为服务进程用户的 home 目录 (~)。
+
+def _spawn_pty_shell(cwd: str, env: dict[str, str]) -> tuple[int, int]:
+    """创建 pty 并 fork 出 login shell，返回 ``(master_fd, pid)``。
+
+    子进程分支在这里完成 setsid / 控制终端 / dup2 / exec，成功或失败都不返回父进程；
+    父进程分支关闭 slave 端后返回。
     """
-    # 默认使用用户 home 目录
-    cwd = os.path.expanduser("~")  # noqa: ASYNC240 - 只展开 ~，不碰文件系统
-
-    # 获取当前系统用户名
-    import getpass
-    username = getpass.getuser()
-
     master_fd, slave_fd = pty.openpty()
 
     # 设置窗口大小（默认 80x24）
     winsize = struct.pack("HHHH", 24, 80, 0, 0)
     fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
-
-    # 启动 shell 子进程
-    env = os.environ.copy()
-    env["TERM"] = "xterm-256color"
-    env["HOME"] = os.path.expanduser("~")  # noqa: ASYNC240 - 只展开 ~，不碰文件系统
-    env["USER"] = username
-    env["LANG"] = "en_US.UTF-8"
-    env["LC_ALL"] = "en_US.UTF-8"
 
     pid = os.fork()
     if pid == 0:
@@ -374,77 +371,107 @@ async def _run_shell_session(websocket: WebSocket, web_user: str) -> None:
 
     # 父进程
     os.close(slave_fd)
+    return master_fd, pid
 
-    logger.info(f"终端会话已创建 | web_user={web_user} | os_user={username} | pid={pid} | cwd={cwd}")
 
-    async def read_from_pty():
-        """从 pty 读取输出并发送到 WebSocket"""
-        loop = asyncio.get_event_loop()
-        while True:
-            try:
-                rlist, _, _ = await loop.run_in_executor(
-                    None, lambda: select.select([master_fd], [], [], 0.1)
-                )
-                if rlist:
-                    data = os.read(master_fd, 65536)
-                    if not data:
-                        break
-                    await websocket.send_bytes(data)
-            except OSError:
-                break
-            except Exception as e:
-                logger.error(f"读取终端输出失败: {e}")
-                break
-
-    async def write_to_pty():
-        """从 WebSocket 读取输入并写入 pty"""
+async def _pump_pty_output(websocket: WebSocket, master_fd: int) -> None:
+    """把 pty 输出持续转发到 WebSocket，直到 pty EOF / 连接关闭。"""
+    loop = asyncio.get_event_loop()
+    while True:
         try:
-            while True:
-                msg = await websocket.receive()
-                if msg["type"] == "websocket.disconnect":
+            rlist, _, _ = await loop.run_in_executor(
+                None, lambda: select.select([master_fd], [], [], 0.1)
+            )
+            if rlist:
+                data = os.read(master_fd, 65536)
+                if not data:
                     break
-
-                if "bytes" in msg and msg["bytes"] is not None:
-                    os.write(master_fd, msg["bytes"])
-                elif "text" in msg and msg["text"] is not None:
-                    text = msg["text"]
-                    try:
-                        data = text.encode("utf-8")
-                        os.write(master_fd, data)
-                    except Exception:  # noqa: BLE001, S110 - 客户端断开/pty 已关闭时丢弃本次输入
-                        pass
-        except WebSocketDisconnect:
-            pass
+                await websocket.send_bytes(data)
+        except OSError:
+            break
         except Exception as e:
-            logger.error(f"读取 WebSocket 输入失败: {e}")
+            logger.error(f"读取终端输出失败: {e}")
+            break
+
+
+async def _pump_pty_input(websocket: WebSocket, master_fd: int) -> None:
+    """把 WebSocket 输入持续写入 pty，直到客户端断开 / pty 关闭。"""
+    try:
+        while True:
+            msg = await websocket.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
+
+            if "bytes" in msg and msg["bytes"] is not None:
+                os.write(master_fd, msg["bytes"])
+            elif "text" in msg and msg["text"] is not None:
+                text = msg["text"]
+                try:
+                    data = text.encode("utf-8")
+                    os.write(master_fd, data)
+                except Exception:  # noqa: BLE001, S110 - 客户端断开/pty 已关闭时丢弃本次输入
+                    pass
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error(f"读取 WebSocket 输入失败: {e}")
+
+
+async def _bridge_pty(websocket: WebSocket, master_fd: int) -> None:
+    """双向转发 pty 与 WebSocket：一侧结束即取消另一侧。"""
+    read_task = asyncio.create_task(_pump_pty_output(websocket, master_fd))
+    write_task = asyncio.create_task(_pump_pty_input(websocket, master_fd))
+
+    _done, pending = await asyncio.wait(
+        [read_task, write_task], return_when=asyncio.FIRST_COMPLETED
+    )
+    for task in pending:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+def _destroy_pty_shell(master_fd: int, pid: int) -> None:
+    """杀掉 shell 子进程并关闭 pty（清理步骤；失败可忽略，不能影响连接收尾）。"""
+    try:
+        os.close(master_fd)
+    except OSError:
+        pass
+    try:
+        os.kill(pid, 9)
+        os.waitpid(pid, 0)
+    except (OSError, ChildProcessError):
+        pass
+
+
+
+async def _run_shell_session(websocket: WebSocket, web_user: str) -> None:
+    """使用 pty 创建伪终端，支持交互式命令（ls, tail -f, top, vim 等）。
+
+    默认工作目录为服务进程用户的 home 目录 (~)。
+    """
+    # 默认使用用户 home 目录
+    cwd = os.path.expanduser("~")  # noqa: ASYNC240 - 只展开 ~，不碰文件系统
+
+    # 获取当前系统用户名
+    import getpass
+
+    username = getpass.getuser()
+    env = _shell_env(username, cwd)
+    master_fd, pid = _spawn_pty_shell(cwd, env)
+
+    logger.info(
+        f"终端会话已创建 | web_user={web_user} | os_user={username} | pid={pid} | cwd={cwd}"
+    )
 
     try:
-        read_task = asyncio.create_task(read_from_pty())
-        write_task = asyncio.create_task(write_to_pty())
-
-        done, pending = await asyncio.wait(
-            [read_task, write_task], return_when=asyncio.FIRST_COMPLETED
-        )
-
-        for task in pending:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
+        await _bridge_pty(websocket, master_fd)
     except Exception as e:
         logger.error(f"终端会话异常: {e}")
     finally:
-        try:
-            os.close(master_fd)
-        except OSError:
-            pass
-        try:
-            os.kill(pid, 9)
-            os.waitpid(pid, 0)  # noqa: ASYNC222 - SIGKILL 后回收很快，pty 清理须在同一协程的 finally 完成
-        except (OSError, ChildProcessError):
-            pass
+        _destroy_pty_shell(master_fd, pid)
 
         if websocket.client_state == WebSocketState.CONNECTED:
             try:

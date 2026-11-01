@@ -371,6 +371,209 @@ def log_sandbox_startup_report(
     return report
 
 
+def _write_etc_overlays() -> tuple[list[str], list[str]]:
+    """生成中立 ``/etc/passwd`` / ``/etc/group`` 覆盖文件，返回 (ro-bind 参数, 临时文件)。"""
+    _uid = os.getuid()
+    _etc_overlays = {
+        "/etc/passwd": (
+            "root:x:0:0:root:/root:/bin/sh\n"
+            f"agent:x:{_uid}:{_uid}:agent:/tmp:/bin/sh\n"
+            "nobody:x:65534:65534:nobody:/:/usr/sbin/nologin\n"
+        ),
+        "/etc/group": (
+            "root:x:0:\n"
+            f"agent:x:{_uid}:\n"
+            "nogroup:x:65534:\n"
+        ),
+    }
+    _etc_tmp: list[str] = []
+    args: list[str] = []
+    for _target, _content in _etc_overlays.items():
+        _fd, _path = tempfile.mkstemp(prefix="sandbox_etc_", suffix=".txt")
+        os.write(_fd, _content.encode())
+        os.close(_fd)
+        _etc_tmp.append(_path)
+        args += ["--ro-bind", _path, _target]
+    return args, _etc_tmp
+
+
+def _cleanup_temp_files(paths: list[str]) -> None:
+    for _path in paths:
+        try:
+            os.unlink(_path)
+        except OSError:
+            pass
+
+
+def _build_bwrap_argv(
+    command: str,
+    *,
+    binds: list[tuple[str, str]],
+    ro_binds: list[tuple[str, str]] | None,
+    cwd: str,
+    network: str,
+) -> tuple[list[str], list[str], str]:
+    """组装 bwrap argv；返回 (argv, 待清理的 etc 覆盖临时文件, 沙箱内 PATH)。"""
+    argv: list[str] = ["bwrap", "--unshare-all"]
+    if network != "none":
+        argv.append("--share-net")
+    argv += ["--die-with-parent", "--new-session"]
+    # read-only system dirs (commands + shared libraries)
+    for d in _SANDBOX_RO_DIRS:
+        argv += ["--ro-bind-try", d, d]
+    # read-only python environment, bound at a neutral path so the real host
+    # venv path (usually under /home) is never exposed.
+    venv = _venv_prefix()
+    if venv:
+        argv += ["--ro-bind-try", venv, _VENV_MOUNT]
+    argv += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
+    # Mask sensitive /etc files (overlay /dev/null) so the agent cannot read
+    # host credentials or the host username via /etc/environment etc.
+    for f in _BWRAP_MASKED_ETC_FILES:
+        argv += ["--ro-bind-try", "/dev/null", f]
+    # Neutral /etc/passwd & /etc/group: overlay minimal files so getpwuid()
+    # resolves to a generic "agent" identity instead of leaking the real host
+    # username (via `whoami`, `id`, `ls -l` owner fields). The real uid is
+    # mapped to "agent" so user-aware commands keep working.
+    etc_args, etc_tmp = _write_etc_overlays()
+    argv += etc_args
+    # read-write: workspace, skills, external dirs bound at their VIRTUAL paths
+    for real, target in binds:
+        argv += ["--bind", real, target]
+    # read-only overlays on top of the writable mounts (protected skills, DA-07)
+    for real, target in ro_binds or []:
+        argv += ["--ro-bind-try", real, target]
+    # HOME/TMPDIR -> tmpfs; PATH -> venv bin + system dirs. The subprocess env
+    # is sanitized separately so no server secrets reach the sandboxed command.
+    sandbox_path = _sandbox_path(venv)
+    argv += ["--setenv", "HOME", "/tmp"]
+    argv += ["--setenv", "TMPDIR", "/tmp"]
+    argv += ["--setenv", "PATH", sandbox_path]
+    argv += ["sh", "-c", f"cd {shlex.quote(cwd)} && {command}"]
+    return argv, etc_tmp, sandbox_path
+
+
+def _run_confined(
+    argv: list[str],
+    *,
+    env: dict[str, str],
+    timeout: int,
+    cwd: str | None,
+    not_found_message: str,
+) -> tuple[subprocess.CompletedProcess | None, ExecuteResponse | None]:
+    """执行受限命令；超时 / 可执行文件缺失转成 ExecuteResponse（返回 (None, response)）。"""
+    try:
+        result = subprocess.run(  # noqa: S603 - argv list, shell=False
+            argv,
+            check=False,
+            shell=False,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=timeout,
+            env=env,
+            cwd=cwd,
+        )
+    except subprocess.TimeoutExpired:
+        return None, ExecuteResponse(
+            output=f"Error: Command timed out after {timeout} seconds.",
+            exit_code=124,
+            truncated=False,
+        )
+    except FileNotFoundError:
+        return None, ExecuteResponse(
+            output=not_found_message,
+            exit_code=127,
+            truncated=False,
+        )
+    return result, None
+
+
+def _format_execute_result(
+    result: subprocess.CompletedProcess, max_output_bytes: int
+) -> ExecuteResponse:
+    """把 stdout/stderr 合成输出并按上限截断（两套沙箱共用同一格式化口径）。"""
+    parts: list[str] = []
+    if result.stdout:
+        parts.append(result.stdout)
+    if result.stderr:
+        parts.extend(
+            f"[stderr] {line}" for line in result.stderr.strip().split("\n")
+        )
+    output = "\n".join(parts) if parts else "<no output>"
+    truncated = False
+    if len(output) > max_output_bytes:
+        output = output[:max_output_bytes]
+        output += f"\n\n... Output truncated at {max_output_bytes} bytes."
+        truncated = True
+    if result.returncode != 0:
+        output = f"{output.rstrip()}\n\nExit code: {result.returncode}"
+    return ExecuteResponse(
+        output=output, exit_code=result.returncode, truncated=truncated
+    )
+
+
+def _landlock_preflight() -> tuple[object | None, ExecuteResponse | None]:
+    """导入 Landlock 执行器并确认可用；不可用时返回 fail-closed 响应。"""
+    try:
+        import easy_agent.sandboxing.landlock as _ll
+    except Exception as exc:  # noqa: BLE001
+        return None, ExecuteResponse(
+            output=f"Error: Landlock 模块不可用，已拒绝执行命令: {exc}",
+            exit_code=127,
+            truncated=False,
+        )
+    if not _ll.landlock_usable():
+        return None, ExecuteResponse(
+            output=(
+                "Error: 当前环境不支持 bwrap 与 Landlock，无法安全执行 shell 命令，已拒绝执行。"
+                "请在容器启动时添加 --security-opt seccomp=unconfined --security-opt apparmor=unconfined "
+                "--security-opt systempaths=unconfined 以启用 bwrap 沙箱。"
+            ),
+            exit_code=127,
+            truncated=False,
+        )
+    return _ll, None
+
+
+def _landlock_ro_dirs(extra_ro_dirs: list[str] | None) -> list[str]:
+    """Landlock 只读目录清单（系统目录 + /dev + 调用方额外目录，去重保序）。"""
+    ro_dirs = list(_SANDBOX_RO_DIRS)
+    if "/dev" not in ro_dirs:
+        ro_dirs.append("/dev")
+    # Landlock 规则只能叠加授权：要只读的目录必须不在 allowed_rw_dirs 里（调用方负责剔除）
+    ro_dirs.extend(d for d in (extra_ro_dirs or []) if d and d not in ro_dirs)
+    # NOTE: the venv is intentionally NOT added to ro_dirs. Its real host path
+    # (typically /home/<user>/.../.venv) would expose /home; the confined
+    # command uses the system Python instead. Landlock cannot remap paths, so
+    # the workspace stays at its real path (confined to it).
+    return ro_dirs
+
+
+def _build_landlock_env(
+    allowed_rw_dirs: list[str], ro_dirs: list[str], cwd: str, ll
+) -> dict[str, str]:
+    """Landlock 执行器的受限环境：先脱敏，再注入授权目录与 cwd。"""
+    full_env = _sanitize_env(None, home=cwd, path=_sandbox_path(None))
+    full_env["EASY_LANDLOCK_RW"] = os.pathsep.join(
+        d for d in allowed_rw_dirs if d
+    )
+    full_env["EASY_LANDLOCK_RO"] = os.pathsep.join(d for d in ro_dirs if d)
+    full_env["EASY_LANDLOCK_RW_FILES"] = os.pathsep.join(ll._SAFE_DEV_FILES)
+    full_env["EASY_LANDLOCK_CWD"] = cwd
+    full_env["TMPDIR"] = cwd
+    return full_env
+
+
+def _landlock_argv(command: str, ll) -> list[str]:
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    script = _Path(ll.__file__)
+    return [_sys.executable, str(script), "sh", "-c", command]
+
+
+
 def run_sandboxed(
     command: str,
     *,
@@ -398,110 +601,23 @@ def run_sandboxed(
     mounted read-only **after** the read-write binds, so they override sub-paths
     of a writable mount (e.g. existing skills inside the writable skills root).
     """
-    argv: list[str] = ["bwrap", "--unshare-all"]
-    if network != "none":
-        argv.append("--share-net")
-    argv += ["--die-with-parent", "--new-session"]
-    # read-only system dirs (commands + shared libraries)
-    for d in _SANDBOX_RO_DIRS:
-        argv += ["--ro-bind-try", d, d]
-    # read-only python environment, bound at a neutral path so the real host
-    # venv path (usually under /home) is never exposed.
-    venv = _venv_prefix()
-    if venv:
-        argv += ["--ro-bind-try", venv, _VENV_MOUNT]
-    argv += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
-    # Mask sensitive /etc files (overlay /dev/null) so the agent cannot read
-    # host credentials or the host username via /etc/environment etc.
-    for f in _BWRAP_MASKED_ETC_FILES:
-        argv += ["--ro-bind-try", "/dev/null", f]
-    # Neutral /etc/passwd & /etc/group: overlay minimal files so getpwuid()
-    # resolves to a generic "agent" identity instead of leaking the real host
-    # username (via `whoami`, `id`, `ls -l` owner fields). The real uid is
-    # mapped to "agent" so user-aware commands keep working.
-    _uid = os.getuid()
-    _etc_overlays = {
-        "/etc/passwd": (
-            "root:x:0:0:root:/root:/bin/sh\n"
-            f"agent:x:{_uid}:{_uid}:agent:/tmp:/bin/sh\n"
-            "nobody:x:65534:65534:nobody:/:/usr/sbin/nologin\n"
-        ),
-        "/etc/group": (
-            "root:x:0:\n"
-            f"agent:x:{_uid}:\n"
-            "nogroup:x:65534:\n"
-        ),
-    }
-    _etc_tmp: list[str] = []
-    for _target, _content in _etc_overlays.items():
-        _fd, _path = tempfile.mkstemp(prefix="sandbox_etc_", suffix=".txt")
-        os.write(_fd, _content.encode())
-        os.close(_fd)
-        _etc_tmp.append(_path)
-        argv += ["--ro-bind", _path, _target]
-    # read-write: workspace, skills, external dirs bound at their VIRTUAL paths
-    for real, target in binds:
-        argv += ["--bind", real, target]
-    # read-only overlays on top of the writable mounts (protected skills, DA-07)
-    for real, target in ro_binds or []:
-        argv += ["--ro-bind-try", real, target]
-    # HOME/TMPDIR -> tmpfs; PATH -> venv bin + system dirs. The subprocess env
-    # is sanitized separately so no server secrets reach the sandboxed command.
-    sandbox_path = _sandbox_path(venv)
-    argv += ["--setenv", "HOME", "/tmp"]
-    argv += ["--setenv", "TMPDIR", "/tmp"]
-    argv += ["--setenv", "PATH", sandbox_path]
-    argv += ["sh", "-c", f"cd {shlex.quote(cwd)} && {command}"]
-
+    argv, etc_tmp, sandbox_path = _build_bwrap_argv(
+        command, binds=binds, ro_binds=ro_binds, cwd=cwd, network=network
+    )
     try:
-        result = subprocess.run(  # noqa: S603 - argv list, shell=False
+        result, error = _run_confined(
             argv,
-            check=False,
-            shell=False,
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            timeout=timeout,
             env=_sanitize_env(env, home="/tmp", path=sandbox_path),
+            timeout=timeout,
             cwd=None,
-        )
-    except subprocess.TimeoutExpired:
-        return ExecuteResponse(
-            output=f"Error: Command timed out after {timeout} seconds.",
-            exit_code=124,
-            truncated=False,
-        )
-    except FileNotFoundError:
-        return ExecuteResponse(
-            output="Error: bwrap executable not found.",
-            exit_code=127,
-            truncated=False,
+            not_found_message="Error: bwrap executable not found.",
         )
     finally:
-        for _path in _etc_tmp:
-            try:
-                os.unlink(_path)
-            except OSError:
-                pass
+        _cleanup_temp_files(etc_tmp)
+    if error is not None:
+        return error
+    return _format_execute_result(result, max_output_bytes)
 
-    parts: list[str] = []
-    if result.stdout:
-        parts.append(result.stdout)
-    if result.stderr:
-        parts.extend(
-            f"[stderr] {line}" for line in result.stderr.strip().split("\n")
-        )
-    output = "\n".join(parts) if parts else "<no output>"
-    truncated = False
-    if len(output) > max_output_bytes:
-        output = output[:max_output_bytes]
-        output += f"\n\n... Output truncated at {max_output_bytes} bytes."
-        truncated = True
-    if result.returncode != 0:
-        output = f"{output.rstrip()}\n\nExit code: {result.returncode}"
-    return ExecuteResponse(
-        output=output, exit_code=result.returncode, truncated=truncated
-    )
 
 
 def run_landlocked(
@@ -527,77 +643,25 @@ def run_landlocked(
     application database - is invisible / denied. If Landlock cannot be applied
     the helper exits 127 without running the command (fail-closed).
     """
-    import sys as _sys
-    from pathlib import Path as _Path
+    ll, error = _landlock_preflight()
+    if error is not None:
+        return error
 
-    try:
-        import easy_agent.sandboxing.landlock as _ll
-    except Exception as exc:  # noqa: BLE001
-        return ExecuteResponse(
-            output=f"Error: Landlock 模块不可用，已拒绝执行命令: {exc}",
-            exit_code=127,
-            truncated=False,
-        )
-    if not _ll.landlock_usable():
-        return ExecuteResponse(
-            output=(
-                "Error: 当前环境不支持 bwrap 与 Landlock，无法安全执行 shell 命令，已拒绝执行。"
-                "请在容器启动时添加 --security-opt seccomp=unconfined --security-opt apparmor=unconfined "
-                "--security-opt systempaths=unconfined 以启用 bwrap 沙箱。"
-            ),
-            exit_code=127,
-            truncated=False,
-        )
-
-    ro_dirs = list(_SANDBOX_RO_DIRS)
-    if "/dev" not in ro_dirs:
-        ro_dirs.append("/dev")
-    # Landlock 规则只能叠加授权：要只读的目录必须不在 allowed_rw_dirs 里（调用方负责剔除）
-    ro_dirs.extend(d for d in (extra_ro_dirs or []) if d and d not in ro_dirs)
-    # NOTE: the venv is intentionally NOT added to ro_dirs. Its real host path
-    # (typically /home/<user>/.../.venv) would expose /home; the confined
-    # command uses the system Python instead. Landlock cannot remap paths, so
-    # the workspace stays at its real path (confined to it).
-
+    ro_dirs = _landlock_ro_dirs(extra_ro_dirs)
     # Sanitize the environment so server secrets (JWT key, API keys, DB creds)
     # are never forwarded to the confined command, then add Landlock params.
-    full_env = _sanitize_env(env, home=cwd, path=_sandbox_path(None))
-    full_env["EASY_LANDLOCK_RW"] = os.pathsep.join(
-        d for d in allowed_rw_dirs if d
-    )
-    full_env["EASY_LANDLOCK_RO"] = os.pathsep.join(d for d in ro_dirs if d)
-    full_env["EASY_LANDLOCK_RW_FILES"] = os.pathsep.join(_ll._SAFE_DEV_FILES)
-    full_env["EASY_LANDLOCK_CWD"] = cwd
-    full_env["TMPDIR"] = cwd
+    full_env = _build_landlock_env(allowed_rw_dirs, ro_dirs, cwd, ll)
+    argv = _landlock_argv(command, ll)
 
-    script = _Path(_ll.__file__)
-    argv: list[str] = [
-        _sys.executable, str(script), "sh", "-c", command,
-    ]
-    try:
-        result = subprocess.run(  # noqa: S603 - argv list, shell=False
-            argv,
-            check=False,
-            shell=False,
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            timeout=timeout,
-            env=full_env,
-            cwd=cwd,
-        )
-    except subprocess.TimeoutExpired:
-        return ExecuteResponse(
-            output=f"Error: Command timed out after {timeout} seconds.",
-            exit_code=124,
-            truncated=False,
-        )
-    except FileNotFoundError:
-        return ExecuteResponse(
-            output="Error: Python interpreter not found for Landlock executor.",
-            exit_code=127,
-            truncated=False,
-        )
+    result, error = _run_confined(
+        argv,
+        env=full_env,
+        timeout=timeout,
+        cwd=cwd,
+        not_found_message="Error: Python interpreter not found for Landlock executor.",
+    )
+    if error is not None:
+        return error
 
     # The helper exits 127 (with a stderr message) when confinement setup fails.
     if result.returncode == 127 and not result.stdout and result.stderr.strip():
@@ -606,25 +670,7 @@ def run_landlocked(
             exit_code=127,
             truncated=False,
         )
-
-    parts: list[str] = []
-    if result.stdout:
-        parts.append(result.stdout)
-    if result.stderr:
-        parts.extend(
-            f"[stderr] {line}" for line in result.stderr.strip().split("\n")
-        )
-    output = "\n".join(parts) if parts else "<no output>"
-    truncated = False
-    if len(output) > max_output_bytes:
-        output = output[:max_output_bytes]
-        output += f"\n\n... Output truncated at {max_output_bytes} bytes."
-        truncated = True
-    if result.returncode != 0:
-        output = f"{output.rstrip()}\n\nExit code: {result.returncode}"
-    return ExecuteResponse(
-        output=output, exit_code=result.returncode, truncated=truncated
-    )
+    return _format_execute_result(result, max_output_bytes)
 
 
 def check_command_paths(command: str, allowed_rw_dirs: list[str]) -> str | None:

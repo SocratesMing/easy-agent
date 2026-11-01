@@ -13,6 +13,7 @@ import json
 import logging
 import shutil
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from deepagents import create_deep_agent
@@ -189,6 +190,20 @@ def _shared_graph_checkpointer():
     return get_session_checkpointer("__graph_cache__")
 
 
+@dataclass(frozen=True)
+class _GraphInputs:
+    """编译图输入集合（_create_agent 拆分用；不含会话级字段）。"""
+
+    skills_paths: list[str]
+    permissions: list
+    middleware: list
+    interrupt_on_config: dict | None
+    memory_list: list[str]
+    raw_tools: list
+    subagents: list[dict]
+    store: object | None
+
+
 class EasyAgent(AgentWorkspaceMixin):
     """EasyAgent wraps DeepAgents with per-user/per-session workspace isolation.
 
@@ -214,6 +229,117 @@ class EasyAgent(AgentWorkspaceMixin):
     #: 反序列化恢复）也能安全读到该字段，见 ``services/tool_scope.py``。
     skill_whitelist: list[str] | None = None
 
+    @staticmethod
+    def _clean_skill_whitelist(skill_whitelist: list[str] | None) -> list[str] | None:
+        """技能作用域归一化：None = 全量；其余去空白并丢弃空项（[] = 显式无技能）。"""
+        if skill_whitelist is None:
+            return None
+        return [str(name).strip() for name in skill_whitelist if str(name).strip()]
+
+    @staticmethod
+    def _resolve_workspace_location(
+        config: Config,
+        *,
+        session_id: str | None,
+        workspace_name: str,
+        workspace_dir: str | Path | None,
+        safe_username: str,
+    ) -> tuple[Path, str]:
+        """解析工作区目录与目录名（显式 workspace_dir 优先，否则按用户/会话自动生成）。"""
+        if workspace_dir:
+            path = Path(workspace_dir)
+            return path, path.name
+        base = Path(config.agent.workspace_dir)
+        if session_id:
+            dir_name = workspace_name if workspace_name else session_id
+            return base / safe_username / "session" / dir_name, dir_name
+        return base / safe_username, safe_username
+
+    @staticmethod
+    def _resolve_memory_files(
+        config: Config, *, safe_username: str, workspace_dir: Path
+    ) -> tuple[Path, Path]:
+        """会话记忆文件与用户长期记忆文件路径（只算路径，不创建目录）。"""
+        # 会话级记忆文件：workspace/{username}/session/{workspace_name}/memory.md
+        # 首轮对话时不创建，第一轮回复完成后自动生成
+        # 第二轮及后续对话时自动加载，提供当前会话的上下文连续性
+        memory_file = workspace_dir / "memory.md"
+        # 用户长期记忆文件：memories/{username}/AGENTS.md
+        # 跨会话持久化，记录用户偏好与可复用经验，首轮对话时加载
+        long_term_file = Path(config.agent.memories_dir) / safe_username / "AGENTS.md"
+        return memory_file, long_term_file
+
+    def _ensure_user_skills_dir(self, config: Config) -> Path:
+        """用户技能目录（用户级，非 session 级）：先建出来再返回。"""
+        user_skills_dir = Path(config.agent.workspace_dir) / self.safe_username / "skills"
+        # D2：技能目录是否存在于「建图时」会影响 permissions 指纹；先建出来，
+        # 避免首个请求调用 backend factory 后才创建，导致同一用户第二次建图键变化。
+        try:
+            user_skills_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:  # noqa: BLE001
+            logger.warning(f"[{self.sid}] 创建用户技能目录失败: {exc}")
+        return user_skills_dir
+
+    @staticmethod
+    def _load_builtin_skills(config: Config, username: str) -> tuple[str, tuple]:
+        """公共技能根目录与当前用户已启用集合（DA-13 S2：只读共享，不复制）。"""
+        # DA-13 S2：公共技能只读共享（/skills/builtin/），只挂用户已添加且启用的那些。
+        # 启用集合只进运行期 SessionContext（不进编译图键）；启停后 invalidate_user_agents 重建。
+        builtin_dir = builtin_skills.builtin_root(config)
+        enabled = (
+            builtin_skills.enabled_names(username, builtin_dir, config)
+            if builtin_dir
+            else ()
+        )
+        return builtin_dir, enabled
+
+    def _build_user_info(self) -> str:
+        """系统提示词里的「当前用户」段（纯计算）。"""
+        return (
+            f"## 当前用户\n"
+            f"- 用户名: `{self.safe_username}`（技能文档与脚本中的 `{{userId}}` / `{{username}}` 均指它）\n"
+            + (f"- 机构ID: `{self.organization_id}`（注册后不可更改）\n" if self.organization_id else "")
+            + f"- 工作区: `{self.workspace_virtual_path}/`\n"
+            + f"{self._get_os_info()}\n"
+        )
+
+    def _assemble_system_prompt(self, system_prompt: str, system_prompt_extra: str) -> str:
+        """按 prompt_guard 的固定顺序组装终稿系统提示词，并记录可观测日志。"""
+        # 组装顺序由 prompt_guard 统一保证：
+        # 基础规则 → 运行时上下文 → 联网附加 → 从属补充内容 → HITL 说明（最后）。
+        assembled = assemble_system_prompt(
+            base_prompt=system_prompt,
+            user_info=self._build_user_info(),
+            web_search_prompt=WEB_SEARCH_SYSTEM_PROMPT
+            if self.enable_web_search
+            else "",
+            extra=system_prompt_extra,
+            hitl_note=HITL_SYSTEM_NOTE if self.enable_hitl else "",
+        )
+
+        # ── 系统提示词可观测日志（专家 Agent 提示词链路校验，可观测点 ③） ──
+        # 记录终稿的「总字符数 + 指纹 + 各分段字符数」，用于验证：
+        #   · 专家提示词确实进了模型终稿（extra 非空且语法长度吻合）；
+        #   · 指纹能与 api/expert.py / agent_manager.py 记录的指纹串成一条链；
+        #   · 未挂专家（通用 Agent）时明确显示 extra 为空，避免误判。
+        logger.info(
+            f"[{self.sid}] 🧾 系统提示词已组装 | 终稿={len(assembled)} 字符 | "
+            f"指纹={prompt_fingerprint(assembled)} | "
+            f"基础={len(system_prompt.strip())} 字符 | "
+            f"联网搜索附加={len(WEB_SEARCH_SYSTEM_PROMPT.strip()) if self.enable_web_search else 0} 字符 | "
+            f"动态附加={len(system_prompt_extra.strip())} 字符"
+        )
+        if system_prompt_extra.strip():
+            logger.info(
+                f"[{self.sid}] ✅ 动态附加内容已注入系统提示词 | "
+                f"{describe_prompt('extra（含专家提示词）', system_prompt_extra)}"
+            )
+        else:
+            logger.info(
+                f"[{self.sid}] ➖ 无动态附加内容（通用 Agent，未注入专家提示词）"
+            )
+        return assembled
+
     def __init__(
         self,
         config: Config,
@@ -230,7 +356,7 @@ class EasyAgent(AgentWorkspaceMixin):
         enable_web_search: bool = False,
         system_prompt_extra: str = "",
         skill_whitelist: list[str] | None = None,
-   ):
+    ):
         """初始化 EasyAgent 实例，配置工作区隔离和运行时上下文。
 
         根据用户名和会话 ID 构建隔离的工作区目录，设置记忆文件路径，
@@ -259,11 +385,7 @@ class EasyAgent(AgentWorkspaceMixin):
         self.username = username
         self.session_id = session_id
         # 技能作用域：None = 全量；[] = 无技能；[names] = 白名单
-        self.skill_whitelist = (
-            None
-            if skill_whitelist is None
-            else [str(name).strip() for name in skill_whitelist if str(name).strip()]
-        )
+        self.skill_whitelist = self._clean_skill_whitelist(skill_whitelist)
         # 日志用的短前缀（取 sid 末 5 位），与 chat_service 等模块保持一致。
         self.sid = (session_id or "new")[-5:]
         self.skills_root = skills_root
@@ -279,48 +401,26 @@ class EasyAgent(AgentWorkspaceMixin):
         # D2：workspace_name 进运行期 context（知识库/工具按它解析会话目录）
         self.workspace_name = ""
 
-        if workspace_dir:
-            self.workspace_dir = Path(workspace_dir)
-            dir_name = self.workspace_dir.name
-        else:
-            base = Path(config.agent.workspace_dir)
-            if session_id:
-                dir_name = workspace_name if workspace_name else session_id
-                self.workspace_dir = base / self.safe_username / "session" / dir_name
-            else:
-                self.workspace_dir = base / self.safe_username
-                dir_name = self.safe_username
+        self.workspace_dir, dir_name = self._resolve_workspace_location(
+            config,
+            session_id=session_id,
+            workspace_name=workspace_name,
+            workspace_dir=workspace_dir,
+            safe_username=self.safe_username,
+        )
 
         # Don't create directory eagerly - LocalShellBackend.write will create it on first write
         self.workspace_virtual_path = "/workspace"
         self._workspace_renamed = False
 
-        # 会话级记忆文件：workspace/{username}/session/{workspace_name}/memory.md
-        # 首轮对话时不创建，第一轮回复完成后自动生成
-        # 第二轮及后续对话时自动加载，提供当前会话的上下文连续性
-        self.memory_file = self.workspace_dir / "memory.md"
+        self.memory_file, self.long_term_memory_file = self._resolve_memory_files(
+            config, safe_username=self.safe_username, workspace_dir=self.workspace_dir
+        )
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
 
-        # 用户长期记忆文件：memories/{username}/AGENTS.md
-        # 跨会话持久化，记录用户偏好与可复用经验，首轮对话时加载
-        memories_base = Path(config.agent.memories_dir)
-        self.long_term_memory_file = memories_base / self.safe_username / "AGENTS.md"
-
-        # 用户技能目录: workspace/{username}/skills/（用户级，非 session 级）
-        self.user_skills_dir = Path(config.agent.workspace_dir) / self.safe_username / "skills"
-        # D2：技能目录是否存在于「建图时」会影响 permissions 指纹；先建出来，
-        # 避免首个请求调用 backend factory 后才创建，导致同一用户第二次建图键变化。
-        try:
-            self.user_skills_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:  # noqa: BLE001
-            logger.warning(f"[{self.sid}] 创建用户技能目录失败: {exc}")
-        # DA-13 S2：公共技能只读共享（/skills/builtin/），只挂用户已添加且启用的那些。
-        # 启用集合只进运行期 SessionContext（不进编译图键）；启停后 invalidate_user_agents 重建。
-        self.builtin_skills_dir = builtin_skills.builtin_root(config)
-        self.builtin_skills = (
-            builtin_skills.enabled_names(self.username, self.builtin_skills_dir, config)
-            if self.builtin_skills_dir
-            else ()
+        self.user_skills_dir = self._ensure_user_skills_dir(config)
+        self.builtin_skills_dir, self.builtin_skills = self._load_builtin_skills(
+            config, self.username
         )
         # 目录名即会话工作区的真实名字（rename_workspace 会更新它）
         self.workspace_name = dir_name
@@ -328,47 +428,9 @@ class EasyAgent(AgentWorkspaceMixin):
         # D2：会话差异集中到运行期 context；编译图缓存键不包含这些字段。
         self.session_context = self._make_session_context()
 
-        user_info = (
-            f"## 当前用户\n"
-            f"- 用户名: `{self.safe_username}`（技能文档与脚本中的 `{{userId}}` / `{{username}}` 均指它）\n"
-            + (f"- 机构ID: `{self.organization_id}`（注册后不可更改）\n" if self.organization_id else "")
-            + f"- 工作区: `{self.workspace_virtual_path}/`\n"
-            + f"{self._get_os_info()}\n"
+        self.system_prompt = self._assemble_system_prompt(
+            system_prompt, system_prompt_extra
         )
-
-        # 组装顺序由 prompt_guard 统一保证：
-        # 基础规则 → 运行时上下文 → 联网附加 → 从属补充内容 → HITL 说明（最后）。
-        self.system_prompt = assemble_system_prompt(
-            base_prompt=system_prompt,
-            user_info=user_info,
-            web_search_prompt=WEB_SEARCH_SYSTEM_PROMPT
-            if self.enable_web_search
-            else "",
-            extra=system_prompt_extra,
-            hitl_note=HITL_SYSTEM_NOTE if self.enable_hitl else "",
-        )
-
-        # ── 系统提示词可观测日志（专家 Agent 提示词链路校验，可观测点 ③） ──
-        # 记录终稿的「总字符数 + 指纹 + 各分段字符数」，用于验证：
-        #   · 专家提示词确实进了模型终稿（extra 非空且语法长度吻合）；
-        #   · 指纹能与 api/expert.py / agent_manager.py 记录的指纹串成一条链；
-        #   · 未挂专家（通用 Agent）时明确显示 extra 为空，避免误判。
-        logger.info(
-            f"[{self.sid}] 🧾 系统提示词已组装 | 终稿={len(self.system_prompt)} 字符 | "
-            f"指纹={prompt_fingerprint(self.system_prompt)} | "
-            f"基础={len(system_prompt.strip())} 字符 | "
-            f"联网搜索附加={len(WEB_SEARCH_SYSTEM_PROMPT.strip()) if self.enable_web_search else 0} 字符 | "
-            f"动态附加={len(system_prompt_extra.strip())} 字符"
-        )
-        if system_prompt_extra.strip():
-            logger.info(
-                f"[{self.sid}] ✅ 动态附加内容已注入系统提示词 | "
-                f"{describe_prompt('extra（含专家提示词）', system_prompt_extra)}"
-            )
-        else:
-            logger.info(
-                f"[{self.sid}] ➖ 无动态附加内容（通用 Agent，未注入专家提示词）"
-            )
 
         self.max_steps = config.agent.max_steps
         self.logger = AgentLogger()
@@ -520,15 +582,8 @@ class EasyAgent(AgentWorkspaceMixin):
             route_prefixes=sorted(prefixes),
         )
 
-    def _create_agent(self):
-        """Create the DeepAgents agent, reusing a process-wide compiled graph when safe.
-
-        D2：编译期输入（模型 / 工具集 / 系统提示词 / middleware / HITL /
-        subagent specs / skills / permissions / memory 源）用哈希做键；会话差异
-        （workspace、session_id、thread_id）通过 ``context=SessionContext`` 传入
-        运行期。无法安全共享时（模型头绑定 session、legacy checkpointer）显式
-        降级为按会话建图。
-        """
+    def _resolve_actual_llm_config(self):
+        """解析本会话实际使用的模型配置，并记录模型 / 提示词预览日志。"""
         from easy_agent.agent.model import resolve_llm_config
 
         actual_llm_cfg = resolve_llm_config(self.config, self.model_name)
@@ -538,7 +593,10 @@ class EasyAgent(AgentWorkspaceMixin):
             f"context_length: {actual_llm_cfg.context_length}"
         )
         logger.info(f"[{self.sid}] 📋 系统提示词 | 预览(前100字符): {self.system_prompt[:100]}")
+        return actual_llm_cfg
 
+    def _prepare_graph_inputs(self, actual_llm_cfg) -> "_GraphInputs":
+        """收集创建编译图所需的全部输入（工具 / 中间件 / 权限 / 记忆 / 子代理 / store）。"""
         skills_paths = self._resolve_skills_paths()
         safe_external = self._safe_external_dirs()
         permissions = self._build_permissions(skills_paths, safe_external)
@@ -588,9 +646,27 @@ class EasyAgent(AgentWorkspaceMixin):
             f"实际路径: {self.memory_file} / {self.long_term_memory_file} | "
             f"记忆源: {memory_list}"
         )
+        return _GraphInputs(
+            skills_paths=skills_paths,
+            permissions=permissions,
+            middleware=middleware,
+            interrupt_on_config=interrupt_on_config,
+            memory_list=memory_list,
+            raw_tools=raw_tools,
+            subagents=subagents,
+            store=store,
+        )
 
-        shared_checkpointer = _shared_graph_checkpointer()
-        block_reason = self._graph_cache_block_reason(actual_llm_cfg, shared_checkpointer)
+    def _make_graph_builder(self, inputs: "_GraphInputs"):
+        """返回真正调用 ``create_deep_agent`` 的构建闭包（共享图 / 会话图共用）。"""
+        skills_paths = inputs.skills_paths
+        permissions = inputs.permissions
+        middleware = inputs.middleware
+        interrupt_on_config = inputs.interrupt_on_config
+        memory_list = inputs.memory_list
+        raw_tools = inputs.raw_tools
+        subagents = inputs.subagents
+        store = inputs.store
 
         def _build(checkpointer, model, *, fallback_context: bool = False):
             # 共享图不带任何会话 fallback；降级路径才把当前会话作为兜底。
@@ -676,44 +752,51 @@ class EasyAgent(AgentWorkspaceMixin):
                 context_schema=SessionContext,
             )
 
-        if block_reason:
-            get_agent_graph_cache().record_disabled()
-            logger.info(f"[{self.sid}] D2 graph-cache 未启用 | {block_reason}")
-            model = create_model(
-                self.config, model_name=self.model_name, session_id=self.session_id
-            )
-            self.model = model
-            self.agent_graph_key = None
-            return _build(
-                get_session_checkpointer(self.session_id or "default"),
-                model,
-                fallback_context=True,
-            )
+        return _build
 
+    def _compute_graph_key(self, actual_llm_cfg, inputs: "_GraphInputs", shared_checkpointer):
+        """编译图缓存键：技能门控工具集合也参与指纹（frontmatter 变化要重编译）。"""
         # 门控工具集合参与编译图指纹：技能 frontmatter 的 include_tools 变了要重编译
         gated_names = set(skill_gated_tool_names()) | declared_include_tools(
             [self.builtin_skills_dir, self.user_skills_dir]
         )
-        key = build_graph_key(
+        return build_graph_key(
             model=model_fingerprint(actual_llm_cfg),
-            tools=raw_tools,
+            tools=inputs.raw_tools,
             system_prompt=self.system_prompt,
-            middleware=middleware,
+            middleware=inputs.middleware,
             hitl={
-                "enabled": bool(interrupt_on_config),
-                "tools": sorted((interrupt_on_config or {}).keys()),
+                "enabled": bool(inputs.interrupt_on_config),
+                "tools": sorted((inputs.interrupt_on_config or {}).keys()),
             },
-            subagents=subagents,
-            skills=skills_paths,
+            subagents=inputs.subagents,
+            skills=inputs.skills_paths,
             skill_tools=sorted(gated_names),
-            permissions=permissions,
-            memory=memory_list,
+            permissions=inputs.permissions,
+            memory=inputs.memory_list,
             summarization=summarization_fingerprint(self.config),
             config=config_fingerprint(self.config),
             checkpointer_id=f"{type(shared_checkpointer).__name__}:{id(shared_checkpointer)}",
-            store_id=f"{type(store).__name__}:{id(store)}",
+            store_id=f"{type(inputs.store).__name__}:{id(inputs.store)}",
         )
 
+    def _build_session_scoped_graph(self, block_reason: str, build_graph):
+        """无法安全共享编译图时的降级路径：按会话建图（带 legacy checkpointer）。"""
+        get_agent_graph_cache().record_disabled()
+        logger.info(f"[{self.sid}] D2 graph-cache 未启用 | {block_reason}")
+        model = create_model(
+            self.config, model_name=self.model_name, session_id=self.session_id
+        )
+        self.model = model
+        self.agent_graph_key = None
+        return build_graph(
+            get_session_checkpointer(self.session_id or "default"),
+            model,
+            fallback_context=True,
+        )
+
+    def _get_or_compile_graph(self, key, build_graph, shared_checkpointer):
+        """缓存命中直接复用；未命中则编译新图并登记（同 key 的多个会话共享同一张图）。"""
         cache = get_agent_graph_cache()
         entry = cache.get(key.digest)
         if entry is not None:
@@ -729,7 +812,7 @@ class EasyAgent(AgentWorkspaceMixin):
             self.config, model_name=self.model_name, session_id=self.session_id
         )
         self.model = model
-        graph = _build(shared_checkpointer, model)
+        graph = build_graph(shared_checkpointer, model)
         cache.put(
             key.digest,
             graph,
@@ -739,6 +822,27 @@ class EasyAgent(AgentWorkspaceMixin):
         )
         self.agent_graph_key = key.digest
         return graph
+
+    def _create_agent(self):
+        """Create the DeepAgents agent, reusing a process-wide compiled graph when safe.
+
+        D2：编译期输入（模型 / 工具集 / 系统提示词 / middleware / HITL /
+        subagent specs / skills / permissions / memory 源）用哈希做键；会话差异
+        （workspace、session_id、thread_id）通过 ``context=SessionContext`` 传入
+        运行期。无法安全共享时（模型头绑定 session、legacy checkpointer）显式
+        降级为按会话建图。
+        """
+        actual_llm_cfg = self._resolve_actual_llm_config()
+        inputs = self._prepare_graph_inputs(actual_llm_cfg)
+        shared_checkpointer = _shared_graph_checkpointer()
+        block_reason = self._graph_cache_block_reason(actual_llm_cfg, shared_checkpointer)
+        build_graph = self._make_graph_builder(inputs)
+
+        if block_reason:
+            return self._build_session_scoped_graph(block_reason, build_graph)
+
+        key = self._compute_graph_key(actual_llm_cfg, inputs, shared_checkpointer)
+        return self._get_or_compile_graph(key, build_graph, shared_checkpointer)
 
     def _build_backend(self, skills_paths: list[str], safe_external=None):
         """构建 CompositeBackend（兼容旧调用；实际逻辑按 context 解析）。
