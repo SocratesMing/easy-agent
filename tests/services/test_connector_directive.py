@@ -210,9 +210,7 @@ class _FakeAgent:
 @pytest.fixture
 def manager(monkeypatch, tmp_path):
     """隔离 agent_manager：只关心「以什么 server_names 加载了 MCP 工具 + 是否重建」。"""
-    am._session_agents.clear()
-    am._session_expert.clear()
-    am._session_connectors.clear()
+    am._reset_session_state()
     _FakeAgent.instances = []
     calls: list[list[str] | None] = []
 
@@ -238,9 +236,7 @@ def manager(monkeypatch, tmp_path):
         },
     )
     yield calls
-    am._session_agents.clear()
-    am._session_expert.clear()
-    am._session_connectors.clear()
+    am._reset_session_state()
 
 
 async def _get(model_name="deepseek"):

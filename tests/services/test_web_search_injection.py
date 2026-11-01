@@ -1,5 +1,6 @@
 """联网搜索开关的 Agent 注入与缓存行为。"""
 
+from collections import OrderedDict
 from types import SimpleNamespace
 
 import pytest
@@ -49,7 +50,7 @@ def _patch_manager(monkeypatch, config):
             created.append(self)
 
     monkeypatch.setattr(agent_manager, "EasyAgent", FakeAgent)
-    monkeypatch.setattr(agent_manager, "_session_agents", {})
+    monkeypatch.setattr(agent_manager, "_sessions", OrderedDict())
     return created
 
 

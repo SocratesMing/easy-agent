@@ -1256,7 +1256,7 @@ def test_resume_keeps_session_expert(client, db, stub_resume, monkeypatch):
     """专家会话里触发 HITL 并恢复：仍以该专家身份复用/重建 Agent。"""
     sid = "sess-hitl-1"
     _make_session(db, sid)
-    monkeypatch.setitem(am._session_expert, sid, "expert_quant")
+    monkeypatch.setitem(am._sessions, sid, am.SessionState(expert_key="expert_quant"))
 
     resp = _resume(client, sid)
     assert resp.status_code == 200

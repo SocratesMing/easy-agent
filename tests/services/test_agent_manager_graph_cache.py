@@ -16,28 +16,11 @@ from easy_agent.services import agent_manager as am
 
 @pytest.fixture(autouse=True)
 def _restore_state(monkeypatch):
-    saved = (
-        OrderedDict(am._session_agents),
-        dict(am._session_expert),
-        dict(am._session_connectors),
-        dict(am._session_edit_targets),
-        dict(am._session_create_locks),
-    )
-    am._session_agents = OrderedDict()
-    am._session_expert = {}
-    am._session_connectors = {}
-    am._session_edit_targets = {}
-    am._session_create_locks = {}
+    # 每个用例一份新的会话状态注册表；用例结束后 monkeypatch 恢复原对象。
+    monkeypatch.setattr(am, "_sessions", OrderedDict())
     reset_agent_graph_cache()
     monkeypatch.setenv("EASY_AGENT_GRAPH_CACHE", "1")
     yield
-    (
-        am._session_agents,
-        am._session_expert,
-        am._session_connectors,
-        am._session_edit_targets,
-        am._session_create_locks,
-    ) = saved
     reset_agent_graph_cache()
 
 
@@ -74,7 +57,8 @@ def compiled(monkeypatch):
             get_session=lambda session_id: None,
         ),
     )
-    am._session_connectors = {"s1": (), "s2": ()}
+    for sid in ("s1", "s2"):
+        am._sessions[sid] = am.SessionState(connectors=())
     return calls
 
 
@@ -134,4 +118,4 @@ async def test_invalidate_user_agents_drops_graph_cache(config, compiled):
 
     am.invalidate_user_agents("u1")
     assert cache.stats()["entries"] == 0
-    assert "s1" not in am._session_agents
+    assert am.get_session_agent("s1") is None

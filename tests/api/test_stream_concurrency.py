@@ -24,9 +24,11 @@ def busy_session(client):
     drain_stream_tasks 会去等这个假任务。
     """
     session_id = client.post("/agent/sessions", json={}).json()["session_id"]
-    agent_manager._session_stream_tasks[session_id] = SimpleNamespace(done=lambda: False)
+    agent_manager._sessions[session_id] = agent_manager.SessionState(
+        stream_task=SimpleNamespace(done=lambda: False)
+    )
     yield session_id
-    agent_manager._session_stream_tasks.pop(session_id, None)
+    agent_manager._sessions.pop(session_id, None)
 
 
 @pytest.fixture(autouse=True)
@@ -77,6 +79,8 @@ def test_resume_on_a_busy_session_is_409(client, busy_session):
 
 def test_a_finished_stream_does_not_block_the_next_turn(busy_session):
     """登记的任务已结束（done）时不算忙：只看运行中的任务。"""
-    agent_manager._session_stream_tasks[busy_session] = SimpleNamespace(done=lambda: True)
+    agent_manager._sessions[busy_session] = agent_manager.SessionState(
+        stream_task=SimpleNamespace(done=lambda: True)
+    )
 
     chat_api.reject_concurrent_stream(busy_session)

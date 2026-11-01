@@ -31,4 +31,4 @@ async def test_memory_update_keeps_the_session_agent_and_edit_binding(tmp_path, 
         assert removed == []
         assert agent_manager.get_session_edit_target("sess-memory") == "expert-1"
     finally:
-        agent_manager._session_edit_targets.pop("sess-memory", None)
+        agent_manager._sessions.pop("sess-memory", None)

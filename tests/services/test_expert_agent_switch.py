@@ -42,9 +42,7 @@ class _FakeAgent:
 @pytest.fixture()
 def manager(db, monkeypatch, tmp_path):
     """把 agent_manager 的外部依赖全部换成本地假实现。"""
-    am._session_agents.clear()
-    am._session_expert.clear()
-    am._session_connectors.clear()
+    am._reset_session_state()
     _FakeAgent.instances = []
 
     monkeypatch.setattr(am, "EasyAgent", _FakeAgent)
@@ -67,8 +65,7 @@ def manager(db, monkeypatch, tmp_path):
         },
     )
     yield am
-    am._session_agents.clear()
-    am._session_expert.clear()
+    am._reset_session_state()
 
 
 async def _get(manager, expert_id=None, prompt=""):
@@ -162,7 +159,7 @@ async def test_remove_session_agent_clears_expert_record(manager):
 
     manager.remove_session_agent(SID)
     assert manager.get_session_expert(SID) == ""
-    assert SID not in am._session_agents
+    assert am.get_session_agent(SID) is None
 
     # 清理后重新获取应该是新建实例
     a2 = await _get(manager, "expert_A", "你是A")

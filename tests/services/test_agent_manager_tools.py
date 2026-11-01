@@ -57,18 +57,7 @@ def _injected_names() -> list[str]:
 
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch):
-    saved = (
-        am._session_agents,
-        am._session_expert,
-        am._session_connectors,
-        am._session_edit_targets,
-        am._session_create_locks,
-    )
-    am._session_agents = OrderedDict()
-    am._session_expert = {}
-    am._session_connectors = {}
-    am._session_edit_targets = {}
-    am._session_create_locks = {}
+    monkeypatch.setattr(am, "_sessions", OrderedDict())
     _SpyAgent.last_kwargs = {}
 
     config = SimpleNamespace(
@@ -102,14 +91,6 @@ def _isolate(monkeypatch):
     monkeypatch.setattr(am, "_tool_factories", _fake_factories)
     monkeypatch.setattr(am, "load_mcp_tools_for_user", _fake_load_mcp)
     yield config
-
-    (
-        am._session_agents,
-        am._session_expert,
-        am._session_connectors,
-        am._session_edit_targets,
-        am._session_create_locks,
-    ) = saved
 
 
 async def test_hitl_disabled_in_config_turns_approvals_off(monkeypatch, _isolate):
@@ -147,7 +128,7 @@ async def test_tool_set_matches_legacy_when_hitl_and_file_context_on(monkeypatch
         "save_expert",
         "read_uploaded_file",
     ]
-    assert agent is am._session_agents["session-abcde"]
+    assert agent is am.get_session_agent("session-abcde")
 
 
 async def test_expert_session_gets_no_save_expert(monkeypatch):
@@ -250,4 +231,4 @@ async def test_session_connectors_are_loaded_off_the_event_loop(monkeypatch):
     )
 
     assert off_loop == [True]
-    assert am._session_connectors["session-conn"] == ("srv_a",)
+    assert am.get_session_connectors("session-conn") == ("srv_a",)

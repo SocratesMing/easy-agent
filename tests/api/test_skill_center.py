@@ -272,14 +272,14 @@ def test_skill_detail_rejects_bad_input(client):
 
 
 def _plant_cached_agent(session_id: str):
-    """往进程内 Agent 缓存放一个假实例，用于断言接口是否把它清掉。"""
+    """往进程内 Agent 缓存（SessionState）放一个假实例，用于断言接口是否把它清掉。"""
     from types import SimpleNamespace
 
     from easy_agent.bootstrap.config import Config
     from easy_agent.services import agent_manager
 
     agent = SimpleNamespace(safe_username=Config.sanitize_username("testuser"))
-    agent_manager._session_agents[session_id] = agent
+    agent_manager._sessions[session_id] = agent_manager.SessionState(agent=agent)
     return agent_manager
 
 
@@ -292,9 +292,9 @@ def test_add_skill_invalidates_cached_agent(client):
     try:
         resp = client.post("/agent/skill-center/add-skill", json={"dir_name": name})
         assert resp.status_code == 200
-        assert sid not in manager._session_agents
+        assert manager.get_session_agent(sid) is None
     finally:
-        manager._session_agents.pop(sid, None)
+        manager._sessions.pop(sid, None)
         manager.remove_session_agent(sid)
         shutil.rmtree(SKILLS_ROOT / name, ignore_errors=True)
 
@@ -315,15 +315,15 @@ def test_disable_and_enable_invalidate_cached_agent(client):
         assert client.post(
             "/agent/skill-center/disable-skill", json={"dir_name": name}
         ).status_code == 200
-        assert sid not in manager._session_agents
+        assert manager.get_session_agent(sid) is None
 
         _plant_cached_agent(sid)
         assert client.post(
             "/agent/skill-center/enable-skill", json={"dir_name": name}
         ).status_code == 200
-        assert sid not in manager._session_agents
+        assert manager.get_session_agent(sid) is None
     finally:
-        manager._session_agents.pop(sid, None)
+        manager._sessions.pop(sid, None)
         manager.remove_session_agent(sid)
         shutil.rmtree(SKILLS_ROOT / name, ignore_errors=True)
 

@@ -5,6 +5,9 @@ import logging
 from easy_agent.bootstrap.env import env_str
 import platform
 from collections import OrderedDict
+from collections.abc import MutableMapping
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable
 
 from easy_agent.agent import EasyAgent
@@ -27,42 +30,230 @@ from easy_agent.services.mcp_policy import filter_server_names
 
 logger = logging.getLogger("easy-agent.chat_service")
 
-_session_agents: "OrderedDict[str, EasyAgent]" = OrderedDict()
-_AGENT_CACHE_MAX = 100
-_session_create_locks: dict[str, asyncio.Lock] = {}
-# 会话 → 当前生效的专家 Agent ID（"" 表示通用 Agent）。
-# 与 _session_agents 同性质（进程内缓存），用于判断「专家是否变更」——
-# 变更时必须驱逐 Agent 缓存，否则会出现「换专家不生效」与「专家人设黏在普通聊天上」。
-_session_expert: dict[str, str] = {}
-# 会话 → 本会话启用的连接器（mcp.json 的 server 名，由输入框「+」面板的开关写入，
-# 见 api/connectors.py 的 /agent/connectors/session）。与 _session_agents 同性质
-# （进程内缓存，仅本次会话临时生效，不落库、不改 mcp.json）：
-#   * key 不存在 = 尚未设置 → 注入全部启用连接器（新建会话的默认态）；
-#   * 空元组     = 显式全部关闭 → 不注入任何连接器的工具；
-# 写入路径（set_session_connectors）会同步驱逐该会话的缓存 Agent，否则旧工具集会黏住。
-_session_connectors: dict[str, tuple[str, ...]] = {}
-_session_stream_tasks: dict[str, asyncio.Task[None]] = {}
-
-# 会话级「待修改专家」绑定表（``{session_id: expert_agent_id}``）：用户在专家面板点
-# 「编辑」后由聊天请求的结构化字段 ``pending_expert_id`` 写入（归属校验在接口层做）。
-# 修改专家时 save_expert 工具以这里的值为准——**用户消息里不再携带专家 ID**，
-# 防止消息体被任意篡改。新绑定覆盖旧绑定，保留至会话结束（remove_session_agent 清除）。
-_session_edit_targets: dict[str, str] = {}
-
-# 会话 → 本次生效的技能作用域白名单（``None`` = 全量可见）。
-# 与 _session_expert 同性质：进程内缓存，随 Agent 一起创建/清理。
-# 作用域**变化必须驱逐 Agent**：技能清单在 Agent 构造时注入，缓存命中会一直用旧作用域。
-_session_skill_scope: dict[str, tuple[str, ...] | None] = {}
-
-# 会话 → 本轮用户在输入框选中的技能目录名（``save_expert`` 创建/修改专家时落库为
-# 专家的 ``export_required_skills``）。写入方：``api/chat.py``（每轮请求的 skills 字段）；
-# 读取方：``tools/expert_writer.py``（同一轮内保存专家）。会话结束 / Agent 驱逐时清理。
-_session_turn_skills: dict[str, list[str]] = {}
+# ── 会话状态注册表 ──────────────────────────────────────────────────────
+#
+# 一个 session_id 对应一个 SessionState，取代原先按会话拆成 8 张模块级字典的状态。
+# 每类状态的生命周期不同（见 SessionState 字段注释），清理统一走
+# ``drop(session_id, scope)``：随 Agent 的状态 / 随会话的状态 / session_runtime 表的
+# 落库缓存各自有明确的清理范围，不再靠注释解释「哪个字典故意不清」。
+#
+# 注册表本身是 OrderedDict，承担 Agent 缓存的 LRU：只统计真正有缓存 Agent 的会话，
+# 上限 _AGENT_CACHE_MAX；只有附属状态（锁 / 流任务 / 连接器）的会话不参与淘汰计数。
 
 #: ``get_or_create_agent_for_session(skill_whitelist=...)`` 的「未指定」哨兵：
 #: 传 None 表示「显式全量可见」，不传才表示「沿用该会话上次的作用域」（HITL 恢复等
 #: 不带本轮选择的路径），两者语义不同，不能用同一个 None 表示。
+#: ``SessionState.skill_scope`` 也用它区分「从未指定」与「显式 None（全量可见）」。
 _SCOPE_UNSPECIFIED = object()
+
+
+class DropScope(str, Enum):
+    """``drop(session_id, scope)`` 的三种清理范围。"""
+
+    #: 只丢 Agent：清「随 Agent」的字段（Agent、专家、技能作用域、本轮技能、待修改
+    #: 专家绑定），保留连接器 / 流任务 / 创建锁。用于记忆更新、取消生成、定时任务
+    #: 结束等「会话还在、只是重建 Agent」的场景。
+    AGENT = "agent"
+    #: 会话终结：清空全部字段并移除注册表项。用于删除会话。
+    SESSION = "session"
+    #: 用户级失效：只清 Agent 与专家（改了 mcp.json / 专家后按新配置重建），保留
+    #: 用户显式设置的连接器开关与其余会话内状态。
+    USER = "user"
+
+
+@dataclass
+class SessionState:
+    """单个会话在本进程内的全部状态（清理范围见 DropScope）。"""
+
+    #: 随 Agent：本会话缓存的 Agent 实例；None = 未缓存（LRU 淘汰 / 参数变化驱逐）。
+    agent: EasyAgent | None = None
+    #: 随 Agent：当前生效的专家 Agent ID（"" = 通用 Agent）。专家变更判定与 HITL
+    #: 恢复复用缓存都靠它，必须与 agent 同生共死。
+    expert_key: str = ""
+    #: 落库缓存（session_runtime 表，load_connectors / save_connectors）：本会话启用的
+    #: 连接器（mcp.json server 名），进程内只是缓存，丢了从库重新读回。
+    #: None = 尚未设置（注入全部启用连接器）；() = 用户显式全部关闭。
+    connectors: tuple[str, ...] | None = None
+    #: 落库缓存（session_runtime.edit_target，save_edit_target 写入）：会话级「待修改
+    #: 专家」绑定，save_expert 工具按它确定修改目标。进程内值随 Agent 驱逐一并失效
+    #: （不清库），下一次点编辑会重新写入。
+    edit_target: str = ""
+    #: 随 Agent：技能作用域白名单；_SCOPE_UNSPECIFIED = 从未指定（全量可见），
+    #: None = 显式全量，tuple = 只挂这些技能目录。随 Agent 清理。
+    skill_scope: tuple[str, ...] | None | object = _SCOPE_UNSPECIFIED
+    #: 随 Agent：本轮输入框选中的技能目录名，供同轮 save_expert 落库；随 Agent 清理。
+    turn_skills: list[str] = field(default_factory=list)
+    #: 随会话：本进程内运行中的流式任务（跨副本流锁在 session_runtime 表）。
+    stream_task: asyncio.Task[None] | None = None
+    #: 随会话：Agent 创建锁（防同一会话并发创建），空闲且无等待者时随 LRU 淘汰释放。
+    create_lock: asyncio.Lock | None = None
+
+
+#: session_id -> SessionState。顺序 = 有缓存 Agent 的会话的 LRU 顺序。
+_sessions: OrderedDict[str, SessionState] = OrderedDict()
+_AGENT_CACHE_MAX = 100
+
+
+def _reset_session_state() -> None:
+    """清空注册表里的全部会话状态（测试与重新初始化专用，生产路径不调用）。"""
+    _sessions.clear()
+
+
+def _state_for(session_id: str) -> SessionState:
+    """取会话状态；不存在时创建（不改变已有会话的 LRU 顺序）。"""
+    state = _sessions.get(session_id)
+    if state is None:
+        state = SessionState()
+        _sessions[session_id] = state
+    return state
+
+
+def _prune_if_empty(session_id: str, state: SessionState) -> None:
+    """所有字段都回到默认值时移除注册表项，避免长期累积空状态。"""
+    if (
+        state.agent is None
+        and not state.expert_key
+        and state.connectors is None
+        and not state.edit_target
+        and state.skill_scope is _SCOPE_UNSPECIFIED
+        and not state.turn_skills
+        and state.stream_task is None
+        and state.create_lock is None
+    ):
+        _sessions.pop(session_id, None)
+
+
+def _clear_agent_fields(state: SessionState) -> None:
+    """清「随 Agent」的字段（AGENT scope 的核心；落库缓存与流任务 / 锁保留）。"""
+    state.agent = None
+    state.expert_key = ""
+    state.edit_target = ""
+    state.skill_scope = _SCOPE_UNSPECIFIED
+    state.turn_skills = []
+
+
+def drop(session_id: str, scope: DropScope) -> None:
+    """按 scope 清理会话状态；三种 scope 的清理矩阵：
+
+    | 字段         | AGENT（只丢 Agent） | SESSION（会话终结） | USER（用户级失效） |
+    | agent        | 清                  | 清                  | 清                 |
+    | expert_key   | 清                  | 清                  | 清                 |
+    | skill_scope  | 清                  | 清                  | 保留               |
+    | turn_skills  | 清                  | 清                  | 保留               |
+    | edit_target  | 清                  | 清                  | 保留               |
+    | connectors   | 保留                | 清                  | 保留               |
+    | stream_task  | 保留                | 清                  | 保留               |
+    | create_lock  | 保留                | 清                  | 保留               |
+    | 注册表项     | 空则删              | 删除                | 空则删             |
+    """
+    state = _sessions.get(session_id)
+    if state is None:
+        return
+    if scope == DropScope.AGENT:
+        _clear_agent_fields(state)
+    elif scope == DropScope.SESSION:
+        _clear_agent_fields(state)
+        state.connectors = None
+        state.stream_task = None
+        state.create_lock = None
+        _sessions.pop(session_id, None)
+        return
+    elif scope == DropScope.USER:
+        state.agent = None
+        state.expert_key = ""
+    else:
+        raise ValueError(f"未知的会话状态清理范围: {scope!r}")
+    _prune_if_empty(session_id, state)
+
+
+def _cached_agent_count() -> int:
+    """有缓存 Agent 的会话数（= 改造前 _session_agents 的长度）。"""
+    return sum(1 for state in _sessions.values() if state.agent is not None)
+
+
+class _SessionFieldView(MutableMapping):
+    """``{session_id: SessionState.某个字段}`` 的实时视图，取代原先直接交给工具的字典。
+
+    ``save_expert`` 工具在**调用时**才读取绑定表 / 本轮技能（Agent 会被复用，值常常
+    在工具装配之后才写入），所以不能传快照；视图每次读写都转发到 ``_sessions``。
+    """
+
+    __slots__ = ("_factory", "_field")
+
+    def __init__(self, field_name: str, factory: Callable[[], Any]) -> None:
+        self._field = field_name
+        self._factory = factory
+
+    def __getitem__(self, session_id: str) -> Any:
+        state = _sessions.get(session_id)
+        if state is None:
+            raise KeyError(session_id)
+        return getattr(state, self._field)
+
+    def __setitem__(self, session_id: str, value: Any) -> None:
+        setattr(_state_for(session_id), self._field, value)
+
+    def __delitem__(self, session_id: str) -> None:
+        state = _sessions.get(session_id)
+        if state is None:
+            raise KeyError(session_id)
+        setattr(state, self._field, self._factory())
+        _prune_if_empty(session_id, state)
+
+    def __iter__(self):
+        return iter(list(_sessions))
+
+    def __len__(self) -> int:
+        return len(_sessions)
+
+
+#: 工具侧持有的两张实时表（``save_expert`` 的「待修改专家」与「本轮输入的技能」）。
+_EDIT_TARGETS_VIEW = _SessionFieldView("edit_target", str)
+_TURN_SKILLS_VIEW = _SessionFieldView("turn_skills", list)
+
+
+def _create_lock(session_id: str) -> asyncio.Lock:
+    """取会话创建锁（不存在则创建），防止同一会话并发创建 Agent。"""
+    state = _state_for(session_id)
+    if state.create_lock is None:
+        state.create_lock = asyncio.Lock()
+    return state.create_lock
+
+
+def _touch_agent_cache(session_id: str) -> None:
+    """命中 / 新建即移到注册表末尾（LRU）。"""
+    if session_id in _sessions:
+        _sessions.move_to_end(session_id)
+
+
+def _evict_agent_cache(keep_session_id: str) -> None:
+    """按 LRU 淘汰 Agent，并同步清理被淘汰会话的附属状态（避免内存泄漏）。
+
+    - 只按「有缓存 Agent 的会话」计数与淘汰，无 Agent 的会话不参与；
+    - 连接器是 session_runtime 表的缓存，清掉后下次建 Agent 会从库重新读回；
+    - 流任务可能仍在运行，保留引用（由 unregister / drain 负责清理）；
+    - 创建锁空闲且无等待者时一并释放。
+    """
+    while _cached_agent_count() > _AGENT_CACHE_MAX:
+        victim = next(
+            (
+                sid
+                for sid, state in _sessions.items()
+                if sid != keep_session_id and state.agent is not None
+            ),
+            None,
+        )
+        if victim is None:
+            break
+        state = _sessions[victim]
+        _clear_agent_fields(state)
+        state.connectors = None
+        lock = state.create_lock
+        if lock is not None and not lock.locked() and not getattr(lock, "_waiters", None):
+            state.create_lock = None
+        _prune_if_empty(victim, state)
+        logger.info(f"[{victim[-5:]}] Agent 缓存 LRU 淘汰（含会话状态清理）")
+
 
 _agent_config: dict = None
 _llm_instance = None
@@ -118,43 +309,6 @@ def init_agent_config(
         f"[初始化] Agent 配置初始化完成 | 环境: {agent_env or '(未设置)'} | "
         f"Windows: {_is_windows()} | LLM 流式已启用 | MCP 按需动态加载"
     )
-
-
-def _create_lock(session_id: str) -> asyncio.Lock:
-    lock = _session_create_locks.get(session_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _session_create_locks[session_id] = lock
-    return lock
-
-
-def _touch_agent_cache(session_id: str) -> None:
-    """命中即移到末尾（LRU）。测试可能把缓存替换成普通 dict，需兼容。"""
-    move = getattr(_session_agents, "move_to_end", None)
-    if callable(move):
-        move(session_id)
-
-
-def _evict_agent_cache(keep_session_id: str) -> None:
-    """按 LRU 淘汰 Agent，并同步清理所有会话级 side dict（避免内存泄漏）。"""
-    while len(_session_agents) > _AGENT_CACHE_MAX:
-        victim = next((sid for sid in _session_agents if sid != keep_session_id), None)
-        if victim is None:
-            break
-        _session_agents.pop(victim, None)
-        # 会话级附属状态与 Agent 同生共死；只清 Agent 会留下永久泄漏的字典项。
-        for side in (
-            _session_expert,
-            _session_connectors,
-            _session_edit_targets,
-            _session_skill_scope,
-            _session_turn_skills,
-        ):
-            side.pop(victim, None)
-        lock = _session_create_locks.get(victim)
-        if lock is not None and not lock.locked() and not getattr(lock, "_waiters", None):
-            _session_create_locks.pop(victim, None)
-        logger.info(f"[{victim[-5:]}] Agent 缓存 LRU 淘汰（含 side dict 清理）")
 
 
 def _tool_factories() -> dict[str, Callable[..., Any]]:
@@ -220,8 +374,8 @@ async def get_or_create_agent_for_session(
     HITL 审批恢复这类不带本轮选择的路径靠它避免把专家会话重建回通用 Agent。
     作用域变化会驱逐缓存：技能清单在 Agent 构造时注入，缓存命中会一直用旧清单。
 
-    连接器不再随每轮消息提交：本函数只读 ``_session_connectors`` 里该会话已记录的
-    启用集合（写入与「驱逐缓存 Agent」由 ``set_session_connectors`` 负责，见
+    连接器不再随每轮消息提交：本函数只读该会话 SessionState 里已记录的启用集合
+    （写入与「驱逐缓存 Agent」由 ``set_session_connectors`` 负责，见
     ``api/connectors.py`` 的 ``/agent/connectors/session``）。
 
     ``save_expert``（DA-13）：非专家会话都注入，且不参与技能门控——产品级入口不能依赖
@@ -250,11 +404,10 @@ async def _get_or_create_agent_unlocked(
     expert_agent_id: str | None = None,
     skill_whitelist: list[str] | None | object = _SCOPE_UNSPECIFIED,
 ) -> EasyAgent:
-    global _session_agents, _session_expert, _session_connectors, _agent_config
-
     if _agent_config is None:
         raise RuntimeError("Agent 配置未初始化")
 
+    state = _state_for(session_id)
     config = _agent_config["config"]
     # config.yaml 的 hitl.enabled=false 时对话也不审批（工具装配和 EasyAgent 都看这个值）
     enable_hitl = hitl_enabled(config, enable_hitl)
@@ -273,20 +426,22 @@ async def _get_or_create_agent_unlocked(
                 str(name).strip() for name in skill_whitelist if str(name).strip()
             )
         )
-        _session_skill_scope[session_id] = current_scope
+        state.skill_scope = current_scope
     else:
-        current_scope = _session_skill_scope.get(session_id)
+        saved_scope = state.skill_scope
+        current_scope = None if saved_scope is _SCOPE_UNSPECIFIED else saved_scope
 
-    # 本会话启用的连接器（mcp.json server 名，由输入框「+」面板的会话级开关写入）。
-    # key 不存在 = 尚未设置 → None = 注入全部启用连接器；空元组 = 全部关闭 → []。
-    recorded_connectors = _session_connectors.get(session_id)
+    # 本会话启用的连接器（mcp.json server 名，由输入框「+」面板的会话级开关写入）：
+    # 进程内没有缓存时回读 session_runtime 表（落库缓存）。
+    # None = 尚未设置 → 注入全部启用连接器；空元组 = 全部关闭 → []。
+    recorded_connectors = state.connectors
     if recorded_connectors is None:
         try:
             from easy_agent.services.session_runtime import load_connectors
 
             recorded_connectors = await run_blocking(load_connectors, get_database(), session_id)
             if recorded_connectors is not None:
-                _session_connectors[session_id] = recorded_connectors
+                state.connectors = recorded_connectors
         except Exception:
             recorded_connectors = None
     only_connectors = None if recorded_connectors is None else list(recorded_connectors)
@@ -305,7 +460,7 @@ async def _get_or_create_agent_unlocked(
         )
 
     # 模型切换 / 联网搜索开关变化 / 专家变更：缓存的 Agent 不匹配，驱逐后重建
-    cached = _session_agents.get(session_id)
+    cached = state.agent
     if cached is not None:
         cached_web_search = bool(getattr(cached, "enable_web_search", False))
         # enable_web_search=None（如 HITL 恢复）：不比较开关，直接复用缓存 Agent
@@ -316,7 +471,7 @@ async def _get_or_create_agent_unlocked(
         # 普通聊天上（模型与联网开关都没变，缓存会一直命中）。
         # 连接器变更的驱逐不在这里：会话级开关（set_session_connectors）写入时
         # 就已直接驱逐过该会话的缓存 Agent。
-        expert_changed = expert_key != _session_expert.get(session_id, "")
+        expert_changed = expert_key != state.expert_key
         # 技能作用域变化同样必须驱逐：技能清单在 Agent 构造时注入，缓存命中会一直
         # 沿用旧清单（专家 A 的白名单黏在专家 B 上 = 隔离失效）。
         cached_scope = getattr(cached, "skill_whitelist", None)
@@ -332,7 +487,7 @@ async def _get_or_create_agent_unlocked(
                 f"[{session_id[-5:]}] Agent 参数变化 | "
                 f"model: {getattr(cached, 'model_name', '?')} -> {effective_model} | "
                 f"web_search: {cached_web_search} -> {web_search_enabled} | "
-                f"expert: {_session_expert.get(session_id, '') or '(通用)'} -> "
+                f"expert: {state.expert_key or '(通用)'} -> "
                 f"{expert_key or '(通用)'} | "
                 f"skill_scope: {cached_scope_key or '全量'} -> {current_scope or '全量'} | "
                 f"connectors: {only_connectors if only_connectors is not None else '(全部)'} | "
@@ -340,7 +495,7 @@ async def _get_or_create_agent_unlocked(
                 f"{describe_prompt('本轮 extra', system_prompt_extra)} | "
                 f"旧终稿指纹={prompt_fingerprint(getattr(cached, 'system_prompt', ''))}"
             )
-            _session_agents.pop(session_id, None)
+            state.agent = None
         else:
             # 缓存命中：本轮传入的 extra 会被**忽略**（复用旧 Agent 的提示词）。
             # 因此这里同时打印「本轮 extra」与「缓存 Agent 终稿」两组指纹：一致说明
@@ -436,8 +591,8 @@ async def _get_or_create_agent_unlocked(
             model_name=model_name or "",
             expert_session=bool(expert_key),
             web_search_tool=web_search_tool,
-            edit_targets=_session_edit_targets,
-            turn_skills=_session_turn_skills,
+            edit_targets=_EDIT_TARGETS_VIEW,
+            turn_skills=_TURN_SKILLS_VIEW,
             factories=_tool_factories(),
         ),
     )
@@ -458,9 +613,9 @@ async def _get_or_create_agent_unlocked(
         # 技能作用域（专家技能硬隔离）：None = 全量，非 None = 只挂这些技能目录
         skill_whitelist=None if current_scope is None else list(current_scope),
    )
-    _session_agents[session_id] = agent
+    state.agent = agent
     _touch_agent_cache(session_id)
-    _session_expert[session_id] = expert_key
+    state.expert_key = expert_key
     _evict_agent_cache(session_id)
     logger.info(
         f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir} | "
@@ -480,20 +635,19 @@ def invalidate_user_agents(username: str) -> int:
     that the next request rebuilds the agent with fresh settings. Returns the
     number of evicted agents.
     """
-    global _session_agents, _session_expert
     if not username:
         return 0
     safe = Config.sanitize_username(username)
     to_remove = [
-        sid for sid, a in _session_agents.items()
-        if getattr(a, "safe_username", "") == safe
+        sid
+        for sid, state in _sessions.items()
+        if state.agent is not None
+        and getattr(state.agent, "safe_username", "") == safe
     ]
     for sid in to_remove:
-        _session_agents.pop(sid, None)
-        _session_expert.pop(sid, None)
-        # 会话级连接器开关（_session_connectors）刻意保留：它是用户在输入框里做的
-        # 显式选择，不该因为「改了 mcp.json」而静默复位；被卸载/停用的 server 会被
-        # MCP 加载层自动跳过并记 warning。
+        # 用户级失效：清 Agent 与专家，保留会话级连接器开关（用户显式选择，不该因为
+        # 「改了 mcp.json」而静默复位；被卸载/停用的 server 由 MCP 加载层跳过并告警）。
+        drop(sid, DropScope.USER)
     evicted_graphs = get_agent_graph_cache().invalidate_user(safe)
     logger.info(
         f"用户 {username} 的缓存 Agent 已失效 | 清除 {len(to_remove)} 个 | "
@@ -502,22 +656,21 @@ def invalidate_user_agents(username: str) -> int:
     return len(to_remove)
 
 
-def remove_session_agent(session_id: str):
-    global _session_agents, _session_expert
-    # 专家记录一并清除：否则下次请求会因 expert_key 与残留值相同而误判「未变更」，
-    # 跳过本应发生的重建。清除后「未变更」的判定自动退化为「与 ""（通用）相同」。
-    _session_expert.pop(session_id, None)
-    # 技能作用域 / 本轮技能同生共死：缓存 Agent 没了，旧白名单不能再黏在下一轮请求上
-    _session_skill_scope.pop(session_id, None)
-    _session_turn_skills.pop(session_id, None)
-    # 待修改专家绑定随会话 Agent 一起失效：绑定语义是「本会话内点编辑带来的」，
-    # 会话 Agent 没了绑定也没意义；下一次点编辑会重新写入。
-    _session_edit_targets.pop(session_id, None)
-    # 连接器记录**不在这里清除**：它是用户在「+ → 连接器」面板里显式设置的会话级开关，
-    # 而本函数还会被「记忆更新 / 取消生成 / 定时任务结束」等场景调用，清掉会让用户
-    # 每次记忆更新后开关悄悄复位。会话真正终结（删除会话）由 clear_session_connectors 负责。
-    if session_id in _session_agents:
-        del _session_agents[session_id]
+def remove_session_agent(session_id: str) -> None:
+    """只丢 Agent：清「随 Agent」的状态，保留连接器 / 流任务 / 创建锁。
+
+    记忆更新、取消生成、定时任务结束、上传文件等场景都会调用本函数，会话仍然存在，
+    因此连接器开关（用户显式设置）和正在运行的流任务都不能清；会话真正终结时走
+    ``clear_session_connectors`` 或 ``drop(session_id, DropScope.SESSION)``。
+    """
+    state = _sessions.get(session_id)
+    if state is None:
+        return
+    had_agent = state.agent is not None
+    # 专家 / 技能作用域 / 本轮技能 / 待修改专家绑定都随 Agent 一起失效：否则
+    # expert_key 残留会让下次请求误判「未变更」，旧白名单或旧绑定也会黏在下一轮上。
+    drop(session_id, DropScope.AGENT)
+    if had_agent:
         logger.info(f"[{session_id[-5:]}] Agent 缓存已清除")
 
 
@@ -526,7 +679,7 @@ def set_session_turn_skills(session_id: str, dirs: list[str] | None) -> list[str
 
     创建 / 修改专家走的是对话式流程（expert-creator 技能 + ``save_expert`` 工具），
     用户在输入框选的技能包只进聊天请求的 ``skills`` 字段——工具侧看不到请求体，
-    因此由 ``api/chat.py`` 在这里暂存一份（与 ``_session_edit_targets`` 同性质）。
+    因此由 ``api/chat.py`` 在这里暂存一份（存进该会话的 SessionState）。
 
     规则：**非空才覆盖**，空值保留上一次——创建流程可能跨多轮（Agent 先追问再保存），
     用户每轮都会重新带上胶囊，此时不该因为中间某一轮没带胶囊就把选择清空。
@@ -534,8 +687,9 @@ def set_session_turn_skills(session_id: str, dirs: list[str] | None) -> list[str
     """
     cleaned = [str(name).strip() for name in (dirs or []) if str(name).strip()]
     if cleaned and session_id:
-        _session_turn_skills[session_id] = cleaned
-    return list(_session_turn_skills.get(session_id) or [])
+        _state_for(session_id).turn_skills = cleaned
+    state = _sessions.get(session_id)
+    return list(state.turn_skills) if state is not None else []
 
 
 def set_session_edit_target(session_id: str, expert_agent_id: str) -> None:
@@ -557,15 +711,16 @@ async def aset_session_edit_target(session_id: str, expert_agent_id: str) -> Non
 
 
 def _bind_edit_target(session_id: str, expert_agent_id: str) -> str:
-    """写进程内绑定表；返回规范化后的专家 ID，无效输入返回空串（不绑定）。"""
+    """写会话状态里的待修改专家绑定；返回规范化后的专家 ID，无效输入返回空串（不绑定）。"""
     expert_agent_id = str(expert_agent_id or "").strip()
     if not session_id or not expert_agent_id:
         return ""
-    if _session_edit_targets.get(session_id) != expert_agent_id:
+    state = _state_for(session_id)
+    if state.edit_target != expert_agent_id:
         logger.info(
             f"[{session_id[-5:]}] ✏️ 已绑定待修改专家 | expert={expert_agent_id}"
         )
-    _session_edit_targets[session_id] = expert_agent_id
+    state.edit_target = expert_agent_id
     return expert_agent_id
 
 
@@ -580,12 +735,20 @@ def _save_edit_target(session_id: str, expert_agent_id: str) -> None:
 
 def get_session_edit_target(session_id: str) -> str:
     """返回会话当前绑定的「待修改专家」ID（"" 表示未绑定）。供测试与排查使用。"""
-    return _session_edit_targets.get(session_id or "", "")
+    state = _sessions.get(session_id or "")
+    return state.edit_target if state is not None else ""
 
 
 def get_session_expert(session_id: str) -> str:
     """返回会话当前生效的专家 Agent ID（"" 表示通用 Agent）。主要供测试与排查使用。"""
-    return _session_expert.get(session_id, "")
+    state = _sessions.get(session_id)
+    return state.expert_key if state is not None else ""
+
+
+def get_session_agent(session_id: str) -> EasyAgent | None:
+    """返回会话当前缓存的 Agent 实例（None 表示未缓存）。主要供测试与排查使用。"""
+    state = _sessions.get(session_id)
+    return state.agent if state is not None else None
 
 
 def get_session_connectors(session_id: str) -> tuple[str, ...] | None:
@@ -595,15 +758,16 @@ def get_session_connectors(session_id: str) -> tuple[str, ...] | None:
     空元组表示用户把开关全部关掉（不注入任何连接器工具）。
     与 ``get_session_expert`` 同理，主要供接口（连接器开关状态查询）与排查使用。
     """
-    return _session_connectors.get(session_id)
+    state = _sessions.get(session_id)
+    return state.connectors if state is not None else None
 
 
 def set_session_connectors(session_id: str, connector_servers: list[str]) -> int:
     """写入会话级连接器启用集合（server 名，空列表 = 全部关闭），并驱逐缓存 Agent。
 
     由 ``api/connectors.py`` 的 ``/agent/connectors/session`` 调用：输入框「+」面板里
-    的连接器开关切换后，前端把该会话**全部**启用项整体提交过来（全量覆盖，不落库、
-    不改 mcp.json，仅本次会话有效）。
+    的连接器开关切换后，前端把该会话**全部**启用项整体提交过来（全量覆盖，不改
+    mcp.json；集合落库缓存到 session_runtime 表，多副本 / 重启后仍能读回）。
 
     集合变了必须驱逐该会话的缓存 Agent，否则旧工具集会黏住（下次请求会按新集合重建）。
     返回被驱逐的 Agent 数，供接口回执与日志。
@@ -635,10 +799,11 @@ def _apply_session_connectors(
     normalized = tuple(
         dict.fromkeys(str(n).strip() for n in connector_servers if str(n).strip())
     )
-    _session_connectors[session_id] = normalized
+    state = _state_for(session_id)
+    state.connectors = normalized
     evicted = 0
-    if session_id in _session_agents:
-        _session_agents.pop(session_id, None)
+    if state.agent is not None:
+        state.agent = None
         evicted = 1
     logger.info(
         f"[{session_id[-5:]}] 🔌 会话连接器开关已更新 | "
@@ -658,9 +823,12 @@ def _save_connectors(session_id: str, normalized: tuple[str, ...]) -> None:
 
 def clear_session_connectors(session_id: str) -> None:
     """清除会话的连接器开关记录（会话被删除等「会话终结」场景专用）。"""
-    global _session_connectors
-    if _session_connectors.pop(session_id, None) is not None:
-        logger.info(f"[{session_id[-5:]}] 会话连接器开关记录已清除")
+    state = _sessions.get(session_id)
+    if state is None or state.connectors is None:
+        return
+    state.connectors = None
+    _prune_if_empty(session_id, state)
+    logger.info(f"[{session_id[-5:]}] 会话连接器开关记录已清除")
 
 
 def register_stream_task(session_id: str, task: asyncio.Task[None]) -> None:
@@ -694,19 +862,21 @@ def _acquire_stream_lock(session_id: str) -> None:
 def _remember_stream_task(session_id: str, task: asyncio.Task[None]) -> None:
     from easy_agent.services.session_runtime import SessionBusyError
 
-    old = _session_stream_tasks.get(session_id)
+    state = _state_for(session_id)
+    old = state.stream_task
     if old and not old.done() and old is not task:
         # 旧实现直接 old.cancel()：旧任务的 hub.close() 会把 EOF 发给新订阅者，
         # 造成「新流 0 条内容即结束、旧流被静默取消」。改为显式拒绝并发。
         raise SessionBusyError(
             f"会话 {session_id} 正在生成回复，请等待完成或先取消当前生成"
         )
-    _session_stream_tasks[session_id] = task
+    state.stream_task = task
 
 
 def is_session_streaming(session_id: str) -> bool:
     """该会话当前是否有本进程内运行中的流式任务（用于并发互斥/409）。"""
-    task = _session_stream_tasks.get(session_id)
+    state = _sessions.get(session_id)
+    task = state.stream_task if state is not None else None
     return bool(task and not task.done())
 
 
@@ -732,10 +902,12 @@ async def aunregister_stream_task(
 
 
 def _forget_stream_task(session_id: str, task: asyncio.Task[None] | None) -> None:
-    if task is None:
-        _session_stream_tasks.pop(session_id, None)
-    elif _session_stream_tasks.get(session_id) is task:
-        _session_stream_tasks.pop(session_id, None)
+    state = _sessions.get(session_id)
+    if state is None:
+        return
+    if task is None or state.stream_task is task:
+        state.stream_task = None
+        _prune_if_empty(session_id, state)
 
 
 def _release_stream_lock(session_id: str) -> None:
@@ -764,7 +936,11 @@ async def cancel_stream_task(session_id: str) -> bool:
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[{session_id[-5:]}] 写入跨实例取消标记失败: {exc}")
 
-    task = _session_stream_tasks.pop(session_id, None)
+    state = _sessions.get(session_id)
+    task = state.stream_task if state is not None else None
+    if state is not None:
+        state.stream_task = None
+        _prune_if_empty(session_id, state)
     if not task:
         logger.warning(
             f"[{session_id[-5:]}] 取消流式任务 | 未找到注册的任务（可能已结束或未注册）"
@@ -814,7 +990,11 @@ async def cancel_stream_task(session_id: str) -> bool:
 
 async def drain_stream_tasks(timeout: float = 20.0) -> None:
     """Wait for in-flight SSE/astream tasks on shutdown, then cancel leftovers."""
-    tasks = [t for t in list(_session_stream_tasks.values()) if t and not t.done()]
+    tasks = [
+        state.stream_task
+        for state in list(_sessions.values())
+        if state.stream_task is not None and not state.stream_task.done()
+    ]
     if not tasks:
         return
     logger.info("关闭前等待 %s 个流式任务结束（最多 %.0fs）", len(tasks), timeout)
