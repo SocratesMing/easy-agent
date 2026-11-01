@@ -25,7 +25,7 @@
 | `bootstrap/runtime_config.py` | 运行期配置 + Agent 失效回调注册（架构解耦用） |
 | `bootstrap/config.py` / `config_models.py` / `config_validation.py` | 配置加载（`Config.from_yaml` 把各段交给模型校验，只处理 YAML 写法与模型对不上的地方）与路径 helpers；Pydantic 配置模型（字段名与默认值的唯一来源）；未知/废弃键校验（已知键由模型字段生成）与 `${VAR}` 展开；`config.py` re-export 原有公开名字与兼容私有名 |
 | `api/` | chat / auth / sessions / files / expert / connectors / scheduled_tasks / settings / skill_center / completion / prompts / terminal（POSIX，HITL 无关） |
-| `services/` | streaming（SSE 编排）、agent_manager（会话 Agent 缓存/流锁）、scheduler、mcp（连接器工具）、session_uploads、skill_library、expert/public_expert、memory_manager、session_runtime、sse（事件注册表） |
+| `services/` | 7 个领域子包：agents（会话 Agent 缓存/流锁/每轮准备）、streaming（SSE 编排/事件/处理器/审批）、sessions（运行期/线程/上传）、mcp（连接器工具/会话/策略/证据）、memory、experts、skills；根下留 scheduler、health、metrics、document_convert |
 | `db/` | `database.py`（连接/迁移/核心表）、`session_messages.py`、`expert_store.py`、`schema_registry.py` |
 | `middleware/` | JWT 鉴权（`auth.py`）、进程内限流（`rate_limit.py`） |
 | `knowledges/` | 知识库 v2：service / api / ragflow client / runtime worker、catalog sync、observability；`runtime/source_sync.py` 负责研报 SQL 增量同步（可选 `staging_dir`：先批量拷贝、READY 后删暂存副本）；`personnel/` 子包负责知识库域的人员管理、Excel 导入、用户扩展字段 |
@@ -36,15 +36,15 @@
 ## 3. 关键数据流
 
 ### 聊天流式（SSE）
-`POST /agent/chat/stream` → 会话归属校验/创建 → `db.add_message`（行表）→
-`agent_manager.get_or_create_agent_for_session`（按 user/session/model/expert/connectors 缓存，`OrderedDict` LRU）→
+`POST /agent/chat/stream` → 会话归属校验/创建 → `MessageRepository.add_message`（行表）→
+`services.agents.manager.get_or_create_agent_for_session`（按 user/session/model/expert/connectors 缓存，`OrderedDict` LRU）→
 `services/streaming/orchestrator.chat_stream_generator` → DeepAgents `astream(stream_mode=["messages","updates"])` →
-`StreamProcessor` 产生事件 → `format_sse`（`services/sse.py`）→ `_StreamHub` 广播/回放（单会话并发返回 409）→
+`StreamProcessor` 产生事件 → `format_sse`（`services/streaming/sse.py`）→ `_StreamHub` 广播/回放（单会话并发返回 409）→
 最终写入 `session_messages`；可选 HITL 中断 `approval_required`，`/chat/resume` 恢复。
 
 事件契约：`docs/sse-events.md`（15 个事件，契约测试 `tests/services/test_sse_contract.py`）。
 
-图输入（DA-03）：默认每条消息一个 thread（`{session_id}-{message_id}`），历史每轮从 DB 重建；`agent.session_thread: true` 时在官方 saver 上一个会话一个 thread（`thread_id = session_id`），每轮只输入本轮消息，thread 为空时从 DB 水合、DB 多出的轮次补进输入（`services/session_thread.py`），审批句柄仍是 `{session_id}-{message_id}`。本轮 `HumanMessage` 只存用户原话（`id` = message_id，DB 用户行同时记 `turn_id`），工作区前缀、知识库 / 页面上下文、上传预览等本轮注入随 `turn_context` 传入，由主代理摘要中间件在计 token 前渲染进本次请求，不写回历史（`agent/turn_context.py`）；记忆每次运行都重新加载（`agent/memory.py`）。会话级 thread 方案见 `docs/archive/design/2026-10-19-da03-session-thread.md`。
+图输入（DA-03）：默认每条消息一个 thread（`{session_id}-{message_id}`），历史每轮从 DB 重建；`agent.session_thread: true` 时在官方 saver 上一个会话一个 thread（`thread_id = session_id`），每轮只输入本轮消息，thread 为空时从 DB 水合、DB 多出的轮次补进输入（`services/sessions/thread.py`），审批句柄仍是 `{session_id}-{message_id}`。本轮 `HumanMessage` 只存用户原话（`id` = message_id，DB 用户行同时记 `turn_id`），工作区前缀、知识库 / 页面上下文、上传预览等本轮注入随 `turn_context` 传入，由主代理摘要中间件在计 token 前渲染进本次请求，不写回历史（`agent/turn_context.py`）；记忆每次运行都重新加载（`agent/memory.py`）。会话级 thread 方案见 `docs/archive/design/2026-10-19-da03-session-thread.md`。
 
 ### Agent 工具与沙箱
 - 文件工具走 CompositeBackend 路由（`/workspace/`、`/user-skills/`、`/skills/builtin/`（只读）、`/memories/`、外部目录）；没命中路由的路径与框架产物（`/.agent/...`：大工具结果、对话历史）落在工作区之外的会话隐藏目录 `workspace/{user}/.agent/{session_id}/`，删除会话时一并删除（DA-04）。共享编译图用两层真实 `CompositeBackend`（`backends/context.py`）按运行期 `SessionContext` 路由（DA-05）。
@@ -95,7 +95,7 @@
 
 ```bash
 uv sync                                  # 安装依赖（dependency-groups dev / extra docs）
-uv run pytest tests/ -q                  # 全量测试（当前基线：2307 passed / 5 skipped，2026-11-01）
+uv run pytest tests/ -q                  # 全量测试（当前基线：2374 passed / 5 skipped，2026-11-02）
 uvx ruff check .                         # 致命规则（E9/F63/F7/F82）+ 未使用 import / 变量（F401/F811/F841）+ try/except/pass（S110）+ async 阻塞调用（ASYNC）
 python scripts/skills/sync_skills.py --check    # 技能副本一致性
 cd frontend-vue2 && npm ci && npm run build
@@ -107,7 +107,7 @@ CI：`.github/workflows/ci.yml`（后端 ruff + pytest collect/test + 双前端 
 ## 6. 已知架构债（详见审计报告）
 
 - 模块 import 图 0 个强连通分量（`scripts/quality/import_graph.py --check-scc`）；分层方向与包入口（`scripts/quality/import_layers.json`）都有 CI 门禁。
-- `Database` 仍较大（待 Phase 2 拆 repository）。
+- `Database` 已收敛为连接/事务/迁移 + 12 个跨域纯委托（T3：121 → 47 个方法，db/ 外 get_database() 28 → 4）；剩余 knowledges/personnel 直连与 .database 边界留待后续批次。
 - 多副本状态仍在进程内（agent 缓存/SSE hub/调度）；设计见 `docs/archive/design/2026-10-17-multi-instance-state.md`。
 - 安全：SEC-01 / 02 / 04 / 05 已修复（`9a98040`）；SEC-06 / 07 / 08 / 09（prompts / completion 未鉴权、文件解析 / 预览越权）已修复；SEC-03 / 10 / 12（登录与凭据）待负责人确认策略后处理，见 `docs/design/2026-11-01-backend-improvement-backlog.md` 的 S2。
-- async 代码里的同步数据库调用仍有 41 处基线（`scripts/quality/async_blocking_whitelist.json`，只减不增）。
+- async 代码里的同步数据库调用基线已从 45 处降到 10 处 / 4 个文件（`scripts/quality/async_blocking_whitelist.json`，只减不增；剩余为 lifespan、脚本与进程内计数器等设计例外）。

@@ -476,7 +476,7 @@ npm run dev
 ### 测试与质量门禁
 
 ```bash
-uv run pytest                         # 全量：当前 2307 passed / 5 skipped
+uv run pytest                         # 全量：当前 2374 passed / 5 skipped
 uv run pytest tests/agent tests/api   # 指定目录
 uvx ruff check .                      # 静态检查（含 S110 / ASYNC 门禁）
 python scripts/quality/import_graph.py --check-scc       # 模块 SCC=0
@@ -513,7 +513,7 @@ python scripts/docs/generate_api_docs.py           # 生成 docs/API接口文档
 
 ### 添加新工具
 1. 在 `easy_agent/tools/` 下继承 `langchain_core.tools.BaseTool`
-2. 在 `easy_agent/services/mcp.py` 注册或注入到 `mcp_tools` 列表
+2. 在 `easy_agent/services/mcp/tools.py` 注册或注入到 `mcp_tools` 列表
 3. 在 `easy_agent/config/prompts/system.md` 中描述工具用途
 
 ### 添加新 API 路由

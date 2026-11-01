@@ -21,14 +21,14 @@
 | 暂停/删除定时任务时的在途中断 | `services/scheduler.py` 的 `running_tasks` / `stopping_tasks` | 只有接到请求的 pod 能取消本进程的在途执行；其它 pod 上的在途运行会继续跑完（收尾时会重新读 DB，已禁用则标记 cancelled，不会记为成功，但 agent 调用过程不会被中断） |
 | 会话流式事件中心 | `easy_agent/api/chat.py` 的 `_session_stream_hubs`（TTL 120s） | 事件流只存在单进程内存：断线重连、多标签页、刷新后 SSE 落到别的 pod 就订阅不到，表现为输出「丢帧」 |
 | 登录态相关缓存 | `easy_agent/api/auth.py` 的 `_active_login_ip` / `_login_time_cache` | 异地登录提示、上次登录时间只反映单个实例；鉴权与空闲超时已改为 DB 权威（`users.last_activity_at`），不受影响 |
-| HITL 中断态与 Agent 缓存 | `easy_agent/agent.py` 的 `_CHECKPOINTERS`、`services/agent_manager.py` 的 `_sessions`（SessionState 注册表） | 中断审批后的恢复请求若落到别的 pod，会找不到 checkpointer / 缓存 Agent，恢复失败 |
+| HITL 中断态与 Agent 缓存 | `easy_agent/agent.py` 的 `_CHECKPOINTERS`、`services/agents/manager.py` 的 `_sessions`（SessionState 注册表） | 中断审批后的恢复请求若落到别的 pod，会找不到 checkpointer / 缓存 Agent，恢复失败 |
 | 共享存储上的文件写 | `easy_agent/utils/task_logger.py`（append 同一个 `{task_id}.log`）、workspace 下的 `memory.md` 等 | 多 pod 挂同一份 NAS 时并发追加/覆盖同一文件可能交错或丢内容 |
 
 ### 3. 已确认安全（仅作排查参考）
 
 - `Database.init_tables()`：建表与补列/建索引都是幂等的（`CREATE TABLE IF NOT EXISTS`、
   重复索引错误已忽略），并发启动安全。
-- `easy_agent/services/mcp.py` 的 `_mcp_tools_cache`：只是进程内缓存，最多多读几次
+- `easy_agent/services/mcp/tools.py` 的 `_mcp_tools_cache`：只是进程内缓存，最多多读几次
   MCP 配置，无正确性影响。
 
 ## 二、分布式锁

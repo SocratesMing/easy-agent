@@ -1,6 +1,6 @@
 # SSE 事件契约（ARCH-05）
 
-> 唯一事实来源：`easy_agent/services/sse.py` 的 `SSE_EVENT_TYPES`。
+> 唯一事实来源：`easy_agent/services/streaming/sse.py` 的 `SSE_EVENT_TYPES`。
 > 本文件由契约测试 `tests/services/test_sse_contract.py` 与代码同步校验。
 
 | type | 触发 | 关键字段 | 消费端 |

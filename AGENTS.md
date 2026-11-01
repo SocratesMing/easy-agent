@@ -18,7 +18,8 @@ easy-agent/
 ├── easy_agent/          # Python backend (FastAPI)
 │   ├── api/             # Routers: chat/auth/sessions/files/terminal/scheduled_tasks/
 │   │                    #   settings/skill_center/connectors/expert/knowledge/personnel
-│   ├── services/        # streaming (SSE), scheduler, agent_manager, mcp, session_uploads, sse
+│   ├── services/        # 7 个领域子包 agents/streaming/sessions/mcp/memory/experts/skills
+│   │                    #   + scheduler/metrics/health/document_convert
 │   ├── db/              # SQLite/MySQL layer + schema_registry + session_messages
 │   ├── models/          # Pydantic API & DB models
 │   ├── middleware/      # JWT auth + in-process rate limit

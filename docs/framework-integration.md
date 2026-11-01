@@ -73,7 +73,7 @@
   `HarnessProfile(tool_description_overrides=...)`，不再 monkeypatch `FilesystemMiddleware`
   （`tests/test_framework_contract.py` 钉住）；profiles 仍是 beta API，升级时按上表第 1 项复核。
 
-- **FW-10 已落地**：`services/mcp.py:normalize_servers_mapping()` 中 URL-only 配置
+- **FW-10 已落地**：`services/mcp/tools.py:normalize_servers_mapping()` 中 URL-only 配置
   默认 transport 由旧 `sse` 改为 `streamable_http`；`streamable-http` / `http` 别名
   统一归一化为 `streamable_http`，显式 `sse` 保持兼容（`tests/services/test_mcp_transport.py`）。
 
