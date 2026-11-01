@@ -56,6 +56,12 @@ jobs:
           enable-cache: true
       - name: Install dependencies
         run: uv sync --frozen --group dev --extra docs
+      # 类型检查按目录接入（T12）：pyright basic 模式只覆盖 pyproject 里 include 的三个目录
+      # （db/repositories、utils、services/streaming），暂不扩大到全仓。
+      # 用 uvx 调起 pyright：不写入 uv.lock、不改本 job 的依赖步骤语义；必须放在
+      # ``uv sync`` 之后——pyright 通过 [tool.pyright] 的 venvPath=.venv 解析第三方依赖。
+      - name: Type check (pyright, selected dirs)
+        run: uvx pyright
       - name: Config schema + bare getenv gates
         run: |
           uv run python scripts/quality/check_config_schema.py --check

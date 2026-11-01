@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Optional, cast
 
 from easy_agent.models.db import UserModel
 from easy_agent.utils.auth import hash_password, verify_password
@@ -334,8 +334,12 @@ def delete_user(db, username: str) -> bool:
         return cursor.rowcount > 0
 
 def get_or_create_default_user(db) -> UserModel:
+    """创建/修复默认管理员。
 
-    return get_or_create_default_admin(db)
+    实现经 ``user_fields_registry`` 注册为 ``Callable[[object], object]``（避免 db → personnel
+    反向依赖），实际返回 UserModel；这里做一次类型收窄，运行期不变。
+    """
+    return cast(UserModel, get_or_create_default_admin(db))
 
 def list_users(db, limit: int = 50, offset: int = 0) -> list[UserModel]:
     with db.get_connection() as conn:

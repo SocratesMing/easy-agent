@@ -22,7 +22,7 @@ def parse_mcp_content(content) -> str:
             if isinstance(item, dict) and item.get("type") == "text":
                 parts.append(item.get("text", ""))
             elif hasattr(item, "text"):
-                parts.append(str(item.text))
+                parts.append(str(getattr(item, "text")))
         if parts:
             return "\n\n".join(parts)
     return str(content)

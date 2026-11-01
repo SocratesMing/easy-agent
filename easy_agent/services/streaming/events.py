@@ -234,6 +234,9 @@ class StreamEventWriter:
             )
 
     async def _run(self) -> None:
+        loop = self._loop
+        # _ensure_task 在事件循环内创建后台任务前写入 self._loop，_run 时必然已设置
+        assert loop is not None
         try:
             while True:
                 first = await self._queue.get()
@@ -241,9 +244,9 @@ class StreamEventWriter:
                     break
                 batch = [first]
                 sentinel_seen = False
-                deadline = self._loop.time() + FLUSH_INTERVAL_SECONDS
+                deadline = loop.time() + FLUSH_INTERVAL_SECONDS
                 while len(batch) < MAX_BATCH_SIZE:
-                    remaining = deadline - self._loop.time()
+                    remaining = deadline - loop.time()
                     if remaining <= 0:
                         break
                     try:

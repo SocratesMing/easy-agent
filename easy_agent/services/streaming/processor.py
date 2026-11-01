@@ -18,7 +18,7 @@ import json
 import logging
 import re
 import time
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -264,8 +264,9 @@ class StreamProcessor:
         events.extend(self._end_thinking())
 
         for tc in (m.tool_calls or []):
-            tid = tc.get("id", "")
-            name = tc.get("name", "")
+            # LangChain AIMessage.tool_calls 的 TypedDict.get 返回 Optional；缺字段按空串处理（与原行为一致）
+            tid = str(tc.get("id") or "")
+            name = str(tc.get("name") or "")
             args = tc.get("args", {}) or {}
             self._step_tool_count += 1
             self.tool_call_start_times[tid] = time.time()
@@ -484,7 +485,9 @@ class StreamProcessor:
         if rc:
             events.extend(self._process_reasoning(rc))
         if content and not tcc:
-            events.extend(self._process_content(content))
+            # chunk.content 的静态类型是 str | list[block]；流式 token 实际只可能是 str，
+            # 非 str 内容沿用原行为（交给 _process_content，不做类型分支改写）。
+            events.extend(self._process_content(cast(str, content)))
         # 大参数工具（write_file/edit_file）的 arguments 分片：边收边解析出当前
         # 快照，下发 tool_call_delta 供前端实时渲染正在写入的内容。
         if tcc:

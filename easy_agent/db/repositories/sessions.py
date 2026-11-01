@@ -189,7 +189,8 @@ def get_session(db, session_id: str) -> Optional[SessionModel]:
         todos=todos,
     )
 
-def list_sessions(db, limit: int = 50, offset: int = 0, username: str = None
+def list_sessions(
+    db, limit: int = 50, offset: int = 0, username: str | None = None
 ) -> list[SessionModel]:
     with db.get_connection() as conn:
         cursor = conn.cursor()
@@ -460,7 +461,7 @@ def get_messages(db, session_id: str) -> list[dict]:
     session = get_session(db, session_id)
     return session.messages if session else []
 
-def count_sessions(db, username: str = None) -> int:
+def count_sessions(db, username: str | None = None) -> int:
     with db.get_connection() as conn:
         cursor = conn.cursor()
         if username:

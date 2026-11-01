@@ -234,7 +234,7 @@ def pending_tool_call_ids_for_approval(
     for msg in reversed(state_messages or []):
         if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
             return [
-                tc.get("id", "")
+                tc.get("id") or ""
                 for tc in msg.tool_calls
                 if tc.get("name", "") in approval_tool_names
             ]

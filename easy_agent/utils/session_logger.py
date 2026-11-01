@@ -147,7 +147,7 @@ class SessionLogger:
     def log_user_message(
         self, message: str, files: Optional[list] = None, message_id: str = ""
     ):
-        entry = {
+        entry: dict[str, Any] = {
             "type": "user_message",
             "message_id": message_id,
             "content": message,

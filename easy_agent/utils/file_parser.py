@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 from pathlib import Path
+from typing import Any, cast
 
 try:
     import fitz
@@ -248,7 +249,9 @@ def _parse_pdf(path: Path) -> str:
         doc = fitz.open(str(path))
         text_parts = []
         for page in doc:
-            page_text = page.get_text()
+            # PyMuPDF stub 的 get_text() 返回 str | list | dict；默认 text 模式恒为 str，
+            # cast 只收窄静态类型，运行期行为不变。
+            page_text = cast(str, page.get_text())
             if page_text.strip():
                 text_parts.append(page_text)
         doc.close()
@@ -431,6 +434,9 @@ def _parse_pptx(path: Path) -> str:
         for i, slide in enumerate(prs.slides):
             slide_texts = []
             for shape in slide.shapes:
+                # python-pptx 的 BaseShape 静态类型不含 text/table；运行时按 hasattr 动态判断，
+                # cast 到 Any 只为允许属性访问，不改变运行逻辑。
+                shape = cast(Any, shape)
                 if hasattr(shape, "text") and shape.text.strip():
                     slide_texts.append(shape.text)
                 if shape.has_table:

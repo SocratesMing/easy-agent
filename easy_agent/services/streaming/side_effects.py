@@ -12,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
+from typing import cast
+
 from easy_agent.db.database import Database
 from easy_agent.db.repositories.file_repository import FileRepository
 from easy_agent.db.repositories.session_repository import SessionRepository
@@ -132,7 +134,8 @@ def drop_generated_records(
             except (OSError, ValueError):
                 inside = False
             if inside:
-                files.delete_generated_file(row.get("id"))
+                # files repository 的 delete_generated_file 内置 None 守卫；cast 只为静态类型收窄
+                files.delete_generated_file(cast(int, row.get("id")))
                 removed += 1
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[{session_id[-5:]}] 清理生成文件记录失败: {e}")

@@ -823,7 +823,7 @@ async def chat_stream_generator(
     message_id: str,
     username: str,
     http_request=None,
-    parsed_content: str = None,
+    parsed_content: str | None = None,
     session_logger=None,
     pinned_skills: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
@@ -891,7 +891,9 @@ async def chat_stream_generator(
         # 超长时由官方 SummarizationMiddleware 在模型调用前按 token 阈值自动摘要。
         session = await run_blocking(db.get_session, session_id)
         total_msgs = len(session.messages) if session and session.messages else 0
-        history_messages = session.messages[:-1] if total_msgs else []
+        history_messages = (
+            session.messages[:-1] if session and session.messages else []
+        )
         provider = agent.config.llm.provider.lower() if agent and agent.config else ""
         # DA-03：thread 里的本轮消息只存用户原话（与 DB 一致）；工作区前缀、知识库 /
         # 页面上下文、上传预览等本轮注入（message_content）走 turn_context，只进本轮
@@ -974,7 +976,7 @@ async def resume_stream_generator(
     thread_id: str,
     decisions: list[dict],
     username: str = "",
-    session_logger: SessionLogger = None,
+    session_logger: SessionLogger | None = None,
     message_id: str = "",
     handle: str | None = None,
 ) -> AsyncGenerator[str, None]:

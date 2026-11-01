@@ -70,6 +70,34 @@ easy_agent = [
     "static/**/*",
 ]
 
+[tool.pyright]
+# 类型检查按目录接入（T12）：先用 basic 模式覆盖数据层 / 基础工具 / 流式核心三个目录，
+# 稳定后再逐步扩大；不要一次 include 全仓（存量未覆盖目录留着分批接入）。
+# - basic 模式：捕获真实可判定的类型错误，不强制完整注解（项目大量代码是渐进类型化的）；
+# - venv/venvPath：CI 在 `uv sync --frozen` 之后才有 .venv，本地开发同样用仓库根 .venv；
+#   没有它时第三方依赖会被判成 MissingImport，产生大面积假阳性；
+# - pythonVersion 固定 3.11：项目声明 requires-python >= 3.11，按最低支持版本检查，
+#   避免 CI 的更新 Python 上误用更高版本才有的 typing 特性；
+# - extraPaths 加仓库根：pyright 从子目录反查 `easy_agent.*` 导入时需要。
+typeCheckingMode = "basic"
+include = [
+    "easy_agent/db/repositories",
+    "easy_agent/utils",
+    "easy_agent/services/streaming",
+]
+exclude = [
+    "**/__pycache__",
+    "easy_agent/skills/**",
+    "skills/**",
+]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.11"
+extraPaths = ["."]
+# 少数第三方包只发布运行期代码、没有 py.typed / stub（jose、openpyxl、xlrd 等）：
+# 保持默认的 warning，不升级成 error，也不逐条 ignore（数量多且随依赖变化）。
+reportMissingModuleSource = "warning"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
