@@ -333,6 +333,12 @@ class PersistentMemorySaver(MemorySaver):
         self._session_id = session_id
         self._db = db
         self._oversize_warned = False
+        # 落库顺序保护：快照在调用线程（通常是事件循环）上生成并递增序号，pickle /
+        # 写库在线程里执行。线程池不保证先后，序号更旧的快照如果后落库会覆盖新状态，
+        # 直接丢弃。
+        self._flush_seq = 0
+        self._persisted_seq = 0
+        self._persist_lock = threading.Lock()
         self._hydrate()
 
     def _hydrate(self) -> None:
@@ -405,14 +411,26 @@ class PersistentMemorySaver(MemorySaver):
         except Exception as exc:  # noqa: BLE001 - 裁剪失败不能阻断持久化
             logger.warning("checkpoint 裁剪失败（忽略，继续全量持久化）: %s", exc)
 
-    def _flush(self) -> None:
+    def _snapshot(self) -> tuple[int, dict[str, Any]]:
+        """在当前线程上给内存态做快照：裁剪 + 深拷贝成普通 dict，并递增写入序号。
+
+        快照必须是「这一刻」的独立副本：写库在线程里进行，期间事件循环还会继续 put，
+        不能把仍在变化的 dict 交给线程去 pickle。
+        """
+        with self._persist_lock:
+            self._flush_seq += 1
+            seq = self._flush_seq
+            self._prune_for_persistence()
+            payload: dict[str, Any] = {}
+            for attr in ("storage", "writes", "blobs"):
+                if hasattr(self, attr):
+                    payload[attr] = self._plain_mapping(getattr(self, attr))
+            return seq, payload
+
+    def _write_snapshot(self, seq: int, payload: dict[str, Any]) -> None:
+        """pickle 快照并写库（线程里执行）；序号更旧的快照直接丢弃，避免覆盖新状态。"""
         if self._db is None:
             return
-        self._prune_for_persistence()
-        payload: dict[str, Any] = {}
-        for attr in ("storage", "writes", "blobs"):
-            if hasattr(self, attr):
-                payload[attr] = self._plain_mapping(getattr(self, attr))
         try:
             blob = pickle.dumps(payload, protocol=5)
             if len(blob) > _PERSIST_MAX_BYTES:
@@ -426,10 +444,27 @@ class PersistentMemorySaver(MemorySaver):
                     )
                     self._oversize_warned = True
                 return
-            self._db.save_agent_checkpoint(self._session_id, blob)
+            with self._persist_lock:
+                if seq < self._persisted_seq:
+                    return
+                self._db.save_agent_checkpoint(self._session_id, blob)
+                self._persisted_seq = seq
             self._oversize_warned = False
         except Exception as exc:  # noqa: BLE001
             logger.warning("持久化 checkpointer 失败 | session=%s | %s", self._session_id, exc)
+
+    def _flush(self) -> None:
+        """同步落库：快照与写库都在调用线程上（sync saver 方法本来就在调用线程执行）。"""
+        if self._db is None:
+            return
+        self._write_snapshot(*self._snapshot())
+
+    async def _aflush(self) -> None:
+        """异步落库：快照留在事件循环上，pickle + 写库放进线程。"""
+        if self._db is None:
+            return
+        seq, payload = self._snapshot()
+        await asyncio.to_thread(self._write_snapshot, seq, payload)
 
     def put(self, *args, **kwargs):
         result = super().put(*args, **kwargs)
@@ -443,12 +478,12 @@ class PersistentMemorySaver(MemorySaver):
 
     async def aput(self, *args, **kwargs):
         result = await super().aput(*args, **kwargs)
-        self._flush()
+        await self._aflush()
         return result
 
     async def aput_writes(self, *args, **kwargs):
         result = await super().aput_writes(*args, **kwargs)
-        self._flush()
+        await self._aflush()
         return result
 
     def delete_thread(self, thread_id: str) -> None:
@@ -457,7 +492,7 @@ class PersistentMemorySaver(MemorySaver):
 
     async def adelete_thread(self, thread_id: str) -> None:
         await super().adelete_thread(thread_id)
-        self._flush()
+        await self._aflush()
 
 
 def sqlite_checkpointer_active() -> bool:

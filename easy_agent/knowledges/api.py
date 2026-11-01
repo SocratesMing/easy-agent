@@ -96,7 +96,7 @@ _CITATION_RE = re.compile(r"\[知识依据(\d+)\]")
 # ---------------------------------------------------------------------------
 # 请求级身份（fail-closed，无遗留请求头/默认用户回退）
 # ---------------------------------------------------------------------------
-async def get_knowledge_principal(
+def get_knowledge_principal(
     http_request: Request,
     db: Annotated[Database, Depends(get_database)],
 ) -> KnowledgePrincipal:
@@ -245,19 +245,22 @@ async def _ensure_knowledge_chat_session(
     生成「[知识库问答]」会话记录；真正提问时才创建。
     """
 
-    base = await _call(service.get_base(base_id, principal))
-    session = _current_panel_chat_session(db, principal, base_id)
+    base = await _call(service.get_base, base_id, principal)
+    session = await run_in_threadpool(
+        _current_panel_chat_session, db, principal, base_id
+    )
     if session is None:
         if not create_missing:
             raise HTTPException(status_code=404, detail="知识库问答会话不存在")
-        session = _create_panel_chat_session(db, principal, base_id, base)
+        session = await run_in_threadpool(
+            _create_panel_chat_session, db, principal, base_id, base
+        )
     if create_missing:
         await _call(
-            service.replace_session_scope(
-                session_id=session.session_id,
-                principal=principal,
-                base_ids=[base_id],
-            )
+            service.replace_session_scope,
+            session_id=session.session_id,
+            principal=principal,
+            base_ids=[base_id],
         )
     return session, base
 
@@ -317,11 +320,15 @@ def knowledge_http_error(exc: KnowledgeServiceError) -> HTTPException:
     )
 
 
-async def _call(awaitable):
-    """统一执行服务调用，将业务错误转换为带错误码的 HTTP 异常。"""
+async def _call(method, /, *args, **kwargs):
+    """统一执行服务调用，将业务错误转换为带错误码的 HTTP 异常。
+
+    调用点传「异步方法对象 + 参数」而不是先构造协程：协程在 try 块内才创建，
+    服务异常处理覆盖完整，也不会在调用点留下未 await 的协程对象。
+    """
 
     try:
-        return await awaitable
+        return await method(*args, **kwargs)
     except KnowledgeServiceError as exc:
         raise knowledge_http_error(exc) from exc
 
@@ -402,7 +409,7 @@ async def list_bases(
 ) -> KnowledgeBaseListResponse:
     """分页列出当前用户有权限访问的知识库。"""
 
-    return await _call(service.list_bases(principal, page=page, page_size=page_size))
+    return await _call(service.list_bases, principal, page=page, page_size=page_size)
 
 
 @router.post(
@@ -419,16 +426,15 @@ async def create_base(
     """创建知识库（个人空间/公共空间），公共空间需管理白名单授权。"""
 
     return await _call(
-        service.create_base(
-            principal=principal,
-            name=payload.name,
-            description=payload.description,
-            visibility=payload.visibility,
-            request_id=_request_id(request),
-            department_id=payload.department_id,
-            restrict_access=payload.restrict_access,
-            permission_user_ids=payload.permission_user_ids,
-        )
+        service.create_base,
+        principal=principal,
+        name=payload.name,
+        description=payload.description,
+        visibility=payload.visibility,
+        request_id=_request_id(request),
+        department_id=payload.department_id,
+        restrict_access=payload.restrict_access,
+        permission_user_ids=payload.permission_user_ids,
     )
 
 
@@ -443,13 +449,12 @@ async def update_base(
     """更新知识库名称与描述。"""
 
     return await _call(
-        service.update_base(
-            base_id=base_id,
-            principal=principal,
-            name=payload.name,
-            description=payload.description,
-            request_id=_request_id(request),
-        )
+        service.update_base,
+        base_id=base_id,
+        principal=principal,
+        name=payload.name,
+        description=payload.description,
+        request_id=_request_id(request),
     )
 
 
@@ -463,11 +468,10 @@ async def delete_base(
     """删除知识库：立即同步删除 RAGFlow 中的文档，本地保留软删除记录。"""
 
     await _call(
-        service.delete_base(
-            base_id=base_id,
-            principal=principal,
-            request_id=_request_id(request),
-        )
+        service.delete_base,
+        base_id=base_id,
+        principal=principal,
+        request_id=_request_id(request),
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -483,7 +487,7 @@ async def list_folders(
 ) -> FolderListResponse:
     """列出知识库内的全部文件夹。"""
 
-    return await _call(service.list_folders(base_id, principal))
+    return await _call(service.list_folders, base_id, principal)
 
 
 @router.post(
@@ -500,12 +504,11 @@ async def create_folder(
     """在知识库内创建文件夹（层级最多 5 层）。"""
 
     return await _call(
-        service.create_folder(
-            base_id=base_id,
-            name=payload.name,
-            parent_id=payload.parent_id,
-            principal=principal,
-        )
+        service.create_folder,
+        base_id=base_id,
+        name=payload.name,
+        parent_id=payload.parent_id,
+        principal=principal,
     )
 
 
@@ -518,12 +521,11 @@ async def ensure_folders(
 ) -> FolderEnsureResponse:
     """文件夹上传时批量确保目录树存在（空目录也会创建），幂等。"""
     return await _call(
-        service.ensure_folders(
-            base_id=base_id,
-            folder_id=payload.folder_id,
-            paths=payload.paths,
-            principal=principal,
-        )
+        service.ensure_folders,
+        base_id=base_id,
+        folder_id=payload.folder_id,
+        paths=payload.paths,
+        principal=principal,
     )
 
 
@@ -537,9 +539,8 @@ async def update_folder(
     """重命名文件夹。"""
 
     return await _call(
-        service.update_folder(
-            folder_id=folder_id, name=payload.name, principal=principal
-        )
+        service.update_folder,
+        folder_id=folder_id, name=payload.name, principal=principal
     )
 
 
@@ -551,7 +552,7 @@ async def delete_folder(
 ) -> Response:
     """删除文件夹（仅允许删除空文件夹）。"""
 
-    await _call(service.delete_folder(folder_id=folder_id, principal=principal))
+    await _call(service.delete_folder, folder_id=folder_id, principal=principal)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -574,17 +575,16 @@ async def list_documents(
     """分页列出知识库文档，支持状态过滤与关键字搜索。"""
 
     return await _call(
-        service.list_documents(
-            base_id=base_id,
-            principal=principal,
-            page=page,
-            page_size=page_size,
-            folder_id=folder_id,
-            direct_only=direct_only,
-            status=document_status.value if document_status else None,
-            query=q,
-            request_id=_request_id(request),
-        )
+        service.list_documents,
+        base_id=base_id,
+        principal=principal,
+        page=page,
+        page_size=page_size,
+        folder_id=folder_id,
+        direct_only=direct_only,
+        status=document_status.value if document_status else None,
+        query=q,
+        request_id=_request_id(request),
     )
 
 
@@ -672,17 +672,16 @@ async def upload_document(
             )
         await file.seek(0)
         accepted = await _call(
-            service.upload_document(
-                base_id=base_id,
-                folder_id=folder_id,
-                filename=file.filename or "",
-                content_type=file.content_type or "application/octet-stream",
-                size_bytes=size_bytes,
-                content=file.file,
-                principal=principal,
-                request_id=_request_id(request),
-                relative_path=relative_path,
-            )
+            service.upload_document,
+            base_id=base_id,
+            folder_id=folder_id,
+            filename=file.filename or "",
+            content_type=file.content_type or "application/octet-stream",
+            size_bytes=size_bytes,
+            content=file.file,
+            principal=principal,
+            request_id=_request_id(request),
+            relative_path=relative_path,
         )
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {}
@@ -717,12 +716,11 @@ async def move_document(
     """移动文档到指定文件夹。"""
 
     return await _call(
-        service.move_document(
-            document_id=document_id,
-            folder_id=payload.folder_id,
-            principal=principal,
-            request_id=_request_id(request),
-        )
+        service.move_document,
+        document_id=document_id,
+        folder_id=payload.folder_id,
+        principal=principal,
+        request_id=_request_id(request),
     )
 
 
@@ -737,11 +735,10 @@ async def get_document_content(
     """下载或在线预览文档原文，支持单区间 Range 请求。"""
 
     document, binary = await _call(
-        service.download_document(
-            document_id=document_id,
-            principal=principal,
-            request_id=_request_id(request),
-        )
+        service.download_document,
+        document_id=document_id,
+        principal=principal,
+        request_id=_request_id(request),
     )
     filename = quote(str(document["name"]), safe="")
     size = binary.size_bytes
@@ -792,11 +789,10 @@ async def delete_document(
     """删除文档：立即同步删除 RAGFlow 中的副本，本地保留软删除记录与原文。"""
 
     await _call(
-        service.delete_document(
-            document_id=document_id,
-            principal=principal,
-            request_id=_request_id(request),
-        )
+        service.delete_document,
+        document_id=document_id,
+        principal=principal,
+        request_id=_request_id(request),
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -815,11 +811,10 @@ async def retry_document(
     """重试失败的文档解析，返回 202 受理。"""
 
     return await _call(
-        service.retry_document(
-            document_id=document_id,
-            principal=principal,
-            request_id=_request_id(request),
-        )
+        service.retry_document,
+        document_id=document_id,
+        principal=principal,
+        request_id=_request_id(request),
     )
 
 
@@ -836,11 +831,10 @@ async def pause_document(
     """暂停未就绪文档的解析任务（等待解析/解析中可暂停，已暂停可恢复）。"""
 
     return await _call(
-        service.pause_document(
-            document_id=document_id,
-            principal=principal,
-            request_id=_request_id(request),
-        )
+        service.pause_document,
+        document_id=document_id,
+        principal=principal,
+        request_id=_request_id(request),
     )
 
 
@@ -857,11 +851,10 @@ async def resume_document(
     """恢复已暂停文档的解析任务，重新提交解析队列。"""
 
     return await _call(
-        service.resume_document(
-            document_id=document_id,
-            principal=principal,
-            request_id=_request_id(request),
-        )
+        service.resume_document,
+        document_id=document_id,
+        principal=principal,
+        request_id=_request_id(request),
     )
 
 
@@ -879,12 +872,11 @@ async def list_operations(
     """分页查询当前用户发起的操作记录。"""
 
     return await _call(
-        service.list_operations(
-            principal=principal,
-            page=page,
-            page_size=page_size,
-            request_id=_request_id(request),
-        )
+        service.list_operations,
+        principal=principal,
+        page=page,
+        page_size=page_size,
+        request_id=_request_id(request),
     )
 
 
@@ -899,7 +891,7 @@ async def get_permissions(
 ) -> PermissionListResponse:
     """查询知识库的授权列表。"""
 
-    return await _call(service.get_permissions(base_id, principal))
+    return await _call(service.get_permissions, base_id, principal)
 
 
 @router.put("/bases/{base_id}/permissions", response_model=PermissionListResponse)
@@ -912,12 +904,11 @@ async def replace_permissions(
     """全量替换知识库可见人员名单并更新受限标记。"""
 
     return await _call(
-        service.replace_permissions(
-            base_id=base_id,
-            principal=principal,
-            items=payload.items,
-            restrict_access=payload.restrict_access,
-        )
+        service.replace_permissions,
+        base_id=base_id,
+        principal=principal,
+        items=payload.items,
+        restrict_access=payload.restrict_access,
     )
 
 
@@ -932,7 +923,7 @@ async def get_permission_directory(
 ) -> PermissionDirectoryListResponse:
     """查询权限管理可选人员目录（按部门/处室/团队分组展示的前置数据）。"""
 
-    return await _call(service.get_permission_directory(base_id, principal))
+    return await _call(service.get_permission_directory, base_id, principal)
 
 
 @router.get(
@@ -945,7 +936,7 @@ async def get_creation_permission_directory(
 ) -> PermissionDirectoryListResponse:
     """创建知识库时的可选人员目录（不依赖具体库，需公共空间管理白名单）。"""
 
-    return await _call(service.get_creation_permission_directory(principal))
+    return await _call(service.get_creation_permission_directory, principal)
 
 
 # ---------------------------------------------------------------------------
@@ -1028,17 +1019,16 @@ async def ask(
 
     request_id = _request_id(request)
     retrieved = await _call(
-        service._retrieve_base_evidence(
-            base_id=base_id,
-            principal=principal,
-            question=payload.question,
-            document_ids=payload.document_ids,
-            top_n=payload.top_n,
-            request_id=request_id,
-            metadata_filter=payload.metadata_filter,
-        )
+        service._retrieve_base_evidence,
+        base_id=base_id,
+        principal=principal,
+        question=payload.question,
+        document_ids=payload.document_ids,
+        top_n=payload.top_n,
+        request_id=request_id,
+        metadata_filter=payload.metadata_filter,
     )
-    answer, quality_warnings = await _call(_answer(payload.question, retrieved.evidence))
+    answer, quality_warnings = await _call(_answer, payload.question, retrieved.evidence)
     response = AskResponse(
         answer=answer,
         evidence=retrieved.evidence,
@@ -1148,14 +1138,15 @@ async def rotate_easyagent_chat_session(
     首次创建。
     """
 
-    base = await _call(service.get_base(base_id, principal))
-    session = _create_panel_chat_session(db, principal, base_id, base)
+    base = await _call(service.get_base, base_id, principal)
+    session = await run_in_threadpool(
+        _create_panel_chat_session, db, principal, base_id, base
+    )
     await _call(
-        service.replace_session_scope(
-            session_id=session.session_id,
-            principal=principal,
-            base_ids=[base_id],
-        )
+        service.replace_session_scope,
+        session_id=session.session_id,
+        principal=principal,
+        base_ids=[base_id],
     )
     return _scope_response(session, base_id)
 
@@ -1169,8 +1160,10 @@ async def cancel_easyagent_answer(
 ):
     """停止当前知识库的 EasyAgent 流式回答。"""
 
-    await _call(service.get_base(base_id, principal))
-    session = _current_panel_chat_session(db, principal, base_id)
+    await _call(service.get_base, base_id, principal)
+    session = await run_in_threadpool(
+        _current_panel_chat_session, db, principal, base_id
+    )
     session_id = session.session_id if session else ""
     capabilities = get_host_capabilities()
     cancelled = await capabilities.cancel_stream_task(session_id)
@@ -1193,7 +1186,7 @@ async def get_session_scope(
     """查询会话已选定的知识库范围。"""
 
     return await _call(
-        service.get_session_scope(session_id=session_id, principal=principal)
+        service.get_session_scope, session_id=session_id, principal=principal
     )
 
 
@@ -1210,11 +1203,10 @@ async def replace_session_scope(
     """全量替换会话的知识库范围。"""
 
     return await _call(
-        service.replace_session_scope(
-            session_id=session_id,
-            principal=principal,
-            base_ids=payload.base_ids,
-        )
+        service.replace_session_scope,
+        session_id=session_id,
+        principal=principal,
+        base_ids=payload.base_ids,
     )
 
 

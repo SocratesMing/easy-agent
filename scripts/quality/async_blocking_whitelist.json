@@ -8,38 +8,6 @@
       "lifespan() -> _init_database_and_state": 1,
       "lifespan() -> _start_scheduler": 1
     },
-    "easy_agent/knowledges/api.py": {
-      "_ensure_knowledge_chat_session() -> _create_panel_chat_session": 1,
-      "_ensure_knowledge_chat_session() -> _current_panel_chat_session": 1,
-      "_ensure_knowledge_chat_session() -> service.get_base": 1,
-      "_ensure_knowledge_chat_session() -> service.replace_session_scope": 1,
-      "cancel_easyagent_answer() -> _current_panel_chat_session": 1,
-      "cancel_easyagent_answer() -> service.get_base": 1,
-      "create_base() -> service.create_base": 1,
-      "create_folder() -> service.create_folder": 1,
-      "get_knowledge_principal() -> db.get_user_by_username": 1,
-      "get_session_scope() -> service.get_session_scope": 1,
-      "list_documents() -> service.list_documents": 1,
-      "list_folders() -> service.list_folders": 1,
-      "list_operations() -> service.list_operations": 1,
-      "replace_permissions() -> service.replace_permissions": 1,
-      "replace_session_scope() -> service.replace_session_scope": 1,
-      "rotate_easyagent_chat_session() -> _create_panel_chat_session": 1,
-      "rotate_easyagent_chat_session() -> service.get_base": 1,
-      "rotate_easyagent_chat_session() -> service.replace_session_scope": 1,
-      "update_base() -> service.update_base": 1,
-      "update_folder() -> service.update_folder": 1
-    },
-    "easy_agent/knowledges/chat/chat_bridge.py": {
-      "authorize_scoped_chat() -> repository.has_session_scope": 1,
-      "prepare_knowledge_chat() -> repository.has_session_scope": 1
-    },
-    "easy_agent/knowledges/chat/streaming.py": {
-      "chat_stream_generator() -> db.get_session": 1,
-      "chat_stream_generator() -> db.update_last_assistant_message": 1,
-      "chat_stream_generator() -> db.update_last_assistant_message_row": 1,
-      "chat_stream_generator() -> persist_metadata": 2
-    },
     "easy_agent/knowledges/scripts/migrate_knowledge_to_shared.py": {
       "_migrate_document() -> repository.get_original_object": 1,
       "_migrate_document() -> repository.update_document": 1,
@@ -53,22 +21,13 @@
     },
     "easy_agent/middleware/rate_limit.py": {
       "_allow() -> self.counter.allow": 1
-    },
-    "easy_agent/persistence/checkpoints.py": {
-      "adelete_thread() -> self._flush": 1,
-      "aput() -> self._flush": 1,
-      "aput_writes() -> self._flush": 1
     }
   },
   "reasons": {
     "easy_agent/api/chat.py": "provision_expert_skills 对 builtin-skills.json 做无锁的读改写，留在事件循环上与其他请求串行；放进线程会和并发请求互相覆盖",
     "easy_agent/app.py": "lifespan 启动阶段，还没有接流量",
-    "easy_agent/knowledges/api.py": "知识库域另行处理：origin/rag-1018 正在改 knowledges/api.py 与 chat/chat_bridge.py，合并后再把这些调用挪进线程",
-    "easy_agent/knowledges/chat/chat_bridge.py": "知识库域另行处理：origin/rag-1018 正在改 knowledges/api.py 与 chat/chat_bridge.py，合并后再把这些调用挪进线程",
-    "easy_agent/knowledges/chat/streaming.py": "知识库域另行处理：origin/rag-1018 正在改 knowledges/api.py 与 chat/chat_bridge.py，合并后再把这些调用挪进线程",
     "easy_agent/knowledges/scripts/migrate_knowledge_to_shared.py": "命令行脚本（asyncio.run），没有并发请求",
     "easy_agent/knowledges/scripts/sync_source_docs.py": "命令行脚本（asyncio.run），没有并发请求",
-    "easy_agent/middleware/rate_limit.py": "这一行只走进程内计数器（is_shared=False，只改内存）；共享计数器已经 run_blocking",
-    "easy_agent/persistence/checkpoints.py": "legacy 回退 saver：_flush 要在事件循环上对进程内的 storage / writes 做快照，放进线程会和并发的 aput 交错；只在回退模式启用"
+    "easy_agent/middleware/rate_limit.py": "这一行只走进程内计数器（is_shared=False，只改内存）；共享计数器已经 run_blocking"
   }
 }

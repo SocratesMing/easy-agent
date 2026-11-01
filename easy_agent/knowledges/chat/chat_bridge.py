@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass
 
@@ -82,9 +83,11 @@ async def authorize_scoped_chat(
     if not session_id:
         return username
     repository = KnowledgeRepository(db)
-    if not repository.has_session_scope(session_id=session_id):
+    if not await asyncio.to_thread(
+        repository.has_session_scope, session_id=session_id
+    ):
         return username
-    principal = await get_knowledge_principal(request, db)
+    principal = await asyncio.to_thread(get_knowledge_principal, request, db)
     return principal.username
 
 
@@ -201,7 +204,9 @@ async def prepare_knowledge_chat(
     service: KnowledgeService | None = None
 
     if knowledge_base_ids is not None:
-        principal = await get_knowledge_principal(request, db)
+        principal = await asyncio.to_thread(
+            get_knowledge_principal, request, db
+        )
         service = _build_service(request, db)
         try:
             await service.replace_session_scope(
@@ -212,7 +217,9 @@ async def prepare_knowledge_chat(
         except KnowledgeServiceError as exc:
             raise knowledge_http_error(exc) from exc
 
-    if not repository.has_session_scope(session_id=session_id):
+    if not await asyncio.to_thread(
+        repository.has_session_scope, session_id=session_id
+    ):
         return KnowledgeChatContext(None, [], [])
 
     filter_model: DocumentMetadataFilter | None = None
@@ -232,7 +239,9 @@ async def prepare_knowledge_chat(
             ) from exc
 
     if principal is None:
-        principal = await get_knowledge_principal(request, db)
+        principal = await asyncio.to_thread(
+            get_knowledge_principal, request, db
+        )
     if service is None:
         service = _build_service(request, db)
     try:

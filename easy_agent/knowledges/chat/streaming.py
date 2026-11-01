@@ -9,6 +9,22 @@ from __future__ import annotations
 from easy_agent.services.sse import is_terminal_event
 from easy_agent.services.sse_emitter import SSEEmitter, sse_stream
 from easy_agent.knowledges.chat.host_port import get_host_capabilities
+from easy_agent.utils.blocking import run_blocking
+
+
+def _persist_assistant_metadata(db, session_id: str, assistant_metadata) -> None:
+    """把证据元数据合并进最后一条 assistant 消息并双写持久化。
+
+    只做同步查库 / 写库；调用方经 ``run_blocking`` 放进线程，避免占住事件循环。
+    """
+
+    if not assistant_metadata:
+        return
+    session = db.get_session(session_id)
+    if session and session.messages and session.messages[-1].get("role") == "assistant":
+        message = {**session.messages[-1], **assistant_metadata}
+        db.update_last_assistant_message(session_id, message)
+        db.update_last_assistant_message_row(session_id, message)
 
 
 # ---------------------------------------------------------------------------
@@ -20,7 +36,7 @@ async def chat_stream_generator(*, context_prefix=None, initial_events=None,
 
     首个宿主事件后插入 initial_events（知识证据事件）；流结束
     （done/error/approval_required）或生成器被关闭时，把 assistant_metadata
-    合并进最后一条 assistant 消息落库。
+    合并进最后一条 assistant 消息落库（写库放进线程）。
     """
 
     content = kwargs.get("parsed_content") or kwargs["request"].message
@@ -29,23 +45,21 @@ async def chat_stream_generator(*, context_prefix=None, initial_events=None,
     stream = get_host_capabilities().host_chat_stream_generator(**kwargs)
     emitter = SSEEmitter(kwargs.get("session_id"))
 
-    def persist_metadata():
-        """把证据元数据合并进最后一条 assistant 消息并双写持久化。"""
+    async def persist_metadata() -> None:
+        """把证据元数据落库；写库经 run_blocking 放进线程。"""
 
-        if not assistant_metadata:
-            return
-        db, session_id = kwargs["db"], kwargs["session_id"]
-        session = db.get_session(session_id)
-        if session and session.messages and session.messages[-1].get("role") == "assistant":
-            message = {**session.messages[-1], **assistant_metadata}
-            db.update_last_assistant_message(session_id, message)
-            db.update_last_assistant_message_row(session_id, message)
+        await run_blocking(
+            _persist_assistant_metadata,
+            kwargs["db"],
+            kwargs["session_id"],
+            assistant_metadata,
+        )
 
     try:
         first = True
         async for event in stream:
             if assistant_metadata and is_terminal_event(event):
-                persist_metadata()
+                await persist_metadata()
             yield event
             if first:
                 first = False
@@ -53,4 +67,4 @@ async def chat_stream_generator(*, context_prefix=None, initial_events=None,
                     yield frame
     finally:
         await stream.aclose()
-        persist_metadata()
+        await persist_metadata()

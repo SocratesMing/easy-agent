@@ -45,7 +45,7 @@ async def test_prepare_applies_requested_scope(monkeypatch, db):
 
     principal = _principal()
 
-    async def fake_principal(request, database):
+    def fake_principal(request, database):
         return principal
 
     monkeypatch.setattr(chat_bridge, "KnowledgeService", FakeService)
@@ -84,7 +84,7 @@ async def test_prepare_persists_scope_with_real_service(monkeypatch, db):
         )
     )
 
-    async def fake_principal(request, database):
+    def fake_principal(request, database):
         return principal
 
     async def fake_retrieve(self, **kwargs):
