@@ -484,6 +484,7 @@ python scripts/quality/check_double_write.py             # 双写冻结
 python scripts/quality/check_config_schema.py --check    # 配置键集合
 python scripts/quality/check_env_usage.py --check        # 裸 env 检查
 python scripts/quality/check_multi_replica.py            # 多副本能力门禁
+python scripts/quality/check_async_blocking.py --check   # async 里的同步数据库调用
 python scripts/skills/sync_skills.py --check             # 技能单一源
 ```
 
@@ -502,7 +503,7 @@ python scripts/docs/generate_api_docs.py           # 生成 docs/API接口文档
 
 | 目录 | 用途 |
 | --- | --- |
-| `scripts/quality/` | import SCC、双写冻结、配置 schema/裸 env、多副本门禁 |
+| `scripts/quality/` | import SCC、双写冻结、配置 schema/裸 env、多副本门禁、async 阻塞调用 |
 | `scripts/db/` | `migrate_db`、SQLite→MySQL、checkpoint 清理 |
 | `scripts/deps/` | 离线依赖下载、wheel 落盘 |
 | `scripts/release/` | 发布预检、变更导出 |

@@ -761,7 +761,8 @@ async def health_check():
 async def _readiness_payload() -> HealthResponse:
     from easy_agent.services.health import ping_database, workspace_writable
 
-    db_ok, db_detail = ping_database(db_instance)
+    # 探针每隔几秒就来一次：查库和写盘检查都放进线程，库慢或盘慢时不拖住事件循环
+    db_ok, db_detail = await asyncio.to_thread(ping_database, db_instance)
     workspace_dir = "./workspace"
     try:
         cfg = get_agent_config()
@@ -769,7 +770,7 @@ async def _readiness_payload() -> HealthResponse:
             workspace_dir = cfg["config"].agent.workspace_dir
     except Exception:
         pass
-    ws_ok, ws_detail = workspace_writable(workspace_dir)
+    ws_ok, ws_detail = await asyncio.to_thread(workspace_writable, workspace_dir)
     ready = db_ok and ws_ok and agent_config is not None
     detail = ""
     if not db_ok:

@@ -358,7 +358,7 @@ async def _get_or_create_agent_unlocked(
     if not workspace_name:
         try:
             db = get_database()
-            session = db.get_session(session_id)
+            session = await run_blocking(db.get_session, session_id)
             if session and session.workspace_name:
                 workspace_name = session.workspace_name
         except Exception:
@@ -374,7 +374,7 @@ async def _get_or_create_agent_unlocked(
     organization_id = ""
     try:
         db = get_database()
-        user = db.get_user_by_username(username)
+        user = await run_blocking(db.get_user_by_username, username)
         if user:
             organization_id = user.organization_id or ""
     except Exception as e:

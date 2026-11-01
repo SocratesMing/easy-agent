@@ -60,7 +60,7 @@ async def chat_stream_status(
 ):
     # 校验会话归属（不存在的会话同样 404，避免泄露会话是否存在）
     repo = _as_chat_repository(db)
-    repo.get_owned_session_meta(session_id, username)
+    await asyncio.to_thread(repo.get_owned_session_meta, session_id, username)
     # 以 DB 的 session_runtime.stream_owner/stream_until 为准：请求落到任一 Pod
     # 都能得到一致答案（本 Pod 的 hub 只代表本进程状态，不能用于跨 Pod 判断）。
     try:
@@ -90,7 +90,7 @@ async def chat_stream_live(
 ):
     # 校验会话归属
     repo = _as_chat_repository(db)
-    repo.get_owned_session_meta(session_id, username)
+    await asyncio.to_thread(repo.get_owned_session_meta, session_id, username)
     database = repo.database
     emitter = SSEEmitter(session_id)
 

@@ -42,6 +42,9 @@ jobs:
       # 阶段 0.2：冻结 sessions.messages 双写与 Database 新业务方法。
       - name: Double-write freeze (sessions.messages / Database facade)
         run: python scripts/quality/check_double_write.py
+      # async def 里的同步数据库调用会占住事件循环（并发 SSE 流跟着停）：基线只减不增。
+      - name: Blocking database calls in async code
+        run: python scripts/quality/check_async_blocking.py --check
 
   backend-tests:
     name: Backend tests (pytest)

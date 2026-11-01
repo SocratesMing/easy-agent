@@ -32,6 +32,7 @@ from easy_agent.services.session_thread import abandon_pending_approval, session
 from easy_agent.services.sse import SSEEvent
 from easy_agent.services.sse_emitter import SSEEmitter
 from easy_agent.services.stream_messages import build_assistant_message_dict
+from easy_agent.utils.blocking import run_blocking
 from easy_agent.utils.session_logger import SessionLogger
 from easy_agent.utils.prompt_probe import describe_prompt
 
@@ -403,7 +404,7 @@ async def _relevance_gate(
     if not check_enabled:
         return None
 
-    profile = _expert_profile(repo, username, expert_id)
+    profile = await run_blocking(_expert_profile, repo, username, expert_id)
     expert_name = profile.get("name_cn", "")
 
     # ── 1. 高危红线：不依赖模型、不受 strict 口径影响 ────────────────────
@@ -448,11 +449,12 @@ async def _relevance_gate(
     ]
 
     started = time.time()
+    context = await run_blocking(_recent_context, repo, session_id)
     classification = await expert_relevance.check_relevance(
         llm,
         basis,
         message,
-        context=_recent_context(repo, session_id),
+        context=context,
         disable_thinking=_precheck_disable_thinking(),
         attachments=attachments,
     )
@@ -501,8 +503,8 @@ async def _refusal_event_stream(session_id: str, repo: ExpertRepository, answer:
             elapsed_time=time.time() - started,
             step_count=0,
         )
-        repo.update_last_assistant_message(session_id, message)
-        repo.update_last_assistant_message_row(session_id, message)
+        await run_blocking(repo.update_last_assistant_message, session_id, message)
+        await run_blocking(repo.update_last_assistant_message_row, session_id, message)
     except Exception as exc:  # noqa: BLE001 —— 落库失败不阻断拒答推送
         logger.warning(f"[{sid}] 拒答消息持久化失败: {exc}")
 

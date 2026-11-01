@@ -21,6 +21,7 @@ EXPECTED_ENTRYPOINTS = {
     "quality/check_config_schema.py",
     "quality/check_env_usage.py",
     "quality/check_multi_replica.py",
+    "quality/check_async_blocking.py",
     "quality/double_write_allowlists.py",
     "quality/import_graph_core.py",
     "db/migrate_db.py",

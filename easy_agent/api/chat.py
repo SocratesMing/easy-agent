@@ -608,8 +608,10 @@ async def chat_stream(
         f"pending_expert: {request.pending_expert_id or '(无)'}"
     )
 
-    session_id, workspace_name = open_turn_session(
-        repo, session_id, username, request.message, request.files, turn.fallback_name
+    # 数据库层是同步的：本轮的查库 / 落库都放进线程，不占事件循环（并发的 SSE 流不跟着停）
+    session_id, workspace_name = await asyncio.to_thread(
+        open_turn_session,
+        repo, session_id, username, request.message, request.files, turn.fallback_name,
     )
 
     # 并发互斥：同一会话同一时刻只允许一条流式生成
@@ -626,8 +628,8 @@ async def chat_stream(
     expert_skills: list[str] = []
     if request.expert_agent_id:
         # 我的专家（数据库）优先，公共专家（目录）兜底；读取失败降级为通用 Agent
-        expert_id, expert_prompt, _expert_source = expert_runtime.load_expert_prompt(
-            expert_repo, username, request.expert_agent_id, sid
+        expert_id, expert_prompt, _expert_source = await asyncio.to_thread(
+            expert_runtime.load_expert_prompt, expert_repo, username, request.expert_agent_id, sid
         )
         if not expert_prompt:
             expert_id = ""
@@ -635,6 +637,7 @@ async def chat_stream(
         # 依赖技能补装：只往用户清单里登记（DA-13 S2），不复制技能包本体。
         # 缺包 / 未配置 / 用户停用都**不阻断对话**，转成一段运行时提示交给模型，
         # 让模型如实说明「技能未就绪」，而不是虚构技能产物。
+        # 留在事件循环上：它对 builtin-skills.json 做无锁的读改写，放进线程会和并发请求互相覆盖。
         skill_report = skill_provision.provision_expert_skills(username, expert_id)
         skill_notice = skill_provision.build_skill_runtime_notice(skill_report)
         # 专家绑定的技能包：自建专家取库字段 export_required_skills，公共专家取
@@ -680,7 +683,8 @@ async def chat_stream(
     if gate is not None:
         classification, refusal = gate
         # 拒答也要落用户消息：否则会话列表里只剩一条 assistant 拒答，上下文断裂
-        expert_runtime.persist_user_turn(
+        await asyncio.to_thread(
+            expert_runtime.persist_user_turn,
             expert_repo,
             session_id,
             username,
@@ -715,7 +719,9 @@ async def chat_stream(
     if request.pending_expert_id:
         from easy_agent.tools.expert_writer import resolve_owned_expert
 
-        owned = resolve_owned_expert(repo.database, username, request.pending_expert_id)
+        owned = await asyncio.to_thread(
+            resolve_owned_expert, repo.database, username, request.pending_expert_id
+        )
         if owned is not None:
             await aset_session_edit_target(session_id, request.pending_expert_id)
         else:
@@ -732,7 +738,9 @@ async def chat_stream(
         metadata_filter=request.knowledge_metadata_filter,
         knowledge_base_ids=request.knowledge_base_ids,
     )
-    uploads = build_turn_uploads(repo, session_id, username, request.files, request.message)
+    uploads = await asyncio.to_thread(
+        build_turn_uploads, repo, session_id, username, request.files, request.message
+    )
     parsed_content = uploads.model_input
     # 专家提示词与技能提示排在最后：agent.py 的拼接顺序为
     # [system_prompt, user_info, web_search_prompt, system_prompt_extra]，
@@ -774,7 +782,9 @@ async def chat_stream(
         user_message["page_context"] = page_context
     # 专家随用户消息落库：回答面板取其上一条用户消息的该字段展示头像 + 名称，
     # 刷新 / 历史加载后不丢，同一会话不同轮次各对应自己那一轮的专家。
-    expert_meta = expert_runtime.expert_meta_for_message(expert_repo, username, expert_id)
+    expert_meta = await asyncio.to_thread(
+        expert_runtime.expert_meta_for_message, expert_repo, username, expert_id
+    )
     if expert_meta:
         user_message["expert"] = expert_meta
     # 结构化技能目录名：气泡按它渲染技能标签，不再需要从消息文本里反扒 `/目录名`
@@ -782,8 +792,8 @@ async def chat_stream(
         user_message["skills"] = turn.dirs
     # DA-03：会话 thread 下新输入会丢弃上一轮挂起的中断，DB 里的待审批同步标为拒绝
     if session_thread_in_use(_get_agent_config()):
-        abandon_pending_approval(repo, session_id)
-    repo.add_message(session_id, user_message)
+        await asyncio.to_thread(abandon_pending_approval, repo, session_id)
+    await asyncio.to_thread(repo.add_message, session_id, user_message)
 
     session_logger = SessionLogger(
         session_id=session_id,
@@ -816,7 +826,8 @@ async def chat_stream(
     # Phase 2B：把本轮 run 持久化（owner + lease）。登记失败只记日志，
     # 不影响聊天；request_json 只含请求元数据（files 已是元数据，不含二进制）。
     run_id = new_run_id(session_id, message_id)
-    start_run(
+    await asyncio.to_thread(
+        start_run,
         repo.database,
         run_id,
         session_id,
@@ -916,7 +927,7 @@ async def chat_resume(
     )
 
     # 获取会话的 workspace_name（校验归属，防止跨用户恢复他人会话）
-    session_meta = repo.get_owned_session_meta(session_id, username)
+    session_meta = await asyncio.to_thread(repo.get_owned_session_meta, session_id, username)
     workspace_name = session_meta["workspace_name"] or ""
 
     # 同一会话已有流在跑时拒绝 resume（它依赖进程内缓存与 checkpointer 状态）。
@@ -933,7 +944,11 @@ async def chat_resume(
 
     # 多副本按 pod 隔离 checkpoint：审批只能在记录它的那个 pod 上恢复，落错 pod 时不必再建 Agent
     try:
-        ensure_approval_on_this_instance(lambda: _session_last_message(repo, session_id), thread_id)
+        await asyncio.to_thread(
+            ensure_approval_on_this_instance,
+            lambda: _session_last_message(repo, session_id),
+            thread_id,
+        )
     except StaleApprovalError as exc:
         logger.warning(f"[{sid}] 审批不在本实例 | thread={thread_id} | {exc}")
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -955,12 +970,13 @@ async def chat_resume(
 
     # DA-03：句柄映射到真正要恢复的 thread（会话 thread 模式下是 session_id）；
     # 会话已有新消息或审批已处理时句柄失效，返回 409。
+    last_message = await asyncio.to_thread(_last_session_message, repo, session_id)
     try:
         resume_thread = await resolve_resume_thread(
             agent,
             session_id=session_id,
             handle=thread_id,
-            last_message=_last_session_message(repo, session_id),
+            last_message=last_message,
         )
     except StaleApprovalError as exc:
         logger.warning(f"[{sid}] 拒绝已失效的审批 | thread={thread_id} | {exc}")
@@ -981,7 +997,8 @@ async def chat_resume(
     # 只保存 decisions/session_id/thread_id 元数据，便于审计恢复来源。
     run_message_id = request.message_id or str(uuid.uuid4())
     run_id = new_run_id(session_id, run_message_id)
-    start_run(
+    await asyncio.to_thread(
+        start_run,
         repo.database,
         run_id,
         session_id,
