@@ -462,6 +462,244 @@ async def finalize_stream(
     yield emitter.done(session_id=session_id, **done_fields)
 
 
+@dataclass
+class StreamRun:
+    """一次 chat / resume 流式运行的共享上下文（主循环、收尾与兜底所需）。
+
+    两个公开生成器只负责准备各自的输入（``turn_input(...)`` / ``Command(resume=...)``）
+    与这里的元数据差异；事件顺序、副作用调用顺序、落库时机由 :func:`_run_stream`
+    唯一实现。
+    """
+
+    agent: EasyAgent
+    db: Database
+    session_id: str
+    sid: str
+    message_id: str
+    emitter: SSEEmitter
+    proc: StreamProcessor
+    persister: IncrementalPersister
+    stream_config: dict
+    start_time: float
+    context_length: int | None
+    auto_compress_tokens: int | None
+    thread_id: str
+    handle: str
+    raw_user_msg: str
+    mode: str = "chat"
+    message_content: str = ""
+    session_logger: SessionLogger | None = None
+    result_log_truncate: int = 200
+    decision_status_by_id: dict | None = None
+
+
+async def _save_partial(
+    run: StreamRun, *, with_approval: bool = False, raise_on_error: bool = False
+) -> None:
+    """在线程里保存「进行中」的 assistant 消息（取消 / 异常兜底共用）。"""
+    await run_blocking(
+        persist_partial,
+        run.proc,
+        db=run.db,
+        session_id=run.session_id,
+        sid=run.sid,
+        start_time=run.start_time,
+        with_approval=with_approval,
+        raise_on_error=raise_on_error,
+    )
+
+
+async def _stream_cancelled_frames(run: StreamRun) -> AsyncGenerator[str, None]:
+    """取消兜底：先等线程里在途的写入完成，再保存部分回复（chat / resume 共用）。
+
+    ``run_blocking`` 在调用方被取消时会等线程里的写库做完再抛出，保证「取消时保存
+    的部分回复」不会和在途写入交叉覆盖（见 ``utils/blocking.py``）。
+    """
+    proc = run.proc
+    if run.mode == "resume":
+        logger.info(f"[{run.sid}] HITL 恢复被取消")
+        await _save_partial(run, with_approval=True, raise_on_error=True)
+    else:
+        logger.info(
+            f"[{run.sid}] ❌ 请求被取消 | 当前 step={proc.current_step} | "
+            f"已累积回复 {len(proc.accumulated_response)} 字符 | "
+            f"已记录 {len(_tool_call_tuples(proc.blocks))} 个工具调用 | "
+            f"思考中={proc.is_in_thinking}"
+        )
+        try:
+            await _save_partial(run, raise_on_error=True)
+            logger.info(
+                f"[{run.sid}] 💾 取消时已保存部分回复 | "
+                f"长度: {len(proc.accumulated_response)}"
+            )
+        except Exception as e:
+            logger.warning(f"[{run.sid}] 取消时保存失败: {e}")
+    yield run.emitter.error("请求被取消")
+
+
+async def _stream_error_frames(
+    run: StreamRun, exc: BaseException
+) -> AsyncGenerator[str, None]:
+    """异常兜底：chat 修正思考 / 工具状态，resume 保存部分回复，最后统一 error 帧。"""
+    proc = run.proc
+    if run.mode == "resume":
+        logger.error(f"[{run.sid}] HITL 恢复异常: {str(exc)}", exc_info=True)
+        # 持久化已生成的部分回复（与取消路径一致），避免流式过程中已完成的
+        # 思考/工具/正文在异常后丢失，导致历史会话中 HITL 之后的记录整体消失。
+        await _save_partial(run, with_approval=True)
+    else:
+        logger.error(f"[{run.sid}] ❌ 聊天异常: {str(exc)}", exc_info=True)
+        blocks = proc.blocks
+        if proc.is_in_thinking and proc.thinking_start_time:
+            dur = round(time.time() - proc.thinking_start_time, 2)
+            if blocks and blocks[-1]["type"] == "thinking":
+                blocks[-1]["duration"] = dur
+            proc.is_in_thinking = False
+            yield run.emitter.emit(
+                SSEEvent.THINKING_END, duration=dur, step=proc.current_step
+            )
+        for blk in reversed(blocks):
+            if blk.get("type") == "tool_call" and blk.get("duration") is None:
+                blk["success"] = False
+                blk["result"] = (
+                    f"执行中断: {friendly_error_message(exc)[:run.result_log_truncate]}"
+                )
+                blk["duration"] = 0
+                break
+    yield run.emitter.error(f"处理失败: {friendly_error_message(exc)}")
+
+
+async def _run_stream(run: StreamRun, stream_input) -> AsyncGenerator[str, None]:
+    """chat / resume 共用的流主循环、HITL 收尾与取消 / 异常兜底。
+
+    ``stream_input`` 是唯一的输入差异（新消息 vs ``Command(resume=...)``）；事件顺序、
+    副作用调用顺序与落库时机与合并前逐行一致。
+    """
+    is_resume = run.mode == "resume"
+    proc = run.proc
+    try:
+        async for ev in pump_stream(
+            agent=run.agent,
+            stream_input=stream_input,
+            stream_config=run.stream_config,
+            proc=proc,
+            persister=run.persister,
+            db=run.db,
+            session_id=run.session_id,
+            sid=run.sid,
+            message_id=run.message_id,
+            session_logger=run.session_logger,
+            context=getattr(run.agent, "session_context", None),
+        ):
+            yield run.emitter.frame(ev)
+
+        # 确保 thinking 结束（流结束时若仍在思考）
+        for _ev in proc._end_thinking():
+            yield run.emitter.frame(_ev)
+
+        if proc.accumulated_response:
+            yield run.emitter.content_end()
+
+        if is_resume:
+            logger.info(
+                f"[{run.sid}] 📢 流式输出结束 | steps={proc.current_step} | "
+                f"blocks={len(proc.blocks)}"
+            )
+        else:
+            logger.info(f"[{run.sid}] 📢 流式输出结束")
+
+        # ── HITL: chat 检测新中断 / resume 检测嵌套中断 ────────────────
+        try:
+            interruption = await detect_hitl_interruption(
+                agent=run.agent,
+                stream_config=run.stream_config,
+                proc=proc,
+                elapsed_time=time.time() - run.start_time,
+                thread_id=run.handle,
+                with_approval=is_resume,
+            )
+            if interruption:
+                # 保存部分 assistant 消息（复用取消路径模式）
+                await run_blocking(
+                    run.db.update_last_assistant_message,
+                    run.session_id,
+                    interruption.partial_message,
+                )
+                if is_resume:
+                    # 键序契约（与迁移前字面量一致）：type → thread_id → blocks →
+                    # action_requests。快捷方法把 action_requests 放在 blocks 之前，
+                    # 故此处必须用 emit() 显式排序，不得改用 approval_required()。
+                    yield run.emitter.emit(
+                        SSEEvent.APPROVAL_REQUIRED,
+                        thread_id=run.handle,
+                        # 嵌套中断时也下发当前 blocks，前端据此刷新已完成的工具结果
+                        blocks=proc._sse_blocks(),
+                        action_requests=interruption.action_requests_payload,
+                    )
+                else:
+                    logger.info(
+                        f"[{run.sid}] 🔔 HITL 中断 | thread_id={run.thread_id} | "
+                        f"审批句柄={run.handle} | "
+                        f"{len(interruption.action_requests_payload)} 个操作待审批"
+                    )
+                    yield run.emitter.approval_required(
+                        thread_id=run.handle,
+                        action_requests=interruption.action_requests_payload,
+                    )
+                return
+        except Exception as e:
+            if is_resume:
+                logger.warning(
+                    f"[{run.sid}] HITL 恢复: 嵌套中断检测异常: {e}", exc_info=True
+                )
+            else:
+                logger.warning(f"[{run.sid}] HITL 中断检测异常: {e}", exc_info=True)
+        finally:
+            if is_resume:
+                # 无论正常结束、嵌套中断还是异常，均把审批决策写回，保证切换会话后仍可见
+                await run_blocking(
+                    persist_approval_decisions,
+                    run.db,
+                    run.session_id,
+                    run.decision_status_by_id,
+                    run.sid,
+                )
+
+        # 流末工具状态：chat 直接取当前 blocks；resume 需按 tool_call_id 去重并合并
+        # 审批状态（astream 重放会再次 append 同 id 记录、内存 blocks 可能丢失审批标记）。
+        tool_call_records = _tool_call_tuples(proc.blocks, with_approval=is_resume)
+        if is_resume:
+            tool_call_records = merge_tool_call_records(tool_call_records)
+            # blocks 同样需要 finalize：去重 + 重新应用审批决策；同步回 proc，
+            # 保证 done 事件的 _sse_blocks() 用的是同一份。
+            proc.blocks = finalize_blocks(proc.blocks, run.decision_status_by_id)
+
+        async for frame in finalize_stream(
+            agent=run.agent,
+            db=run.db,
+            session_id=run.session_id,
+            sid=run.sid,
+            message_id=run.message_id,
+            proc=proc,
+            start_time=run.start_time,
+            context_length=run.context_length,
+            auto_compress_tokens=run.auto_compress_tokens,
+            tool_call_records=tool_call_records,
+            raw_user_msg=run.raw_user_msg,
+            message_content=run.message_content,
+            session_logger=run.session_logger,
+            mode=run.mode,
+            emitter=run.emitter,
+        ):
+            yield frame
+    except asyncio.CancelledError:
+        async for frame in _stream_cancelled_frames(run):
+            yield frame
+    except Exception as e:
+        async for frame in _stream_error_frames(run, e):
+            yield frame
+
+
 async def chat_stream_generator(
     request: ChatRequest,
     db: Database,
@@ -572,136 +810,47 @@ async def chat_stream_generator(
         handle = approval_handle(session_id, message_id)
         stream_config = build_run_config(agent, thread_id)
 
-        async for ev in pump_stream(
+        run = StreamRun(
             agent=agent,
-            stream_input=turn_input(
+            db=db,
+            session_id=session_id,
+            sid=sid,
+            message_id=message_id,
+            emitter=emitter,
+            proc=proc,
+            persister=persister,
+            stream_config=stream_config,
+            start_time=start_time,
+            context_length=context_length,
+            auto_compress_tokens=auto_compress_tokens,
+            thread_id=thread_id,
+            handle=handle,
+            raw_user_msg=parsed_content or request.message,
+            message_content=message_content,
+            session_logger=session_logger,
+            result_log_truncate=result_log_truncate,
+        )
+        # 主循环、收尾与兜底统一在 _run_stream（与 resume 共用）；这里只构造本轮输入。
+        async for frame in _run_stream(
+            run,
+            turn_input(
                 context_messages,
                 message_id=message_id,
                 rendered=message_content,
                 pinned_skills=pinned_skills,
             ),
-            stream_config=stream_config,
-            proc=proc,
-            persister=persister,
-            db=db,
-            session_id=session_id,
-            sid=sid,
-            message_id=message_id,
-            session_logger=session_logger,
-            context=getattr(agent, "session_context", None),
-        ):
-            yield emitter.frame(ev)
-
-        # ── Post-streaming: 流结束 ──────────────────────────────────────
-        logger.info(f"[{sid}] 📢 流式输出结束")
-
-        # 确保 thinking 结束（流结束时若仍在思考）
-        for _ev in proc._end_thinking():
-            yield emitter.frame(_ev)
-
-        # content_end 需要累计正文；其余状态由 finalize_stream 从 proc 读取
-        accumulated_response = proc.accumulated_response
-
-        # 发送 content_end
-        if accumulated_response:
-            yield emitter.content_end()
-
-        # ── HITL: 检测中断（文件删除审批） ────────────────────────────
-        try:
-            interruption = await detect_hitl_interruption(
-                agent=agent,
-                stream_config=stream_config,
-                proc=proc,
-                elapsed_time=time.time() - start_time,
-                thread_id=handle,
-            )
-            if interruption:
-                # 保存部分 assistant 消息（复用取消路径模式）
-                await run_blocking(
-                    db.update_last_assistant_message,
-                    session_id,
-                    interruption.partial_message,
-                )
-                logger.info(
-                    f"[{sid}] 🔔 HITL 中断 | thread_id={thread_id} | 审批句柄={handle} | "
-                    f"{len(interruption.action_requests_payload)} 个操作待审批"
-                )
-                yield emitter.approval_required(
-                    thread_id=handle,
-                    action_requests=interruption.action_requests_payload,
-                )
-                return
-        except Exception as e:
-            logger.warning(f"[{sid}] HITL 中断检测异常: {e}", exc_info=True)
-
-        # ── 收尾：最终消息 + 副作用 + done（chat：无 blocks、usage 无 elapsed_time）──
-        async for frame in finalize_stream(
-            agent=agent,
-            db=db,
-            session_id=session_id,
-            sid=sid,
-            message_id=message_id,
-            proc=proc,
-            start_time=start_time,
-            context_length=context_length,
-            auto_compress_tokens=auto_compress_tokens,
-            tool_call_records=_tool_call_tuples(proc.blocks),
-            raw_user_msg=parsed_content or request.message,
-            message_content=message_content,
-            session_logger=session_logger,
-            emitter=emitter,
         ):
             yield frame
-
     except asyncio.CancelledError:
-        accumulated_response = proc.accumulated_response
-        blocks = proc.blocks
-        tool_call_records = _tool_call_tuples(proc.blocks)
-        current_step = proc.current_step
-        is_in_thinking = proc.is_in_thinking
-        logger.info(
-            f"[{sid}] ❌ 请求被取消 | 当前 step={current_step} | "
-            f"已累积回复 {len(accumulated_response)} 字符 | "
-            f"已记录 {len(tool_call_records)} 个工具调用 | "
-            f"思考中={is_in_thinking}"
-        )
-        try:
-            await run_blocking(
-                persist_partial,
-                proc,
-                db=db,
-                session_id=session_id,
-                sid=sid,
-                start_time=start_time,
-                raise_on_error=True,
-            )
-            logger.info(
-                f"[{sid}] 💾 取消时已保存部分回复 | 长度: {len(accumulated_response)}"
-            )
-        except Exception as e:
-            logger.warning(f"[{sid}] 取消时保存失败: {e}")
-        yield emitter.error("请求被取消")
+        # 取消发生在准备阶段（主循环内的取消由 _run_stream 兜底）：还没有产出任何
+        # token，不写空 assistant 消息，取消继续向上传播（/cancel 语义不变）。
+        logger.info(f"[{sid}] ❌ 准备阶段被取消（未产生回复）")
+        raise
     except Exception as e:
-        logger.error(f"[{sid}] ❌ 聊天异常: {str(e)}", exc_info=True)
-        accumulated_response = proc.accumulated_response
-        blocks = proc.blocks
-        current_step = proc.current_step
-        is_in_thinking = proc.is_in_thinking
-        if is_in_thinking and proc.thinking_start_time:
-            dur = round(time.time() - proc.thinking_start_time, 2)
-            if proc.blocks and proc.blocks[-1]["type"] == "thinking":
-                proc.blocks[-1]["duration"] = dur
-            proc.is_in_thinking = False
-            yield emitter.emit(
-                SSEEvent.THINKING_END, duration=dur, step=current_step
-            )
-        for blk in reversed(blocks):
-            if blk.get("type") == "tool_call" and blk.get("duration") is None:
-                blk["success"] = False
-                blk["result"] = f"执行中断: {friendly_error_message(e)[:result_log_truncate]}"
-                blk["duration"] = 0
-                break
+        # 准备阶段异常（查库 / 上下文构建）：还没产出任何 token，按统一文案补终态帧。
+        logger.error(f"[{sid}] ❌ 聊天准备异常: {str(e)}", exc_info=True)
         yield emitter.error(f"处理失败: {friendly_error_message(e)}")
+
 
 async def resume_stream_generator(
     db: Database,
@@ -831,135 +980,26 @@ async def resume_stream_generator(
         start_time=start_time,
     )
 
-    try:
-        async for ev in pump_stream(
-            agent=agent,
-            stream_input=resume_command,
-            stream_config=stream_config,
-            proc=proc,
-            persister=persister,
-            db=db,
-            session_id=session_id,
-            sid=sid,
-            message_id=message_id,
-            session_logger=session_logger,
-            context=getattr(agent, "session_context", None),
-        ):
-            yield emitter.frame(ev)
-
-        # ── Post-streaming ─────────────────────────────────────────
-        # 确保 thinking 结束（流结束时若仍在思考）
-        for _ev in proc._end_thinking():
-            yield emitter.frame(_ev)
-
-        # 同步本地状态别名（供 content_end / 去重 / finalize_stream 使用）
-        accumulated_response = proc.accumulated_response
-        blocks = proc.blocks
-        tool_call_records = _tool_call_tuples(proc.blocks, with_approval=True)
-        current_step = proc.current_step
-        logger.info(
-            f"[{sid}] 📢 流式输出结束 | steps={current_step} | blocks={len(blocks)}"
-        )
-
-        if accumulated_response:
-            yield emitter.content_end()
-
-        # ── HITL: 检测嵌套中断 ─────────────────────────────────────
-        try:
-            interruption = await detect_hitl_interruption(
-                agent=agent,
-                stream_config=stream_config,
-                proc=proc,
-                elapsed_time=time.time() - start_time,
-                thread_id=handle,
-                with_approval=True,
-            )
-            if interruption:
-                await run_blocking(
-                    db.update_last_assistant_message,
-                    session_id,
-                    interruption.partial_message,
-                )
-                # 键序契约（与迁移前字面量一致）：type → thread_id → blocks →
-                # action_requests。快捷方法把 action_requests 放在 blocks 之前，
-                # 故此处必须用 emit() 显式排序，不得改用 approval_required()。
-                yield emitter.emit(
-                    SSEEvent.APPROVAL_REQUIRED,
-                    thread_id=handle,
-                    # 嵌套中断时也下发当前 blocks，前端据此刷新已完成的工具结果
-                    blocks=proc._sse_blocks(),
-                    action_requests=interruption.action_requests_payload,
-                )
-                return
-        except Exception as e:
-            logger.warning(
-                f"[{sid}] HITL 恢复: 嵌套中断检测异常: {e}", exc_info=True
-            )
-        finally:
-            # 无论正常结束、嵌套中断还是异常，均把审批决策写回，保证切换会话后仍可见
-            await run_blocking(
-                persist_approval_decisions, db, session_id, decision_status_by_id, sid
-            )
-
-        # 恢复流重跑工具时会再次 append 同 tool_call_id 的记录（DB 加载的 + 重跑时新增的），
-        # 按 tool_call_id 去重并合并审批状态：保留有结果的记录，继承非空 approval_status，
-        # 避免最终消息出现重复工具卡、且审批标记（已批准）不被无状态的新记录冲掉。
-        tool_call_records = merge_tool_call_records(tool_call_records)
-
-        # blocks 同样需要 finalize：astream 重放可能新建同 tool_call_id/同名 block，
-        # 且内存 blocks 的 approval_status 可能在重放中被遗漏。
-        blocks = finalize_blocks(blocks, decision_status_by_id)
-        proc.blocks = blocks  # 同步去重后的 blocks，确保 done 事件 _sse_blocks() 一致
-
-        # ── 收尾：最终消息 + 副作用 + done（resume：带权威 blocks、usage 含 elapsed_time）──
-        async for frame in finalize_stream(
-            agent=agent,
-            db=db,
-            session_id=session_id,
-            sid=sid,
-            message_id=message_id,
-            proc=proc,
-            start_time=start_time,
-            context_length=context_length,
-            auto_compress_tokens=auto_compress_tokens,
-            tool_call_records=tool_call_records,
-            raw_user_msg=original_user_msg,
-            session_logger=session_logger,
-            mode="resume",
-            emitter=emitter,
-        ):
-            yield frame
-
-    except asyncio.CancelledError:
-        logger.info(f"[{sid}] HITL 恢复被取消")
-        accumulated_response = proc.accumulated_response
-        accumulated_thinking = proc.accumulated_thinking
-        blocks = proc.blocks
-        tool_call_records = _tool_call_tuples(proc.blocks, with_approval=True)
-        last_context_tokens = proc.last_context_tokens
-        current_step = proc.current_step
-        await run_blocking(
-            persist_partial,
-            proc,
-            db=db,
-            session_id=session_id,
-            sid=sid,
-            start_time=start_time,
-            with_approval=True,
-            raise_on_error=True,
-        )
-        yield emitter.error("请求被取消")
-    except Exception as e:
-        logger.error(f"[{sid}] HITL 恢复异常: {str(e)}", exc_info=True)
-        # 持久化已生成的部分回复（与取消路径一致），避免流式过程中已完成的
-        # 思考/工具/正文在异常后丢失，导致历史会话中 HITL 之后的记录整体消失。
-        await run_blocking(
-            persist_partial,
-            proc,
-            db=db,
-            session_id=session_id,
-            sid=sid,
-            start_time=start_time,
-            with_approval=True,
-        )
-        yield emitter.error(f"处理失败: {friendly_error_message(e)}")
+    run = StreamRun(
+        agent=agent,
+        db=db,
+        session_id=session_id,
+        sid=sid,
+        message_id=message_id,
+        emitter=emitter,
+        proc=proc,
+        persister=persister,
+        stream_config=stream_config,
+        start_time=start_time,
+        context_length=context_length,
+        auto_compress_tokens=auto_compress_tokens,
+        thread_id=thread_id,
+        handle=handle,
+        raw_user_msg=original_user_msg,
+        mode="resume",
+        session_logger=session_logger,
+        decision_status_by_id=decision_status_by_id,
+    )
+    # 主循环、收尾与兜底统一在 _run_stream（与 chat 共用）；这里只构造恢复输入。
+    async for frame in _run_stream(run, resume_command):
+        yield frame
