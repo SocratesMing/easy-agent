@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-import easy_agent.services.expert_service as esvc
+import easy_agent.services.experts.service as esvc
 from easy_agent.bootstrap.config import Config
 
 

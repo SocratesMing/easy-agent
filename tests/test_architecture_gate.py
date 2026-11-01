@@ -402,7 +402,7 @@ def test_importing_bootstrap_env_does_not_load_the_agent():
 
 def test_importing_services_health_does_not_load_agent_manager():
     loaded = _modules_loaded_by("easy_agent.services.health")
-    assert "easy_agent.services.agent_manager" not in loaded
+    assert "easy_agent.services.agents.manager" not in loaded
 
 
 # --- double-write freeze -----------------------------------------------------

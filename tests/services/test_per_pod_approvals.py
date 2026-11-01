@@ -18,8 +18,8 @@ from langgraph.graph import END, START, StateGraph
 from easy_agent.db.database import Database
 from easy_agent.models.db import SessionModel
 from easy_agent.persistence import checkpoints as ck
-from easy_agent.services import session_thread
-from easy_agent.services.session_thread import (
+from easy_agent.services.sessions import thread as session_thread
+from easy_agent.services.sessions.thread import (
     StaleApprovalError,
     ensure_approval_on_this_instance,
     resolve_resume_thread,

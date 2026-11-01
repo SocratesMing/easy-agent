@@ -13,7 +13,7 @@
 
 本模块只做文件层面的事、只依赖 ``Config``（agent 层与 services 层都会用到它，不能反过来
 import services）；调用方负责在启停后让缓存的 Agent 失效。用户技能目录名也以这里为准，
-``services/skill_library.py`` 从这里取。
+``services/skills/library.py`` 从这里取。
 
 各函数的 ``config`` 缺省时按运行期配置解析用户目录（接口层）；``EasyAgent``、迁移脚本这类
 持有自己配置的调用方要显式传入，否则会读写到运行期配置（或 ``./workspace``）下的清单。

@@ -1,6 +1,6 @@
 """本轮请求准备测试：聊天与专家执行共用的准备函数，以及不经 HTTP 的 ``prepare_turn``。
 
-T4 之后准备逻辑在 ``services/chat_turn.py``（路由只剩「参数校验 → prepare → SSE 响应」），
+T4 之后准备逻辑在 ``services/agents/chat_turn.py``（路由只剩「参数校验 → prepare → SSE 响应」），
 因此这里直接调用服务函数、不经过 HTTP，覆盖：空请求校验、技能解析、取会话、上传文件
 上下文，以及 ``prepare_turn`` 的专家拒答 / 并发 409 / 待修改专家越权三种关键场景。
 """
@@ -9,13 +9,15 @@ from types import SimpleNamespace
 
 import pytest
 
-import easy_agent.services.chat_turn as chat_turn
+import easy_agent.services.agents.chat_turn as chat_turn
 from easy_agent.db.repositories.chat_repository import ChatRepository
 from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.knowledges.chat.chat_bridge import KnowledgeChatContext
 from easy_agent.models.api import ChatRequest
 from easy_agent.models.exceptions import BadRequestError, ConflictError, NotFoundError
-from easy_agent.services import agent_manager, expert_runtime, skill_provision
+from easy_agent.services.skills import provision as skill_provision
+from easy_agent.services.experts import runtime as expert_runtime
+from easy_agent.services.agents import manager as agent_manager
 
 
 @pytest.fixture(autouse=True)

@@ -27,7 +27,7 @@ logger = logging.getLogger("easy_agent.agent")
 LONG_TERM_MEMORY_VIRTUAL_PATH = "/memories/AGENTS.md"
 
 # 会话工作区布局：上传文件解析后落盘的目录与清单文件名（清单作为记忆注入）。
-# services/session_uploads.py 从这里导入（上层依赖下层）。
+# services/sessions/uploads.py 从这里导入（上层依赖下层）。
 UPLOADS_DIR_NAME = "uploads"
 MANIFEST_FILENAME = "index.md"
 

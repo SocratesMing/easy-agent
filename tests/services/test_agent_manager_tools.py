@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from easy_agent.bootstrap.config import Config
-from easy_agent.services import agent_manager as am
+from easy_agent.services.agents import manager as am
 from easy_agent.tools import registry
 from easy_agent.tools.registry import ToolSpec
 
@@ -214,7 +214,7 @@ async def test_session_connectors_are_loaded_off_the_event_loop(monkeypatch):
     """建 Agent 时从 DB 读会话连接器：放进线程，不占事件循环。"""
     import threading
 
-    from easy_agent.services import session_runtime
+    from easy_agent.services.sessions import runtime as session_runtime
 
     monkeypatch.setattr(am, "create_web_search_tool", lambda *a, **k: None)
     _fake = object()

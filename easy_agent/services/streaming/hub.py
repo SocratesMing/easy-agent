@@ -16,7 +16,7 @@ import asyncio
 import logging
 from collections import deque
 
-from easy_agent.services.stream_events import StreamEventWriter
+from easy_agent.services.streaming.events import StreamEventWriter
 
 logger = logging.getLogger(__name__)
 

@@ -187,7 +187,7 @@ def scheduled_run(tmp_path, db, monkeypatch):
 
     ``force_hitl``：忽略调度器传的 ``enable_hitl=False``，模拟「运行停在审批处」。
     """
-    import easy_agent.services.agent_manager as agent_manager
+    import easy_agent.services.agents.manager as agent_manager
     import easy_agent.services.scheduler as sched
     from easy_agent.bootstrap.config import DistributedLockConfig
     from easy_agent.models.db import ScheduledTaskModel

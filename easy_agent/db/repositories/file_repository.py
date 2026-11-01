@@ -1,7 +1,7 @@
 """files 域 repository 对象（C1 剩余域 / T3b 收敛）。
 
 覆盖会话上传文件（``session_files``）、生成文件（``generated_files``）、文件记录
-删除与会话归属校验。T3b 把 ``api/files.py``、``services/session_uploads.py``、
+删除与会话归属校验。T3b 把 ``api/files.py``、``services/sessions/uploads.py``、
 ``services/streaming/persistence.py``（生成文件登记）、``tools/session_file_reader.py``
 的调用方迁到本对象；方法签名全部写全，不再有 ``(*args, **kwargs)``。
 

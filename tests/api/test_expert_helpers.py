@@ -19,7 +19,7 @@ from fastapi import HTTPException
 
 import easy_agent.api.expert as expert_api
 import easy_agent.api.expert_helpers as expert_helpers
-import easy_agent.services.expert_runtime as expert_runtime
+import easy_agent.services.experts.runtime as expert_runtime
 from easy_agent.app import app
 
 # 批次 2B 纯移动的符号清单（实现位于 helpers，expert 仅 re-export）
@@ -171,7 +171,7 @@ def test_tag_options_accepts_models_and_dicts_and_drops_empty():
 
 
 def test_expert_flags_defaults_on_missing_or_broken_config(monkeypatch):
-    # 2026-10 迁移后 _expert_flags 落在 services.expert_runtime（expert_helpers 仅 re-export），
+    # 2026-10 迁移后 _expert_flags 落在 services.experts.runtime（expert_helpers 仅 re-export），
     # 打桩必须指向真实定义处。
     monkeypatch.setattr(expert_runtime, "get_agent_config", lambda: {})
     assert expert_runtime._expert_flags() == (True, True, False)

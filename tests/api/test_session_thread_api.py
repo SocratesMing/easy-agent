@@ -16,12 +16,12 @@ import pytest
 from deepagents import create_deep_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
-import easy_agent.services.chat_turn as chat_turn
+import easy_agent.services.agents.chat_turn as chat_turn
 import easy_agent.persistence.checkpoints as checkpoints
 from easy_agent.db.repositories import sessions as sessions_repo
 from easy_agent.db.repositories.message_repository import MessageRepository
 from easy_agent.models.db import SessionModel
-from easy_agent.services import agent_manager
+from easy_agent.services.agents import manager as agent_manager
 
 class _Silent(GenericFakeChatModel):
     """只用来编译一张读状态的图，不会被调用。"""
@@ -184,7 +184,7 @@ def test_two_turns_share_one_checkpoint_thread(client, db, monkeypatch):
 
 def test_resume_on_another_pod_returns_409_before_building_the_agent(client, db, monkeypatch):
     """checkpoint 按 pod 隔离时，审批落到别的 pod 直接 409，提示两个实例名，也不必再建 Agent。"""
-    import easy_agent.services.session_thread as session_thread
+    import easy_agent.services.sessions.thread as session_thread
 
     sid = _session(db, "sess-other-pod")
     MessageRepository(db).add_message(sid, {"role": "user", "content": "删掉 a.txt", "turn_id": "m1"})

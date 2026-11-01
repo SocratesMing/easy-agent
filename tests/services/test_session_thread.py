@@ -22,7 +22,7 @@ from pydantic import Field
 
 from easy_agent.agent.turn_context import TurnAwareSummarizationMiddleware, turn_input
 from easy_agent.models.api import ChatRequest
-from easy_agent.services.session_thread import (
+from easy_agent.services.sessions.thread import (
     INTERRUPTED_SUFFIX,
     StaleApprovalError,
     abandon_pending_approval,

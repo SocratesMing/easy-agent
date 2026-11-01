@@ -20,9 +20,9 @@ from easy_agent.api.deps import (
     get_chat_repository,
 )
 from easy_agent.middleware import get_current_username
-from easy_agent.services.session_runtime import is_stream_active
-from easy_agent.services.sse import is_terminal_event
-from easy_agent.services.sse_emitter import SSEEmitter
+from easy_agent.services.sessions.runtime import is_stream_active
+from easy_agent.services.streaming.sse import is_terminal_event
+from easy_agent.services.streaming.emitter import SSEEmitter
 
 logger = logging.getLogger(__name__)
 

@@ -19,7 +19,7 @@ from easy_agent.db.database import Database
 from easy_agent.db.repositories.file_repository import FileRepository
 from easy_agent.db.repositories.message_repository import MessageRepository
 from easy_agent.db.repositories.session_repository import SessionRepository
-from easy_agent.services.stream_messages import _partial_message_dict, tool_call_records_to_dicts
+from easy_agent.services.streaming.messages import _partial_message_dict, tool_call_records_to_dicts
 
 logger = logging.getLogger("easy_agent.chat_service")
 

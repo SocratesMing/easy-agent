@@ -12,13 +12,13 @@ from easy_agent.db.repositories.chat_repository import ChatRepository
 from easy_agent.db.repositories.stream_events import clear_stream_events
 from easy_agent.models.api import ChatRequest, ResumeRequest
 from easy_agent.middleware import get_current_username
-from easy_agent.services.chat_turn import (
+from easy_agent.services.agents.chat_turn import (
     RefusalPlan,
     prepare_resume,
     prepare_turn,
     require_turn_content,
 )
-from easy_agent.services.agent_manager import (
+from easy_agent.services.agents.manager import (
     aregister_stream_task,
     aunregister_stream_task,
     cancel_stream_task,
@@ -26,10 +26,10 @@ from easy_agent.services.agent_manager import (
     is_session_streaming,
     remove_session_agent,
 )
-from easy_agent.services.sse_emitter import SSEEmitter
-from easy_agent.services.session_runtime import SessionBusyError
-from easy_agent.services.run_registry import finish_run, renew_run
-from easy_agent.services.stream_hub import (  # noqa: F401 - 兼容旧导入路径
+from easy_agent.services.streaming.emitter import SSEEmitter
+from easy_agent.services.sessions.runtime import SessionBusyError
+from easy_agent.services.streaming.runs import finish_run, renew_run
+from easy_agent.services.streaming.hub import (  # noqa: F401 - 兼容旧导入路径
     _HUB_HISTORY_MAX_CHARS,
     _STREAM_HUB_TTL_SECONDS,
     _SUBSCRIBER_QUEUE_SLACK,

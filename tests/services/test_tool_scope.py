@@ -1,4 +1,4 @@
-"""专家技能作用域（``services/tool_scope.py``）的守护测试。
+"""专家技能作用域（``services/agents/tool_scope.py``）的守护测试。
 
 对应需求：「专家创建时选定的技能包，对话时只用这些；一个都没选 = 全库可见；
 公共专家 + 本轮另选 = 并集」。
@@ -21,9 +21,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from easy_agent.services import tool_scope as ts
+from easy_agent.services.agents import tool_scope as ts
 from easy_agent.bootstrap.config import Config
-from easy_agent.services import skill_library
+from easy_agent.services.skills import library as skill_library
 
 USER = "testuser"
 

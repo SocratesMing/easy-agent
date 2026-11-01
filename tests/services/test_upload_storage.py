@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from langgraph.store.memory import InMemoryStore
 
-from easy_agent.services import upload_storage as us
+from easy_agent.services.sessions import upload_storage as us
 
 PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"  # 非 UTF-8 二进制

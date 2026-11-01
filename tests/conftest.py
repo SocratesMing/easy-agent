@@ -151,7 +151,7 @@ def client(db, monkeypatch):
     import easy_agent.agent as _agent_mod
     import easy_agent.app as _app_mod
     import easy_agent.agent.model as _model_mod
-    import easy_agent.services.agent_manager as _am_mod
+    import easy_agent.services.agents.manager as _am_mod
 
     for _m in (
         _model_mod,

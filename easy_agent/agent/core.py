@@ -226,7 +226,7 @@ class EasyAgent(AgentWorkspaceMixin):
 
     #: 技能作用域（专家技能硬隔离）：``None`` = 全量可见（改造前行为）。
     #: 类级默认值让「不走 __init__」的构造路径（测试里的 ``EasyAgent.__new__``、
-    #: 反序列化恢复）也能安全读到该字段，见 ``services/tool_scope.py``。
+    #: 反序列化恢复）也能安全读到该字段，见 ``services/agents/tool_scope.py``。
     skill_whitelist: list[str] | None = None
 
     @staticmethod

@@ -26,8 +26,8 @@ from pathlib import Path
 from typing import Any
 
 from easy_agent.bootstrap.config import Config
-from easy_agent.services import connectors as _connectors
-from easy_agent.services.mcp import load_mcp_config
+from easy_agent.services.mcp import connectors as _connectors
+from easy_agent.services.mcp.tools import load_mcp_config
 
 logger = logging.getLogger(__name__)
 

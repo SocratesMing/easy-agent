@@ -4,8 +4,8 @@ import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 
-from easy_agent.services import run_registry
-from easy_agent.services.run_registry import (
+from easy_agent.services.streaming import runs as run_registry
+from easy_agent.services.streaming.runs import (
     RECOVER_ERROR_MESSAGE,
     finish_run,
     new_run_id,
@@ -13,8 +13,8 @@ from easy_agent.services.run_registry import (
     renew_run,
     start_run,
 )
-from easy_agent.services import session_runtime
-from easy_agent.services.session_runtime import instance_owner, is_stream_active
+from easy_agent.services.sessions import runtime as session_runtime
+from easy_agent.services.sessions.runtime import instance_owner, is_stream_active
 from easy_agent.db.repositories.agent_runs import (
     STATUS_COMPLETED,
     STATUS_INTERRUPTED,

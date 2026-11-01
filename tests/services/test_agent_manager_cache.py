@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from easy_agent.services import agent_manager as am
-from easy_agent.services.agent_manager import SessionState
+from easy_agent.services.agents import manager as am
+from easy_agent.services.agents.manager import SessionState
 
 
 @pytest.fixture(autouse=True)

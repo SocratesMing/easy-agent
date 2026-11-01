@@ -15,7 +15,7 @@ recency 最高处），作为所有专家会话的兜底约束。
 
 第 2 条的口径跟随 ``expert.relevance_strict``：宽松（默认）= 只答相关部分、跳过无关
 部分；严格 = 只要消息里出现无关任务就整条拒答。注意这只是提示词层面的**软约束**，
-「一定拒答」由输入侧预检（``services/expert_relevance.py``）保证；其中删除/修改文件
+「一定拒答」由输入侧预检（``services/experts/relevance.py``）保证；其中删除/修改文件
 这类高危操作由预检的确定性红线拦死，与本口径无关。
 
 开关：``config.expert_guardrail_enabled``（默认开启），关闭后完全不拼接，

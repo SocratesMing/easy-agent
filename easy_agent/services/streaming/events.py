@@ -22,7 +22,7 @@ import json
 import logging
 
 from easy_agent.db.repositories.stream_events import append_stream_event
-from easy_agent.services.sse import is_terminal_event
+from easy_agent.services.streaming.sse import is_terminal_event
 
 logger = logging.getLogger(__name__)
 

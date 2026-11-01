@@ -9,8 +9,8 @@ from __future__ import annotations
 from easy_agent.db.database import Database
 from easy_agent.db.repositories.message_repository import MessageRepository
 from easy_agent.db.repositories.session_repository import SessionRepository
-from easy_agent.services.sse import is_terminal_event
-from easy_agent.services.sse_emitter import SSEEmitter, sse_stream
+from easy_agent.services.streaming.sse import is_terminal_event
+from easy_agent.services.streaming.emitter import SSEEmitter, sse_stream
 from easy_agent.knowledges.chat.host_port import get_host_capabilities
 from easy_agent.utils.blocking import run_blocking
 

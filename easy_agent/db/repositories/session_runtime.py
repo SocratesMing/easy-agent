@@ -196,7 +196,7 @@ class SessionRuntimeRepository:
     """会话运行期状态（``session_runtime`` 表）repository。
 
     覆盖流锁（原子抢占 / 续约 / 条件释放）、连接器开关缓存与待修改专家绑定。
-    :mod:`easy_agent.services.session_runtime` 的函数只调用同名方法，因此服务层
+    :mod:`easy_agent.services.sessions.runtime` 的函数只调用同名方法，因此服务层
     可以直接接收本对象（duck typing），不必再依赖 ``Database``。
 
     方法签名写全；SQL、事务边界与状态语义仍在模块级函数里，本类不改变它们。

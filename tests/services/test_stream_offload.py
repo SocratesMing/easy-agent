@@ -157,7 +157,7 @@ _WRITE = {"path": "a.md", "content": "x"}
 
 async def test_stream_end_side_effects_query_off_the_event_loop(tmp_path, monkeypatch):
     """收尾的工作区改名（两次写库）和技能入库扫描（读生成文件记录）也在线程里查库。"""
-    from easy_agent.services import skill_library
+    from easy_agent.services.skills import library as skill_library
     from easy_agent.services.streaming.orchestrator import chat_stream_generator
 
     monkeypatch.setattr(skill_library, "user_skills_dir", lambda username: tmp_path / "skills")

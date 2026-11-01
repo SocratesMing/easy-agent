@@ -11,17 +11,17 @@ from types import SimpleNamespace
 
 import pytest
 
-import easy_agent.services.chat_turn as chat_turn
-from easy_agent.services import skill_provision
+import easy_agent.services.agents.chat_turn as chat_turn
+from easy_agent.services.skills import provision as skill_provision
 import easy_agent.api.expert as expert_api
 import easy_agent.api.expert_helpers as expert_helpers
-import easy_agent.services.expert_runtime as expert_runtime
-import easy_agent.services.agent_manager as am
-import easy_agent.services.skill_library as skill_library
+import easy_agent.services.experts.runtime as expert_runtime
+import easy_agent.services.agents.manager as am
+import easy_agent.services.skills.library as skill_library
 from easy_agent.db.expert_store import ExpertStore
 from easy_agent.models.db import SessionModel
-from easy_agent.services import expert_relevance
-from easy_agent.services.expert_service import load_active_prompt
+from easy_agent.services.experts import relevance as expert_relevance
+from easy_agent.services.experts.service import load_active_prompt
 
 WORKSPACE_USER_DIR = Path(os.environ["TEST_WORKSPACE_DIR"]) / "users" / "testuser"
 
@@ -1293,7 +1293,7 @@ def public_root(tmp_path, monkeypatch):
     应用启动时已加载 agent 配置（tools.experts_dir 指向仓库 experts/），故这里
     直接替换 ``public_expert_service.public_experts_root``，保证用例只看到自造数据。
     """
-    from easy_agent.services import public_expert_service
+    from easy_agent.services.experts import public as public_expert_service
 
     root = tmp_path / "experts"
     root.mkdir()
@@ -1351,7 +1351,7 @@ def test_public_list_returns_presets(client, public_root):
 
 
 def test_public_list_empty_when_dir_missing(client, tmp_path, monkeypatch):
-    from easy_agent.services import public_expert_service
+    from easy_agent.services.experts import public as public_expert_service
 
     monkeypatch.setattr(
         public_expert_service, "public_experts_root", lambda: tmp_path / "nope"

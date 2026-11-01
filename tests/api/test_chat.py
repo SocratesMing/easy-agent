@@ -2,7 +2,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-import easy_agent.services.chat_turn as chat_turn
+import easy_agent.services.agents.chat_turn as chat_turn
 
 
 def test_chat_stream_returns_tokens(client):
@@ -148,7 +148,7 @@ _SKILL_DISPLAY_NAMES = {"docx": "Word 文档", "pdf": "PDF 文档"}
 
 def _patch_skills(monkeypatch):
     """把用户技能目录固定为 docx / pdf，避免用例依赖本机实际安装的技能。"""
-    from easy_agent.services import skill_library
+    from easy_agent.services.skills import library as skill_library
 
     monkeypatch.setattr(
         skill_library, "list_user_skill_dirs", lambda username: list(_SKILL_DIRS)
@@ -278,7 +278,7 @@ def test_stream_skills_field_unknown_dir_ignored(client, db, monkeypatch):
 
 def test_stream_disabled_skill_is_not_pinned(client, db, monkeypatch):
     """已停用的技能不在技能源里，pin 不到：只记日志，落库仍记下用户选了它。"""
-    from easy_agent.services import skill_library
+    from easy_agent.services.skills import library as skill_library
 
     _patch_skills(monkeypatch)
     disabled = [{**_SKILL_DIRS[0], "enabled": False}, _SKILL_DIRS[1]]

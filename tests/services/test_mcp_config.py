@@ -3,7 +3,7 @@
 import json
 
 from easy_agent.api.connectors import _extract_servers
-from easy_agent.services import mcp as mcp_mod
+from easy_agent.services.mcp import tools as mcp_mod
 
 
 def test_extract_servers_standard_mcpservers_format():

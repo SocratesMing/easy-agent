@@ -31,7 +31,8 @@ from typing import Any
 
 from easy_agent.agent import builtin_skills
 
-from . import public_expert_service, skill_library
+from easy_agent.services.skills import library as skill_library
+from easy_agent.services.experts import public as public_expert_service
 
 logger = logging.getLogger("easy-agent")
 
@@ -46,7 +47,7 @@ _report_at: dict[tuple[str, str, str, str], float] = {}
 
 def _auto_install_enabled() -> bool:
     """配置开关 ``expert.auto_install_required_skills``（默认开）。"""
-    from .agent_manager import get_agent_config  # 延迟导入，避免模块级循环依赖
+    from easy_agent.services.agents.manager import get_agent_config  # 延迟导入，避免模块级循环依赖
 
     cfg = get_agent_config()
     if not cfg:
@@ -341,7 +342,7 @@ def _invalidate_agents_after_install(
     if not (invalidate_cache and report["installed"]):
         return
     try:
-        from .agent_manager import invalidate_user_agents
+        from easy_agent.services.agents.manager import invalidate_user_agents
 
         report["cache_invalidated"] = int(invalidate_user_agents(username) or 0)
     except Exception as exc:  # noqa: BLE001 - 驱逐失败最多是下一轮才生效

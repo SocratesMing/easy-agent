@@ -32,8 +32,8 @@ from easy_agent.persistence.checkpoints import (
     checkpoint_instance,
     per_pod_checkpoints_active,
 )
-from easy_agent.services.hitl_state import pending_hitl_interrupts
-from easy_agent.services.stream_messages import build_context_messages
+from easy_agent.services.streaming.approvals import pending_hitl_interrupts
+from easy_agent.services.streaming.messages import build_context_messages
 
 logger = logging.getLogger(__name__)
 

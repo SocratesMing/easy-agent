@@ -13,8 +13,8 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
-from easy_agent.services import mcp_evidence
-from easy_agent.services.mcp_evidence import wrap_mcp_tool, wrap_mcp_tools
+from easy_agent.services.mcp import evidence as mcp_evidence
+from easy_agent.services.mcp.evidence import wrap_mcp_tool, wrap_mcp_tools
 
 
 class EchoArgs(BaseModel):
@@ -301,7 +301,7 @@ def test_wrap_supports_lightweight_tool_doubles():
 
 
 async def test_get_mcp_tools_wraps_each_server(monkeypatch, tmp_path):
-    from easy_agent.services import mcp
+    from easy_agent.services.mcp import tools as mcp
 
     config_file = tmp_path / "mcp.json"
     config_file.write_text(json.dumps({"servers": {}}), encoding="utf-8")

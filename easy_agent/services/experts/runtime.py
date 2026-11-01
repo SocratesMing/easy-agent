@@ -8,7 +8,7 @@
 调用顺序（**不可颠倒**）：
 
 1. ``load_expert_prompt`` 取提示词（我的专家优先、公共专家兜底）并追加职责边界块；
-2. ``ensure_expert_skills``（见 ``services/skill_provision.py``）登记依赖技能；
+2. ``ensure_expert_skills``（见 ``services/skills/provision.py``）登记依赖技能；
 3. ``relevance_gate`` 做输入侧硬闸——**必须在创建 Agent 之前**，命中即短路，
    Agent 不创建、任何工具都不可达；
 4. ``refusal_event_stream`` 推一条与正常链路同形状的 SSE（拒答也完整落库）。
@@ -26,17 +26,21 @@ from easy_agent.db.expert_store import STATUS_ACTIVE
 from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.models.api import ChatRequest
 from easy_agent.models.exceptions import BadRequestError, NotFoundError
-from easy_agent.services.expert_service import load_active_prompt
-from easy_agent.services.session_thread import abandon_pending_approval, session_thread_in_use
-from easy_agent.services.sse import SSEEvent
-from easy_agent.services.sse_emitter import SSEEmitter
-from easy_agent.services.stream_messages import build_assistant_message_dict
+from easy_agent.services.experts.service import load_active_prompt
+from easy_agent.services.sessions.thread import abandon_pending_approval, session_thread_in_use
+from easy_agent.services.streaming.sse import SSEEvent
+from easy_agent.services.streaming.emitter import SSEEmitter
+from easy_agent.services.streaming.messages import build_assistant_message_dict
 from easy_agent.utils.blocking import run_blocking
 from easy_agent.utils.session_logger import SessionLogger
 from easy_agent.utils.prompt_probe import describe_prompt
 
-from . import expert_guardrail, expert_relevance, public_expert_service
-from .agent_manager import get_agent_config
+from easy_agent.services.experts import (
+    guardrail as expert_guardrail,
+    relevance as expert_relevance,
+    public as public_expert_service,
+)
+from easy_agent.services.agents.manager import get_agent_config
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +89,7 @@ def _with_guardrail(prompt_text: str) -> str:
 
     在 `_load_expert_prompt` 的两个成功分支统一收口：预置专家的提示词是固定文件、
     LLM 生成的也不保证自带边界，运行时程序化拼接是唯一可靠的兜底（见
-    services/expert_guardrail.py）。``expert.guardrail_enabled=false`` 时不拼接；
+    services/experts/guardrail.py）。``expert.guardrail_enabled=false`` 时不拼接；
     第 2 条口径跟随 ``expert.relevance_strict``。
     """
     guardrail_enabled, _check_enabled, strict = _expert_flags()
@@ -276,7 +280,7 @@ def _precheck_llm():
     函数内 import 是必须的：``_llm_instance`` 在 lifespan 里才被赋值，模块顶层
     ``from ... import _llm_instance`` 会固定成初始化前的 None。
     """
-    from easy_agent.services.agent_manager import _llm_instance
+    from easy_agent.services.agents.manager import _llm_instance
 
     return _llm_instance
 
@@ -523,7 +527,7 @@ async def _refusal_event_stream(session_id: str, repo: ExpertRepository, answer:
         },
     )
 
-# ── 公开别名（与 feat/frontend-guocl 的 services/expert_runtime.py 同名）──────
+# ── 公开别名（与 feat/frontend-guocl 的 services/experts/runtime.py 同名）──────
 # 内部实现保留下划线命名（与迁移来源 expert_helpers 一致），对外统一暴露无下划线的
 # 名字：调用方不必知道这段代码原来在 api 层。
 current_user_id = _current_user_id

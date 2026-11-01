@@ -30,7 +30,7 @@ import logging
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from . import skill_library
+from easy_agent.services.skills import library as skill_library
 
 logger = logging.getLogger("easy-agent")
 

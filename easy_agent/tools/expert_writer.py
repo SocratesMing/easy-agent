@@ -18,7 +18,7 @@
 
 落盘口径与 ``POST /agent/add`` / ``POST /agent/update`` **完全一致**：版本目录
 ``workspace/{username}/experts/{id}/v{n}/``、``active`` 指针、库记录字段、
-修改时新建 ``v{n+1}`` 而不覆盖 ``v{n}``（见 ``services/expert_service.py``）。
+修改时新建 ``v{n+1}`` 而不覆盖 ``v{n}``（见 ``services/experts/service.py``）。
 
 安全约束
 --------
@@ -41,7 +41,7 @@ from easy_agent.db.expert_store import (
 from easy_agent.db.providers import get_expert_repository
 from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.db.repositories.user_repository import UserRepository
-from easy_agent.services.expert_service import (
+from easy_agent.services.experts.service import (
     MAX_DESCRIPTION_LEN,
     build_expert_ids,
     generate_expert_config,
@@ -321,7 +321,7 @@ class SaveExpertTool(BaseTool):
             )
             return []
 
-        from easy_agent.services import tool_scope
+        from easy_agent.services.agents import tool_scope
 
         kept, dropped = tool_scope.normalize_expert_skills(self.username, names, sid)
         logger.info(

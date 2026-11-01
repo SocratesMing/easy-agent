@@ -16,7 +16,7 @@ from langchain_core.messages import AIMessage
 
 from easy_agent.models.api import ChatRequest
 from easy_agent.persistence.checkpoints import checkpoint_instance
-from easy_agent.services.sse import format_sse
+from easy_agent.services.streaming.sse import format_sse
 from easy_agent.services.streaming import orchestrator
 from easy_agent.services.streaming.orchestrator import (
     chat_stream_generator,

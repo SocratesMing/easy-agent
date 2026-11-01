@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-import easy_agent.services.agent_manager as agent_manager
+import easy_agent.services.agents.manager as agent_manager
 from easy_agent.api.completion import MAX_TOTAL_CONTENT_CHARS, chat_completion
 from easy_agent.middleware.rate_limit import _DEFAULT_RULES
 from easy_agent.models.api import ChatCompletionMessage, ChatCompletionRequest

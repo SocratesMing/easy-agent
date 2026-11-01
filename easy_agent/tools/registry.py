@@ -5,7 +5,7 @@
 1. **声明**：每个工具的 ``name`` / ``source`` / 是否内置 / 是否写操作 /
    是否 HITL / 审批决策，集中在一处（``TOOL_REGISTRY``）；
 2. **装配**：按既有条件与顺序返回会话工具列表（``build_session_tools``），
-   使 ``services/agent_manager.py`` 不再逐个工具写 ``if/append``。
+   使 ``services/agents/manager.py`` 不再逐个工具写 ``if/append``。
 
 约束（与改造前逐项等价）：
 
@@ -17,7 +17,7 @@
 - 带 ``when`` 谓词的条件 HITL（``execute`` / ``access_knowledge_original``）的
   决策与谓词名同样登记在表内，``agent.py`` 按注册表元数据构造 ``interrupt_on``；
   谓词名到函数的绑定留在 ``agent.py``，注册表保持无包内 import 的叶子模块；
-- MCP 工具由 ``services/mcp.py`` 运行时加载，本模块不静态枚举；未登记的名字
+- MCP 工具由 ``services/mcp/tools.py`` 运行时加载，本模块不静态枚举；未登记的名字
   一律视为 ``mcp``（见 :func:`resolve_tool_source`）。
 
 设计文档：``docs/archive/design/2026-10-18-d1-tool-registry.md``。

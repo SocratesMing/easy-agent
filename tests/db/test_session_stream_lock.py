@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from easy_agent.db.database import Database
-from easy_agent.services.session_runtime import (
+from easy_agent.services.sessions.runtime import (
     SessionBusyError,
     acquire_stream,
     release_stream,
@@ -99,7 +99,7 @@ def test_renew_only_by_current_owner(tmp_path):
 
 
 def test_session_runtime_renew_fails_after_takeover(tmp_path):
-    from easy_agent.services.session_runtime import renew_stream
+    from easy_agent.services.sessions.runtime import renew_stream
 
     db = _db(tmp_path)
     acquire_stream(_runtime(db), "s7")

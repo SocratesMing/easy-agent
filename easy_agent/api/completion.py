@@ -18,7 +18,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from easy_agent.agent.model import create_model, extract_reasoning
 from easy_agent.middleware import get_current_username
 from easy_agent.models.api import ChatCompletionRequest
-from easy_agent.services.agent_manager import get_agent_config
+from easy_agent.services.agents.manager import get_agent_config
 
 logger = logging.getLogger("easy_agent.completion")
 
@@ -50,7 +50,7 @@ def _get_llm(model_name: Optional[str] = None):
                 )
     # _llm_instance 是启动时懒初始化的全局变量，须在调用时读取最新值，
     # 不能用模块顶层 from import 绑定（否则拿到的是初始化前的 None）。
-    from easy_agent.services.agent_manager import _llm_instance
+    from easy_agent.services.agents.manager import _llm_instance
 
     llm = _llm_instance
     if llm is None:

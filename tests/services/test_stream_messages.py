@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from easy_agent.services.stream_messages import (
+from easy_agent.services.streaming.messages import (
     _historical_tool_records,
     _partial_message_dict,
     _tool_call_tuples,

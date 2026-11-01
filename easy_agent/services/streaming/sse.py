@@ -2,7 +2,7 @@
 
 所有后端流式生产者（chat / expert / knowledge）与前端消费者都应引用这里的
 事件名；新增事件先加注册表，再改生产/消费端。`format_sse` 是全仓唯一的
-SSE 序列化实现，统一生产入口见 ``services/sse_emitter.py`` 的 ``SSEEmitter``。
+SSE 序列化实现，统一生产入口见 ``services/streaming/emitter.py`` 的 ``SSEEmitter``。
 
 对应审计项：ARCH-05（4 套生产/3 套消费、事件契约漂移）。
 """
@@ -132,7 +132,7 @@ def format_sse(data: dict[str, Any]) -> str:
     """把一个事件 dict 序列化为 SSE frame（`data: {...}\n\n`）。
 
     这是全仓唯一实现；其它模块必须 `from .sse import format_sse`，或使用
-    ``services.sse_emitter.SSEmitter``（内部委托本函数）。
+    ``services.streaming.emitter.SSEmitter``（内部委托本函数）。
     """
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 

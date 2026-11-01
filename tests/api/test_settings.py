@@ -8,7 +8,7 @@ from pathlib import Path
 
 import easy_agent.api.settings as settings_api
 
-from easy_agent.services import mcp as mcp_mod
+from easy_agent.services.mcp import tools as mcp_mod
 
 
 def test_models(client):

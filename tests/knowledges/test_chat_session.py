@@ -121,7 +121,7 @@ async def test_knowledge_chat_stream_injects_evidence_and_persists_metadata(
     from types import SimpleNamespace
 
     from easy_agent.knowledges.chat import streaming as knowledge_streaming
-    from easy_agent.services.sse import format_sse, parse_sse_frame
+    from easy_agent.services.streaming.sse import format_sse, parse_sse_frame
 
     host_frames = [
         format_sse({"type": "start", "session_id": "kb-1"}),

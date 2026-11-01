@@ -5,7 +5,7 @@
 做法是在专家提示词链路的三个环节各打一条带 **同一短指纹** 的日志：
 
 1. 加载 —— ``api/expert.py`` 从磁盘读到专家提示词时；
-2. 传递 —— ``services/agent_manager.py`` 组装 / 复用会话 Agent 时；
+2. 传递 —— ``services/agents/manager.py`` 组装 / 复用会话 Agent 时；
 3. 拼接 —— ``agent.py`` 拼成最终 ``system_prompt`` 时。
 
 只要**同一个指纹在 (1)(2)(3) 依次出现**，即可端到端证明该提示词已进入模型终稿；

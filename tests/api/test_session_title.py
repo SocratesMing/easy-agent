@@ -1,6 +1,6 @@
 """会话标题生成：输入框拼接的内部指令（连接器 / 技能）不能出现在标题里。"""
 
-import easy_agent.services.chat_turn as chat_turn
+import easy_agent.services.agents.chat_turn as chat_turn
 
 SKILL_DIRS = [{"dir_name": "docx", "path": "/tmp/skills/docx", "enabled": True}]
 

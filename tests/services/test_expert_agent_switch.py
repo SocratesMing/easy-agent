@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import easy_agent.services.agent_manager as am
+import easy_agent.services.agents.manager as am
 from easy_agent.bootstrap.config import Config
 
 SID = "session-abcdef"

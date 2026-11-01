@@ -85,7 +85,7 @@ class ToolsConfig(BaseModel):
     工具错误日志（``agent/tool_errors.py``）与流式日志。
     """
     experts_dir: str = "./experts"
-    """公共（预置）专家目录：只读扫描，见 services/public_expert_service.py。
+    """公共（预置）专家目录：只读扫描，见 services/experts/public.py。
 
     可写绝对路径（推荐生产环境，如 ``/qts/experts``）或相对路径；相对路径按
     「进程 CWD → 项目根」顺序解析，因此改这里的目录后无需调整启动方式。
@@ -381,7 +381,7 @@ class FileContextConfig(BaseModel):
     请求不再带文件，模型就看不到内容了（且首轮内容挂在内存中的 Agent 缓存上，
     缓存一驱逐即丢失）。
 
-    机制（详见 ``services/session_uploads.py``）：
+    机制（详见 ``services/sessions/uploads.py``）：
     1. 上传即解析：解析文本落盘到会话工作区 ``uploads/{文件名}.txt``，一次解析、
        全程复用；
     2. 上传即记清单：文件名/大小/时间/解析状态写入 ``uploads/index.md``，该文件由

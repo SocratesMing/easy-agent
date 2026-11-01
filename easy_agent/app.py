@@ -54,19 +54,19 @@ from easy_agent.models.exceptions import (
     NotFoundError,
 )
 from easy_agent.utils.paths import PROJECT_ROOT
-from easy_agent.services.agent_manager import (
+from easy_agent.services.agents.manager import (
     drain_stream_tasks,
     get_agent_config,
     init_agent_config,
 )
-from easy_agent.services.stream_events import flush_all_stream_events
+from easy_agent.services.streaming.events import flush_all_stream_events
 from easy_agent.services.scheduler import (
     init_scheduler,
     reload_all_tasks,
     shutdown_scheduler,
     start_scheduled_task_reconcile,
 )
-from easy_agent.services.prompt_loader import (
+from easy_agent.services.agents.prompts import (
     configure_prompts_dir,
     get_prompts_dir,
     load_system_prompt,
@@ -256,7 +256,7 @@ async def _recover_stale_runs() -> None:
     不自动重新执行（执行器属于 Phase 2C）。任何异常只告警，不阻断启动。
     """
     try:
-        from easy_agent.services.run_registry import recover_stale_runs
+        from easy_agent.services.streaming.runs import recover_stale_runs
 
         recovered = await asyncio.to_thread(recover_stale_runs, db_instance)
         if recovered:
@@ -335,7 +335,7 @@ def _log_public_experts() -> None:
     """公共（预置）专家目录：把「解析到哪个目录、来源是谁」打出来，
     出问题时能一眼看出是配置写错还是目录没挂上。"""
     try:
-        from easy_agent.services import public_expert_service
+        from easy_agent.services.experts import public as public_expert_service
 
         public_experts = public_expert_service.discover_public_experts()
         if public_experts:
@@ -386,7 +386,7 @@ async def _start_checkpointing(agent_env: str, config) -> None:
 async def _shutdown_services(app) -> None:
     """关闭顺序：停周期恢复 → 等流式任务结束 → 刷出事件 → 关 MCP、Store、checkpointer、知识库
     → 调度器与数据库。"""
-    from easy_agent.services.run_registry import stop_run_recovery
+    from easy_agent.services.streaming.runs import stop_run_recovery
 
     await stop_run_recovery()
     await drain_stream_tasks()
@@ -397,7 +397,7 @@ async def _shutdown_services(app) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"flush SSE 事件写入器失败: {exc}")
     try:
-        from easy_agent.services.mcp_sessions import aclose_mcp_sessions
+        from easy_agent.services.mcp.sessions import aclose_mcp_sessions
 
         await aclose_mcp_sessions()
     except Exception as exc:  # noqa: BLE001
@@ -505,7 +505,7 @@ async def lifespan(app: FastAPI):
         # 对象存储 A：EASY_UPLOAD_BACKEND=store 时上传原始文件必须落 LangGraph
         # Store，这里做启动期 fail-closed 自检（local 模式为空操作）。宁可启动
         # 失败，也不要跑起来后每次上传都 503。
-        from easy_agent.services.upload_storage import preflight_upload_store
+        from easy_agent.services.sessions.upload_storage import preflight_upload_store
 
         preflight_upload_store()
 
@@ -515,7 +515,7 @@ async def lifespan(app: FastAPI):
 
     # 新 pod 往往在旧 pod 的 run 租约过期前就起来了，启动时那一轮扫不到，之后定期再扫。
     # 放在所有 fail-fast 检查之后：启动失败时不留下没人收尾的后台任务
-    from easy_agent.services.run_registry import start_run_recovery
+    from easy_agent.services.streaming.runs import start_run_recovery
 
     start_run_recovery()
 

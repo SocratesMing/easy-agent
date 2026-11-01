@@ -10,8 +10,8 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
-import easy_agent.services.memory_manager as memory_manager
-from easy_agent.services import agent_manager
+import easy_agent.services.memory.manager as memory_manager
+from easy_agent.services.agents import manager as agent_manager
 from easy_agent.services.streaming import side_effects
 
 

@@ -2,7 +2,7 @@
 
 把 users 域的全部数据访问收拢为可注入对象：注册/登录/资料/管理员用户管理、
 token_version、活跃时间、默认用户/免密用户。T3b 把 ``middleware.auth``、
-``services/agent_manager.py`` 等调用方迁到本对象；方法签名全部写全。
+``services/agents/manager.py`` 等调用方迁到本对象；方法签名全部写全。
 
 边界：
 

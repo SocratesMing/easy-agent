@@ -29,8 +29,8 @@ from easy_agent.tools.registry import ToolBuildContext, build_session_tools
 from easy_agent.tools.web_search import create_web_search_tool
 from easy_agent.utils.prompt_probe import describe_prompt, prompt_fingerprint
 from easy_agent.utils.blocking import run_blocking
-from easy_agent.services.mcp import get_mcp_tools as load_mcp_tools_for_user
-from easy_agent.services.mcp_policy import filter_server_names
+from easy_agent.services.mcp.tools import get_mcp_tools as load_mcp_tools_for_user
+from easy_agent.services.mcp.policy import filter_server_names
 
 logger = logging.getLogger("easy-agent.chat_service")
 
@@ -372,7 +372,7 @@ async def get_or_create_agent_for_session(
     「专家变更 -> 驱逐缓存」，确保同一会话在专家之间、专家与通用之间来回切换都能
     立即生效。不传该参数时行为与引入本参数前**逐字一致**。
 
-    ``skill_whitelist`` 为本轮技能作用域（专家技能硬隔离，见 ``services/tool_scope.py``）：
+    ``skill_whitelist`` 为本轮技能作用域（专家技能硬隔离，见 ``services/agents/tool_scope.py``）：
     ``None`` = 显式全量可见；``[]`` = 一个技能都不可用；非空 = 只有这些目录可见。
     **不传**（哨兵 ``_SCOPE_UNSPECIFIED``）表示「沿用该会话上次生效的作用域」——
     HITL 审批恢复这类不带本轮选择的路径靠它避免把专家会话重建回通用 Agent。
@@ -424,7 +424,7 @@ async def _resolve_session_connectors(state, session_id: str) -> list[str] | Non
     recorded_connectors = state.connectors
     if recorded_connectors is None:
         try:
-            from easy_agent.services.session_runtime import load_connectors
+            from easy_agent.services.sessions.runtime import load_connectors
 
             recorded_connectors = await run_blocking(
                 load_connectors, get_session_runtime_repository(), session_id
@@ -837,7 +837,7 @@ def _bind_edit_target(session_id: str, expert_agent_id: str) -> str:
 
 def _save_edit_target(session_id: str, expert_agent_id: str) -> None:
     try:
-        from easy_agent.services.session_runtime import save_edit_target
+        from easy_agent.services.sessions.runtime import save_edit_target
 
         save_edit_target(
             get_session_runtime_repository(), session_id, expert_agent_id
@@ -927,7 +927,7 @@ def _apply_session_connectors(
 
 def _save_connectors(session_id: str, normalized: tuple[str, ...]) -> None:
     try:
-        from easy_agent.services.session_runtime import save_connectors
+        from easy_agent.services.sessions.runtime import save_connectors
 
         save_connectors(
             get_session_runtime_repository(), session_id, list(normalized)
@@ -964,7 +964,7 @@ async def aregister_stream_task(session_id: str, task: asyncio.Task[None]) -> No
 
 def _acquire_stream_lock(session_id: str) -> None:
     """获取 DB 流锁；会话已被占用时抛 ``SessionBusyError``，其它错误只记日志。"""
-    from easy_agent.services.session_runtime import SessionBusyError, acquire_stream
+    from easy_agent.services.sessions.runtime import SessionBusyError, acquire_stream
 
     try:
         acquire_stream(get_session_runtime_repository(), session_id)
@@ -975,7 +975,7 @@ def _acquire_stream_lock(session_id: str) -> None:
 
 
 def _remember_stream_task(session_id: str, task: asyncio.Task[None]) -> None:
-    from easy_agent.services.session_runtime import SessionBusyError
+    from easy_agent.services.sessions.runtime import SessionBusyError
 
     state = _state_for(session_id)
     old = state.stream_task
@@ -1027,7 +1027,7 @@ def _forget_stream_task(session_id: str, task: asyncio.Task[None] | None) -> Non
 
 def _release_stream_lock(session_id: str) -> None:
     try:
-        from easy_agent.services.session_runtime import release_stream
+        from easy_agent.services.sessions.runtime import release_stream
 
         release_stream(get_session_runtime_repository(), session_id)
     except Exception as exc:  # noqa: BLE001
@@ -1045,7 +1045,7 @@ async def cancel_stream_task(session_id: str) -> bool:
     import time as _time
 
     try:
-        from easy_agent.services.session_runtime import request_cancel
+        from easy_agent.services.sessions.runtime import request_cancel
 
         await run_blocking(
             request_cancel, get_session_runtime_repository(), session_id

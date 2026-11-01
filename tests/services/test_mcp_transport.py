@@ -1,6 +1,6 @@
 """MCP transport 归一化测试（FW-10）。"""
 
-from easy_agent.services.mcp import normalize_servers_mapping
+from easy_agent.services.mcp.tools import normalize_servers_mapping
 
 
 def test_url_only_defaults_to_streamable_http():

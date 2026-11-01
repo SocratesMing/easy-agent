@@ -36,12 +36,12 @@ from easy_agent.models.api import (
 )
 from easy_agent.middleware import get_current_username
 from easy_agent.bootstrap.config import Config
-from easy_agent.services.agent_manager import (
+from easy_agent.services.agents.manager import (
     clear_session_connectors,
     get_agent_config,
     remove_session_agent,
 )
-from easy_agent.services.session_uploads import (
+from easy_agent.services.sessions.uploads import (
     UploadTooLargeError,
     append_manifest,
     save_upload_streaming,

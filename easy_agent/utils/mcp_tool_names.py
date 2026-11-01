@@ -4,7 +4,7 @@
 静默丢弃（见 ``docs/design/2026-10-20-d4-mcp-tool-naming.md``）。
 
 灰度开关：``EASY_MCP_TOOL_PREFIX``，默认 **off**，此模块的命名函数只有在开关打开时
-才会被 ``services/mcp.py`` 使用；关闭时行为与旧版完全一致。
+才会被 ``services/mcp/tools.py`` 使用；关闭时行为与旧版完全一致。
 
 命名规则（稳定、可回退）：
 

@@ -138,7 +138,7 @@ async def test_new_stream_replaces_previous_turn_events(db, monkeypatch):
     ]
     assert chunks == frames
 
-    from easy_agent.services.stream_events import flush_all_stream_events
+    from easy_agent.services.streaming.events import flush_all_stream_events
 
     await flush_all_stream_events()
     rows = list_stream_events(db, SESSION_ID)

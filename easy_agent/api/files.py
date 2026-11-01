@@ -27,11 +27,11 @@ from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
 )
 from easy_agent.utils.file_parser import parse_file_content
 from easy_agent.bootstrap.config import Config
-from easy_agent.services.session_uploads import (
+from easy_agent.services.sessions.uploads import (
     UploadTooLargeError,
     save_upload_streaming,
 )
-from easy_agent.services.upload_storage import (
+from easy_agent.services.sessions.upload_storage import (
     UploadStorageError,
     UploadStoreAccessDenied,
     UploadStoreNotFound,

@@ -32,7 +32,7 @@ from typing import Any, Optional
 import yaml
 
 from easy_agent.bootstrap.config import Config
-from easy_agent.services.prompt_loader import get_prompts_dir
+from easy_agent.services.agents.prompts import get_prompts_dir
 
 logger = logging.getLogger(__name__)
 
@@ -444,7 +444,7 @@ def build_expert_md(name_cn: str, name_en: str, config_data: dict) -> str:
 
     # 职责边界（程序化强制追加，不依赖 LLM 按模板生成）：只答领域内、先拆解相关性、
     # 禁止高危操作、回答标注来源。与运行时统一追加的「专家职责边界」块
-    # （services/expert_guardrail.py）互为双保险——旧版本专家提示词没有这一段，
+    # （services/experts/guardrail.py）互为双保险——旧版本专家提示词没有这一段，
     # 运行时那层负责兜底；新版本两处都有，约束更明确。
     parts.append("## 职责边界\n")
     parts.extend(

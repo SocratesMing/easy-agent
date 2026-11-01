@@ -14,7 +14,10 @@ import pytest
 from easy_agent.agent import EasyAgent
 from easy_agent.db.repositories.file_repository import FileRepository
 from easy_agent.bootstrap.config import Config
-from easy_agent.services import skill_categories, skill_library
+from easy_agent.services.skills import (
+    categories as skill_categories,
+    library as skill_library,
+)
 from easy_agent.services.streaming.side_effects import register_session_skills
 
 USERNAME = "szm"
@@ -187,7 +190,7 @@ def _workspace_skill(agent, name: str = "pdf-report"):
 
 async def test_records_are_read_and_dropped_off_the_event_loop(agent, db, monkeypatch):
     """读、删记录在线程里；驱逐 Agent 缓存改的是进程内状态，留在事件循环上。"""
-    from easy_agent.services import agent_manager
+    from easy_agent.services.agents import manager as agent_manager
 
     loop_thread = threading.get_ident()
     calls: list[tuple[str, bool]] = []
@@ -224,7 +227,7 @@ async def test_records_are_read_and_dropped_off_the_event_loop(agent, db, monkey
 
 async def test_cancel_while_dropping_records_still_reloads_agents(agent, db, monkeypatch):
     """删记录时用户点了停止：技能已经入库，照样要驱逐 Agent 缓存，下一条消息才能用上。"""
-    from easy_agent.services import agent_manager
+    from easy_agent.services.agents import manager as agent_manager
 
     reloaded: list[str] = []
     monkeypatch.setattr(agent_manager, "invalidate_user_agents", lambda username: reloaded.append(username))

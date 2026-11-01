@@ -6,7 +6,7 @@
 - :class:`SSEEmitter`：绑定默认 ``session_id``，提供 ``emit`` / 快捷事件方法；
 - :func:`sse_stream`：把「事件 dict 的同步/异步可迭代对象」转成 frame 流。
 
-约束（与 ``services/sse.py`` 的契约一致）：
+约束（与 ``services/streaming/sse.py`` 的契约一致）：
 
 - **不改变 wire 格式**：``frame`` 委托 ``format_sse``，逐字节等价；
 - **不改变字段顺序**：dict 插入序即序列化序，快捷方法按迁移前字面量键序构造；
@@ -20,7 +20,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Mapping
 from typing import Any
 
-from easy_agent.services.sse import SSEEvent, format_sse, validate_event
+from easy_agent.services.streaming.sse import SSEEvent, format_sse, validate_event
 
 
 class SSEEmitter:

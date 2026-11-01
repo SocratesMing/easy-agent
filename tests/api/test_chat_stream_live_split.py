@@ -19,7 +19,7 @@ from easy_agent.db.repositories.stream_events import (
     list_stream_events,
 )
 from easy_agent.models.db import SessionModel
-from easy_agent.services import stream_hub
+from easy_agent.services.streaming import hub as stream_hub
 
 def _runtime(db):
     """T3c：会话运行期状态走领域 repository（Database 转发方法已删除）。"""

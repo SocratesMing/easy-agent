@@ -4,13 +4,13 @@
 
 - **本模块**：只服务专家 CRUD 接口（``api/expert.py``）——记录 →对外结构转换、
   配置与标签读取、重名校验、LLM 生成后落库；
-- **``services/expert_runtime.py``**：专家对话运行时（提示词加载、职责边界护栏、
+- **``services/experts/runtime.py``**：专家对话运行时（提示词加载、职责边界护栏、
   相关性预检、短路拒答、消息落库）。聊天主链路与专家接口都要用，故下沉到 services，
   避免 ``api/chat.py`` 与 ``api/expert.py`` 互相 import。
 
 依赖方向：本模块**不 import ``api.expert``**（避免循环），旧内部名字经
 ``__all__`` re-export 继续可用（``expert_api._to_public`` 等）；运行时函数从
-``services.expert_runtime`` 原样转发，历史调用点（``_load_expert_prompt`` 等）不破。
+``services.experts.runtime`` 原样转发，历史调用点（``_load_expert_prompt`` 等）不破。
 """
 
 import asyncio
@@ -25,8 +25,8 @@ from easy_agent.db.expert_store import (
 )
 from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.agent.model import create_model
-from easy_agent.services.agent_manager import get_agent_config
-from easy_agent.services.expert_runtime import (  # noqa: F401 - re-export 历史名字
+from easy_agent.services.agents.manager import get_agent_config
+from easy_agent.services.experts.runtime import (  # noqa: F401 - re-export 历史名字
     _as_str_list,
     _current_user_id,
     _expert_flags,
@@ -43,7 +43,7 @@ from easy_agent.services.expert_runtime import (  # noqa: F401 - re-export 历�
     _session_logger_for,
     _with_guardrail,
 )
-from easy_agent.services.expert_service import (
+from easy_agent.services.experts.service import (
     generate_expert_config,
     slugify,
     write_expert_version,

@@ -1,6 +1,6 @@
 """D4：MCP 工具命名与「原始名 → 实际名」解析。
 
-开关 ``EASY_MCP_TOOL_PREFIX`` 默认关闭，关闭时 ``services/mcp.py`` 不会调用这里的
+开关 ``EASY_MCP_TOOL_PREFIX`` 默认关闭，关闭时 ``services/mcp/tools.py`` 不会调用这里的
 命名函数，行为与旧版一致；本文件只验证命名函数与兼容匹配本身的正确性。
 """
 

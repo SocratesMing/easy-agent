@@ -7,8 +7,8 @@ import logging
 import pytest
 
 from easy_agent.db.repositories.stream_events import list_stream_events
-from easy_agent.services import stream_events as stream_events_module
-from easy_agent.services.stream_events import MAX_BATCH_SIZE, StreamEventWriter
+from easy_agent.services.streaming import events as stream_events_module
+from easy_agent.services.streaming.events import MAX_BATCH_SIZE, StreamEventWriter
 
 
 def _frame(event_type: str, **fields) -> str:

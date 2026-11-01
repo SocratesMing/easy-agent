@@ -20,7 +20,7 @@ import logging
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
-from easy_agent.services.session_uploads import ensure_parsed_text
+from easy_agent.services.sessions.uploads import ensure_parsed_text
 from easy_agent.utils.blocking import run_blocking
 
 logger = logging.getLogger("easy_agent.tools.session_file_reader")

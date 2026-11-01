@@ -64,7 +64,7 @@ def _ensure_experts_root_config() -> str:
     """读取 ``config.yaml`` 的 ``tools.experts_dir``（读不到返回空串）。"""
     try:
         # 延迟导入：避免 services 包初始化期的循环依赖
-        from easy_agent.services.agent_manager import get_agent_config
+        from easy_agent.services.agents.manager import get_agent_config
 
         cfg = get_agent_config()
         if cfg and cfg.get("config"):
@@ -321,7 +321,7 @@ def read_public_expert(expert_dir: Path) -> Optional[dict]:
         "export_description": description,
         "export_skills_names": _as_str_list(cfg.get("skills_names")),
         # 依赖技能（技能目录名，不是展示名）：召唤该专家时由
-        # services/skill_provision.py 自动「添加」到用户公共技能清单。
+        # services/skills/provision.py 自动「添加」到用户公共技能清单。
         "export_required_skills": _as_str_list(cfg.get("required_skills")),
         # 画像补充字段（相关性预检用）：公共专家的 config.yaml 里有场景与能力清单，
         # 不下发到列表也不影响前端（未知字段被忽略），但能让预检看到"能产出报告"。

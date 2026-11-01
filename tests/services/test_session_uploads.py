@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from easy_agent.bootstrap.config import Config
-from easy_agent.services import session_uploads as su
+from easy_agent.services.sessions import uploads as su
 
 
 class _FakeDB:

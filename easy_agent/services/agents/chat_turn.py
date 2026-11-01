@@ -42,22 +42,26 @@ from easy_agent.knowledges.facade import (
 from easy_agent.models.api import ChatRequest, ResumeRequest
 from easy_agent.models.db import SessionModel
 from easy_agent.models.exceptions import BadRequestError, ConflictError, NotFoundError
-from easy_agent.services import (
-    agent_manager,
-    expert_runtime,
-    run_registry,
-    session_thread,
-    session_uploads as file_context,
-    skill_library,
-    skill_provision,
+from easy_agent.services.skills import (
+    library as skill_library,
+    provision as skill_provision,
+)
+from easy_agent.services.experts import runtime as expert_runtime
+from easy_agent.services.sessions import (
+    thread as session_thread,
+    uploads as file_context,
+)
+from easy_agent.services.agents import (
+    manager as agent_manager,
     tool_scope,
 )
-from easy_agent.services.agent_manager import (
+from easy_agent.services.streaming import runs as run_registry
+from easy_agent.services.agents.manager import (
     get_agent_config as _get_agent_config,
     get_or_create_agent_for_session,
 )
-from easy_agent.services.hitl_state import HitlDecisionError
-from easy_agent.services.session_thread import StaleApprovalError
+from easy_agent.services.streaming.approvals import HitlDecisionError
+from easy_agent.services.sessions.thread import StaleApprovalError
 from easy_agent.services.streaming.orchestrator import (
     resume_stream_generator,
     validate_resume_decisions,
@@ -517,7 +521,7 @@ async def prepare_turn(
         )
 
     # 技能作用域（专家技能硬隔离）：专家绑定了技能包时，只挂「专家技能包 ∪ 本轮另选」；
-    # 专家没绑定则保持全量可见（= 改造前行为）。见 services/tool_scope.py。
+    # 专家没绑定则保持全量可见（= 改造前行为）。见 services/agents/tool_scope.py。
     scope = tool_scope.resolve_tool_scope(
         username,
         expert_skills=expert_skills,

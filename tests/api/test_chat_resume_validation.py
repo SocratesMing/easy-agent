@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import easy_agent.api.chat as chat_api
-import easy_agent.services.chat_turn as chat_turn
+import easy_agent.services.agents.chat_turn as chat_turn
 from easy_agent.models.db import SessionModel
 
 

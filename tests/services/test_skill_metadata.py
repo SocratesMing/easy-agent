@@ -1,6 +1,6 @@
 """技能库元数据测试：展示字段与框架加载技能用同一套 frontmatter 解析（YAML）。"""
 
-from easy_agent.services import skill_library
+from easy_agent.services.skills import library as skill_library
 
 
 def _skill(tmp_path, name, text):

@@ -16,8 +16,8 @@ from typing import Any
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from easy_agent.bootstrap.config import Config, _expand_env_recursive
-from easy_agent.services import mcp_sessions
-from easy_agent.services.mcp_evidence import wrap_mcp_tools
+from easy_agent.services.mcp import sessions as mcp_sessions
+from easy_agent.services.mcp.evidence import wrap_mcp_tools
 from easy_agent.tools.registry import builtin_tool_names
 from easy_agent.utils.mcp_tool_names import prefix_enabled, rename_tool
 

@@ -15,7 +15,7 @@ import pytest
 from langgraph.store.memory import InMemoryStore
 
 from easy_agent.db.providers import get_file_repository
-from easy_agent.services import upload_storage as us
+from easy_agent.services.sessions import upload_storage as us
 
 
 @pytest.fixture()

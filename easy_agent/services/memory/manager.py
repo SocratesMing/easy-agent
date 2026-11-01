@@ -17,7 +17,7 @@ import re
 import time
 from pathlib import Path
 
-from easy_agent.services.memory_store import (
+from easy_agent.services.memory.store import (
     SOURCE_DIRECT_WRITE,
     SOURCE_IMPORT,
     SOURCE_LLM_LONG_TERM,
@@ -29,7 +29,7 @@ from easy_agent.services.memory_store import (
     sync_from_markdown,
     write_structured_memory,
 )
-from easy_agent.services.prompt_loader import load_prompt, render
+from easy_agent.services.agents.prompts import load_prompt, render
 
 logger = logging.getLogger("easy_agent.memory")
 

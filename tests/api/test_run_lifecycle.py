@@ -17,12 +17,12 @@ from types import SimpleNamespace
 import pytest
 
 import easy_agent.api.chat as chat_api
-import easy_agent.services.chat_turn as chat_turn
-from easy_agent.services import run_registry
-import easy_agent.services.expert_runtime as expert_runtime
+import easy_agent.services.agents.chat_turn as chat_turn
+from easy_agent.services.streaming import runs as run_registry
+import easy_agent.services.experts.runtime as expert_runtime
 from easy_agent.models.db import SessionModel
 from easy_agent.db.repositories import agent_runs as agent_runs_repo
-from easy_agent.services.run_registry import new_run_id, start_run
+from easy_agent.services.streaming.runs import new_run_id, start_run
 
 
 async def _async_noop(*args, **kwargs):

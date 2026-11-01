@@ -32,7 +32,7 @@ from pathlib import Path
 from easy_agent.agent.workspace import MANIFEST_FILENAME, UPLOADS_DIR_NAME
 from easy_agent.bootstrap.config import Config
 from easy_agent.utils.file_parser import parse_file_content
-from easy_agent.services.upload_storage import (
+from easy_agent.services.sessions.upload_storage import (
     UploadStorageError,
     is_store_uri,
     materialize_upload,

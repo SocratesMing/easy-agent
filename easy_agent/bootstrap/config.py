@@ -107,7 +107,7 @@ class Config(BaseModel):
     """专家会话是否在创建 Agent 前做「相关性预检」（一次轻量 LLM 三分类）。
 
     开启时与本专家职责无关的消息**短路拒答**，Agent 不创建、工具零可达；预检
-    异常/超时一律放行（fail-open）。见 services/expert_relevance.py。"""
+    异常/超时一律放行（fail-open）。见 services/experts/relevance.py。"""
 
     expert_relevance_strict: bool = False
     """「部分相关」消息的口径：true = 整条拒答；false（默认）= 放行，交给职责边界块
@@ -130,7 +130,7 @@ class Config(BaseModel):
 
     注意本开关只做**登记**：公共技能包本体始终在 ``tools.skills_dir`` 下，不会复制
     进用户目录（DA-13 S2）。技能包缺失时只提示、不阻断对话，见
-    ``services/skill_provision.py``。"""
+    ``services/skills/provision.py``。"""
 
     expert_tool_scope_enabled: bool = True
     """专家会话是否按「专家选定的技能包」做**硬隔离**（默认开启）。
@@ -141,7 +141,7 @@ class Config(BaseModel):
     改造前的全量可见（= 不选即全部可用）。
 
     关闭后一律全量挂载，等价于改造前行为，用于线上出问题时的快速回退
-    （不需要回滚代码）。见 ``services/tool_scope.py``。"""
+    （不需要回滚代码）。见 ``services/agents/tool_scope.py``。"""
 
     app_welcome_title: str = DEFAULT_APP_WELCOME_TITLE
 

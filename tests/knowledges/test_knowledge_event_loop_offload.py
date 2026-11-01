@@ -22,7 +22,7 @@ from easy_agent.knowledges import api as knowledge_api
 from easy_agent.knowledges.chat import chat_bridge
 from easy_agent.knowledges.chat import streaming as knowledge_streaming
 from easy_agent.knowledges.core.models import KnowledgePrincipal
-from easy_agent.services.sse import format_sse
+from easy_agent.services.streaming.sse import format_sse
 
 
 def _principal() -> KnowledgePrincipal:

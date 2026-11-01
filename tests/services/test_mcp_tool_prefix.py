@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from easy_agent.services import mcp
+from easy_agent.services.mcp import tools as mcp
 
 
 class _StatelessClient:

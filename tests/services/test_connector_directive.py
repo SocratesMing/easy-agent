@@ -14,8 +14,11 @@ from types import SimpleNamespace
 import pytest
 
 from easy_agent.bootstrap.config import Config
-from easy_agent.services import agent_manager as am
-from easy_agent.services import connectors, mcp
+from easy_agent.services.agents import manager as am
+from easy_agent.services.mcp import (
+    connectors,
+    tools as mcp,
+)
 
 SID = "session-connectors"
 

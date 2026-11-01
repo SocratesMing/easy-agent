@@ -24,10 +24,10 @@
       "rf = [d for d in os.environ.get(\"EASY_LANDLOCK_RW_FILES\", \"\").split(sep) if d]": 1,
       "cwd = os.environ.get(\"EASY_LANDLOCK_CWD\")": 1
     },
-    "easy_agent/services/mcp_evidence.py": {
+    "easy_agent/services/mcp/evidence.py": {
       "raw = os.getenv(\"EASY_MCP_MAX_CONTENT_CHARS\", \"\").strip()": 1
     },
-    "easy_agent/services/mcp_sessions.py": {
+    "easy_agent/services/mcp/sessions.py": {
       "raw = os.getenv(name, \"\").strip()": 1
     },
     "easy_agent/utils/auth.py": {

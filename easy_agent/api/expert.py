@@ -4,18 +4,18 @@
 
 - **鉴权**：全部 ``Depends(get_current_username)``，再用 ``user_id`` 做归属校验；
   非本人资源一律返回 **404**（不泄露存在性），与 ``chat.py`` 现有做法一致；
-- **落库与目录**：``db/expert_store.py``（单表 CRUD）+ ``services/expert_service.py``
+- **落库与目录**：``db/expert_store.py``（单表 CRUD）+ ``services/experts/service.py``
   （LLM 生成与版本目录），本文件只做编排与参数校验；
 - **执行走唯一入口 ``/agent/chat/stream``**：专家对话不再是独立接口。前端在聊天请求里
   带上 ``expert_agent_id``，由 ``api/chat.py`` 的专家分支完成「加载提示词 → 补装依赖技能
   → 职责范围预检 → 建 Agent」，与通用对话共用同一套 SSE 事件与会话/run 生命周期。
-  运行时逻辑在 ``services/expert_runtime.py``，本文件只保留 CRUD；
+  运行时逻辑在 ``services/experts/runtime.py``，本文件只保留 CRUD；
 - **专家提示词走 ``system_prompt_extra``**：不改 ``agent.py``，专家人设通过现成通道
   追加到系统提示词末尾（recency 最高，实际效果上主导通用人设）。
 
 批次 2B 起非路由辅助逻辑（用户/记录转换、配置读取、生成落库）移到
 ``api/expert_helpers.py``；2026-10 起对话运行时（提示词加载与护栏、消息落库、相关性
-预检、短路拒答流）下沉到 ``services/expert_runtime.py``。旧内部名字经 ``__all__``
+预检、短路拒答流）下沉到 ``services/experts/runtime.py``。旧内部名字经 ``__all__``
 re-export 继续可用。
 """
 
@@ -33,9 +33,9 @@ from easy_agent.db.expert_store import (
     STATUS_BUILDING,
 )
 from easy_agent.middleware import get_current_username
-from easy_agent.services.agent_manager import invalidate_user_agents
-from easy_agent.services import public_expert_service
-from easy_agent.services.expert_service import (
+from easy_agent.services.agents.manager import invalidate_user_agents
+from easy_agent.services.experts import public as public_expert_service
+from easy_agent.services.experts.service import (
     build_expert_ids,
     load_active_prompt_file,
     remove_expert_dir,
@@ -178,7 +178,7 @@ async def add_expert(
     expert_agent_id, name_en = build_expert_ids(request.name_cn)
 
     # 专家绑定的技能包（用户选择）：归一成 canonical 目录名后落库；不传 = 不绑定
-    from easy_agent.services import tool_scope
+    from easy_agent.services.agents import tool_scope
 
     selected_skills: list[str] = []
     if request.required_skills:
@@ -274,7 +274,7 @@ async def update_expert(
     # 由 _generate_and_store 里的大模型自动归类结果覆盖。
     meta = {"export_name_cn": name_cn, "export_prompt": user_prompt}
     if request.required_skills is not None:
-        from easy_agent.services import tool_scope
+        from easy_agent.services.agents import tool_scope
 
         kept, dropped = tool_scope.normalize_expert_skills(
             username, request.required_skills, "update"
@@ -528,7 +528,7 @@ def expert_required_skills(
 
     本接口**只读**：不会触发安装，也不会驱逐缓存（触发补装的是真正发消息那一刻）。
     """
-    from easy_agent.services import skill_provision
+    from easy_agent.services.skills import provision as skill_provision
 
     report = skill_provision.required_skills_status(username, expert_id)
     if not report["required"]:

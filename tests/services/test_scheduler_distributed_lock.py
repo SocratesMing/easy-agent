@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import easy_agent.services.agent_manager as agent_manager
+import easy_agent.services.agents.manager as agent_manager
 import easy_agent.services.scheduler as sched
 from easy_agent.bootstrap.config import DistributedLockConfig
 from easy_agent.models.db import ScheduledTaskModel

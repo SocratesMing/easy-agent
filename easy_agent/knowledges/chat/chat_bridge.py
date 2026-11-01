@@ -14,7 +14,7 @@ from fastapi import HTTPException, Request
 from pydantic import ValidationError
 
 from easy_agent.db import Database
-from easy_agent.services.sse import SSEEvent
+from easy_agent.services.streaming.sse import SSEEvent
 from easy_agent.knowledges.api import get_knowledge_principal, knowledge_http_error
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.models import DocumentMetadataFilter

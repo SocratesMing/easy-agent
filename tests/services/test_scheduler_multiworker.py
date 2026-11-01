@@ -65,7 +65,7 @@ def test_single_worker_does_not_block(fake_env, monkeypatch):
 
 def test_agent_manager_registers_the_agent_lifecycle_on_import():
     """scheduler 不导入 agent_manager，由 agent_manager 导入时注册生命周期。"""
-    import easy_agent.services.agent_manager as agent_manager
+    import easy_agent.services.agents.manager as agent_manager
 
     get_agent, remove_agent = sched._require_agent_lifecycle()
     assert get_agent is agent_manager.get_or_create_agent_for_session
@@ -73,7 +73,7 @@ def test_agent_manager_registers_the_agent_lifecycle_on_import():
 
 
 def test_unregistered_agent_lifecycle_fails_clearly(monkeypatch):
-    """没注册就跑任务要明确报错，不再悄悄动态导入 agent_manager（那样会藏住一个 import 环）。"""
+    """没注册就跑任务要明确报错，不再悄悄动态导入 agents.manager（那样会藏住一个 import 环）。"""
     monkeypatch.setattr(sched, "_agent_lifecycle_provider", None)
-    with pytest.raises(RuntimeError, match="agent_manager"):
+    with pytest.raises(RuntimeError, match="agent 生命周期"):
         sched._require_agent_lifecycle()

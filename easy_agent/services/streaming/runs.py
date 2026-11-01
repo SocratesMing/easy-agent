@@ -26,8 +26,8 @@ from easy_agent.db.repositories.agent_runs import AgentRunRepository
 from easy_agent.db.repositories.session_runtime import SessionRuntimeRepository
 from easy_agent.db.repositories.stream_events import StreamEventRepository
 from easy_agent.bootstrap.env import env_int
-from easy_agent.services.session_runtime import instance_owner, is_stream_active
-from easy_agent.services.sse_emitter import SSEEmitter
+from easy_agent.services.sessions.runtime import instance_owner, is_stream_active
+from easy_agent.services.streaming.emitter import SSEEmitter
 from easy_agent.utils.blocking import run_blocking
 
 logger = logging.getLogger("easy_agent.run_registry")

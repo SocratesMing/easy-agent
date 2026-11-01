@@ -1,5 +1,12 @@
-"""流式服务包：chat / resume 的 SSE 编排（C2 拆分）。
+"""流式服务包：chat / resume 的 SSE 编排、事件持久化与运行注册表（T15 领域分包）。
 
+- ``processor``：流式输出解析 / 工具调用累积；
+- ``messages``：流式消息构造；
+- ``events``：SSE 事件持久化写入器；
+- ``hub``：会话级事件中枢；
+- ``sse`` / ``emitter``：SSE 事件契约与发送器；
+- ``approvals``：HITL 审批状态；
+- ``runs``：流式运行租约注册表；
 - ``projector``：纯投影函数；
 - ``persistence``：增量 / 最终落库；
 - ``side_effects``：工作区 / 技能 / 记忆收尾；

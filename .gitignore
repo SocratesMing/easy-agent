@@ -57,6 +57,10 @@ data/
 logs/
 memories/
 sessions/
+# 运行时 sessions/ 目录忽略，但 services 子包同名（T15），需显式放行；
+# 只放行目录本身，内部 __pycache__ 仍按上面的规则忽略
+!easy_agent/services/sessions/
+easy_agent/services/sessions/__pycache__/
 node_modules/
 
 # Local config with secrets (use config-example.yaml as template)

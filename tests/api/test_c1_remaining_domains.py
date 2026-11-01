@@ -56,7 +56,7 @@ RETAINED_DATABASE_BOUNDARIES = {
     # start_run 边界。
     # T3a（2026-11-01）：chat_stream / chat_resume 的 start_run 改传 repo.runs，11 → 9。
     "expert.py": 0,
-    # T4（2026-11-01）：本轮准备逻辑下沉 services/chat_turn.py。
+    # T4（2026-11-01）：本轮准备逻辑下沉 services/agents/chat_turn.py。
     # T3c（2026-11-01）：stream hub / 事件回放改走领域 repository，
     # api/chat.py 与 api/chat_live.py 都不再持有 ``repo.database``。
     "chat.py": 0,

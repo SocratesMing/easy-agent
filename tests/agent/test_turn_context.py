@@ -25,7 +25,7 @@ from easy_agent.agent.turn_context import (
     render_turn_request,
     turn_input,
 )
-from easy_agent.services.stream_messages import turn_message_text
+from easy_agent.services.streaming.messages import turn_message_text
 
 RENDERED = "[KNOWLEDGE CONTEXT]\nquestion"
 

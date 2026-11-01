@@ -12,7 +12,7 @@ T3b 继续迁移，方法先留在这里避免 API 层回退到底层函数）�
   都不在本任务范围内，A2「消息只写 ``session_messages`` 行表」语义不变；
 - 方法签名写全（不用 ``*args, **kwargs``），调用方与 IDE/类型检查都能看到参数；
 - ``database`` property 只服务于尚未迁移到 repository 的边界
-  （``services/session_uploads.py`` 的 ``db=`` 端口已能直接接受 repository，
+  （``services/sessions/uploads.py`` 的 ``db=`` 端口已能直接接受 repository，
   这里保留是给流式引擎/知识域等未迁移调用方的过渡出口，新增代码不要用）。
 """
 

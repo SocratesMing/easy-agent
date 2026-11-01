@@ -18,8 +18,11 @@ from pathlib import Path
 
 import pytest
 
-from easy_agent.services import memory_locks, memory_manager
-from easy_agent.services.memory_store import (
+from easy_agent.services.memory import (
+    locks as memory_locks,
+    manager as memory_manager,
+)
+from easy_agent.services.memory.store import (
     ENV_FLAG,
     MemoryEntry,
     MemoryStore,

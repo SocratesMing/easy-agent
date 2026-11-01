@@ -9,9 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import easy_agent.services.chat_turn as chat_turn
-import easy_agent.services.expert_runtime as expert_runtime
-from easy_agent.services import agent_manager
+import easy_agent.services.agents.chat_turn as chat_turn
+import easy_agent.services.experts.runtime as expert_runtime
+from easy_agent.services.agents import manager as agent_manager
 
 BUSY = "本会话正在生成回复，请等待完成或先取消当前生成"
 

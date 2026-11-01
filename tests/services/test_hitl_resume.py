@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from easy_agent.services.hitl_state import (
+from easy_agent.services.streaming.approvals import (
     hanging_hitl_tool_count,
     normalize_resume_decisions,
 )

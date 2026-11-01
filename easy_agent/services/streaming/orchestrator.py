@@ -30,25 +30,25 @@ from easy_agent.agent.turn_context import turn_input
 from easy_agent.models.api import ChatRequest
 from easy_agent.utils.blocking import run_blocking
 from easy_agent.utils.session_logger import SessionLogger
-from easy_agent.services.agent_manager import get_agent_config
-from easy_agent.services.hitl_state import (
+from easy_agent.services.agents.manager import get_agent_config
+from easy_agent.services.streaming.approvals import (
     HitlDecisionError,
     ResumePlan,
     normalize_resume_decisions,
     pending_hitl_interrupts,
     plan_resume,
 )
-from easy_agent.services.sse import SSEEvent
-from easy_agent.services.sse_emitter import SSEEmitter
-from easy_agent.services.stream_messages import (
+from easy_agent.services.streaming.sse import SSEEvent
+from easy_agent.services.streaming.emitter import SSEEmitter
+from easy_agent.services.streaming.messages import (
     _partial_message_dict,
     _tool_call_tuples,
     build_assistant_message_dict,
     tool_call_records_to_dicts,
     turn_message_text,
 )
-from easy_agent.services.stream_processor import StreamProcessor
-from easy_agent.services.session_thread import (
+from easy_agent.services.streaming.processor import StreamProcessor
+from easy_agent.services.sessions.thread import (
     StaleApprovalError,
     approval_handle,
     plan_turn,
@@ -896,7 +896,7 @@ async def chat_stream_generator(
         # DA-03：thread 里的本轮消息只存用户原话（与 DB 一致）；工作区前缀、知识库 /
         # 页面上下文、上传预览等本轮注入（message_content）走 turn_context，只进本轮
         # 模型请求，见 agent/turn_context.py。开关 agent.session_thread 打开时一个会话
-        # 一个 thread，只输入本轮消息（及需要补齐的内容），见 services/session_thread.py。
+        # 一个 thread，只输入本轮消息（及需要补齐的内容），见 services/sessions/thread.py。
         plan = await plan_turn(
             agent,
             session_id=session_id,

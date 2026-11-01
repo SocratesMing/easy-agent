@@ -98,7 +98,8 @@ def test_project_structure():
     # 各功能包结构
     assert (base_path / "easy_agent" / "api" / "__init__.py").exists()
     assert (base_path / "easy_agent" / "api" / "chat.py").exists()
-    assert (base_path / "easy_agent" / "services" / "prompt_loader.py").exists()
+    assert (base_path / "easy_agent" / "services" / "agents" / "prompts.py").exists()
+    assert (base_path / "easy_agent" / "services" / "streaming" / "orchestrator.py").exists()
     assert (base_path / "easy_agent" / "bootstrap" / "initialization" / "runtime.py").exists()
     assert (base_path / "easy_agent" / "db" / "database.py").exists()
 
@@ -132,7 +133,7 @@ class TestImports:
         assert UserModel is not None
 
     def test_service_imports(self):
-        from easy_agent.services.agent_manager import init_agent_config
+        from easy_agent.services.agents.manager import init_agent_config
         from easy_agent.services.streaming.orchestrator import chat_stream_generator
 
         assert chat_stream_generator is not None

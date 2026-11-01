@@ -13,8 +13,11 @@ from anyio import ClosedResourceError
 from langchain_core.tools import ToolException
 from mcp.types import CallToolResult, TextContent, Tool
 
-from easy_agent.services import mcp, mcp_sessions
-from easy_agent.services.mcp_sessions import MCPSessionManager
+from easy_agent.services.mcp import (
+    tools as mcp,
+    sessions as mcp_sessions,
+)
+from easy_agent.services.mcp.sessions import MCPSessionManager
 
 
 def _tool_def(name: str, description: str = "Echo tool.") -> Tool:

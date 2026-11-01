@@ -162,7 +162,7 @@ async def test_general_purpose_subagent_is_bounded_by_its_own_call_limit():
 
 async def _run_daily_report_task(real_agent, db, monkeypatch):
     """用真实共享编译图跑一次定时任务 ``task-da10``。"""
-    import easy_agent.services.agent_manager as agent_manager
+    import easy_agent.services.agents.manager as agent_manager
     import easy_agent.services.scheduler as sched
     from easy_agent.bootstrap.config import DistributedLockConfig
     from easy_agent.models.db import ScheduledTaskModel

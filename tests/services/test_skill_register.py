@@ -7,7 +7,7 @@
 import pytest
 
 from easy_agent.bootstrap.config import Config
-from easy_agent.services import skill_library
+from easy_agent.services.skills import library as skill_library
 
 USERNAME = "szm"
 

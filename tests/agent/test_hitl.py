@@ -318,7 +318,7 @@ def test_delete_decision_check_ignores_innocent_words():
 
 
 def test_annotations_survive_the_mcp_evidence_wrapper():
-    from easy_agent.services.mcp_evidence import wrap_mcp_tool
+    from easy_agent.services.mcp.evidence import wrap_mcp_tool
 
     wrapped = wrap_mcp_tool(_mcp_tool("delete_note", readOnlyHint=True), server="notes")
     assert "delete_note" not in build_interrupt_config([wrapped])

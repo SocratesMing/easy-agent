@@ -29,7 +29,7 @@ from easy_agent.bootstrap.config import Config
 from easy_agent.db.expert_store import STATUS_ACTIVE, STATUS_FAILED, ExpertStore
 from easy_agent.db import init_database
 from easy_agent.db.repositories.expert_repository import ExpertRepository
-from easy_agent.services.expert_service import get_expert_dir
+from easy_agent.services.experts.service import get_expert_dir
 import easy_agent.tools.expert_writer as writer
 
 TAG_OPTIONS = [
@@ -370,7 +370,7 @@ def test_agent_manager_injects_save_expert(client, monkeypatch):
     save_expert 是产品级入口，非专家会话常驻，不交给 SkillsMiddleware 门控。
     """
     import easy_agent.agent.core as agent_mod
-    import easy_agent.services.agent_manager as am
+    import easy_agent.services.agents.manager as am
 
     if not am._agent_config or not am._agent_config.get("config"):
         pytest.skip("全局 Agent 配置未初始化")
@@ -538,7 +538,7 @@ def _stub_skills_middleware(monkeypatch, recorded: list):
 
 def test_agent_manager_keeps_save_expert_out_of_skill_gating(client, monkeypatch):
     """save_expert 是产品级入口：非专家会话常驻，不再交给 SkillsMiddleware 门控；专家会话不提供。"""
-    import easy_agent.services.agent_manager as am
+    import easy_agent.services.agents.manager as am
     from easy_agent.agent.graph_cache import clear_agent_graph_cache
 
     if not am._agent_config or not am._agent_config.get("config"):
@@ -575,7 +575,7 @@ def test_agent_manager_keeps_save_expert_out_of_skill_gating(client, monkeypatch
 
 def test_agent_manager_reuses_agent_across_turns(client, monkeypatch):
     """选中 / 不选 expert-creator 不再影响 Agent：同一会话连续两轮复用同一个实例。"""
-    import easy_agent.services.agent_manager as am
+    import easy_agent.services.agents.manager as am
 
     if not am._agent_config or not am._agent_config.get("config"):
         pytest.skip("全局 Agent 配置未初始化")
@@ -597,7 +597,7 @@ def test_agent_manager_reuses_agent_across_turns(client, monkeypatch):
 
 def test_session_edit_target_bind_override_and_clear(client):
     """绑定表：新绑定覆盖旧绑定、随会话 Agent 清理一起清除。"""
-    import easy_agent.services.agent_manager as am
+    import easy_agent.services.agents.manager as am
 
     am.set_session_edit_target("sess-edit-bind", "expert_a_1")
     am.set_session_edit_target("sess-edit-bind", "expert_b_2")

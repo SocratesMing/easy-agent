@@ -157,7 +157,7 @@ def catalog_connectors(username: str, config: Any = None) -> dict[str, Any]:
         }
     """
     from easy_agent.bootstrap.config import Config
-    from easy_agent.services.mcp import load_user_mcp_config
+    from easy_agent.services.mcp.tools import load_user_mcp_config
 
     entries = load_catalog()
     # 只看用户自己的 mcp.json（不回退全局）：全局那份现在是公共连接器目录，
@@ -262,7 +262,7 @@ def resolve_connector_servers(
     """
     if not names:
         return [], []
-    from easy_agent.services.mcp import load_user_mcp_config
+    from easy_agent.services.mcp.tools import load_user_mcp_config
 
     user_servers = load_user_mcp_config(username, config) or {}
     # 目录展示名 -> id：同名多条时全部保留（调用方按名字已无法区分）

@@ -50,7 +50,7 @@ def _require_agent_lifecycle():
     provider = _agent_lifecycle_provider
     if provider is None:
         raise RuntimeError(
-            "定时任务拿不到 agent 生命周期：easy_agent.services.agent_manager 还没有导入"
+            "定时任务拿不到 agent 生命周期：easy_agent.services.agents.manager 还没有导入"
             "（它在导入时调用 set_agent_lifecycle 注册，应用启动路径会自动完成）"
         )
     return provider()

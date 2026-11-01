@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from easy_agent.services.prompt_loader import clear_cache, load_system_prompt
-from easy_agent.services.prompt_loader import DEFAULT_SYSTEM_PROMPT
+from easy_agent.services.agents.prompts import clear_cache, load_system_prompt
+from easy_agent.services.agents.prompts import DEFAULT_SYSTEM_PROMPT
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "easy_agent" / "config"
 

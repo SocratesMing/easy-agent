@@ -623,7 +623,7 @@ def _create_expert_tables(db, cursor):
     - ``export_required_skills``：专家**绑定的技能包目录名**（JSON 字符串数组），
       创建 / 修改专家时由用户在输入框选定的技能包写入（``save_expert`` 落库）。
       与 ``export_skills_names``（展示标签）完全不同：这里是真实技能目录名，
-      对话时按它做技能作用域硬隔离，见 ``services/tool_scope.py``；
+      对话时按它做技能作用域硬隔离，见 ``services/agents/tool_scope.py``；
     - ``export_description``：专家主要功能描述（大模型生成，≤300 字），
       用于卡片与详情页展示；
     - ``tag_id``：分类标签，由大模型在配置的 ``expert_tags`` 候选中选一个，

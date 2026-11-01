@@ -817,7 +817,7 @@ class MCPSessionManager:
                 self._retire_nowait(entry, "scope-invalidated")
 
 
-# Module-level default manager used by ``services/mcp.py``.
+# Module-level default manager used by ``services/mcp/tools.py``.
 _manager = MCPSessionManager()
 
 

@@ -7,7 +7,7 @@ import zipfile
 import pytest
 
 from easy_agent.api import skill_center
-from easy_agent.services import skill_library
+from easy_agent.services.skills import library as skill_library
 
 URL = "/agent/skill-center/import-skill"
 SKILL_MD = "---\nname: demo\ndescription: 演示技能\n---\n\n# Demo\n"

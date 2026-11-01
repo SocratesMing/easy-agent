@@ -18,10 +18,10 @@ JSONL 布局（首行 meta，其后每条记忆一行）::
 读取对损坏行、缺字段、缺失文件全部容错（best effort）；外部直接编辑 Markdown
 后，内容 hash 不一致会在下一次同步时以 Markdown 为准回灌 sidecar。
 
-实现拆分（批次 2A）：文件锁 / 原子写在 :mod:`easy_agent.services.memory_locks`，
-条目模型与 Markdown 编解码在 :mod:`easy_agent.services.memory_entries`；本模块保留
+实现拆分（批次 2A）：文件锁 / 原子写在 :mod:`easy_agent.services.memory.locks`，
+条目模型与 Markdown 编解码在 :mod:`easy_agent.services.memory.entries`；本模块保留
 :class:`MemoryStore`、写入/同步入口，并 re-export 拆分前的全部公开名字（对象身份
-不变），既有 ``from easy_agent.services.memory_store import ...`` 导入路径仍可用。
+不变），既有 ``from easy_agent.services.memory.store import ...`` 导入路径仍可用。
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 # 以下导入同时是兼容 re-export：对象身份与子模块一致（纯移动，不改行为）。
-from easy_agent.services.memory_entries import (  # noqa: F401 - 兼容重导出（测试锁定）
+from easy_agent.services.memory.entries import (  # noqa: F401 - 兼容重导出（测试锁定）
     DEFAULT_CATEGORY,
     DEFAULT_SOURCE,
     ENV_FLAG,
@@ -67,7 +67,7 @@ from easy_agent.services.memory_entries import (  # noqa: F401 - 兼容重导出
     truncate_text,
     validate_entry,
 )
-from easy_agent.services.memory_locks import (
+from easy_agent.services.memory.locks import (
     LOCK_SUFFIX,
     STORE_SUFFIX,
     _atomic_write_text,

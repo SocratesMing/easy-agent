@@ -6,7 +6,10 @@ from pathlib import Path
 import pytest
 
 from easy_agent.agent import builtin_skills
-from easy_agent.services import skill_categories, skill_library
+from easy_agent.services.skills import (
+    categories as skill_categories,
+    library as skill_library,
+)
 
 SKILLS_ROOT = Path(os.environ["TEST_SKILLS_DIR"])
 
@@ -276,7 +279,7 @@ def _plant_cached_agent(session_id: str):
     from types import SimpleNamespace
 
     from easy_agent.bootstrap.config import Config
-    from easy_agent.services import agent_manager
+    from easy_agent.services.agents import manager as agent_manager
 
     agent = SimpleNamespace(safe_username=Config.sanitize_username("testuser"))
     agent_manager._sessions[session_id] = agent_manager.SessionState(agent=agent)

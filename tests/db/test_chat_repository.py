@@ -73,7 +73,7 @@ def test_repository_exposes_session_files_for_upload_ports(tmp_path):
 
 def test_repository_satisfies_session_uploads_workspace_port(tmp_path, monkeypatch):
     """session_uploads 直接吃 repository 端口（不再需要 repo.database）。"""
-    from easy_agent.services import session_uploads as su
+    from easy_agent.services.sessions import uploads as su
 
     db = _make_db(tmp_path)
     repo = ChatRepository(db)

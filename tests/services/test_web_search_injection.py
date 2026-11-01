@@ -7,7 +7,7 @@ import pytest
 
 from easy_agent.agent import EasyAgent
 from easy_agent.bootstrap.config import Config
-from easy_agent.services import agent_manager
+from easy_agent.services.agents import manager as agent_manager
 from easy_agent.tools.registry import require_tool_spec
 from easy_agent.tools.web_search import PROVIDER_TAVILY
 
