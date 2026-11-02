@@ -4,7 +4,7 @@
 - 依据代码：`6150ca1`（分支 `claude/unruffled-mcnulty-7daf87`）。后端代码 = 共享分支 `origin/refactor/audit-improvements-2026-10-18`（`c82f112`）+ 本分支的事件循环改造。
 - 范围：后端 `easy_agent/`；安全项来自 `docs/audit/2026-10-17-easy-agent-audit.md`；前端只列一处脚本问题（T16）。前端结构没有纳入这次分析。
 - 用法：一个任务对应一个分支和一组提交，不要把多个任务混在一起。动手前先读第 1 节「通用约定」。文中行号以 `6150ca1` 为准，改动前按函数名重新定位。
-- 2026-11-02 更新：各任务的完成情况见第 2 节「状态」列；复核结论、T8 重做方案和剩余小问题见第 6 节。
+- 2026-11-02 更新：各任务的完成情况见第 2 节「状态」列；复核结论、T8 重做方案和剩余小问题见第 6 节。`rag-1018` 已合入共享分支，yongzheng 改为基于共享分支开发，切换说明见 §6.5。
 
 ## 0. 已经完成的（不要重复做）
 
@@ -53,7 +53,7 @@
 
    | 分支 | 负责人 | 在改 |
    | --- | --- | --- |
-   | `origin/rag-1018`（基于当前共享分支，最新提交 2026-10-31） | yongzheng | `knowledges/api.py`、`knowledges/chat/chat_bridge.py`、`app.py`（删掉 `knowledge_observability` 中间件，`/api/knowledge` 改为 `/agent/knowledge`） |
+   | 共享分支（`rag-1018` 已于 2026-11-02 合入，截到 `213d96b`，`30340c1` 的 `config.yaml` 不合） | yongzheng | 之后直接基于共享分支开发（切换说明见 §6.5）；`knowledges/` 仍是他的主要改动区，动这个目录前先和他沟通 |
    | `origin/vue26-1015`、`origin/feat/frontend-guocl`、`origin/zhq/dt-1016`（基于 10-17） | 郭春龙 | `api/chat.py`、`api/expert.py`、`api/sessions.py`、`services/agent_manager.py`、`services/expert_runtime.py` 等 |
    | `origin/feat/mcp`、`origin/audit-improvement`（基于 10-14 的旧快照） | lyhistudy | 几乎覆盖全部 api / services 文件 |
 
@@ -447,11 +447,11 @@ python scripts/quality/import_graph.py --json > /tmp/import_graph.json
 
 ### 6.2 合入顺序
 
-1. 共享分支快进到 `rag-1018` 的 `213d96b`，需要 yongzheng 确认。不要带上 `30340c1`，原因有两个：
+1. ✅ 已完成（2026-11-02）：共享分支快进到 `rag-1018` 的 `213d96b`。没有带上 `30340c1`，原因有两个：
    - `config.yaml` 在 `.gitignore` 里，一旦被跟踪，就会和每个人本地的同名文件冲突；
    - 带上它会让 `tests/integration/test_v3_streaming.py` 的 3 个用例失败。
-2. 合入 `feat/backend-backlog-2026-11-02`。它基于 `213d96b`，可以直接快进。
-3. 和 yongzheng 约好窗口后重做 T8（§6.3）。窗口期内，`knowledges/service.py`、`api.py`、`core/repository.py` 不要再有并行改动。
+2. ✅ 已完成（2026-11-02，`a8c411e`）：合入 `feat/backend-backlog-2026-11-02`。之后又合入了 `09cdaca`（AI 侧边栏知识库子面板对齐）和 `33864f8`（Vue 2 模块的知识库、人员接口统一走 `/agent`）。
+3. ⏳ 待办：和 yongzheng 约好窗口后重做 T8（§6.3）。窗口期内，`knowledges/service.py`、`api.py`、`core/repository.py` 不要再有并行改动。
 
 ### 6.3 T8 重做要点
 
@@ -485,3 +485,40 @@ python scripts/quality/import_graph.py --json > /tmp/import_graph.json
    - T3 要求列出剩余 5 处 `.database` 的清单，目前还没有。
 9. `services/agents/chat_turn.py:prepare_turn` 有 306 行，是现在最长的函数，可以作为下一轮拆分的对象。
 10. `tests/middleware/test_rate_limit_shared.py::test_db_counter_is_exact_under_concurrent_threads`：用 60 秒固定窗口连发 20 次。恰好跨过整分钟边界时，两个窗口各放行 5 次，断言就会失败（实测放行 10 次）。机器负载高时更容易碰上。测试里应该固定时钟。
+
+### 6.5 yongzheng 切到共享分支（2026-11-02）
+
+`rag-1018` 已合入共享分支，之后直接基于 `origin/refactor/audit-improvements-2026-10-18` 开发。
+
+**切换步骤**
+
+1. 先把本地 `easy_agent/config/config.yaml` 复制到仓库外备份。这个文件在 `rag-1018` 上是被提交跟踪的（`30340c1`），在共享分支上没有被跟踪：切换时 git 会把它从工作区删掉；如果它有未提交的修改，git 会直接拒绝切换。
+2. 从共享分支拉新分支：
+
+   ```bash
+   git fetch origin && git switch -c <新分支名> origin/refactor/audit-improvements-2026-10-18
+   ```
+
+3. 把备份的 `config.yaml` 放回原位。它在 `.gitignore` 里，之后不会再被误提交。研报同步的开关和路径建议写在 `.env.dev`：`KNOWLEDGE_SOURCE_SYNC_ENABLED`、`SOURCE_SYNC_FILE_ROOT`、`SOURCE_SYNC_STAGING_DIR`、`COL_SQL_TABLE`。`base_name`、`lookback_days`、`max_inflight` 在模板里是写死的，要改的话，在 `config-example.yaml` 里加环境变量占位，或者用 `EASY_CONFIG` 指向自己的配置文件。
+4. `rag-1018` 上没进共享分支的只有 `30340c1`，不用再合。
+
+**knowledges 相关代码的变化**
+
+- `knowledges/api.py`：
+  - `_call` 改成传「方法 + 参数」，例如 `_call(service.list_bases, principal, page=page)`，不再先构造协程；
+  - `get_knowledge_principal` 改成了同步函数。
+
+  新增的路由沿用这两种写法。
+- 导入路径：`services/` 收进了子包（T15）。例如 `services.sse` 改为 `services.streaming.sse`，`services.agent_manager` 改为 `services.agents.manager`，`services.session_thread` 改为 `services.sessions.thread`，`services.mcp` 改为 `services.mcp.tools`。
+- 数据访问（T3）：`Database` 上大部分转发方法已经删了，只保留 knowledges / personnel 还在用的 12 个。新代码不要再调用已删除的方法；`get_database()` 在 `db/` 之外的调用上限是 4 处，现在已经用满。
+- `knowledges/chat/original_tool.py`：`_principal` 现在要传入 `db`；extract 路径的查库和审计写入已经放进线程执行。
+- `persistence/checkpoints.py`：12MB 快照上限已经和 T14.3 的「按序号落库」合在一起。
+- 前端：Vue 2 模块的知识库、人员接口已统一走 `/agent`（`33864f8`）。`edc55ab` 当时改的是搬家前的旧路径，前端部分没有合全。
+
+**新增的 CI 门禁**（新代码也要过）
+
+- async 函数里不能直接查库，要用 `asyncio.to_thread` 或 `run_blocking`（`scripts/quality/check_async_blocking.py`）。阻塞基线只许减少，不许增加。
+- ruff 开启了 `S110`（`try/except/pass` 要么补日志，要么写 `noqa` 并注明原因）和 `ASYNC` 规则。
+- `scripts/quality/check_double_write.py` 里的数据访问计数只许减少，不许增加。
+
+**T8 重做**：拆分 `knowledges/service.py`、`api.py`、`core/repository.py` 前要先约好时间窗口；窗口期内这三个文件不要并行修改（§6.3）。
