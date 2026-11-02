@@ -1,4 +1,5 @@
 import { computed, onMounted, onUnmounted, watch } from 'vue'
+import { createAutoDismiss } from '../../../utils/autoDismiss.js'
 import { chatBus, chatStore } from '../store/chatStore.js'
 import { buildPageContext } from '../../../utils/pageContext.js'
 
@@ -11,7 +12,7 @@ export function useAiSidebarBridge(app) {
   const {
     panels, userProfile, sessions, currentSessionId, loadedSessionId, messages,
     sessionUsage, availableModels, selectedModel, sessionStates, attachedStreamingSessions,
-    attachToStreamingSession, handleSelectSession, handleCreateSession,
+    attachToStreamingSession, handleSelectSession, handleCreateSession, error,
   } = app
 
   // 主页面正展示的会话被删除（任一侧）：先清空归属，避免把已删除会话的界面数据再存回缓存
@@ -61,6 +62,15 @@ export function useAiSidebarBridge(app) {
     delete sessionStates.value[sessionId]
     if (currentSessionId.value === sessionId) fallbackAfterSessionRemoved()
   }
+
+  // 后端 / 系统报错提示（主页面 error-toast）显示 5 秒后自动消失
+  const dismissError = createAutoDismiss({
+    read: () => error.value,
+    clear: () => { error.value = null },
+    ttlMs: 5000,
+  })
+  watch(error, (value) => { dismissError(value) })
+  onUnmounted(() => { dismissError(null) })
 
   onMounted(() => {
     chatBus.on('stream-started', onPeerStreamStarted)

@@ -1334,7 +1334,7 @@ async function handleDeleteSession(sessionId) {
 const { aiPageContext, handleOpenSessionInMain, fallbackAfterSessionRemoved } = useAiSidebarBridge({
   panels: { showSkillCenter, showScheduledTasks, showSettingsPanel, showUserManagementPanel },
   userProfile, sessions, currentSessionId, loadedSessionId, messages, sessionUsage, availableModels, selectedModel,
-  sessionStates, attachedStreamingSessions, attachToStreamingSession, handleSelectSession, handleCreateSession,
+  sessionStates, attachedStreamingSessions, attachToStreamingSession, handleSelectSession, handleCreateSession, error,
 })
 
 async function handleRenameSession(sessionId, newTitle) {
