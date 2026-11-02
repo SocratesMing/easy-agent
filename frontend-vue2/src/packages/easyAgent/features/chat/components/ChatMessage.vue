@@ -191,15 +191,8 @@
 
         <MarkdownBody v-if="displayContent" class="message-text" :content="displayContent" :cite-map="citeNumberMap" />
 
-        <!-- 错误提示 -->
-        <div v-if="message.error" class="message-error">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="error-icon">
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="12" y1="8" x2="12" y2="12"></line>
-            <line x1="12" y1="16" x2="12.01" y2="16"></line>
-          </svg>
-          <span>{{ message.error }}</span>
-        </div>
+        <!-- 错误提示：显示 5 秒后自动消失 -->
+        <MessageError :error="message.error" />
 
         <!-- 生成的文件按钮 -->
         <div v-if="message.role === 'assistant' && message.generated_files && message.generated_files.length > 0" class="generated-files-btn-container">
@@ -250,6 +243,7 @@ import FileIcon from '../../../shared/components/FileIcon.vue'
 import KnowledgeEvidence from '../../knowledge/KnowledgeEvidence.vue'
 import SkillIcon from '../../../shared/components/SkillIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
+import MessageError from './MessageError.vue'
 import { approvalTargetForBlock, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
 import { pageContextLabel } from '../../../utils/pageContext.js'
 import { iconCategoryFor } from '../../../utils/skillCategories.js'
@@ -286,7 +280,7 @@ function isProcessType(b) {
 installCodeCopyHandler()
 
 export default {
-  components: { FileIcon, ToolCallCard, KnowledgeEvidence, SkillIcon, MarkdownBody },
+  components: { FileIcon, ToolCallCard, KnowledgeEvidence, SkillIcon, MarkdownBody, MessageError },
   props: {
     message: {
       type: Object,
@@ -2078,28 +2072,6 @@ export default {
   .message-text ::v-deep .katex-display {
     font-size: 0.66em;
   }
-}
-
-.message-error {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 10px 14px;
-  margin: 4px 16px;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  border-radius: 10px;
-  color: #dc2626;
-  font-size: 14px;
-  line-height: 1.5;
-  word-break: break-word;
-}
-
-.message-error .error-icon {
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-  margin-top: 1px;
 }
 
 .message-text ::v-deep pre {

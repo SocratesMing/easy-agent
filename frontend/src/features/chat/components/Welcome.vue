@@ -77,9 +77,13 @@
 </template>
 
 <script setup>
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick, onBeforeUnmount, watch } from 'vue'
 import { login, register } from '../../../api/auth.js'
 import { APP_TITLE } from '../../../config.js'
+import { createAutoDismiss } from '../../../utils/autoDismiss.js'
+
+// 登录 / 注册错误提示显示 5 秒后自动消失
+const TRANSIENT_ERROR_TTL_MS = 5000
 
 const emit = defineEmits(['completed'])
 
@@ -87,6 +91,14 @@ const usernameInput = ref(null)
 const submitting = ref(false)
 const error = ref('')
 const success = ref('')
+// 登录 / 注册错误提示 5 秒后自动消失
+const dismissError = createAutoDismiss({
+  read: () => error.value,
+  clear: () => { error.value = '' },
+  ttlMs: TRANSIENT_ERROR_TTL_MS,
+})
+watch(error, (value) => { dismissError(value) })
+onBeforeUnmount(() => { dismissError(null) })
 const isLogin = ref(true)
 
 const form = ref({

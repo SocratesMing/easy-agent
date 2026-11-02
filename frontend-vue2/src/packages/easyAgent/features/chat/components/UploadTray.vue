@@ -21,7 +21,7 @@
             </div>
             <span v-else-if="file.uploadStatus === 'completed'" class="upload-status completed">上传完成</span>
             <span v-else-if="file.uploadStatus === 'pending'" class="upload-status pending">发送时上传</span>
-            <template v-else-if="file.uploadStatus === 'error'">
+            <template v-else-if="file.uploadStatus === 'error' && !isErrorHidden(file, index)">
               <span class="upload-status error" :title="file.errorMessage || '上传失败'">上传失败</span>
               <button
                 v-if="file.retryable"
@@ -64,7 +64,51 @@ export default {
     limitsFull: { type: Boolean, default: false },
   },
   emits: ['remove', 'retry'],
-  methods: { formatSize },
+  data() {
+    return {
+      // 已在界面隐藏「上传失败」状态的文件（key = 序号:文件名）；失败状态只短暂提示
+      hiddenErrorKeys: {},
+      // 自动隐藏定时器（非响应式内容）
+      errorHideTimers: {},
+    }
+  },
+  watch: {
+    files: {
+      deep: true,
+      immediate: true,
+      handler() { this.syncErrorAutoHide() },
+    },
+  },
+  beforeDestroy() {
+    Object.values(this.errorHideTimers).forEach((timer) => clearTimeout(timer))
+  },
+  methods: {
+    formatSize,
+    errorKey(file, index) { return `${index}:${file.filename}` },
+    isErrorHidden(file, index) { return Boolean(this.hiddenErrorKeys[this.errorKey(file, index)]) },
+    syncErrorAutoHide() {
+      this.files.forEach((file, index) => {
+        const key = this.errorKey(file, index)
+        if (file.uploadStatus !== 'error' || !file.errorMessage) {
+          if (this.errorHideTimers[key]) {
+            clearTimeout(this.errorHideTimers[key])
+            delete this.errorHideTimers[key]
+          }
+          if (this.hiddenErrorKeys[key]) {
+            const next = { ...this.hiddenErrorKeys }
+            delete next[key]
+            this.hiddenErrorKeys = next
+          }
+          return
+        }
+        if (this.hiddenErrorKeys[key] || this.errorHideTimers[key]) return
+        this.errorHideTimers[key] = setTimeout(() => {
+          delete this.errorHideTimers[key]
+          this.hiddenErrorKeys = { ...this.hiddenErrorKeys, [key]: true }
+        }, 5000)
+      })
+    },
+  },
 }
 </script>
 
