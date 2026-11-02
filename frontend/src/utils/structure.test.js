@@ -31,7 +31,7 @@ const LINE_BUDGET = {
   'features/chat/components/SessionList.vue': 1038,
   'features/workspace/components/WorkspacePanel.vue': 978,
   'features/tasks/components/ScheduledTasksPanel.vue': 842,
-  'features/knowledge/KnowledgeWorkbench.vue': 1911,
+  'features/knowledge/KnowledgeWorkbench.vue': 1909,
 }
 
 /** 组件里已经存在的 api 直连（存量，只允许删） */

@@ -46,7 +46,7 @@ const LINE_BUDGET = {
   [`${MOD}features/chat/components/SessionList.vue`]: 1072,
   [`${MOD}features/tasks/components/ScheduledTasksPanel.vue`]: 967,
   [`${MOD}features/workspace/components/WorkspacePanel.vue`]: 954,
-  [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1911,
+  [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1909,
   [`${MOD}features/personnel/PersonnelManagement.vue`]: 1145,
   // 页面级深色覆盖（原 App.vue 非 scoped 样式块，只允许变短）
   [`${MOD}styles/theme-dark.css`]: 1195,

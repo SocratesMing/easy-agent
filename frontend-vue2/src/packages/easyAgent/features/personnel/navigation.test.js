@@ -13,9 +13,21 @@ test('admin personnel and permission entry lives in the knowledge top bar', asyn
 
   assert.doesNotMatch(sessionList, /人员管理/)
   // 人员管理入口对 admin 与公共空间管理员（白名单，can_manage）开放
-  assert.match(workbench, /v-if="teamSpaceManagement\.can_manage && selectedSpace === 'team'"[\s\S]{0,500}人员管理/)
+  assert.match(workbench, /v-if="teamSpaceManagement\.can_manage"[\s\S]{0,500}人员管理/)
   assert.match(workbench, /\$emit\('manage-personnel'\)/)
   assert.match(app, /@manage-personnel="handleShowUserManagement"/)
+})
+
+test('personnel entry stays reachable with no knowledge base and in narrow layouts', async () => {
+  const workbench = await readFile(path.join(moduleRoot, 'features/knowledge/KnowledgeWorkbench.vue'), 'utf8')
+
+  // 不能要求先在左侧选中公共空间：窄屏下左栏曾被整栏隐藏，入口永远出不来（没有部门 → 建不了公共库 → 死循环）
+  assert.doesNotMatch(workbench, /can_manage && selectedSpace/)
+  // 空的公共空间与新建弹窗都给管理员直达人员管理的入口
+  assert.match(workbench, /teamSpaceManagement\.can_manage" title="公共空间需要先有可用部门" @click="\$emit\('manage-personnel'\)"/)
+  assert.match(workbench, /class="ke-modal-shortcut"[\s\S]{0,200}showBaseModal = false; \$emit\('manage-personnel'\)[\s\S]{0,40}去配置人员与部门/)
+  // 窄屏容器查询不再隐藏知识库栏（改到正文上方）
+  assert.doesNotMatch(workbench, /\.ke-library-panel,\.ke-resizer\.library\{display:none\}/)
 })
 
 test('personnel page explains global team-space authorization and its scope', async () => {
