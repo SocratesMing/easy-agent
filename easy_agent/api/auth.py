@@ -10,12 +10,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from easy_agent.bootstrap.config import Config, DEFAULT_APP_WELCOME_TITLE
 from easy_agent.db.repositories.user_repository import UserRepository
 from easy_agent.knowledges.core.repository import KnowledgeRepository
-from easy_agent.middleware import get_current_username
-from easy_agent.middleware.auth import (
+from easy_agent.db.login_state import (
     clear_user_activity,
     get_user_activity_time,
-    get_user_repository,
     touch_user_activity,
+)
+from easy_agent.middleware import get_current_username
+from easy_agent.middleware.auth import (
+    get_user_repository,
 )
 from easy_agent.api.deps import as_user_repository as _as_user_repository
 from easy_agent.models.api import (
@@ -135,7 +137,7 @@ def register(
     # 注册即登录，同样缓存登录时间与活跃 IP
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = get_client_ip(http_request)
-    touch_user_activity(repo, user.username)
+    touch_user_activity(repo, user.username, force=True)
 
     try:
         user_workspace = Config.get_user_workspace_dir(user.username)
@@ -202,7 +204,7 @@ def login(
     # 缓存登录时间（供登出接口打印）与当前活跃 IP（供下次登录判断异地踢人）
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = client_ip
-    touch_user_activity(repo, user.username)
+    touch_user_activity(repo, user.username, force=True)
 
     context_length = _get_context_length()
 
@@ -271,7 +273,7 @@ def login_passwordless(
 
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = client_ip
-    touch_user_activity(repo, user.username)
+    touch_user_activity(repo, user.username, force=True)
 
     if created:
         # 与注册接口一致：为免密新用户创建 workspace 目录

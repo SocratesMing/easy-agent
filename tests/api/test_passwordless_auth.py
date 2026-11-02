@@ -6,7 +6,7 @@ import pytest
 
 from easy_agent.api import auth as auth_mod
 from easy_agent.bootstrap.config import Config
-from easy_agent.middleware import auth as auth_middleware
+from easy_agent.db import login_state
 
 
 @pytest.fixture(autouse=True)
@@ -151,8 +151,8 @@ models:
 
 
 def test_middleware_idle_logout_fallback_is_zero(monkeypatch):
-    monkeypatch.setattr(auth_middleware, "get_agent_config", lambda: {})
-    assert auth_middleware._get_idle_logout_minutes() == 0
+    monkeypatch.setattr(login_state, "get_runtime_agent_config", lambda: {})
+    assert login_state._get_idle_logout_minutes() == 0
 
 
 async def test_auth_config_fallback_reports_no_timeout(monkeypatch):

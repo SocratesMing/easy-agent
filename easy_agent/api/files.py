@@ -530,10 +530,10 @@ async def preview_file(
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
 
-        username = await asyncio.to_thread(verify_token_sso, auth_header[7:], user_repo)
+        username = await asyncio.to_thread(verify_token_sso, auth_header[7:], user_repo, request)
     if not username and token:
 
-        username = await asyncio.to_thread(verify_token_sso, token, user_repo)
+        username = await asyncio.to_thread(verify_token_sso, token, user_repo, request)
     if not username:
         # SEC-07：删除 get_or_create_default_user 回退，未登录不能再读默认用户工作区。
         # iframe 等无法设置 Header 的场景仍可用 token 查询参数（同样走 SSO 校验）。

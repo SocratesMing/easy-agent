@@ -1,5 +1,6 @@
 """用户认证工具模块"""
 
+import hashlib
 import logging
 import os
 import secrets
@@ -95,6 +96,10 @@ def _load_or_create_secret(secret_file: Path = _DEFAULT_SECRET_FILE) -> str:
 
 
 SECRET_KEY = _load_or_create_secret()
+# 签名密钥指纹（SHA-256 前 8 位，反推不出密钥）：写进 token 头的 kid，启动日志也会打印。
+# 验签失败时与本进程比对，就能看出 token 是不是别的副本 / worker 用另一把密钥签的。
+SECRET_FINGERPRINT = hashlib.sha256(SECRET_KEY.encode("utf-8")).hexdigest()[:8]
+_TOKEN_HEADERS = {"kid": SECRET_FINGERPRINT}
 
 
 def hash_password(password: str) -> str:
@@ -122,14 +127,18 @@ def create_access_token(
     now = datetime.utcnow()
     if never_expires:
         to_encode.update({"iat": now})
-        return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+        return jwt.encode(
+            to_encode, SECRET_KEY, algorithm=ALGORITHM, headers=_TOKEN_HEADERS
+        )
 
     expire = now + (
         expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     # iat（签发时间）用于登出时回溯登录时刻；exp 为过期时间
     to_encode.update({"exp": expire, "iat": now})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(
+        to_encode, SECRET_KEY, algorithm=ALGORITHM, headers=_TOKEN_HEADERS
+    )
 
 
 def decode_access_token(token: str, verify_exp: bool = True) -> Optional[dict]:
@@ -143,3 +152,31 @@ def decode_access_token(token: str, verify_exp: bool = True) -> Optional[dict]:
         return payload
     except JWTError:
         return None
+
+
+def describe_undecodable_token(token: str) -> tuple[str, dict]:
+    """说明 ``decode_access_token`` 为什么解不开这个 token，只用于拒绝日志。
+
+    返回 (原因, 未验签的载荷)。载荷没有经过签名校验，只能在日志里标出 token 声称的
+    用户，不能用于鉴权；头和载荷都是客户端可控的，写日志前用 repr 转义。
+    """
+    if token.lower() in ("null", "undefined", "none"):
+        return f"token 是字面量 {token!r}（前端没拿到 token 就发了请求）", {}
+    try:
+        header = jwt.get_unverified_header(token)
+        claims = jwt.get_unverified_claims(token)
+    except JWTError:
+        return f"token 不是有效的 JWT（长度 {len(token)}）", {}
+    alg = header.get("alg")
+    if alg != ALGORITHM:
+        return f"token 的签名算法 {str(alg)[:16]!r} 不被接受", claims
+    kid = header.get("kid")
+    if not kid:
+        return "token 验签失败（没有 kid：旧版本签发、另一把密钥签的，或被改动过）", claims
+    if kid != SECRET_FINGERPRINT:
+        return (
+            f"token 由另一把密钥签发（kid={str(kid)[:16]!r}，本进程 {SECRET_FINGERPRINT}），"
+            "多副本 / 多 worker 部署请给所有实例配置同一个 EASY_JWT_SECRET",
+            claims,
+        )
+    return "token 签名不对（kid 与本进程一致，token 可能被截断或改动过）", claims
