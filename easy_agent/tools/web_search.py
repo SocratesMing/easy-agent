@@ -89,7 +89,7 @@ class WebSearchArgs(BaseModel):
     query: str = Field(
         description=(
             "搜索关键词或问题，1~100 字符，越具体越好。"
-            "不要用「最新新闻」这类泛化词，改用具体检索语句，例如「中信银行 2026 年半年报 净利润」"
+            "不要用「最新新闻」这类泛化词，改用具体检索语句，例如「某上市公司 2026 年半年报 净利润」"
         )
     )
     time_range: str = Field(

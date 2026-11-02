@@ -19,7 +19,7 @@ mcp/
 依赖已装在**独立虚拟环境**（避免与其他项目冲突）：
 
 ```
-C:\Users\issuser\.workbuddy\binaries\python\envs\jmfx-mcp\Scripts\python.exe
+C:\Users\your-user\.workbuddy\binaries\python\envs\jmfx-mcp\Scripts\python.exe
 ```
 
 如需重建：
@@ -42,7 +42,7 @@ envs/jmfx-mcp/Scripts/pip.exe install -r mcp/requirements.txt
 
 | 动作 | 说明 |
 |---|---|
-| 建只读账号 | `jmfx_ro` / `Jmfx_RO@2026`，**仅授 SELECT**，限定在 `jmfx_analysis` |
+| 建只读账号 | `jmfx_ro` / `<部署时设置的强密码>`，**仅授 SELECT**，限定在 `jmfx_analysis` |
 | 建口径视图 | `v_team_pl` / `v_portfolio_pl` / `v_total_pl`（元 → **万元**） |
 | 建指标视图 | `v_indicator_std`（元原值 + `*_wan` 万元 + `*_yi` 亿元）、`v_liability`（万元） |
 | 建排名视图 | `v_team_rank_month` |
@@ -60,7 +60,7 @@ envs/jmfx-mcp/Scripts/pip.exe install -r mcp/requirements.txt
 | `JM_A_HOST` | `127.0.0.1` |
 | `JM_A_PORT` | `3306` |
 | `JM_A_USER` | `jmfx_ro` |
-| `JM_A_PASSWORD` | `Jmfx_RO@2026` |
+| `JM_A_PASSWORD` | `<部署时设置的强密码>` |
 | `JM_A_DB` | `jmfx_analysis` |
 
 ---
@@ -68,7 +68,7 @@ envs/jmfx-mcp/Scripts/pip.exe install -r mcp/requirements.txt
 ## 4. 启动方式
 
 ```bash
-PY="C:\Users\issuser\.workbuddy\binaries\python\envs\jmfx-mcp\Scripts\python.exe"
+PY="C:\Users\your-user\.workbuddy\binaries\python\envs\jmfx-mcp\Scripts\python.exe"
 
 # ① stdio —— 宿主与本服务同机（**WorkBuddy 走这条**；进程由宿主按需拉起，无需手动启动）
 "$PY" jmfx_mcp_server.py
@@ -95,21 +95,21 @@ SSE 启动后地址：`http://<服务器IP>:8765/sse`（默认只监听 `127.0.0
 > ⚠️ 是 **`mcp.json`**，不是 `~/.workbuddy/.mcp.json`（后者是 WorkBuddy 内部聚合文件，不要改）。
 > 文件不存在就新建；已存在则**合并进 `mcpServers`，不要覆盖**。
 
-当前实际配置（已写入 `C:\Users\issuser\.workbuddy\mcp.json`）：
+示例配置（写入 `C:\Users\your-user\.workbuddy\mcp.json`）：
 
 ```json
 {
   "mcpServers": {
     "jmfx-analysis": {
-      "command": "C:\\Users\\issuser\\.workbuddy\\binaries\\python\\envs\\jmfx-mcp\\Scripts\\python.exe",
-      "args": ["E:\\中信银行\\经营分析\\mcp\\jmfx_mcp_server.py"],
+      "command": "C:\\Users\\your-user\\.workbuddy\\binaries\\python\\envs\\jmfx-mcp\\Scripts\\python.exe",
+      "args": ["D:\\mcp\\jmfx_mcp_server.py"],
       "env": {
         "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8",
         "JM_A_HOST": "127.0.0.1",
         "JM_A_PORT": "3306",
         "JM_A_USER": "jmfx_ro",
-        "JM_A_PASSWORD": "Jmfx_RO@2026",
+        "JM_A_PASSWORD": "<部署时设置的强密码>",
         "JM_A_DB": "jmfx_analysis"
       }
     }
@@ -207,7 +207,7 @@ SSE 启动后地址：`http://<服务器IP>:8765/sse`（默认只监听 `127.0.0
 
 > **WorkBuddy 对话区没有 ECharts 运行时**，不能直接 `setOption`。正确做法：以 `table.rows` 为数据、
 > 参考 `chart.series[].type` 选图型（bar → 条形/柱状，pie → 饼图，line → 折线），由模型在本轮对话里
-> 内联渲染；配色仍遵循国内惯例（**正红负绿**），主色可用中信红 `#C8102E`。
+> 内联渲染；配色仍遵循国内惯例（**正红负绿**），主色可用正红 `#C8102E`。
 > 详见 Skill `jmfx-analysis` 第三节。
 
 **协议层形态（重要）**：MCP 的工具返回类型是 `text`——服务端把整个信封序列化成一个

@@ -23,7 +23,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 MCP_JSON = os.path.join(os.path.expanduser("~"), ".workbuddy", "mcp.json")
-SERVER = r"E:\中信银行\经营分析\mcp\jmfx_mcp_server.py"
+SERVER = r"D:\mcp\jmfx_mcp_server.py"
 SERVER_KEY = "jmfx-analysis"
 
 PASS, FAIL = [], []
