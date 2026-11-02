@@ -1,7 +1,7 @@
 /**
  * 运行期前端配置（window.__RUNTIME_CONFIG__）的渲染与解析。
  *
- * 生成端（write-runtime-config.mjs）和读取端（print-serve-env.mjs）共用这里的
+ * 生成端（generate-runtime-config.mjs）和读取端（print-serve-env.mjs）共用这里的
  * 文件格式，避免两边各写一套转义 / 正则后对不上。
  *
  * 运行期配置的值来自容器 / serve 启动时的环境变量（API_BASE_URL、APP_TITLE 等），
