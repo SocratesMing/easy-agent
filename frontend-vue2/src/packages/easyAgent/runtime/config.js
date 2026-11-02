@@ -17,16 +17,20 @@ export const EASY_AGENT_CONTRACT_VERSION = 1
 
 export const DEFAULT_APP_TITLE = 'Easy Agent'
 
-/** 模块会请求的后端路径前缀（宿主若全局拦截 XHR / fetch，需对这些前缀放行） */
-export const EASY_AGENT_API_PREFIXES = Object.freeze(['/agent/', '/api/knowledge/', '/api/personnel/'])
+/**
+ * 模块会请求的后端路径前缀（宿主若全局拦截 XHR / fetch，需对这些前缀放行）。
+ * 知识库、人员接口已统一到 /agent（/agent/knowledge/v1、/agent/personnel）；后端仍经
+ * LegacyHostRoutes 兼容 /api/knowledge、/api/personnel，只为浏览器里缓存的旧版前端保留。
+ */
+export const EASY_AGENT_API_PREFIXES = Object.freeze(['/agent/'])
 
 const MODES = ['standalone', 'embedded']
 
 const SECTION_DEFAULTS = {
   api: {
-    // 拼在所有模块请求路径（/agent、/api/knowledge/v1、/api/personnel、SSE、下载/预览地址）之前
+    // 拼在所有模块请求路径（/agent/...，含 SSE、下载/预览地址）之前
     baseURL: '',
-    // 可选 (path) => url：需要按前缀分别改写时使用（如 /agent 与 /api 走不同网关）；优先于 baseURL
+    // 可选 (path) => url：需要按路径分别改写时使用（如部分接口走另一个网关）；优先于 baseURL
     resolveUrl: null,
     // 可选 () => object：每个模块请求附加的请求头（网关头等）。不要返回宿主自己的登录凭证
     headers: null,

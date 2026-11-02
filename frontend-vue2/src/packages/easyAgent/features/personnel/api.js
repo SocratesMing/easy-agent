@@ -1,9 +1,9 @@
 import request, { requestRaw } from '../../utils/request.js'
 import { buildPersonnelFilters, filenameFromContentDisposition } from './model.js'
 
-const ROOT = '/api/personnel'
+const ROOT = '/agent/personnel'
 export const getLoginPolicy = () => request({ url: `${ROOT}/login-policy`, method: 'get' })
-const KNOWLEDGE_ADMIN_ROOT = '/api/knowledge/v1/admin'
+const KNOWLEDGE_ADMIN_ROOT = '/agent/knowledge/v1/admin'
 
 export function listPersonnelUsers(filters = {}) {
   return request({

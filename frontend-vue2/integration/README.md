@@ -54,7 +54,7 @@
 | 字段 | 默认（embedded） | 说明 |
 | --- | --- | --- |
 | `mode` | — | `'embedded'`（宿主路由页面）/ `'standalone'`（外网独立应用）；决定下面几项的默认值 |
-| `api.baseURL` | `''` | 拼在所有模块请求前：`/agent/...`、`/api/knowledge/v1/...`、`/api/personnel/...`、SSE、下载 / 预览链接、XHR 上传 |
+| `api.baseURL` | `''` | 拼在所有模块请求前：`/agent/...`（含知识库 `/agent/knowledge/v1/...`、人员 `/agent/personnel/...`）、SSE、下载 / 预览链接、XHR 上传 |
 | `api.resolveUrl(path)` | — | 需要按前缀分别改写时使用（优先于 `baseURL`）；绝对地址原样返回 |
 | `api.headers()` | — | 每个模块请求附加的头（网关头）；其中的 `Authorization` 会被忽略 |
 | `api.withCredentials` | `false` | 跨域直连且后端用 Cookie 时开启 |
@@ -106,9 +106,11 @@
    宿主若用 jest 等测试框架扫描 `src/**/*.test.js`，迁移包不含测试文件，无需处理。
 6. **布局高度**：包住 `<router-view>` 的元素要有确定高度（如 `height: calc(100vh - 顶栏高度)`，或 flex 列里
    `flex: 1; min-height: 0`）。模块根节点 `width/height: 100%`，不再用 `100vw`。
-7. **反向代理（生产）**：`/agent`、`/api/knowledge`、`/api/personnel` 三个前缀反代到 Agent 后端；SSE 关闭缓冲
-   （`proxy_buffering off; proxy_read_timeout 3600s;`）。宿主若有统一登录 SDK 全局劫持 XHR / fetch，需对这三个前缀放行
-   （模块导出 `EASY_AGENT_API_PREFIXES`）。
+7. **反向代理（生产）**：`/agent` 前缀反代到 Agent 后端；SSE 关闭缓冲
+   （`proxy_buffering off; proxy_read_timeout 3600s;`）。模块的知识库、人员接口已统一走 `/agent`；
+   `/api/knowledge`、`/api/personnel` 两个旧前缀只为浏览器里缓存的旧版前端保留（后端 `LegacyHostRoutes` 仍兼容），
+   确认都已升级后可去掉。宿主若有统一登录 SDK 全局劫持 XHR / fetch，需对模块前缀放行
+   （模块导出 `EASY_AGENT_API_PREFIXES`，现在只有 `/agent/`）。
 8. **旧目录**（`src/api/easyAgent`、`src/utils/easyAgent`、`src/pages/easyAgent` 下的旧文件、`src/mixins` 里的 Easy Agent mixin）：
    ```bash
    node <迁移包>/integration/tools/sync-easy-agent.cjs --package <迁移包> --target <宿主根> --legacy-scan
@@ -251,7 +253,7 @@ node smoke.mjs --chrome <chrome 路径> --base http://localhost:18091   # Node �
 | `run-vite.mjs` 实际调用 vue-cli-service | 确认后保留（Docker / CI 依赖该脚本名） | 保留设计 |
 | `dev` / `build` 依赖仓库级 `sync-frontend-shared.mjs` | 同步目标改为模块内 `shared/`；模块自带完整副本，宿主不需要 `frontend-shared/`；`check` 校验来源一致，来源缺失时报错（可显式 `--allow-missing-shared-source`） | 已解决 |
 | `utils/request.js` 与 `api/request.js` 两套 | 合并为一套（`personnel/api.js` 改用统一层，语义逐项核对）；新增合同测试 | 已解决 |
-| `/api/personnel`、`/api/knowledge/v1` 前缀 | 不改后端前缀；所有通道统一经 `resolveUrl`；导出前缀清单供宿主放行 | 已解决 |
+| `/api/personnel`、`/api/knowledge/v1` 前缀 | 后端已统一到 `/agent/personnel`、`/agent/knowledge/v1`（`/api` 由 `LegacyHostRoutes` 兼容旧前端）；模块改为只请求 `/agent`（2026-11-02）；所有通道统一经 `resolveUrl`；导出前缀清单供宿主放行 | 已解决 |
 | `src/config.js` 仍存在 | 引用图确认无引用后删除；`docker/entrypoint.sh` 仍写 `runtime-config.js`（Vue 2 页面从未加载）未改 | 已解决；部署脚本待确认 |
 | 全局 reset / `:root` / `html,body,#app` / 滚动条 / `theme.js` 写 html / 标题 / history / `100vw` | 模块样式限域、主题写模块根、标题与地址经适配器、页面跟随宿主容器 | 已解决并在浏览器验证 |
 | `main.js` 全局注册 Element 组件与 `tip` 指令 | 改为组件局部注册；Element 主题由宿主提供；独立应用 `main.js` 只引主题 CSS | 已解决 |

@@ -3,8 +3,11 @@
  * 覆盖 JSON / 原始响应 / 文本 / 二进制 / SSE、地址前缀、鉴权头、401 续期与失效、取消。
  */
 import assert from 'node:assert/strict'
+import { readdirSync, readFileSync } from 'node:fs'
 import http from 'node:http'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 const store = new Map()
 globalThis.localStorage = {
@@ -64,7 +67,7 @@ const server = http.createServer((request, response) => {
       return undefined
     }
     if (url.pathname.endsWith('/agent/slow')) return setTimeout(() => json(200, { late: true }), 200)
-    if (url.pathname.endsWith('/api/knowledge/v1/status')) return json(200, { enabled: true })
+    if (url.pathname.endsWith('/agent/knowledge/v1/status')) return json(200, { enabled: true })
     if (url.pathname.endsWith('/agent/bad')) return json(422, { detail: { code: 'LIMIT', message: '超限', retryable: true } })
     return json(404, { detail: 'not found' })
   })
@@ -108,8 +111,9 @@ test('地址前缀在调用时读取：import 之后才配置 baseURL 同样生�
   configureEasyAgent({ api: { baseURL: `${origin}/` } })
   assert.equal(req.resolveUrl('/agent/x'), `${origin}/agent/x`)
   assert.equal(req.resolveUrl('https://other/agent/x'), 'https://other/agent/x')
-  configureEasyAgent({ api: { resolveUrl: (p) => `${origin}${p.replace('/api/', '/agent/')}` } })
-  assert.equal(req.resolveUrl('/api/knowledge/v1/status'), `${origin}/agent/knowledge/v1/status`)
+  // 宿主按路径改写（例如知识库接口走另一个网关）：resolveUrl 优先于 baseURL
+  configureEasyAgent({ api: { resolveUrl: (p) => `${origin}${p.replace('/agent/knowledge/', '/kb-gateway/agent/knowledge/')}` } })
+  assert.equal(req.resolveUrl('/agent/knowledge/v1/status'), `${origin}/kb-gateway/agent/knowledge/v1/status`)
 })
 
 test('不带宿主 axios.defaults 上的 Authorization / baseURL；附加头生效且不能覆盖鉴权', async () => {
@@ -150,7 +154,7 @@ test('并发 401 只续期一次，各自换新 token 重发；续期结果同�
   })
   const [a, b, c] = await Promise.all([
     req.default({ url: '/agent/json' }),
-    req.default({ url: '/api/knowledge/v1/status' }),
+    req.default({ url: '/agent/knowledge/v1/status' }),
     req.fetchWithAuth(`${origin}/agent/json`),
   ])
   assert.equal(a.ok, 1)
@@ -286,11 +290,11 @@ test('runSignIn：返回 profile 时透传；声称成功却没写 token 时报�
 test('notifyUnauthorized：能续期时后台续期，不能续期时直接失效', async () => {
   let refreshCalls = 0
   setup({ token: 'old', auth: { refresh: async () => { refreshCalls += 1; return true } } })
-  req.notifyUnauthorized('/api/knowledge/v1/bases/x/documents', '登录已过期')
+  req.notifyUnauthorized('/agent/knowledge/v1/bases/x/documents', '登录已过期')
   await new Promise((r) => setTimeout(r, 0))
   assert.equal(refreshCalls, 1)
   configureEasyAgent({ auth: { refresh: null } })
-  req.notifyUnauthorized('/api/knowledge/v1/bases/x/documents', '登录已过期')
+  req.notifyUnauthorized('/agent/knowledge/v1/bases/x/documents', '登录已过期')
   assert.equal(store.has('mini_agent_token'), false)
 })
 
@@ -303,4 +307,25 @@ test('存储键按运行时配置读写（SDK / 宿主可与独立应用分开�
   req.clearAuth()
   assert.equal(store.has('host_agent_token'), false)
   assert.equal(store.get('mini_agent_token'), 'good')
+})
+
+test('模块只请求 /agent：知识库、人员接口不再走 /api 旧前缀（后端的 /api 兼容层只留给旧版前端）', async () => {
+  const { EASY_AGENT_API_PREFIXES } = await import('../runtime/config.js')
+  assert.deepEqual([...EASY_AGENT_API_PREFIXES], ['/agent/'])
+  // 扫模块源码里的接口路径字面量：引号后紧跟 /api/ 的就是旧前缀（相对 import 的 '../api/x.js' 不算）
+  const moduleRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const offenders = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) walk(full)
+      else if (/\.(js|vue)$/.test(entry.name) && !entry.name.endsWith('.test.js')) {
+        readFileSync(full, 'utf8').split('\n').forEach((line, i) => {
+          if (/['"`]\/api\//.test(line)) offenders.push(`${full.slice(moduleRoot.length + 1)}:${i + 1}`)
+        })
+      }
+    }
+  }
+  walk(moduleRoot)
+  assert.deepEqual(offenders, [])
 })

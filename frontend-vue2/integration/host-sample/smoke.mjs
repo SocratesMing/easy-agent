@@ -164,7 +164,7 @@ async function main() {
   const login = log1.find((e) => e.path === '/agent/auth/login-passwordless')
   check('宿主适配器用门户身份免密登录', !!login)
   check('Agent 请求不带宿主 token、不走宿主 axios baseURL', log1.every((e) => !e.hostToken && !e.hostPrefix), `${log1.length} 个请求`)
-  const noToken = log1.filter((e) => /^\/(agent|api)\//.test(e.path) && !e.path.startsWith('/agent/auth/login') && !e.path.startsWith('/api/personnel/login-policy') && !/^Bearer mock-token-/.test(e.authorization))
+  const noToken = log1.filter((e) => /^\/(agent|api)\//.test(e.path) && !e.path.startsWith('/agent/auth/login') && !e.path.startsWith('/agent/personnel/login-policy') && !/^Bearer mock-token-/.test(e.authorization))
   check('Agent 请求都带 Agent token（登录接口除外）', noToken.length === 0, noToken.map((e) => `${e.method} ${e.path} auth=${e.authorization || '(无)'}`).join('; '))
   const hostEvents = await evaluate('window.__hostEvents.slice()')
   check('不派发宿主同名 window 事件（auth-expired / user-activity）', hostEvents.length === 0, JSON.stringify(hostEvents))

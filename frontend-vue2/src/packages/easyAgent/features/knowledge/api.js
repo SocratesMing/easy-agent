@@ -6,7 +6,7 @@ import { readSSE } from '../../api/sse.js'
 const authFetch = fetchWithAuth
 
 // 地址前缀由运行时配置决定（configureEasyAgent / SDK configureRequest），不能在模块加载时固化
-const root = () => streamUrl('/api/knowledge/v1')
+const root = () => streamUrl('/agent/knowledge/v1')
 
 export async function cancelMessage(sessionId) {
   const response = await authFetch(streamUrl(`/agent/chat/cancel?session_id=${encodeURIComponent(sessionId)}`), { method: 'POST' })

@@ -1,7 +1,7 @@
 /**
  * Easy Agent 对宿主 vue.config.js 的增量配置（首次接入时人工合并，不要整份替换宿主配置）。
  *
- * 只有开发服务器代理是必须的；生产环境由宿主 Nginx 把下面三个前缀反代到 Agent 后端
+ * 只有开发服务器代理是必须的；生产环境由宿主 Nginx 把 /agent 反代到 Agent 后端
  * （或在适配器里配置 api.baseURL 跨域直连）。模块本身不需要额外 loader / 插件 / alias。
  */
 const EASY_AGENT_TARGET = process.env.EASY_AGENT_PROXY_TARGET || 'http://localhost:8080'
@@ -19,6 +19,8 @@ module.exports = {
           proxyRes.headers['cache-control'] = 'no-cache'
         },
       },
+      // 旧前缀：模块已统一请求 /agent（含知识库、人员），这两条只为浏览器里缓存的旧版前端保留
+      // （后端 LegacyHostRoutes 仍把 /api/<prefix> 改写为 /agent/<prefix>），确认都已升级后可删
       '/api/knowledge': { target: EASY_AGENT_TARGET, changeOrigin: true },
       '/api/personnel': { target: EASY_AGENT_TARGET, changeOrigin: true },
     },

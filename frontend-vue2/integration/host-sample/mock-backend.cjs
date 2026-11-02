@@ -160,7 +160,7 @@ async function api(req, res, url) {
     const username = body.username || 'anonymous'
     return send(res, 200, { access_token: issueToken(username), username, context_length: 131072 })
   }
-  if (p === '/api/personnel/login-policy') return send(res, 200, { register_enabled: true })
+  if (p === '/agent/personnel/login-policy') return send(res, 200, { register_enabled: true })
 
   const who = auth(req, url)
   if (who.error) {
@@ -173,10 +173,10 @@ async function api(req, res, url) {
   if (p === '/agent/auth/config') return send(res, 200, { context_length: 131072, preset_questions: ['介绍一下你自己'], app_welcome_title: 'Mock 后端欢迎语' })
   if (p === '/agent/auth/logout') return send(res, 200, { ok: true })
   if (p === '/agent/settings/models') return send(res, 200, { models: [{ name: 'mock-model', display_name: 'Mock 模型' }], active_model: 'mock-model' })
-  if (p === '/api/knowledge/v1/status') return send(res, 200, { enabled: true })
-  if (p === '/api/knowledge/v1/capabilities') return send(res, 200, { upload: true })
-  if (p.startsWith('/api/knowledge/v1/bases') && method === 'GET') return send(res, 200, { items: [], total: 0 })
-  if (p.startsWith('/api/knowledge/v1/operations')) return send(res, 200, { items: [], total: 0 })
+  if (p === '/agent/knowledge/v1/status') return send(res, 200, { enabled: true })
+  if (p === '/agent/knowledge/v1/capabilities') return send(res, 200, { upload: true })
+  if (p.startsWith('/agent/knowledge/v1/bases') && method === 'GET') return send(res, 200, { items: [], total: 0 })
+  if (p.startsWith('/agent/knowledge/v1/operations')) return send(res, 200, { items: [], total: 0 })
 
   if (p === '/agent/sessions' && method === 'GET') return send(res, 200, state.sessions)
   if (p === '/agent/sessions' && method === 'POST') {
