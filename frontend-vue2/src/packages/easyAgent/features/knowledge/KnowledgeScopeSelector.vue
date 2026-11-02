@@ -8,7 +8,7 @@
 
     <!-- 面板样式对齐「+」菜单技能子面板：标题+数量 / 条目列表（勾选即生效）/ 底部管理入口 -->
     <Transition name="scope-popover">
-      <div v-if="open" class="scope-panel" :style="panelStyle">
+      <div v-if="open" ref="panelRef" class="scope-panel" :class="'side-' + panelSide" :style="panelStyle">
         <div class="scope-head">
           <span class="scope-title">我的知识库</span>
           <span class="scope-count">{{ bases.length }}</span>
@@ -40,10 +40,11 @@
 </template>
 
 <script>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { IconBookOpen, IconChevronDown, IconLibrary } from './icons.js'
 import { getKnowledgeCapabilities, getSessionKnowledgeScope, listKnowledgeBases, replaceSessionKnowledgeScope } from './api.js'
 import { eventTarget } from '../../utils/domEvent.js'
+import { placeScopePanel } from './panelPlacement.js'
 
 export default {
   components: {
@@ -57,7 +58,7 @@ export default {
     // 隐藏常驻触发按钮（入口由宿主提供，如加号菜单）
     hideTrigger: { type: Boolean, default: false },
     // 面板定位锚点（CSS 选择器）：加号菜单场景传「知识库」菜单项，
-    // 面板贴着菜单项右侧弹出（与技能子面板同款定位）
+    // 面板贴着菜单项左右两侧之一弹出，竖直方向对齐菜单项（见 updatePanelPosition）
     anchorSelector: { type: String, default: '' },
     // 底部「在管理面板中打开」入口（SDK 未配置主站地址时无处可跳，隐藏）
     showManage: { type: Boolean, default: true },
@@ -76,6 +77,9 @@ const draft = ref([])
 const saving = ref(false)
 const error = ref('')
 const panelStyle = ref({})
+const panelRef = ref(null)
+// 面板在锚点的哪一侧（right / left），决定热桥画在哪边
+const panelSide = ref('right')
 const selectedBaseNames = computed(() => selected.value
   .map((id) => {
     const base = bases.value.find(item => item.id === id)
@@ -143,8 +147,8 @@ async function openPopover(anchor) {
 }
 function closePopover() { if (open.value) open.value = false }
 
-// 面板贴着锚点（如加号菜单「知识库」菜单项）右侧弹出，
-// 定位方式与 ChatInput 的技能/连接器子面板（openSubpanel）保持一致
+// 面板贴着锚点（如加号菜单「知识库」菜单项）左右两侧之一弹出，竖直方向对齐锚点，
+// 规则见 panelPlacement.js
 function updatePanelPosition() {
   // 页面上可能同时存在多个输入框（主对话区 + AI 侧边栏），且 SDK 运行在 Shadow DOM 中，
   // 不能用 document.querySelector 全局查找锚点
@@ -152,19 +156,19 @@ function updatePanelPosition() {
     || (props.anchorSelector && rootRef.value && rootRef.value.getRootNode().querySelector(props.anchorSelector))
     || rootRef.value
   if (!anchor) return
-  const rect = anchor.getBoundingClientRect()
-  const panelWidth = Math.min(380, window.innerWidth * 0.9)
-  const estimatedHeight = 420
-  const top = Math.max(8, Math.min(rect.top - 8, window.innerHeight - estimatedHeight - 8))
-  const left = rect.right + 10 + panelWidth > window.innerWidth
-    ? Math.max(8, rect.left - panelWidth - 10)
-    : rect.right + 10
+  const place = placeScopePanel({
+    anchor: anchor.getBoundingClientRect(),
+    // 面板还没渲染时高度按 0 算（先让顶边对齐锚点），渲染后由下面的 watch 按实测高度校正
+    panelHeight: panelRef.value ? panelRef.value.offsetHeight : 0,
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+  })
+  panelSide.value = place.side
   panelStyle.value = {
     position: 'fixed',
-    top: `${top}px`,
-    left: `${left}px`,
-    width: '380px',
-    maxWidth: '90vw',
+    top: `${place.top}px`,
+    left: `${place.left}px`,
+    width: `${place.width}px`,
   }
 }
 
@@ -174,6 +178,13 @@ function openManage() { emit('manage') }
 function handleViewportChange() {
   if (open.value) updatePanelPosition()
 }
+// 打开、列表加载完、条数或报错变化都会改变面板高度：等这一轮 DOM 更新全部完成后按实测高度
+// 重新定位。不能用 flush: 'post'：Vue 2.7 下面板在 <Transition> 子组件里渲染，子组件的更新在
+// 本轮刷新中途才排进队列，会排到 post 监听之后，量的时候面板还不存在（高度按 0 算，放不下也
+// 不上移）。nextTick 在 Vue 2 / 3 下都等到整轮更新结束。
+watch([open, loading, () => bases.value.length, error], () => {
+  if (open.value) nextTick(updatePanelPosition)
+})
 let saveSeq = 0
 function sameSet(a, b) {
   const ka = [...a].sort().join('|')
@@ -250,6 +261,8 @@ onUnmounted(() => {
       loading,
       open,
       openManage,
+      panelRef,
+      panelSide,
       panelStyle,
       roleLabel,
       rootRef,
@@ -282,6 +295,11 @@ onUnmounted(() => {
 
 /* ========== 面板：与「+」菜单技能子面板（.plus-subpanel）同款样式 ========== */
 .scope-panel{position:fixed;width:380px;max-width:90vw;display:flex;flex-direction:column;background:var(--bg-secondary,#fff);border:1px solid var(--border-color,#e2e8f0);border-radius:12px;box-shadow:0 12px 36px rgba(0,0,0,.14);padding:12px;box-sizing:border-box;color:var(--text-primary,#1e293b);z-index:9999}
+/* 热桥：面板与锚点之间有 6px 水平间隙，横移时这段空白两边都不属于，会先触发菜单的
+   mouseleave 计时。在朝向锚点的一侧延出 8px（间隙 + 2px 重叠），把这段空白划给面板。 */
+.scope-panel::before{content:'';position:absolute;top:0;bottom:0;width:8px}
+.scope-panel.side-right::before{left:-8px}
+.scope-panel.side-left::before{right:-8px}
 .scope-head{display:flex;align-items:center;gap:8px;padding:2px 4px 8px}
 .scope-title{flex:1;font-size:14px;font-weight:600;color:var(--text-primary,#1e293b)}
 .scope-count{font-size:12px;color:var(--text-secondary,#64748b);font-variant-numeric:tabular-nums}
