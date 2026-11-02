@@ -4,6 +4,7 @@
 - 依据代码：`6150ca1`（分支 `claude/unruffled-mcnulty-7daf87`）。后端代码 = 共享分支 `origin/refactor/audit-improvements-2026-10-18`（`c82f112`）+ 本分支的事件循环改造。
 - 范围：后端 `easy_agent/`；安全项来自 `docs/audit/2026-10-17-easy-agent-audit.md`；前端只列一处脚本问题（T16）。前端结构没有纳入这次分析。
 - 用法：一个任务对应一个分支和一组提交，不要把多个任务混在一起。动手前先读第 1 节「通用约定」。文中行号以 `6150ca1` 为准，改动前按函数名重新定位。
+- 2026-11-02 更新：各任务的完成情况见第 2 节「状态」列；复核结论、T8 重做方案和剩余小问题见第 6 节。
 
 ## 0. 已经完成的（不要重复做）
 
@@ -60,27 +61,27 @@
 
 ## 2. 任务总览
 
-| ID | 任务 | 优先级 | 规模 | 依赖 / 协调 |
-| --- | --- | --- | --- | --- |
-| S1 | 安全：未认证读写与任意文件解析（SEC-08 / 09 / 07 / 06） | P0 | S–M | 加鉴权前先查前端和宿主的调用方 |
-| S2 | 安全：JWT 过期、免密登录、默认口令等（SEC-03 / 10 / 12 及 P2 / P3） | P1 | M | 影响登录行为，需负责人先确认策略 |
-| T1 | 吞错修复（审计写入、迁移 DDL）+ ruff `S110` | P1 | S | 无 |
-| T2 | 文档事实刷新 | P1 | S | 无 |
-| T3 | 数据访问层收敛：按领域 repository，删 `Database` 转发 | P1 | M–L | 分领域多次提交 |
-| T4 | `chat_stream` / `chat_resume` 的准备逻辑下沉为服务 | P2 | M | 郭春龙的分支在改 `api/chat.py` |
-| T5 | chat / resume 流主循环合并 | P2 | M | SSE 契约测试兜底 |
-| T6 | `agent_manager` 会话状态收拢为 `SessionState` | P2 | S–M | 多个分支在改该文件 |
-| T7 | 知识库域的事件循环阻塞（27 处） | P2 | S | 等 `rag-1018` 合并 |
-| T8 | `knowledges/` 拆分与内部分层 | P2 | L | 与 yongzheng 约好窗口 |
-| T9 | 其余超长函数按热度拆分 | P3 | M | 一个函数一组提交 |
-| T10 | 函数内导入清理 | P3 | S–M | 注意导入成本测试 |
-| T11 | 数据库层 / 服务层不再抛 `HTTPException` | P3 | S | 改测试断言 |
-| T12 | 类型检查按目录接入 | P3 | M | 不改 `uv.lock` 的接入方式 |
-| T13 | ruff `ASYNC` 规则开启 | P3 | S | 无 |
-| T14 | 阻塞门禁基线里的「设计例外」逐个消解 | P3 | M | 每项单独评估 |
-| T15 | `services/` 领域子包（分层设计 §8） | P3 | M | 活跃分支合并后再做 |
-| T16 | 前端运行期配置的值没有 JS 转义 | P3 | S | 无 |
-| P\* | 既有规划：多副本 B2 / B4、共享限流计数、FW-11 | — | L | 需要单独设计决策 |
+| ID | 任务 | 优先级 | 规模 | 依赖 / 协调 | 状态（2026-11-02） |
+| --- | --- | --- | --- | --- | --- |
+| S1 | 安全：未认证读写与任意文件解析（SEC-08 / 09 / 07 / 06） | P0 | S–M | 加鉴权前先查前端和宿主的调用方 | ✅ 已完成 |
+| S2 | 安全：JWT 过期、免密登录、默认口令等（SEC-03 / 10 / 12 及 P2 / P3） | P1 | M | 影响登录行为，需负责人先确认策略 | ⏳ 待负责人确认策略 |
+| T1 | 吞错修复（审计写入、迁移 DDL）+ ruff `S110` | P1 | S | 无 | ✅ 已完成（与 T13 同一提交） |
+| T2 | 文档事实刷新 | P1 | S | 无 | ✅ 已完成 |
+| T3 | 数据访问层收敛：按领域 repository，删 `Database` 转发 | P1 | M–L | 分领域多次提交 | ✅ 已完成（分三批） |
+| T4 | `chat_stream` / `chat_resume` 的准备逻辑下沉为服务 | P2 | M | 郭春龙的分支在改 `api/chat.py` | ✅ 已完成 |
+| T5 | chat / resume 流主循环合并 | P2 | M | SSE 契约测试兜底 | ✅ 已完成 |
+| T6 | `agent_manager` 会话状态收拢为 `SessionState` | P2 | S–M | 多个分支在改该文件 | ✅ 已完成 |
+| T7 | 知识库域的事件循环阻塞（27 处） | P2 | S | 等 `rag-1018` 合并 | ✅ 已完成 |
+| T8 | `knowledges/` 拆分与内部分层 | P2 | L | 与 yongzheng 约好窗口 | 🔁 已撤出，`rag-1018` 合并后重做（§6.3） |
+| T9 | 其余超长函数按热度拆分 | P3 | M | 一个函数一组提交 | ✅ 已完成 |
+| T10 | 函数内导入清理 | P3 | S–M | 注意导入成本测试 | ✅ 已完成 |
+| T11 | 数据库层 / 服务层不再抛 `HTTPException` | P3 | S | 改测试断言 | ✅ 已完成 |
+| T12 | 类型检查按目录接入 | P3 | M | 不改 `uv.lock` 的接入方式 | ✅ 已完成 |
+| T13 | ruff `ASYNC` 规则开启 | P3 | S | 无 | ✅ 已完成 |
+| T14 | 阻塞门禁基线里的「设计例外」逐个消解 | P3 | M | 每项单独评估 | ✅ 第 1–3 条已完成；第 4 条保持现状 |
+| T15 | `services/` 领域子包（分层设计 §8） | P3 | M | 活跃分支合并后再做 | ✅ 已完成 |
+| T16 | 前端运行期配置的值没有 JS 转义 | P3 | S | 无 | ✅ 已完成 |
+| P\* | 既有规划：多副本 B2 / B4、共享限流计数、FW-11 | — | L | 需要单独设计决策 | — 未开始 |
 
 ## 3. 任务详情
 
@@ -419,3 +420,68 @@ grep -rn "get_database()" easy_agent --include=*.py | grep -v "^easy_agent/db/" 
 grep -rnE "\b(repo|repository|db)\.database\b" easy_agent --include=*.py | grep -v "^easy_agent/db/" | wc -l
 python scripts/quality/import_graph.py --json > /tmp/import_graph.json
 ```
+
+## 6. 2026-11-02 复核结论与返工
+
+### 6.1 分支现状
+
+- 执行智能体在本地分支 `feat/backend-backlog-2026-11-01`（基于 `f589e04`）上完成了 S1 和 T1–T16，共 22 个提交；之后又追加了一个脱敏提交 `06be86d`。逐提交复核的结果是重构前后行为一致：SQL 字符串、OpenAPI、沙箱 argv 都和基线逐项相同，端到端冒烟（含 HITL 审批恢复）也一致。
+- 问题出在 T7/T8：它们在 `rag-1018` 合并前就做了。这个分支和 `rag-1018` 合并时冲突区约 3,300 行，yongzheng 在 `service.py`、`api.py`、`core/repository.py` 上的改动需要手工搬进拆分后的文件。
+- 处理方式（2026-11-02 定）：先合 `rag-1018`，再在它上面重做 T8。
+- 已按这个方式重建分支 `feat/backend-backlog-2026-11-02`：基于 `rag-1018` 的 `213d96b`（不含 `30340c1` 提交的 `config.yaml`），去掉 T8 的两个提交（`739fe5d`、`de33a21`），其余提交（含 `06be86d`）顺序不变。重建时做了这些改动：
+  1. **解决 4 处冲突**：
+     - T16：`frontend/package.json`；
+     - T1/T13：`source_sync.py`、`test_original_tool.py`；
+     - T7/T14.3：`knowledges/api.py`、`chat_bridge.py`、`persistence/checkpoints.py`，其中 checkpoint 把 `rag-1018` 的体积上限和按序号落库合在一起；
+     - T15：`chat_bridge.py` 的导入，`get_knowledge_principal` 仍从 `knowledges.api` 导入。
+  2. **新增一个提交**，放在事件循环那个提交之前：`rag-1018` 新增的原文 `extract` 路径在事件循环上直接查库和写审计，不改的话阻塞门禁过不了。现在这些调用放进线程；`_principal` 改为接收 `db`，`get_database()` 的调用数不变。
+  3. **挪动测试改动**：T15 里对 `tests/api/test_c1_remaining_domains.py` 期望值的改动挪进 T3c。原来 T3c、T9a、T9b 三个提交的测试不过。
+  4. **合并 pyc 提交**：删除 pyc 的那个提交并进 T15，历史里不再出现 `.pyc`。
+  5. **补回提交说明**：T10、T12 的提交说明里被 shell 吃掉的 `# 延迟导入：<原因>` 和 `uvx pyright` 已补回。
+- 重建后的验证：
+  - 代码提交逐个跑了 CI 同口径的门禁和全量测试。门禁都通过；前两个提交早于阻塞门禁脚本，没有这一项。
+  - 测试只在 T3b 上失败过一次，是 `tests/middleware/test_rate_limit_shared.py` 的并发用例。单独重跑 8 次都通过，属于偶发失败，见 §6.4 第 10 条。
+  - 末端 2374 passed / 5 skipped，pyright 0 errors。
+  - 端到端冒烟（普通对话、HITL 审批恢复、21 个请求）和原分支一致。
+- 旧分支保留到 T8 重做完成，重做时要参照它的 `739fe5d` 和 `de33a21`。
+
+### 6.2 合入顺序
+
+1. 共享分支快进到 `rag-1018` 的 `213d96b`，需要 yongzheng 确认。不要带上 `30340c1`，原因有两个：
+   - `config.yaml` 在 `.gitignore` 里，一旦被跟踪，就会和每个人本地的同名文件冲突；
+   - 带上它会让 `tests/integration/test_v3_streaming.py` 的 3 个用例失败。
+2. 合入 `feat/backend-backlog-2026-11-02`。它基于 `213d96b`，可以直接快进。
+3. 和 yongzheng 约好窗口后重做 T8（§6.3）。窗口期内，`knowledges/service.py`、`api.py`、`core/repository.py` 不要再有并行改动。
+
+### 6.3 T8 重做要点
+
+- 方案沿用原来的两个提交：
+  - `739fe5d`：`KnowledgeService` 拆成 `knowledges/services/{_base,bases,documents,upstream_sync,retrieval,session_scope}.py`；
+  - `de33a21`：`KnowledgeRepository` 拆成 `core/repositories/*`，`api.py` 拆成 `routes/*`，`KnowledgePrincipal` 和 `get_knowledge_principal` 下沉到 `core`。
+- 相比原来拆分时的输入，`rag-1018` 改动不小，重跑拆分脚本时要处理：
+  - `KnowledgeService`：新增 12 个方法，删除 5 个，改动 28 个。
+    - 新增：`_delete_remote_documents`、`_error_response`、`_folder_summary`、`_is_folder_conflict`、`_match_upstream_document`、`_normalized_progress`、`_permission_directory_response`、`_permission_list_response`、`_require_document`、`_require_folder`、`_require_session`、`_stale_dataset_model`；
+    - 删除：`_chunk_id`、`_chunk_text`、`_dataset_model`、`_dataset_needs_model_switch`、`_ordered_chunks`。
+  - `KnowledgeRepository`：改动 1 个（`update_sync_item`）。
+  - `api.py`：新增 `knowledge_http_error`（`chat_bridge.py` 在用）；T7 的 `_call(method, *args)` 写法要保留。
+- 拆出来的文件按 T15 之后的路径导入，例如 `services.streaming.sse`；函数内导入沿用 T10 的 `# 延迟导入：<原因>` 注释。
+- 验收：
+  - 方法体除了跨子服务调用的改写，AST 与拆分前一致；
+  - OpenAPI 与拆分前完全一致；
+  - knowledges 子层规则写进 `import_layers.json`；
+  - 每个提交的门禁和全量测试都通过。
+
+### 6.4 还要改的小问题（追加新提交即可，不用改历史）
+
+1. `scripts/quality/double_write_allowlists.py`：`MAX_DATABASE_ESCAPE_HATCH_REFS` 先写成 5，下一行又写成 12，实际生效的是 12。删掉 `= 12` 那一行。
+2. `scripts/quality/check_double_write.py`：计数类违规的路径是 `easy_agent`，不在文件列表里，所以文本模式只打印「N violation(s)」，不说是哪一条。要把这类违规单独打印出来。
+3. `pyproject.toml`：ruff 把整个 `skills/**` 都排除了，注释还把 canonical 和副本写反了。改成用 `per-file-ignores`，只对 `skills/**` 放开 `S110` 和 `ASYNC`。
+4. `persistence/checkpoints.py`（T14.3）：线程写库期间一直持有 `_persist_lock`，事件循环上的 `_snapshot` 要等这把锁。实测 3 个并发 flush、每次写库 0.3 s 时，事件循环最长卡 596 ms。快照改用一把短锁，写库用另一把锁。
+5. CI 里的 `uvx pyright` 锁定版本，当前是 1.1.414。
+6. `scripts/skills/migrate_builtin_skills.py`：调用 `migrate_user_copies` 之前先取 `store_lock`。
+7. `_ADMIN_USERNAME` 在 `api/prompts.py` 和 `api/terminal.py` 里各定义了一次，收成一处。
+8. 文档：
+   - `docs/README.md` 和 `docs/design/2026-10-20-services-subpackages-and-layering.md` 的头部还写着 §8 未实施；
+   - T3 要求列出剩余 5 处 `.database` 的清单，目前还没有。
+9. `services/agents/chat_turn.py:prepare_turn` 有 306 行，是现在最长的函数，可以作为下一轮拆分的对象。
+10. `tests/middleware/test_rate_limit_shared.py::test_db_counter_is_exact_under_concurrent_threads`：用 60 秒固定窗口连发 20 次。恰好跨过整分钟边界时，两个窗口各放行 5 次，断言就会失败（实测放行 10 次）。机器负载高时更容易碰上。测试里应该固定时钟。

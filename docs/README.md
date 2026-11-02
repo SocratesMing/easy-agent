@@ -26,7 +26,7 @@
 - [2026-10-20-d4-mcp-tool-naming.md](design/2026-10-20-d4-mcp-tool-naming.md) — MCP 工具按 server 命名的方案与兼容层
 - [2026-10-20-services-subpackages-and-layering.md](design/2026-10-20-services-subpackages-and-layering.md) — services 拆领域子包、`__init__` 瘦身与分层方向门禁（已评审，待实施）
 - [2026-10-21-per-pod-sqlite-checkpoints.md](design/2026-10-21-per-pod-sqlite-checkpoints.md) — 多副本：每个 pod 独立的 SQLite checkpoint + 粘性会话（已实施）
-- [2026-11-01-backend-improvement-backlog.md](design/2026-11-01-backend-improvement-backlog.md) — 后端剩余改进任务清单（安全剩余项、数据访问收敛、大函数拆分等，供执行智能体领取）
+- [2026-11-01-backend-improvement-backlog.md](design/2026-11-01-backend-improvement-backlog.md) — 后端剩余改进任务清单（安全剩余项、数据访问收敛、大函数拆分等，供执行智能体领取；§6 是 2026-11-02 的复核结论与 T8 重做方案）
 
 ## 审计结论（长期保留）
 
