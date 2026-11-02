@@ -29,6 +29,7 @@ from easy_agent.knowledges.core.permissions import allowed_actions, effective_ro
 from easy_agent.knowledges.core.repository import KnowledgeRepository
 from easy_agent.knowledges.ragflow import RagflowClient, RagflowError
 from easy_agent.knowledges.service import SHARED_DATASET_NAME
+from easy_agent.utils.blocking import run_blocking
 
 
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+")
@@ -107,10 +108,14 @@ class KnowledgeOriginalTool(BaseTool):
             return await self._extract_text(**kwargs)
         return self._execute(**kwargs)
 
-    def _principal(self) -> KnowledgePrincipal:
-        """按用户名实时重建 principal，用户已删除或失效时立即拒绝。"""
+    def _principal(self, db) -> KnowledgePrincipal:
+        """按用户名实时重建 principal，用户已删除或失效时立即拒绝。
 
-        user = get_database().get_user_by_username(self.username)
+        ``db`` 由调用方传入（与本次动作的仓储同一个连接门面）；这里是同步查库，
+        异步路径（``_extract_text``）要放进线程调用。
+        """
+
+        user = db.get_user_by_username(self.username)
         if user is None:
             raise PermissionError("当前用户不存在或已失效")
         return KnowledgePrincipal(
@@ -322,16 +327,18 @@ class KnowledgeOriginalTool(BaseTool):
         repository = KnowledgeRepository(db)
         principal: KnowledgePrincipal | None = None
         try:
-            principal = self._principal()
+            # 数据库层是同步的：重建 principal、查文档、权限校验都放进线程，不占事件循环；
+            # 从 RAGFlow 取 chunk 是异步 HTTP，留在事件循环上。
+            principal = await asyncio.to_thread(self._principal, db)
             if not document_id:
                 return "错误：extract 操作需要 document_id。请先调用 list 获取真实文档 ID。"
-            document = repository.get_document(document_id)
+            document = await asyncio.to_thread(repository.get_document, document_id)
             if document is None:
                 raise FileNotFoundError(
                     "文档不存在，请先调用 list 获取真实 document_id"
                 )
-            base = self._authorized_base(
-                repository, str(document["base_id"]), principal
+            base = await asyncio.to_thread(
+                self._authorized_base, repository, str(document["base_id"]), principal
             )
             if self.ragflow_client is not None:
                 text = await self._extract_with_client(
@@ -346,10 +353,15 @@ class KnowledgeOriginalTool(BaseTool):
                         client, base=base, document=document
                     )
             if not text.startswith("错误："):
-                self._audit(db, principal, document_id, "extract", "success")
+                # 审计是写库：run_blocking 在调用方被取消时也会等写入做完
+                await run_blocking(
+                    self._audit, db, principal, document_id, "extract", "success"
+                )
             return text
         except (FileNotFoundError, PermissionError, ValueError, RagflowError) as exc:
-            self._audit(db, principal, document_id, "extract", "denied_or_failed")
+            await run_blocking(
+                self._audit, db, principal, document_id, "extract", "denied_or_failed"
+            )
             return f"错误：{exc}"
 
     def _audit(
@@ -396,7 +408,7 @@ class KnowledgeOriginalTool(BaseTool):
         repository = KnowledgeRepository(db)
         principal: KnowledgePrincipal | None = None
         try:
-            principal = self._principal()
+            principal = self._principal(db)
             if action == "list":
                 bases, message = self._resolve_list_bases(
                     repository, principal, base_id
