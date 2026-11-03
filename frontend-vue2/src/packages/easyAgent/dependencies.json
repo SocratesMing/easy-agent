@@ -205,6 +205,7 @@
         "xlsx"
       ],
       "usedBy": [
+        "shared/preview/ExcelPreview.vue",
         "shared/preview/FilePreview.vue"
       ]
     }
