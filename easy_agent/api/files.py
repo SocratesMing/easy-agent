@@ -130,6 +130,41 @@ _MIME_MAP = {
     ".conf": "text/plain; charset=utf-8",
     ".log": "text/plain; charset=utf-8",
     ".vue": "text/plain; charset=utf-8",
+    # 与前端 FilePreview 的 textExts 对齐：这些扩展名前端都按文本渲染，
+    # 漏配会让响应退化成 application/octet-stream（缺 charset，非 ASCII 可能乱码）。
+    ".htm": "text/plain; charset=utf-8",
+    ".jsonl": "text/plain; charset=utf-8",
+    ".jsx": "text/plain; charset=utf-8",
+    ".tsx": "text/plain; charset=utf-8",
+    ".hpp": "text/plain; charset=utf-8",
+    ".bat": "text/plain; charset=utf-8",
+    ".scss": "text/plain; charset=utf-8",
+    ".less": "text/plain; charset=utf-8",
+    ".rb": "text/plain; charset=utf-8",
+    ".php": "text/plain; charset=utf-8",
+    ".swift": "text/plain; charset=utf-8",
+    ".kt": "text/plain; charset=utf-8",
+    ".scala": "text/plain; charset=utf-8",
+    ".lua": "text/plain; charset=utf-8",
+    ".pl": "text/plain; charset=utf-8",
+    ".r": "text/plain; charset=utf-8",
+    ".dart": "text/plain; charset=utf-8",
+    ".ex": "text/plain; charset=utf-8",
+    ".exs": "text/plain; charset=utf-8",
+    ".erl": "text/plain; charset=utf-8",
+    ".hs": "text/plain; charset=utf-8",
+    ".ml": "text/plain; charset=utf-8",
+    ".jl": "text/plain; charset=utf-8",
+    ".tf": "text/plain; charset=utf-8",
+    ".proto": "text/plain; charset=utf-8",
+    ".graphql": "text/plain; charset=utf-8",
+    ".env": "text/plain; charset=utf-8",
+    ".properties": "text/plain; charset=utf-8",
+    ".gradle": "text/plain; charset=utf-8",
+    ".cmake": "text/plain; charset=utf-8",
+    ".makefile": "text/plain; charset=utf-8",
+    # 老 Office 二进制格式：前端不支持时也要给出正确 MIME（下载/转换用）
+    ".doc": "application/msword",
 }
 
 
@@ -559,13 +594,9 @@ async def preview_file(
         except UploadStorageError as exc:
             raise _store_http_error(exc) from exc
     else:
-        full_path = workspace_dir / file_path
-
-        if not full_path.exists():
-            raise HTTPException(status_code=404, detail="文件不存在")
-
-        if not full_path.is_file():
-            raise HTTPException(status_code=400, detail="路径不是文件")
+        # 先判越界再看存在性：若反过来，「越界且不存在」返回 404、「越界但存在」
+        # 返回 400，等于给调用者一个探测他人目录里有哪些文件的口子。
+        full_path = resolve_workspace_file(workspace_dir, file_path)
 
     # 目标格式转换（如 PPT/XLS/DOC → PDF）
     if target and target.lower() == "pdf":

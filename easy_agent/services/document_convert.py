@@ -69,7 +69,7 @@ def convert_to_pdf(src: str | Path, target: str = "pdf") -> Path:
     # 每个转换任务使用独立的 LibreOffice 用户配置目录，避免并发实例的 profile 锁冲突
     user_profile = out_dir / "lo_profile"
     try:
-        subprocess.run(
+        result = subprocess.run(
             [
                 soffice,
                 "--headless",
@@ -94,7 +94,16 @@ def convert_to_pdf(src: str | Path, target: str = "pdf") -> Path:
 
     generated = list(out_dir.glob(f"*.{target}"))
     if not generated:
-        raise RuntimeError("文档转换未生成目标文件")
+        # soffice 缺对应组件（如没装 libreoffice-calc 时转 xlsx）会以 0 退出且不产出文件，
+        # 真正原因只在 stderr 里（"source file could not be loaded"），带上便于定位。
+        raw = (result.stderr or b"").decode("utf-8", "ignore").strip()
+        # javaldx 这类 warning 无害，优先暴露 Error 行
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        picked = [ln for ln in lines if ln.lower().startswith("error")] or lines
+        stderr = " / ".join(picked)[:200]
+        logger.error(f"LibreOffice 未生成目标文件 | {src} | {stderr}")
+        suffix = f"（{stderr}）" if stderr else ""
+        raise RuntimeError(f"文档转换未生成目标文件{suffix}")
 
     # 归一化输出文件名（LibreOffice 默认以源 stem 命名，通常已一致）
     if generated[0] != out_pdf:
