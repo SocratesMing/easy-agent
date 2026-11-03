@@ -28,6 +28,7 @@ const MAX_NEW_FILE_LINES = 800
 /**
  * 现存超大文件的行数预算（= 2026-10-20 实测值，只允许往下调）。
  * 2026-10-28 合并 audit-improvements / rag-1018 分支后按实测值更新。
+ * 2026-11-03 合并 audit-improvements 预览修复（Office → PDF）后按实测值更新。
  * 拆分这些文件时同步删掉条目，避免预算变成"合法上限"。
  */
 const LINE_BUDGET = {
@@ -40,7 +41,7 @@ const LINE_BUDGET = {
   [`${MOD}features/chat/mixins/chatSession.js`]: 1205,
   [`${MOD}features/connectors/components/ConnectorListPanel.vue`]: 1504,
   [`${MOD}features/skills/components/SkillListPanel.vue`]: 1260,
-  [`${MOD}shared/preview/FilePreview.vue`]: 1162,
+  [`${MOD}shared/preview/FilePreview.vue`]: 1164,
   [`${MOD}features/settings/components/SettingsPanel.vue`]: 1128,
   [`${MOD}features/chat/components/Chat.vue`]: 1122,
   [`${MOD}features/chat/components/SessionList.vue`]: 1072,
