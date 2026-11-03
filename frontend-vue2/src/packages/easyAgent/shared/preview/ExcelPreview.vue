@@ -26,13 +26,46 @@
         </tbody>
       </table>
     </div>
-    <div v-else class="preview-loading">加载中...</div>
+    <div v-else-if="loading" class="preview-loading">加载中...</div>
+    <div v-else-if="error" class="preview-loading">{{ error }}</div>
+    <div v-else class="preview-loading">表格内容为空</div>
   </div>
 </template>
 
 <script>
 import ExcelJS from 'exceljs'
 import { requestArrayBuffer } from '../../utils/request.js'
+
+// xlsx/xlsm 是 zip 容器（以 "PK" 开头）；.xls（BIFF）等旧格式 ExcelJS 无法解析，交给 SheetJS
+function isZip(buffer) {
+  const head = new Uint8Array(buffer, 0, Math.min(2, buffer.byteLength))
+  return head[0] === 0x50 && head[1] === 0x4b
+}
+
+async function parseWithExcelJS(buffer) {
+  const workbook = new ExcelJS.Workbook()
+  await workbook.xlsx.load(buffer)
+  return workbook.worksheets.map(ws => {
+    const data = []
+    ws.eachRow((row) => {
+      const rowData = []
+      row.eachCell({ includeEmpty: true }, cell => {
+        rowData[cell.column - 1] = cell.value ?? ''
+      })
+      data.push(rowData)
+    })
+    return { name: ws.name, data }
+  })
+}
+
+async function parseWithSheetJS(buffer) {
+  const XLSX = await import('xlsx')
+  const workbook = XLSX.read(buffer, { type: 'array' })
+  return workbook.SheetNames.map(name => ({
+    name,
+    data: XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: '', raw: false }),
+  }))
+}
 export default {
   props: {
     fileUrl: {
@@ -43,35 +76,42 @@ export default {
   data() {
     return {
       sheets: [],
-      activeSheet: 0
+      activeSheet: 0,
+      loading: false,
+      error: ''
     }
   },
   methods: {
     async loadExcel() {
       if (!this.fileUrl) return
 
+      const seq = (this._loadSeq = (this._loadSeq || 0) + 1)
+      this.loading = true
+      this.error = ''
+      this.sheets = []
       try {
         const arrayBuffer = await requestArrayBuffer({ url: this.fileUrl })
-
-        const workbook = new ExcelJS.Workbook()
-        await workbook.xlsx.load(arrayBuffer)
-
-        this.sheets = workbook.worksheets.map(ws => {
-          const data = []
-          ws.eachRow((row, rowNumber) => {
-            const rowData = []
-            row.eachCell({ includeEmpty: true }, cell => {
-              rowData[cell.column - 1] = cell.value ?? ''
-            })
-            data.push(rowData)
-          })
-          return { name: ws.name, data }
-        })
-
+        let sheets
+        if (isZip(arrayBuffer)) {
+          try {
+            sheets = await parseWithExcelJS(arrayBuffer)
+          } catch (e) {
+            console.warn('Excel preview: ExcelJS 解析失败，改用 SheetJS:', e)
+            sheets = await parseWithSheetJS(arrayBuffer)
+          }
+        } else {
+          sheets = await parseWithSheetJS(arrayBuffer)
+        }
+        if (seq !== this._loadSeq) return
+        this.sheets = sheets
         this.activeSheet = 0
       } catch (e) {
+        if (seq !== this._loadSeq) return
         console.error('Excel preview error:', e)
         this.sheets = []
+        this.error = 'Excel 预览加载失败，请下载后查看'
+      } finally {
+        if (seq === this._loadSeq) this.loading = false
       }
     }
   },
