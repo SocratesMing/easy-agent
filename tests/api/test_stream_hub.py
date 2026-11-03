@@ -5,10 +5,20 @@
 逻辑已由本文件覆盖。
 """
 
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
 from easy_agent.api.chat import _StreamHub, _detached_event_stream, _session_stream_hubs
-from easy_agent.services.streaming.sse import format_sse
+from easy_agent.bootstrap import runtime_config
+from easy_agent.bootstrap.config_models import StreamingConfig
+from easy_agent.services.streaming.sse import (
+    SSE_HEARTBEAT_ENV,
+    SSE_HEARTBEAT_FRAME,
+    format_sse,
+    heartbeat_interval_seconds,
+)
 
 
 def _sse(obj) -> str:
@@ -67,6 +77,68 @@ async def test_detached_event_stream_yields_and_publishes_to_hub():
     assert hub is not None
     assert hub.done is True
     assert list(hub.history) == chunks  # history 已改为 deque（O(1) 淘汰）
+
+
+async def test_detached_event_stream_emits_heartbeat_while_idle(monkeypatch):
+    """静默期必须补心跳注释帧。
+
+    回归背景：模型长思考/长工具调用期间流上几十秒没有事件，nginx 默认
+    ``proxy_read_timeout 60s`` 会掐断连接，浏览器报
+    ``ERR_INCOMPLETE_CHUNKED_ENCODING 200``，前端只能看到 network error。
+    """
+    monkeypatch.setattr(
+        "easy_agent.api.chat.heartbeat_interval_seconds", lambda: 0.05
+    )
+
+    async def slow_gen():
+        await asyncio.sleep(0.12)
+        yield _sse({"type": "done", "session_id": "sess-hb"})
+
+    chunks = [
+        chunk async for chunk in _detached_event_stream(slow_gen(), "sess-hb", "hb")
+    ]
+
+    assert chunks.count(SSE_HEARTBEAT_FRAME) >= 1, "静默期必须出现心跳帧"
+    assert chunks[-1].startswith("data: "), "心跳不得插到终态之后"
+    # 心跳只走连接侧：不进 hub 历史（否则重连回放/落库会夹带注释帧）
+    assert SSE_HEARTBEAT_FRAME not in list(_session_stream_hubs["sess-hb"].history)
+
+
+def test_heartbeat_interval_env_then_config_then_default(monkeypatch):
+    """心跳间隔读取顺序：环境变量 > config.yaml ``streaming`` 段 > 15 秒默认值。"""
+    monkeypatch.setattr(
+        runtime_config,
+        "_runtime_agent_config",
+        {
+            "config": SimpleNamespace(
+                streaming=StreamingConfig(sse_heartbeat_seconds=42.0)
+            )
+        },
+    )
+    monkeypatch.delenv(SSE_HEARTBEAT_ENV, raising=False)
+    assert heartbeat_interval_seconds() == 42.0, "未设环境变量时应读 config.yaml"
+
+    monkeypatch.setenv(SSE_HEARTBEAT_ENV, "7")
+    assert heartbeat_interval_seconds() == 7.0, "环境变量应覆盖配置文件"
+
+    monkeypatch.setattr(runtime_config, "_runtime_agent_config", None)
+    monkeypatch.delenv(SSE_HEARTBEAT_ENV, raising=False)
+    assert heartbeat_interval_seconds() == 15.0, "两者都缺失时回退默认 15 秒"
+
+
+async def test_detached_event_stream_heartbeat_can_be_disabled(monkeypatch):
+    monkeypatch.setattr("easy_agent.api.chat.heartbeat_interval_seconds", lambda: 0)
+
+    async def slow_gen():
+        await asyncio.sleep(0.06)
+        yield _sse({"type": "done", "session_id": "sess-hb-off"})
+
+    chunks = [
+        chunk
+        async for chunk in _detached_event_stream(slow_gen(), "sess-hb-off", "hb")
+    ]
+
+    assert SSE_HEARTBEAT_FRAME not in chunks
 
 
 async def test_replay_is_complete_when_history_exceeds_queue_slack():

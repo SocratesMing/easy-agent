@@ -10,6 +10,7 @@ SSE 序列化实现，统一生产入口见 ``services/streaming/emitter.py`` �
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -128,6 +129,53 @@ _REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
+# ---- 心跳 ---------------------------------------------------------------
+# 反向代理（nginx 等）按「上游多久没数据」判空闲超时，默认 proxy_read_timeout
+# 只有 60s。模型长思考 / 长工具调用期间流上可能几十秒没有任何事件，代理会直接
+# 掐断 TCP：响应头已发出（200），body 却是残缺的 chunked，浏览器报
+# ``ERR_INCOMPLETE_CHUNKED_ENCODING 200``。
+#
+# 心跳用 SSE 注释行（以 ``:`` 开头），前端解析器只处理 ``data: `` 行因此会忽略
+# 它；心跳不产生事件、不进 hub 历史、不落 stream_events 表，只在订阅者连接上发。
+SSE_HEARTBEAT_ENV = "EASY_SSE_HEARTBEAT_SECONDS"
+DEFAULT_SSE_HEARTBEAT_SECONDS = 15.0
+SSE_HEARTBEAT_FRAME = ": keep-alive\n\n"
+
+
+def _configured_heartbeat_seconds() -> float | None:
+    """config.yaml ``streaming.sse_heartbeat_seconds``；运行期配置不可用时返回 None。
+
+    惰性 import：本模块被 API 层热路径导入，不能反向依赖 bootstrap 包。
+    """
+    try:
+        from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
+
+        runtime = get_runtime_agent_config() or {}
+        streaming = getattr(runtime.get("config"), "streaming", None)
+        value = getattr(streaming, "sse_heartbeat_seconds", None)
+        return None if value is None else float(value)
+    except Exception:  # noqa: BLE001 - 配置不可用（未初始化/测试替身）时回退默认
+        return None
+
+
+def heartbeat_interval_seconds() -> float:
+    """心跳间隔（秒）：``EASY_SSE_HEARTBEAT_SECONDS`` > config.yaml > 15 秒；<= 0 关闭。
+
+    环境变量优先，与其它 ``EASY_*`` 开关一致；模板里该键本身就引用同名环境变量，
+    因此两种写法结果相同。
+    """
+    raw = os.environ.get(SSE_HEARTBEAT_ENV)
+    if raw is not None and raw.strip():
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    configured = _configured_heartbeat_seconds()
+    if configured is not None:
+        return configured
+    return DEFAULT_SSE_HEARTBEAT_SECONDS
+
+
 def format_sse(data: dict[str, Any]) -> str:
     """把一个事件 dict 序列化为 SSE frame（`data: {...}\n\n`）。
 
@@ -172,7 +220,11 @@ __all__ = [
     "SSEEventSpec",
     "SSE_EVENT_TYPES",
     "TERMINAL_EVENT_TYPES",
+    "DEFAULT_SSE_HEARTBEAT_SECONDS",
+    "SSE_HEARTBEAT_ENV",
+    "SSE_HEARTBEAT_FRAME",
     "format_sse",
+    "heartbeat_interval_seconds",
     "is_terminal_event",
     "parse_sse_frame",
     "validate_event",

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -21,7 +22,11 @@ from easy_agent.api.deps import (
 )
 from easy_agent.middleware import get_current_username
 from easy_agent.services.sessions.runtime import is_stream_active
-from easy_agent.services.streaming.sse import is_terminal_event
+from easy_agent.services.streaming.sse import (
+    SSE_HEARTBEAT_FRAME,
+    heartbeat_interval_seconds,
+    is_terminal_event,
+)
 from easy_agent.services.streaming.emitter import SSEEmitter
 
 logger = logging.getLogger(__name__)
@@ -109,6 +114,9 @@ async def chat_stream_live(
         except (TypeError, ValueError):
             cursor = 0
         idle_rounds = 0
+        # 空闲心跳：回放端点长时间没有新事件时同样会被反向代理判空闲超时。
+        heartbeat_seconds = heartbeat_interval_seconds()
+        last_emit = time.monotonic()
 
         while True:
             try:
@@ -130,6 +138,7 @@ async def chat_stream_live(
                     if not frame:
                         continue
                     yield frame
+                    last_emit = time.monotonic()
                     if _frame_is_terminal(frame):
                         return
                 # 可能还有下一页，立即继续拉取（不 sleep）。
@@ -147,6 +156,12 @@ async def chat_stream_live(
                 idle_rounds = 0
             else:
                 idle_rounds += 1
+            # 空闲超过心跳间隔就补一帧注释行，避免代理按「上游静默」掐断长思考流。
+            if heartbeat_seconds > 0 and (
+                time.monotonic() - last_emit >= heartbeat_seconds
+            ):
+                yield SSE_HEARTBEAT_FRAME
+                last_emit = time.monotonic()
             # 先等一轮再判断是否收尾：流结束后仍给写入器留出 2 个轮询周期
             # （约 300ms）把最后一批事件落库。
             await asyncio.sleep(_LIVE_POLL_SECONDS)
