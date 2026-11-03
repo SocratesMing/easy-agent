@@ -21,7 +21,7 @@
             </div>
             <span v-else-if="file.uploadStatus === 'completed'" class="upload-status completed">上传完成</span>
             <span v-else-if="file.uploadStatus === 'pending'" class="upload-status pending">发送时上传</span>
-            <template v-else-if="file.uploadStatus === 'error'">
+            <template v-else-if="file.uploadStatus === 'error' && !isErrorHidden(file, index)">
               <span class="upload-status error" :title="file.errorMessage || '上传失败'">上传失败</span>
               <button
                 v-if="file.retryable"
@@ -52,16 +52,45 @@
 </template>
 
 <script setup>
+import { onBeforeUnmount, reactive, watch } from 'vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
 import { formatSize } from '../../../utils/format.js'
 
-defineProps({
+const props = defineProps({
   files: { type: Array, default: () => [] },
   limitsText: { type: String, default: '' },
   limitsFull: { type: Boolean, default: false },
 })
 
 defineEmits(['remove', 'retry'])
+
+// 上传失败状态只短暂提示：5 秒后自动隐藏（key = 序号:文件名）
+const hiddenErrorKeys = reactive({})
+const errorHideTimers = {}
+
+function errorKey(file, index) { return `${index}:${file.filename}` }
+function isErrorHidden(file, index) { return Boolean(hiddenErrorKeys[errorKey(file, index)]) }
+function syncErrorAutoHide() {
+  props.files.forEach((file, index) => {
+    const key = errorKey(file, index)
+    if (file.uploadStatus !== 'error' || !file.errorMessage) {
+      if (errorHideTimers[key]) {
+        clearTimeout(errorHideTimers[key])
+        delete errorHideTimers[key]
+      }
+      delete hiddenErrorKeys[key]
+      return
+    }
+    if (hiddenErrorKeys[key] || errorHideTimers[key]) return
+    errorHideTimers[key] = setTimeout(() => {
+      delete errorHideTimers[key]
+      hiddenErrorKeys[key] = true
+    }, 5000)
+  })
+}
+
+watch(() => props.files, () => { syncErrorAutoHide() }, { deep: true, immediate: true })
+onBeforeUnmount(() => { Object.values(errorHideTimers).forEach((timer) => clearTimeout(timer)) })
 </script>
 
 <style scoped>

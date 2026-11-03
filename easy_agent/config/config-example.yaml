@@ -37,6 +37,14 @@ retry:
   enabled: true           # 是否启用重试
   max_retries: 3          # 最大重试次数
 
+# ===== 流式响应（SSE）=====
+streaming:
+  # 空闲心跳间隔（秒）：流上超过该时长没有事件时补一帧 SSE 注释行（: keep-alive），
+  # 防止反向代理（nginx 默认 proxy_read_timeout 60s）按「上游静默」掐断连接
+  # （表现为浏览器 ERR_INCOMPLETE_CHUNKED_ENCODING 200 / 前端 network error）。
+  # 须小于反向代理读超时；<= 0 关闭心跳。心跳不是事件，不落库、前端自动忽略。
+  sse_heartbeat_seconds: ${EASY_SSE_HEARTBEAT_SECONDS:-15}
+
 # ===== Agent =====
 max_steps: ${MAX_STEPS:-100}                      # 单轮最大执行步数
 tool_progress_enabled: ${TOOL_PROGRESS_ENABLED:-true}  # 工具空结果终止提示 + 原地打转提醒（只改结果文本，不改工具行为）

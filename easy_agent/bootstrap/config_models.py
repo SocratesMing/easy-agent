@@ -410,3 +410,18 @@ class FileContextConfig(BaseModel):
 
     preview_max_chars: int = Field(default=2000, ge=0)
     """本轮上传文件注入模型的开头预览字符数（多文件合计）；0 = 不注入预览。"""
+
+
+class StreamingConfig(BaseModel):
+    """SSE 流式响应配置（config.yaml 的 ``streaming`` 段）。
+
+    心跳帧用于穿过反向代理的空闲超时：模型长思考 / 长工具调用期间流上可能几十秒
+    没有任何事件，nginx 默认 ``proxy_read_timeout 60s`` 会掐断连接，浏览器报
+    ``ERR_INCOMPLETE_CHUNKED_ENCODING 200``。
+
+    心跳是 SSE 注释行（``: keep-alive``），**不是事件**：不进 hub 历史、不落
+    ``stream_events`` 表，前端只解析 ``data: `` 行所以会自动忽略。
+    """
+
+    sse_heartbeat_seconds: float = 15.0
+    """空闲多久补一帧心跳（秒）；<= 0 关闭心跳。须小于反向代理的读超时（nginx 默认 60s）。"""

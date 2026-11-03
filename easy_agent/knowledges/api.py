@@ -33,9 +33,10 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 
 from easy_agent.db import Database, get_database
+from easy_agent.db.login_state import LoginRejected, bearer_token, verify_login_token
+from easy_agent.db.repositories.user_repository import UserRepository
 from easy_agent.agent.model import create_model
 from easy_agent.models.db import SessionModel
-from easy_agent.utils.auth import decode_access_token
 from easy_agent.knowledges.chat.host_port import get_host_capabilities
 from easy_agent.knowledges.chat.panel import stream_panel_answer
 from easy_agent.knowledges.core.config import KnowledgeConfig
@@ -100,40 +101,20 @@ def get_knowledge_principal(
     http_request: Request,
     db: Annotated[Database, Depends(get_database)],
 ) -> KnowledgePrincipal:
-    """解析可信用户，不接受遗留请求头/默认用户回退。"""
+    """解析可信用户，不接受遗留请求头/默认用户回退。
 
-    authorization = http_request.headers.get("Authorization", "")
-    scheme, separator, token = authorization.partition(" ")
-    if not separator or scheme.lower() != "bearer" or not token.strip():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Knowledge authentication required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    登录态与主鉴权共用 ``verify_login_token``：不看 token 的 exp，按单点登录版本和空闲登出
+    判定，状态码和提示文案也一致（被踢下线时前端据文案停止自动续期）。
+    """
 
-    payload = decode_access_token(token.strip())
-    username = payload.get("sub") if payload else None
-    token_version = payload.get("v") if payload else None
-    user = db.get_user_by_username(username) if username else None
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired knowledge credentials",
-            headers={"WWW-Authenticate": "Bearer"},
+    try:
+        user = verify_login_token(
+            bearer_token(http_request), UserRepository(db), request=http_request
         )
-
-    if user.account_status == "disabled":
+    except LoginRejected as exc:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account disabled",
-        )
-
-    if token_version is None or token_version != user.token_version:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Knowledge credentials have been revoked",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+            status_code=exc.status_code, detail=exc.detail, headers=exc.headers
+        ) from None
 
     department_id = user.organization_id.strip() or None
     http_request.state.actor_user_id = user.user_id

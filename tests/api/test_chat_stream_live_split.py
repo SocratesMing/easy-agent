@@ -111,6 +111,29 @@ def test_stream_status_uses_db_stream_owner(client, db):
     ).status_code == 404
 
 
+def test_stream_live_emits_heartbeat_while_idle(client, db, monkeypatch):
+    """/stream/live 空闲轮询期也要发心跳，避免代理按「上游静默」掐断连接。"""
+    _seed_session(db)
+    append_stream_event(db, SESSION_ID, _frame("start", session_id=SESSION_ID))
+    monkeypatch.setattr(chat_live, "heartbeat_interval_seconds", lambda: 0.01)
+    rounds = []
+
+    def _active(_runtime, _session_id):
+        rounds.append(1)
+        # 前两轮活跃、之后失效：让空闲轮询走完 2 个轮次后正常收尾。
+        return len(rounds) <= 2
+
+    monkeypatch.setattr(chat_live, "is_stream_active", _active)
+
+    response = client.get(
+        "/agent/chat/stream/live", params={"session_id": SESSION_ID}
+    )
+
+    assert response.status_code == 200
+    assert ": keep-alive" in response.text, "空闲期必须出现心跳注释帧"
+    assert '"type": "done"' in response.text, "心跳不得影响收尾补 done"
+
+
 def test_stream_live_replays_terminal_events_from_db(client, db):
     _seed_session(db)
     frames = [

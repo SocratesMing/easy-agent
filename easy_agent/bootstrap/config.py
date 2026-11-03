@@ -34,6 +34,7 @@ from easy_agent.bootstrap.config_models import (  # noqa: F401 - 兼容重导出
     ProviderConfig,
     RetryConfig,
     SQLiteConfig,
+    StreamingConfig,
     SummarizationConfig,
     ToolsConfig,
     UploadLimitsConfig,
@@ -94,6 +95,8 @@ class Config(BaseModel):
     upload_limits: UploadLimitsConfig = Field(default_factory=UploadLimitsConfig)
     file_context: FileContextConfig = Field(default_factory=FileContextConfig)
     """对话附件上传限额（upload_limits 段）；缺失该段时使用默认值 10/5/20。"""
+    streaming: StreamingConfig = Field(default_factory=StreamingConfig)
+    """SSE 流式响应配置（streaming 段）；缺失时心跳默认 15 秒。"""
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
     active_model: str = "minimax"
     preset_questions: list[PresetQuestionGroup] = Field(default_factory=list)
@@ -289,6 +292,7 @@ class Config(BaseModel):
                 "checkpoint": _get_section(data, "checkpoint") or {},
                 "hitl": _get_section(data, "hitl") or {},
                 "file_context": _get_section(data, "file_context") or {},
+                "streaming": _get_section(data, "streaming") or {},
                 "upload_limits": cls._parse_upload_limits(data),
                 "models": models,
                 "active_model": active_model,

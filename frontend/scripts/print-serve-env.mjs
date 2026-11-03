@@ -4,8 +4,8 @@
  * 由于 .env.<mode> 中的 VITE_* 变量在 `npm run build` 时已被固化进 bundle，
  * `serve` 运行期不会读取 .env。本脚本在启动 serve 之前：
  *   1) 根据 AGENT_ENV 读取对应 .env.<mode>（构建期配置，仅作参考）；
- *   2) 读取 dist/runtime-config.js（运行期配置，由 generate-runtime-config.sh
- *      在启动时生成），展示真正生效的后端地址。
+ *   2) 读取 dist/runtime-config.js（运行期配置，由 generate-runtime-config.mjs
+ *      在启动时生成；跨平台，不依赖 bash），展示真正生效的后端地址。
  *
  * 生成文件是 `window.__RUNTIME_CONFIG__ = <JSON>;`：解析时去掉前缀与结尾分号后
  * 直接 JSON.parse，不再用正则逐键抽取（值和键都可能含引号 / 反斜杠 / 换行）。

@@ -302,7 +302,7 @@ async def _authenticate_admin(websocket: WebSocket, users: UserRepository) -> st
     token = message.get("token") if isinstance(message, dict) and message.get("type") == "auth" else None
     # 校验要查库（token_version / 停用状态），放进线程，不占事件循环
     username = (
-        await asyncio.to_thread(verify_token_sso, token, users)
+        await asyncio.to_thread(verify_token_sso, token, users, websocket)
         if isinstance(token, str) and token
         else None
     )

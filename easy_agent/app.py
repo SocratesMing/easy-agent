@@ -92,7 +92,7 @@ from easy_agent.services.sessions.upload_storage import preflight_upload_store
 from easy_agent.persistence.stores import reset_store
 from easy_agent.sandboxing.sandbox import log_sandbox_startup_report
 from easy_agent.bootstrap.runtime_features import check_multi_replica_startup
-from easy_agent.utils.auth import validate_production_jwt_secret
+from easy_agent.utils.auth import SECRET_FINGERPRINT, validate_production_jwt_secret
 from easy_agent.persistence.checkpoints import shutdown_checkpointers
 from easy_agent.services.mcp.sessions import aclose_mcp_sessions
 from easy_agent.services.streaming.runs import stop_run_recovery
@@ -438,6 +438,8 @@ async def lifespan(app: FastAPI):
     # 避免 pytest / 工具脚本仅 import 就失败；dev/test 保留 data/.jwt_secret 回退。
 
     validate_production_jwt_secret(env=agent_env)
+    # 各副本 / worker 的指纹不一致时，别处签发的 token 在这里一律 401（拒绝日志会写明 kid 不符）
+    logger.info("[鉴权] JWT 签名密钥指纹: %s", SECRET_FINGERPRINT)
 
     # Phase 0：严格多副本门禁。默认关闭；Phase 2/3 完成前开启会明确失败，
     # 避免在 SSE/run/file/sandbox 尚未外置时误宣称多副本安全。

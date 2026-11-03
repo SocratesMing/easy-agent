@@ -839,7 +839,7 @@ function basesForSpace(space) {
   const keyword = baseQuery.value.trim().toLowerCase()
   return bases.value.filter(item => item.visibility === space && (!keyword || item.name.toLowerCase().includes(keyword) || (item.description || '').toLowerCase().includes(keyword)))
 }
-function notify(message, type = 'success') { toast.value = { message, type }; clearTimeout(toastTimer); toastTimer = setTimeout(() => { toast.value = null }, 3000) }
+function notify(message, type = 'success') { toast.value = { message, type }; clearTimeout(toastTimer); toastTimer = setTimeout(() => { toast.value = null }, type === 'error' ? 5000 : 3000) }
 function handleError(error) { console.error(error); notify(error?.message || '操作失败', 'error') }
 
 async function initialize() {

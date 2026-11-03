@@ -42,6 +42,15 @@ HITL 会先保存恢复值再校验，非法决策会让线程卡死，所以必
 时 `/agent/chat/resume` 返回 409。会话里发新消息即放弃上一轮未处理的审批，DB 里对应的工具调用
 标为 `rejected`。
 
+## 传输层心跳（非事件）
+
+`/agent/chat/stream` 与 `/agent/chat/stream/live` 在**空闲超过 `streaming.sse_heartbeat_seconds`**
+（config.yaml，默认 15s；环境变量 `EASY_SSE_HEARTBEAT_SECONDS` 优先；`<=0` 关闭）时下发
+SSE 注释帧 `: keep-alive\n\n`。它只用于穿过反向代理的空闲
+超时（nginx 默认 `proxy_read_timeout 60s`，否则浏览器报 `ERR_INCOMPLETE_CHUNKED_ENCODING
+200`），**不是事件**：不进 `hub` 历史、不落 `stream_events` 表；前端 `readSSE` 只处理
+`data: ` 行，会自动忽略。
+
 ## 约束
 
 1. 新增事件：先改 `SSE_EVENT_TYPES` → 更新本文件 → 改生产端 → 改前端 handler → 契约测试。

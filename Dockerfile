@@ -78,12 +78,19 @@ ENV AGENT_ENV=${AGENT_ENV}
 # 若宿主禁用了非特权 user namespace（麒麟 kysec 常见），先在宿主执行
 #   sysctl -w user.max_user_namespaces=15000
 # 或以 --cap-add SYS_ADMIN 运行并给 /usr/local/bin/bwrap 加 setuid 位。
+# Office → PDF 预览（FilePreview 的 pptx/ppt/doc 走 target=pdf）依赖 soffice：
+# 缺 libreoffice-impress 时 PPTX 预览直接 500，缺 libreoffice-calc 时 xlsx/xls 必然转换失败，
+# 缺中文字体则转出的 PDF 显示方块。仅装所需组件 + Noto CJK，避免拉全量 libreoffice。
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         bash \
         procps \
         libcap2 \
         gettext-base \
+        libreoffice-impress \
+        libreoffice-writer \
+        libreoffice-calc \
+        fonts-noto-cjk \
         && rm -rf /var/lib/apt/lists/*
 
 # 离线编译产物 + 构建期校验（缺 --ro-bind-try 会直接让沙箱 fail-closed）

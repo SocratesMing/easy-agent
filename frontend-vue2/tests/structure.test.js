@@ -34,7 +34,7 @@ const LINE_BUDGET = {
   // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
   [`${MOD}EasyAgentPage.vue`]: 2035,
   [`${MOD}features/chat/components/ChatInput.vue`]: 3613,
-  [`${MOD}features/chat/components/ChatMessage.vue`]: 2672,
+  [`${MOD}features/chat/components/ChatMessage.vue`]: 2644,
   [`${MOD}features/chat/components/AiSidebar.vue`]: 1725,
   [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2152,
   [`${MOD}features/chat/mixins/chatSession.js`]: 1205,

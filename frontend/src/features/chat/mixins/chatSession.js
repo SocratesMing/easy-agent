@@ -3,6 +3,10 @@ import { createSession, listSessions, getChatHistory, deleteSession, renameSessi
 import { getSessionGeneratedFiles } from '../../../api/files.js'
 import { chatBus, chatStore, syncPendingApprovalFlag as setPendingApprovalFlag } from '../store/chatStore.js'
 import { applyApprovalRequests, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
+import { createAutoDismiss } from '../../../utils/autoDismiss.js'
+
+// 后端 / 系统报错提示（侧边栏 ais-error、主页面 error-toast）显示 5 秒后自动消失
+const TRANSIENT_ERROR_TTL_MS = 5000
 
 /**
  * 对话引擎：单个"展示中会话"的消息、流式事件处理、HITL 审批、会话 CRUD。
@@ -86,8 +90,21 @@ export default {
   created() {
     chatBus.on('stream-started', this.onPeerStreamStarted)
     chatBus.on('session-removed', this.onPeerSessionRemoved)
+    // 后端 / 系统报错提示 5 秒后自动消失（非响应式定时器）
+    this._dismissError = createAutoDismiss({
+      read: () => this.error,
+      clear: () => { this.error = null },
+      ttlMs: TRANSIENT_ERROR_TTL_MS,
+    })
+  },
+  watch: {
+    // 期间出现新提示会取消旧定时器并重新计时
+    error(value) {
+      this._dismissError(value)
+    },
   },
   beforeUnmount() {
+    this._dismissError(null)
     chatBus.off('stream-started', this.onPeerStreamStarted)
     chatBus.off('session-removed', this.onPeerSessionRemoved)
   },

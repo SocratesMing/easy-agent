@@ -80,6 +80,10 @@
 import { login, register } from '../../../api/auth.js'
 import { getLoginPolicy } from '../../personnel/api.js'
 import { getRuntime } from '../../../runtime/config.js'
+import { createAutoDismiss } from '../../../utils/autoDismiss.js'
+
+// 登录 / 注册错误提示显示 5 秒后自动消失
+const TRANSIENT_ERROR_TTL_MS = 5000
 
 export default {
   data() {
@@ -98,6 +102,20 @@ export default {
       }
     }
   },
+  created() {
+    // 登录 / 注册错误提示 5 秒后自动消失（非响应式定时器）
+    this._dismissError = createAutoDismiss({
+      read: () => this.error,
+      clear: () => { this.error = '' },
+      ttlMs: TRANSIENT_ERROR_TTL_MS,
+    })
+  },
+  watch: {
+    // 期间出现新提示会取消旧定时器并重新计时
+    error(value) {
+      this._dismissError(value)
+    },
+  },
   mounted() {
     getLoginPolicy().then(policy => { this.selfRegistrationEnabled = policy.self_registration_enabled === true }).catch(() => {})
     // 检测是否因单点登录被踢下线（账号在其他设备登录）
@@ -108,6 +126,9 @@ export default {
     this.$nextTick(() => {
       if (this.$refs.usernameInput) this.$refs.usernameInput.focus()
     })
+  },
+  beforeDestroy() {
+    this._dismissError(null)
   },
   methods: {
     toggleMode() {

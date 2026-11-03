@@ -36,7 +36,7 @@
           <div v-else-if="isPdf" class="preview-pdf">
             <iframe :src="resolveUrl(previewUrl)" class="pdf-iframe"></iframe>
           </div>
-          <div v-else-if="isPptx" class="preview-pptx">
+          <div v-else-if="isPdfConverted" class="preview-pptx">
             <iframe v-if="pptxPdfUrl" :src="pptxPdfUrl" class="pptx-iframe" title="PPTX 预览"></iframe>
           </div>
           <div v-else-if="isDocx" class="preview-docx">
@@ -120,7 +120,7 @@ import { requestBlob, requestArrayBuffer, requestText, resolveUrl } from '../../
 setupMarkedExtensions()
 
 const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico']
-const textExts = ['.txt', '.json', '.xml', '.csv', '.js', '.ts', '.vue', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp', '.sh', '.bat', '.css', '.scss', '.less', '.sql', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.env', '.log', '.md', '.jsx', '.tsx', '.rb', '.php', '.swift', '.kt', '.scala', '.lua', '.pl', '.r', '.dart', '.ex', '.exs', '.erl', '.hs', '.ml', '.jl', '.tf', '.proto', '.graphql', '.makefile', '.cmake', '.dockerfile', '.gitignore', '.properties', '.gradle']
+const textExts = ['.txt', '.json', '.jsonl', '.xml', '.csv', '.js', '.ts', '.vue', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp', '.sh', '.bat', '.css', '.scss', '.less', '.sql', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.env', '.log', '.md', '.jsx', '.tsx', '.rb', '.php', '.swift', '.kt', '.scala', '.lua', '.pl', '.r', '.dart', '.ex', '.exs', '.erl', '.hs', '.ml', '.jl', '.tf', '.proto', '.graphql', '.makefile', '.cmake', '.dockerfile', '.gitignore', '.properties', '.gradle']
 
 // 安全获取文件扩展名（无扩展名时返回空字符串）
 function getExt(name) {
@@ -236,8 +236,9 @@ export default {
     isPdf() {
       return getExt(this.filename) === 'pdf'
     },
-    isPptx() {
-      return getExt(this.filename) === 'pptx'
+    // PPTX 与老版 PPT/DOC 都没有可用的前端渲染器：统一交后端 LibreOffice 转 PDF。
+    isPdfConverted() {
+      return ['pptx', 'ppt', 'doc'].includes(getExt(this.filename))
     },
     isDocx() {
       return getExt(this.filename) === 'docx'
@@ -457,9 +458,9 @@ export default {
       try {
         if (this.isPdf) {
           console.log('[FilePreview] PDF 预览')
-        } else if (this.isPptx) {
-          console.log('[FilePreview] PPTX 预览 (LibreOffice → PDF)')
-          // 后端用 LibreOffice 把 pptx 转成 PDF，返回 PDF 流，由浏览器内置查看器渲染
+        } else if (this.isPdfConverted) {
+          console.log('[FilePreview] Office → PDF 预览 (LibreOffice)')
+          // 后端用 LibreOffice 把 pptx/ppt/doc 转成 PDF，返回 PDF 流，由浏览器内置查看器渲染
           const pdfParams = new URLSearchParams(params)
           pdfParams.set('target', 'pdf')
           const pdfUrl = `${this.previewBaseUrl}?${pdfParams.toString()}`
@@ -496,7 +497,8 @@ export default {
           if (text.length > 50000) {
             text = text.substring(0, 50000) + '\n\n... (内容过长已截断)'
           }
-          this.textContent = text
+          // 剥掉 UTF-8 BOM（Excel 导出的 CSV 常带），否则首列表头会混入不可见的 \uFEFF
+          this.textContent = text.replace(/^\uFEFF/, '')
           console.log('[FilePreview] 文本预览加载完成, 长度:', this.textContent.length)
         } else {
           console.log('[FilePreview] 不支持预览的文件类型:', ext || '未知')

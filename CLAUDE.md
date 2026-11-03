@@ -82,7 +82,7 @@ Environment variables:
 
 ### Other Backend Modules
 
-- `middleware/auth.py` — JWT (python-jose) + bcrypt. 30-minute token expiry, idle-logout support, and single sign-on: a new login increments `token_version`, invalidating older tokens. `get_current_username()` only accepts a valid `Authorization: Bearer` token (no `X-Username` fallback). Login does not bind to an IP.
+- `middleware/auth.py` — JWT (python-jose) + bcrypt. The login-state decision lives in `db/login_state.py:verify_login_token`, shared by `get_current_username()`, the query-token `verify_token_sso()` and the knowledge principal. The token's 30-minute `exp` is not enforced: a session ends by idle logout (DB `last_activity_at`) or single sign-on (a new login increments `token_version`, invalidating older tokens). Every rejection logs a `[鉴权] 拒绝 …` WARNING with the reason and request_id. `get_current_username()` only accepts a valid `Authorization: Bearer` token (no `X-Username` fallback). Login does not bind to an IP.
 - `db/database.py` — SQLite (default) or MySQL (DBUtils pool); MySQL failures do **not** silently fall back to SQLite. Messages are stored in the `session_messages` row table; `sessions.messages` remains only as a legacy blob fallback for old sessions. Schema migrations run via `db/schema_registry.py` / `_ensure_column()`.
 - `knowledges/` — Knowledge base v2 (RAGFlow service/API/runtime worker). Its `personnel/` subpackage owns knowledge-scoped personnel management and Excel import (`/agent/personnel`).
 - `utils/file_parser.py` — Extracts text from PDF, DOCX, XLSX, PPTX, images (OCR), CSV, code files. Auto-detects encoding.
@@ -123,7 +123,7 @@ Vue 2 paths below are relative to `frontend-vue2/src/packages/easyAgent/`:
 
 ### Gotchas
 
-- **JWT secret persistence** — dev/test store the secret in `data/.jwt_secret`, so restarts keep tokens valid; `AGENT_ENV=prod` requires an explicit `EASY_JWT_SECRET`
+- **JWT secret persistence** — dev/test store the secret in `data/.jwt_secret`, so restarts keep tokens valid; `AGENT_ENV=prod` requires an explicit `EASY_JWT_SECRET`. Replicas without a shared secret reject each other's tokens: tokens carry the key fingerprint as `kid`, startup logs `[鉴权] JWT 签名密钥指纹`, and the rejection log says `token 由另一把密钥签发`
 - **Single sign-on** — a new login increments `token_version` and invalidates older tokens; login is not IP-bound
 - **Messages are row-based** — `session_messages` is authoritative; `sessions.messages` is a legacy blob fallback
 - **Context compression** via `SummarizationMiddleware` — configurable threshold/target in config, triggers on token count

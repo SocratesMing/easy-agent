@@ -27,6 +27,10 @@ from easy_agent.services.agents.manager import (
     remove_session_agent,
 )
 from easy_agent.services.streaming.emitter import SSEEmitter
+from easy_agent.services.streaming.sse import (
+    SSE_HEARTBEAT_FRAME,
+    heartbeat_interval_seconds,
+)
 from easy_agent.services.sessions.runtime import SessionBusyError
 from easy_agent.services.streaming.runs import finish_run, renew_run
 from easy_agent.services.streaming.hub import (  # noqa: F401 - 兼容旧导入路径
@@ -261,9 +265,22 @@ async def _detached_event_stream(
     )
     _detached_bg_tasks.add(bg_task)
     bg_task.add_done_callback(_detached_bg_tasks.discard)
+    # 空闲心跳：模型长思考/长工具调用期间流上可能几十秒没有事件，反向代理
+    # （nginx 默认 proxy_read_timeout 60s）会掐断连接，浏览器报
+    # ERR_INCOMPLETE_CHUNKED_ENCODING。心跳只发给本订阅者，不进 hub 历史、不落库。
+    heartbeat_seconds = heartbeat_interval_seconds()
     try:
         while True:
-            item = await queue.get()
+            if heartbeat_seconds > 0:
+                try:
+                    item = await asyncio.wait_for(
+                        queue.get(), timeout=heartbeat_seconds
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    yield SSE_HEARTBEAT_FRAME
+                    continue
+            else:
+                item = await queue.get()
             if item is None:
                 break
             yield item

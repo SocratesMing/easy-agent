@@ -24,6 +24,7 @@ from easy_agent.bootstrap.config_models import (
     ProviderConfig,
     RetryConfig,
     SQLiteConfig,
+    StreamingConfig,
     SummarizationConfig,
     ToolsConfig,
     UploadLimitsConfig,
@@ -64,6 +65,7 @@ KNOWN_TOP_LEVEL_KEYS = _fields(AgentConfig) | frozenset(
         "distributed_lock",
         "upload_limits",
         "file_context",
+        "streaming",
         "expert",
         "expert_tags",
         "expert_guardrail_enabled",
@@ -99,6 +101,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
     "personnel": _fields(PersonnelConfig),
     "upload_limits": _fields(UploadLimitsConfig),
     "file_context": _fields(FileContextConfig),
+    "streaming": _fields(StreamingConfig),
     # 以下各段与模型字段名不同（expert 段对应 Config.expert_*）或不归 Config 管（knowledge）
     "expert": frozenset(
         {

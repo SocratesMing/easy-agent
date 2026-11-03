@@ -259,10 +259,10 @@ def get_task_workspace_file(
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
 
-        username = verify_token_sso(auth_header[7:], user_repo)
+        username = verify_token_sso(auth_header[7:], user_repo, request)
     if not username and token:
 
-        username = verify_token_sso(token, user_repo)
+        username = verify_token_sso(token, user_repo, request)
     if not username:
         raise HTTPException(status_code=401, detail="登录已过期或未登录，请重新登录")
 

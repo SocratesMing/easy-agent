@@ -1,3 +1,8 @@
+import { createAutoDismiss } from '../../../utils/autoDismiss.js'
+
+// 后端 / 系统报错提示（主页面 error-toast、侧边栏 ais-error）显示 5 秒后自动消失
+const TRANSIENT_ERROR_TTL_MS = 5000
+
 /**
  * 流式连接的生命周期（由 chatSession mixin 混入，主页面与 AI 侧边栏共用）。
  *
@@ -14,8 +19,21 @@ export default {
     // 本实例发起的流式连接（发送 / 审批恢复 / 挂载）；非响应式
     this._streamControllers = new Set()
     this._chatDisposed = false
+    // 后端 / 系统报错提示 5 秒后自动消失（非响应式定时器；主页面 / 侧边栏共用）
+    this._dismissError = createAutoDismiss({
+      read: () => this.error,
+      clear: () => { this.error = null },
+      ttlMs: TRANSIENT_ERROR_TTL_MS,
+    })
+  },
+  watch: {
+    // 期间出现新提示会取消旧定时器并重新计时
+    error(value) {
+      this._dismissError(value)
+    },
   },
   beforeDestroy() {
+    this._dismissError(null)
     this.disposeLocalStreams()
   },
   methods: {
