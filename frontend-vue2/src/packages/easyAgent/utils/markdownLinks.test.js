@@ -46,3 +46,21 @@ test('linkifyText：引号不能跳出 href 属性', () => {
     `<a href="https://a.com/x&#039;onclick=&#039;y" ${NEW_TAB}>https://a.com/x&#039;onclick=&#039;y</a>`
   )
 })
+
+test('文件/文档预览（sourceCards: false）如实渲染链接，不改写成来源卡片', () => {
+  const md = '- 裸 URL：https://example.com/bare\n- [独立行链接](https://example.com/standalone)'
+  const doc = renderMarkdown(md, renderer, { sourceCards: false })
+  assert.ok(!doc.includes('msg-source-card'))
+  assert.ok(doc.includes(`<a href="https://example.com/bare" ${NEW_TAB}>https://example.com/bare</a>`))
+  assert.ok(doc.includes(`<a href="https://example.com/standalone" ${NEW_TAB}>独立行链接</a>`))
+  // 对话默认仍美化成卡片；卡片图标带固有尺寸，缺样式的容器里也不会撑满整行
+  const chat = render(md)
+  assert.ok(chat.includes('class="msg-source-card"'))
+  assert.ok(chat.includes('<svg width="15" height="15"'))
+})
+
+test('任务列表项带 task-list-item class（不依赖 :has()，旧版 Chrome 也能去掉圆点）', () => {
+  const html = render('- [x] 完成\n- [ ] 未完成\n- 普通项')
+  assert.equal((html.match(/<li class="task-list-item"><input /g) || []).length, 2)
+  assert.ok(html.includes('<li>普通项</li>'))
+})

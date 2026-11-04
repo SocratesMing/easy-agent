@@ -438,7 +438,7 @@ function stripFrontmatter(md) {
 function renderExpertMd(content) {
   const body = stripFrontmatter(content)
   if (!body.trim()) return ''
-  return renderMarkdown(body, expertMdRenderer)
+  return renderMarkdown(body, expertMdRenderer, { sourceCards: false })
 }
 
 export default {

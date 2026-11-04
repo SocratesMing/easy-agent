@@ -1974,52 +1974,7 @@ export default {
   opacity: 0.8;
 }
 
-/* 来源卡片：AI 回复里「标题 + 链接」独立行美化成卡片，不展示裸 URL，点击跳转。
-   连续卡片装进 flex 容器，从左到右排列、装不下自动换行 */
-.message-text ::v-deep .msg-source-cards {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  max-width: 100%;
-  margin: 3px 0;
-}
-
-.message-text ::v-deep a.msg-source-card {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  max-width: 100%;
-  margin: 0;
-  padding: 7px 12px;
-  border: 1px solid rgba(37, 99, 235, 0.28);
-  border-radius: 10px;
-  background: rgba(37, 99, 235, 0.05);
-  color: #2563eb;
-  font-weight: 500;
-  line-height: 1.4;
-  text-decoration: none;
-  cursor: pointer;
-  overflow-wrap: anywhere;
-  transition: background 0.15s ease-out, border-color 0.15s ease-out;
-}
-
-.message-text ::v-deep a.msg-source-card:hover {
-  background: rgba(37, 99, 235, 0.1);
-  border-color: rgba(37, 99, 235, 0.5);
-  text-decoration: none;
-}
-
-.message-text ::v-deep a.msg-source-card svg {
-  flex-shrink: 0;
-  width: 15px;
-  height: 15px;
-}
-
-.easy-agent-root[data-theme="dark"] .message-text ::v-deep a.msg-source-card {
-  background: rgba(96, 165, 250, 0.1);
-  border-color: rgba(96, 165, 250, 0.35);
-}
+/* 来源卡片样式在 styles/markdown.css（思考过程、用户气泡、侧边栏共用） */
 
 .message-text ::v-deep a.ke-cite {
   color: #2563eb;

@@ -55,7 +55,8 @@ export function normalizeMathDelimiters(content) {
 // ---------------------------------------------------------------------------
 
 const SOURCE_CARD_ICON =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+  // width/height 属性给出固有尺寸：所在容器没有卡片样式时也不会被撑成整块宽度的大图标
+  '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
   ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
   '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>' +
   '<polyline points="15 3 21 3 21 9"></polyline>' +
@@ -456,20 +457,28 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
  *
  * @param {string} content markdown 文本
  * @param {Object} renderer createMarkdownRenderer 创建的渲染器
+ * @param {{ sourceCards?: boolean }} [options] sourceCards=false 时不做来源卡片改写（文件/文档预览）
  * @returns {string} HTML 字符串
  * @example
  * renderMarkdown('**hi**', renderer)
+ * renderMarkdown(fileText, renderer, { sourceCards: false })
  */
-export function renderMarkdown(content, renderer) {
+export function renderMarkdown(content, renderer, options = {}) {
   if (!content) return ''
+  // sourceCards：AI 回复里「标题 + 链接」行美化成来源卡片（隐藏裸 URL）。只适用于对话；
+  // 文件 / 文档预览应如实渲染作者写的链接，传 { sourceCards: false }。
+  const sourceCards = options.sourceCards !== false
   try {
-    return marked.parse(beautifySourceLinks(normalizeMathDelimiters(content)), {
+    const math = normalizeMathDelimiters(content)
+    const html = marked.parse(sourceCards ? beautifySourceLinks(math) : math, {
       renderer,
       breaks: true,
       gfm: true,
       // 显式同步：KaTeX / emoji 扩展均为同步扩展，结果直接是 HTML 字符串
       async: false,
     })
+    // 任务列表项打上 class，样式据此去掉圆点（li:has(> input) 需要 Chrome 105+，内网浏览器不支持）
+    return html.replace(/<li><input /g, '<li class="task-list-item"><input ')
   } catch (e) {
     console.error('Markdown 渲染失败:', e)
     return escapeHtml(content)

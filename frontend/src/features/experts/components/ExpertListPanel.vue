@@ -592,7 +592,7 @@ function stripFrontmatter(md) {
 const detailMdHtml = computed(() => {
   const content = stripFrontmatter(detailMd.value.content)
   if (!content.trim()) return ''
-  return renderMarkdown(content, expertMdRenderer)
+  return renderMarkdown(content, expertMdRenderer, { sourceCards: false })
 })
 
 /** 「定义提示词」只对本人创建的专家有意义；公共预置专家由发行包提供，不展示该 tab */

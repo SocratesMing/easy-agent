@@ -172,7 +172,7 @@ export default {
         return '<p class="memory-empty">暂无记忆内容，点击右上角「编辑」添加</p>'
       }
       try {
-        return renderMarkdownHtml(raw, renderer)
+        return renderMarkdownHtml(raw, renderer, { sourceCards: false })
       } catch (e) {
         console.error('记忆 Markdown 渲染失败:', e)
         return `<pre>${this.escapeHtml(raw)}</pre>`
@@ -185,7 +185,7 @@ export default {
         return '<p class="memory-empty">暂无系统提示词</p>'
       }
       try {
-        return renderMarkdownHtml(raw, renderer)
+        return renderMarkdownHtml(raw, renderer, { sourceCards: false })
       } catch (e) {
         console.error('系统提示词 Markdown 渲染失败:', e)
         return `<pre>${this.escapeHtml(raw)}</pre>`

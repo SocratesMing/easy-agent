@@ -1743,7 +1743,7 @@ export default {
       } finally {
         this.untrackStream(streamController)
         // HITL: 若有审批待处理，保持 isStreaming=true（用户需先审批）；卸载后不收尾（见 streamLifecycle）
-        if (!this._chatDisposed && !this.pendingApproval) {
+        if (!this._chatDisposed && !this.pendingApprovalOf(streamSessionId)) {
           const sid = streamSessionId
           const isDisplayed = !sid || sid === this.loadedSessionId
           // 兜底：流已结束（列表"进行中"标记即将移除），若该会话的消息仍标记 loading

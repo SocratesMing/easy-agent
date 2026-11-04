@@ -8,6 +8,9 @@ import { createStreamChunkHandler as createChunkHandler } from '../services/chun
 import streamLifecycle from './streamLifecycle.js'
 import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
 
+// 会话级界面字段 → sessionStates 缓存字段，后台流事件期间换入（runInSession）；含 pendingApproval：多会话同时待审批时各自持有
+const SESSION_FIELDS = [['messages', 'messages'], ['sessionUsage', 'sessionUsage'], ['sessionDuration', 'sessionDuration'], ['iterationCount', 'iterationCount'], ['currentTodos', 'todos'], ['streamingAssistantId', 'streamingAssistantId'], ['pendingApproval', 'pendingApproval']]
+
 // MCP 工具结果解析：正常流与 HITL 恢复流共用（App.vue 经本模块引用）
 export { parseMCPResult }
 
@@ -345,7 +348,7 @@ export default {
         if (this.attachedStreamingSessions[sessionId] === mode) {
           delete this.attachedStreamingSessions[sessionId]
         }
-        if (!this._chatDisposed && (!displayed || !this.pendingApproval)) {
+        if (!this._chatDisposed && (!displayed || !this.pendingApprovalOf(sessionId))) {
           if (displayed) this.currentAbortController = null
           this.unmarkStreaming(sessionId)
           if (this.sessionStates[sessionId]) {
@@ -384,6 +387,8 @@ export default {
         sessionDuration: this.sessionDuration,
         iterationCount: this.iterationCount,
         abortController: this.currentAbortController,
+        streamingAssistantId: this.isSessionStreaming(this.loadedSessionId) ? this.streamingAssistantId : null,
+        pendingApproval: this.pendingApproval,
         todos: [...this.currentTodos]
       }
     },
@@ -397,6 +402,8 @@ export default {
         this.sessionDuration = state.sessionDuration || 0
         this.iterationCount = state.iterationCount || 0
         this.currentAbortController = state.abortController
+        this.streamingAssistantId = this.isSessionStreaming(sessionId) ? (state.streamingAssistantId || null) : null
+        this.pendingApproval = state.pendingApproval || null
         this.currentTodos = state.todos || []
         this.loadedSessionId = sessionId
         this.syncExpertChipFromMessages()
@@ -445,47 +452,36 @@ export default {
           abortController: null,
           todos: [],
           streamingAssistantId: null,
-          assistantMsgId: null,
+          pendingApproval: null,
         }
       }
       this.$set(this.sessionStates, sid, st)
       return st
     },
+    // 某会话的待审批（展示中读组件字段，后台读缓存）；流收尾按「流所属会话」判断，不能看当前展示的
+    pendingApprovalOf(sid) {
+      if (!sid || sid === this.loadedSessionId) return this.pendingApproval
+      return (this.sessionStates[sid] && this.sessionStates[sid].pendingApproval) || null
+    },
+    clearPendingApprovalOf(sid) {
+      if (!sid || sid === this.loadedSessionId) this.pendingApproval = null
+      else if (this.sessionStates[sid]) this.sessionStates[sid].pendingApproval = null
+    },
     runInSession(sid, ctx, fn) {
       if (!sid || sid === this.loadedSessionId) return fn() // 展示中：直接用组件数据
       const st = this.ensureSessionState(sid)
-      const saved = {
-        messages: this.messages,
-        usage: this.sessionUsage,
-        duration: this.sessionDuration,
-        iterations: this.iterationCount,
-        todos: this.currentTodos,
-        streamingAssistantId: this.streamingAssistantId,
-        assistantMsgId: ctx ? ctx.assistantMsgId : undefined,
-      }
-      this.messages = st.messages
-      this.sessionUsage = st.sessionUsage
-      this.sessionDuration = st.sessionDuration
-      this.iterationCount = st.iterationCount
-      this.currentTodos = st.todos
-      this.streamingAssistantId = st.streamingAssistantId
-      if (ctx) ctx.assistantMsgId = st.assistantMsgId
+      const saved = SESSION_FIELDS.map(([vmKey, stKey]) => {
+        const value = this[vmKey]
+        this[vmKey] = st[stKey]
+        return value
+      })
+      // 不用缓存覆盖 ctx.assistantMsgId：ctx 属于这条流，覆盖会让后台事件丢失（切回无实时过程）
       const restore = () => {
-        st.messages = this.messages
-        st.sessionUsage = this.sessionUsage
-        st.sessionDuration = this.sessionDuration
-        st.iterationCount = this.iterationCount
-        st.todos = this.currentTodos
-        st.streamingAssistantId = this.streamingAssistantId
-        if (ctx) st.assistantMsgId = ctx.assistantMsgId
+        SESSION_FIELDS.forEach(([vmKey, stKey], i) => {
+          st[stKey] = this[vmKey]
+          this[vmKey] = saved[i]
+        })
         this.$set(this.sessionStates, sid, st)
-        this.messages = saved.messages
-        this.sessionUsage = saved.usage
-        this.sessionDuration = saved.duration
-        this.iterationCount = saved.iterations
-        this.currentTodos = saved.todos
-        this.streamingAssistantId = saved.streamingAssistantId
-        if (ctx) ctx.assistantMsgId = saved.assistantMsgId
       }
       let result
       try {
@@ -554,8 +550,8 @@ export default {
     // 作为消息 id，保证恢复执行时记录使用一致的 message_id。监听 loadedSessionId 变化即可
     // 覆盖所有历史加载路径（初始加载、切换会话、欢迎流程后加载、删除会话回退等）。
     reconstructPendingApproval() {
-      // 流式进行中由 onApprovalRequired 管理审批状态，不重建以免覆盖
-      if (this.isStreaming) return
+      // 流式中（含停在审批）不从历史重建，但换成该会话自己的审批，不能残留上一个展示会话的
+      if (this.isStreaming) return void (this.pendingApproval = (this.sessionStates[this.loadedSessionId] || {}).pendingApproval || null)
       this.pendingApproval = null
       if (!this.messages || this.messages.length === 0) return
       const sid = this.currentSessionId || ''
@@ -954,7 +950,7 @@ export default {
       } finally {
         this.untrackStream(streamController)
         // HITL: 若有审批待处理，保持 isStreaming=true（用户需先审批）；卸载后不收尾（见 streamLifecycle）
-        if (!this._chatDisposed && !this.pendingApproval) {
+        if (!this._chatDisposed && !this.pendingApprovalOf(streamSessionId)) {
           const sid = streamSessionId
           const isDisplayed = !sid || sid === this.loadedSessionId
           // 兜底：流已结束（列表"进行中"标记即将移除），若该会话的消息仍标记 loading
@@ -1082,24 +1078,28 @@ export default {
       } catch (e) {
         if (e.name === 'AbortError') return
         console.error('恢复执行失败:', e)
-        const idx = this.messages.findIndex(m => m.id === assistantMsgId)
-        if (idx !== -1) {
+        // 恢复期间用户可能已切到别的会话：错误写回本会话（展示中或其缓存）
+        this.runInSession(sessionId, null, () => {
+          const idx = this.messages.findIndex(m => m.id === assistantMsgId)
+          if (idx === -1) return
           this.messages[idx].loading = false
           this.messages[idx].error = e.message || '恢复执行失败'
-          if (e.status === 409) {
-            this.messages[idx].pending_approval = null
-          }
+          if (e.status === 409) this.messages[idx].pending_approval = null
           setReactive(this.messages, idx, { ...this.messages[idx] })
-        }
+        })
       } finally {
         this.untrackStream(streamController)
         // 如果 resumeStream 期间收到了新的 approval_required（onChunk 重新设置了
-        // pendingApproval），则不清除，保持 isStreaming=true 等待用户审批
-        const hasNewApproval = this.pendingApproval && this.pendingApproval !== currentApproval
+        // 本会话的 pendingApproval），则不清除，保持 isStreaming=true 等待用户审批
+        const latestApproval = this.pendingApprovalOf(sessionId)
+        const hasNewApproval = latestApproval && latestApproval !== currentApproval
         if (!this._chatDisposed && !hasNewApproval) {
-          this.pendingApproval = null
-          this.currentAbortController = null
-          this.streamingAssistantId = null
+          // 只清本会话的审批；当前展示的若是另一个会话，它的审批与停止按钮保持不动
+          this.clearPendingApprovalOf(sessionId)
+          if (sessionId === this.loadedSessionId) {
+            this.currentAbortController = null
+            this.streamingAssistantId = null
+          }
           const sid = sessionId
           if (sid && this.sessionStates[sid]) {
             this.sessionStates[sid].isStreaming = false

@@ -134,7 +134,7 @@ const renderer = createMarkdownRenderer({
 })
 
 function settingsRenderMarkdown(content) {
-  return renderMarkdown(content, renderer)
+  return renderMarkdown(content, renderer, { sourceCards: false })
 }
 
 const emit = defineEmits(['close'])
