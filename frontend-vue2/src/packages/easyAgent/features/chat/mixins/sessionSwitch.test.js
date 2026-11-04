@@ -93,3 +93,60 @@ test('已结束的会话恢复时不带残留的 streamingAssistantId', () => {
   vm.restoreSessionState('A')
   assert.equal(vm.streamingAssistantId, null)
 })
+
+// 模拟一次 approval_required 事件：与 chunk handler 一样经 runInSession 路由到流所属会话
+function approvalArrives(vm, sid, threadId) {
+  vm.runInSession(sid, null, () => { vm.pendingApproval = { threadId, assistantMsgId: `p${sid}` } })
+}
+
+// 模拟左侧栏切换：保存当前 → 恢复目标 → loadedSessionId watcher 触发的 reconstructPendingApproval
+function switchTo(vm, sid) {
+  vm.saveCurrentSessionState()
+  vm.currentSessionId = sid
+  assert.ok(vm.restoreSessionState(sid))
+  vm.reconstructPendingApproval()
+}
+
+function twoSessionsWaitingForApproval() {
+  const vm = makeVm()
+  vm.sessionStates.A = { messages: [{ id: 'pA', role: 'assistant', blocks: [] }], sessionUsage: {}, todos: [] }
+  vm.sessionStates.B = { messages: [{ id: 'pB', role: 'assistant', blocks: [] }], sessionUsage: {}, todos: [] }
+  vm.markStreaming('A')
+  vm.markStreaming('B')
+  vm.currentSessionId = 'A'
+  vm.restoreSessionState('A')
+  return vm
+}
+
+test('两个会话同时停在审批：各自持有自己的审批，后到的不会覆盖先到的', () => {
+  const vm = twoSessionsWaitingForApproval()
+  approvalArrives(vm, 'A', 'A-1') // 展示中
+  approvalArrives(vm, 'B', 'B-1') // 后台
+  assert.equal(vm.pendingApproval.threadId, 'A-1')
+  assert.equal(vm.pendingApprovalOf('B').threadId, 'B-1')
+  switchTo(vm, 'B')
+  assert.equal(vm.pendingApproval.threadId, 'B-1')
+  switchTo(vm, 'A')
+  assert.equal(vm.pendingApproval.threadId, 'A-1')
+})
+
+test('批准 A 后切到 B：B 的批准按钮仍拿得到 B 的审批（此前为 null，点击无反应）', () => {
+  const vm = twoSessionsWaitingForApproval()
+  approvalArrives(vm, 'A', 'A-1')
+  approvalArrives(vm, 'B', 'B-1')
+  // 批准 A：恢复流结束只清 A 自己的
+  vm.clearPendingApprovalOf('A')
+  vm.unmarkStreaming('A')
+  switchTo(vm, 'B')
+  assert.deepEqual(vm.pendingApproval, { threadId: 'B-1', assistantMsgId: 'pB' })
+})
+
+test('A 的恢复流在后台结束时，不清掉当前展示的 B 的审批', () => {
+  const vm = twoSessionsWaitingForApproval()
+  approvalArrives(vm, 'A', 'A-1')
+  approvalArrives(vm, 'B', 'B-1')
+  switchTo(vm, 'B') // 用户批准 A 后立刻切到 B，A 的恢复流还在跑
+  vm.clearPendingApprovalOf('A')
+  assert.equal(vm.pendingApproval.threadId, 'B-1')
+  assert.equal(vm.pendingApprovalOf('A'), null)
+})
