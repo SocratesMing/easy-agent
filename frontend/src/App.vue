@@ -562,6 +562,7 @@ function saveCurrentSessionState() {
     sessionDuration: sessionDuration.value,
     iterationCount: iterationCount.value,
     abortController: currentAbortController.value,
+    streamingAssistantId: isSessionStreaming(loadedSessionId.value) ? streamingAssistantId.value : null,
     todos: [...currentTodos.value]
   }
 }
@@ -576,6 +577,7 @@ function restoreSessionState(sessionId) {
     sessionDuration.value = state.sessionDuration || 0
     iterationCount.value = state.iterationCount || 0
     currentAbortController.value = state.abortController
+    streamingAssistantId.value = isSessionStreaming(sessionId) ? (state.streamingAssistantId || null) : null
     currentTodos.value = state.todos || []
     loadedSessionId.value = sessionId
     syncExpertChipFromMessages()
@@ -676,7 +678,6 @@ function runInSession(sid, ctx, fn) {
     iterations: iterationCount.value,
     todos: currentTodos.value,
     streamingAssistantId: streamingAssistantId.value,
-    assistantMsgId: ctx ? ctx.assistantMsgId : undefined,
   }
   messages.value = st.messages || []
   sessionUsage.value = st.sessionUsage
@@ -684,7 +685,7 @@ function runInSession(sid, ctx, fn) {
   iterationCount.value = st.iterationCount
   currentTodos.value = st.todos
   streamingAssistantId.value = st.streamingAssistantId
-  if (ctx) ctx.assistantMsgId = st.assistantMsgId
+  // 不用缓存覆盖 ctx.assistantMsgId：ctx 属于这条流，覆盖会让后台事件丢失（切回无实时过程）
   const restore = () => {
     st.messages = messages.value
     st.sessionUsage = sessionUsage.value
@@ -692,7 +693,6 @@ function runInSession(sid, ctx, fn) {
     st.iterationCount = iterationCount.value
     st.todos = currentTodos.value
     st.streamingAssistantId = streamingAssistantId.value
-    if (ctx) st.assistantMsgId = ctx.assistantMsgId
     sessionStates.value = { ...sessionStates.value, [sid]: st }
     messages.value = saved.messages
     sessionUsage.value = saved.usage
@@ -700,7 +700,6 @@ function runInSession(sid, ctx, fn) {
     iterationCount.value = saved.iterations
     currentTodos.value = saved.todos
     streamingAssistantId.value = saved.streamingAssistantId
-    if (ctx) ctx.assistantMsgId = saved.assistantMsgId
   }
   let result
   try {
