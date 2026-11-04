@@ -1,0 +1,350 @@
+/**
+ * Markdown 渲染产物的样式（由 markdownSetup.js 引入，凡是渲染 markdown 的地方都会带上）。
+ *
+ * 为什么不写在组件的 scoped 样式里：
+ *   v-html 产物没有 scope id，只能靠 ::v-deep 穿透。`::v-deep .x` 写在选择器最前面（前面没有
+ *   scoped 父选择器）时，编译结果取决于宿主的 vue-loader / compiler-sfc 版本——外网编译成
+ *   `[data-v] .x` 正常生效，内网宿主的工具链下整组规则失效。这里用普通选择器、限定在
+ *   .easy-agent-root 内，与工具链版本无关。
+ */
+
+/* ── 来源卡片（AI 回复里「标题 + 链接」独立行，见 shared/markdown/index.js beautifySourceLinks）──
+   对话正文、思考过程、用户气泡、侧边栏都会出现，统一在这里定义。
+   [href] 把优先级抬到 0,3,1，压过各组件 `.xxx[data-v] a { … }` 的普通链接样式。 */
+.easy-agent-root .msg-source-cards {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  margin: 3px 0;
+}
+
+.easy-agent-root a.msg-source-card[href] {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  margin: 0;
+  padding: 7px 12px;
+  border: 1px solid rgba(37, 99, 235, 0.28);
+  border-radius: 10px;
+  background: rgba(37, 99, 235, 0.05);
+  color: #2563eb;
+  font-weight: 500;
+  line-height: 1.4;
+  text-decoration: none;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  transition: background 0.15s ease-out, border-color 0.15s ease-out;
+}
+
+.easy-agent-root a.msg-source-card[href]:hover {
+  background: rgba(37, 99, 235, 0.1);
+  border-color: rgba(37, 99, 235, 0.5);
+  text-decoration: none;
+}
+
+.easy-agent-root a.msg-source-card[href] svg {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+}
+
+.easy-agent-root[data-theme="dark"] a.msg-source-card[href] {
+  background: rgba(96, 165, 250, 0.1);
+  border-color: rgba(96, 165, 250, 0.35);
+}
+
+/* ── 文件预览里的 Markdown 文档（FilePreview.vue 的 .preview-markdown > .markdown-body）── */
+.easy-agent-root .preview-markdown .markdown-body {
+  max-width: 900px;
+  margin: 0 auto;
+  color: #24292f;
+  line-height: 1.6;
+  overflow-wrap: break-word;
+}
+
+.easy-agent-root .preview-markdown .markdown-body h1,
+.easy-agent-root .preview-markdown .markdown-body h2,
+.easy-agent-root .preview-markdown .markdown-body h3,
+.easy-agent-root .preview-markdown .markdown-body h4,
+.easy-agent-root .preview-markdown .markdown-body h5,
+.easy-agent-root .preview-markdown .markdown-body h6 {
+  margin-top: 24px;
+  margin-bottom: 16px;
+  font-weight: 600;
+  line-height: 1.25;
+  border-bottom: 1px solid #e5e7eb;
+  padding-bottom: 8px;
+}
+
+.easy-agent-root .preview-markdown .markdown-body > :first-child { margin-top: 0; }
+.easy-agent-root .preview-markdown .markdown-body h1 { font-size: 2em; }
+.easy-agent-root .preview-markdown .markdown-body h2 { font-size: 1.5em; }
+.easy-agent-root .preview-markdown .markdown-body h3 { font-size: 1.25em; }
+.easy-agent-root .preview-markdown .markdown-body h4 { font-size: 1em; }
+.easy-agent-root .preview-markdown .markdown-body h5 { font-size: 0.875em; border-bottom: none; }
+.easy-agent-root .preview-markdown .markdown-body h6 { font-size: 0.85em; color: #57606a; border-bottom: none; }
+
+.easy-agent-root .preview-markdown .markdown-body p {
+  margin-bottom: 16px;
+}
+
+.easy-agent-root .preview-markdown .markdown-body strong { font-weight: 600; }
+.easy-agent-root .preview-markdown .markdown-body em { font-style: italic; }
+.easy-agent-root .preview-markdown .markdown-body del { text-decoration: line-through; }
+
+.easy-agent-root .preview-markdown .markdown-body mark {
+  padding: 0 2px;
+  background: #fff8c5;
+  color: inherit;
+  border-radius: 2px;
+}
+
+.easy-agent-root .preview-markdown .markdown-body kbd {
+  display: inline-block;
+  padding: 2px 5px;
+  font: 11px 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  line-height: 1.2;
+  color: #24292f;
+  background: #f6f8fa;
+  border: 1px solid #d0d7de;
+  border-bottom-color: #afb8c1;
+  border-radius: 6px;
+  box-shadow: inset 0 -1px 0 #afb8c1;
+  vertical-align: middle;
+}
+
+.easy-agent-root .preview-markdown .markdown-body sub,
+.easy-agent-root .preview-markdown .markdown-body sup {
+  font-size: 75%;
+  line-height: 0;
+  position: relative;
+}
+.easy-agent-root .preview-markdown .markdown-body sup { top: -0.5em; vertical-align: baseline; }
+.easy-agent-root .preview-markdown .markdown-body sub { bottom: -0.25em; vertical-align: baseline; }
+
+/* 代码：亮黑底 + github-dark 的 token 配色 */
+.easy-agent-root .preview-markdown .markdown-body :not(pre) > code {
+  padding: 0.2em 0.4em;
+  margin: 0;
+  font-size: 85%;
+  background-color: rgba(13, 17, 23, 0.06);
+  border-radius: 6px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+}
+
+/* 代码块：与聊天区一致的语言标签 + 复制按钮（亮黑配色） */
+.easy-agent-root .preview-markdown .markdown-body .code-block-wrapper {
+  margin: 16px 0;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.easy-agent-root .preview-markdown .markdown-body .code-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #161b22;
+  padding: 8px 12px;
+}
+
+.easy-agent-root .preview-markdown .markdown-body .code-lang {
+  font-size: 12px;
+  color: #8b949e;
+  font-weight: 500;
+}
+
+.easy-agent-root .preview-markdown .markdown-body .code-copy-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #8b949e;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.easy-agent-root .preview-markdown .markdown-body .code-copy-btn:hover {
+  background: #30363d;
+  border-color: #484f58;
+  color: #c9d1d9;
+}
+
+.easy-agent-root .preview-markdown .markdown-body .code-copy-btn.copied {
+  color: #4ade80;
+}
+
+.easy-agent-root .preview-markdown .markdown-body .code-copy-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* wrapper 内的 pre 交给 wrapper 统一裁切圆角与边框 */
+.easy-agent-root .preview-markdown .markdown-body .code-block-wrapper pre {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background-color: #0d1117;
+}
+
+.easy-agent-root .preview-markdown .markdown-body pre {
+  padding: 16px;
+  overflow: auto;
+  font-size: 85%;
+  line-height: 1.45;
+  background-color: #0d1117;
+  color: #c9d1d9;
+  border-radius: 6px;
+  margin-bottom: 16px;
+  border: 1px solid #21262d;
+}
+
+.easy-agent-root .preview-markdown .markdown-body pre code {
+  padding: 0;
+  margin: 0;
+  background-color: transparent;
+  color: #c9d1d9;
+  border-radius: 0;
+  white-space: pre;
+  display: block;
+}
+
+/* 列表：模块基础样式把 ul/ol 的 list-style 重置成了 none，这里恢复圆点 / 序号 */
+.easy-agent-root .preview-markdown .markdown-body ul,
+.easy-agent-root .preview-markdown .markdown-body ol {
+  padding-left: 2em;
+  margin-bottom: 16px;
+}
+.easy-agent-root .preview-markdown .markdown-body ul { list-style: disc; }
+.easy-agent-root .preview-markdown .markdown-body ol { list-style: decimal; }
+.easy-agent-root .preview-markdown .markdown-body ul ul { list-style: circle; }
+.easy-agent-root .preview-markdown .markdown-body ul ul ul { list-style: square; }
+.easy-agent-root .preview-markdown .markdown-body li ul,
+.easy-agent-root .preview-markdown .markdown-body li ol { margin: 4px 0 0; }
+
+.easy-agent-root .preview-markdown .markdown-body li {
+  margin-bottom: 4px;
+}
+
+/* 任务列表：- [x] / - [ ] 渲染成禁用的复选框（class 由 renderMarkdown 添加），去掉圆点避免「圆点 + 方框」 */
+.easy-agent-root .preview-markdown .markdown-body li.task-list-item {
+  list-style: none;
+}
+.easy-agent-root .preview-markdown .markdown-body li.task-list-item > input[type="checkbox"] {
+  margin: 0 0.4em 0.2em -1.4em;
+  vertical-align: middle;
+  -webkit-appearance: checkbox;
+  appearance: checkbox;
+}
+
+.easy-agent-root .preview-markdown .markdown-body blockquote {
+  padding: 0 1em;
+  color: #6a737d;
+  border-left: 0.25em solid #d0d7de;
+  margin: 0 0 16px 0;
+}
+.easy-agent-root .preview-markdown .markdown-body blockquote blockquote { margin: 8px 0; }
+
+.easy-agent-root .preview-markdown .markdown-body hr {
+  height: 2px;
+  margin: 24px 0;
+  padding: 0;
+  border: 0;
+  background-color: #d0d7de;
+}
+
+/* 图片：不超出预览宽度（否则大图把整页撑出横向滚动条） */
+.easy-agent-root .preview-markdown .markdown-body img {
+  display: inline-block;
+  max-width: 100%;
+  height: auto;
+  vertical-align: middle;
+}
+
+.easy-agent-root .preview-markdown .markdown-body table {
+  display: table;
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 16px;
+  border-spacing: 0;
+}
+
+.easy-agent-root .preview-markdown .markdown-body thead {
+  display: table-header-group;
+  vertical-align: middle;
+  border-color: inherit;
+}
+
+.easy-agent-root .preview-markdown .markdown-body tbody {
+  display: table-row-group;
+  vertical-align: middle;
+  border-color: inherit;
+}
+
+.easy-agent-root .preview-markdown .markdown-body tr {
+  display: table-row;
+  vertical-align: inherit;
+  border-color: inherit;
+}
+
+.easy-agent-root .preview-markdown .markdown-body tr:nth-child(2n) {
+  background-color: #f6f8fa;
+}
+
+.easy-agent-root .preview-markdown .markdown-body table th,
+.easy-agent-root .preview-markdown .markdown-body table td {
+  padding: 6px 13px;
+  border: 1px solid #d0d7de;
+  display: table-cell;
+  vertical-align: middle;
+}
+
+.easy-agent-root .preview-markdown .markdown-body table th {
+  font-weight: 600;
+  background-color: #f6f8fa;
+}
+
+.easy-agent-root .preview-markdown .markdown-body table td {
+  color: #24292f;
+}
+
+.easy-agent-root .preview-markdown .markdown-body details {
+  margin-bottom: 16px;
+}
+.easy-agent-root .preview-markdown .markdown-body summary {
+  display: list-item;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+/* 链接：长 URL 允许断行，不把页面撑宽 */
+.easy-agent-root .preview-markdown .markdown-body a {
+  color: #0366d6;
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.easy-agent-root .preview-markdown .markdown-body a:hover {
+  text-decoration: underline;
+}
+
+.easy-agent-root .preview-markdown .markdown-body .github-emoji {
+  display: inline;
+  vertical-align: -0.125em;
+  font-size: 1.1em;
+  line-height: 1;
+}
+
+.easy-agent-root .preview-markdown .markdown-body .katex-display {
+  margin: 12px 0;
+  padding: 4px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
