@@ -52,11 +52,7 @@ from easy_agent.agent.subagents import DEFAULT_SUBAGENTS, apply_skill_gated_tool
 from easy_agent.agent.summarization import build_summarization_middleware
 from easy_agent.agent.memory import SessionMemoryMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
-from easy_agent.tools.registry import (
-    WEB_SEARCH_OFF_PROMPT_NOTE,
-    require_tool_spec,
-    skill_gated_tool_names,
-)
+from easy_agent.tools.registry import require_tool_spec, skill_gated_tool_names
 from easy_agent.agent import builtin_skills
 from easy_agent.agent.skills import declared_include_tools, skill_tool_resolver
 from easy_agent.utils.mcp_content import parse_mcp_content
@@ -315,14 +311,9 @@ class EasyAgent(AgentWorkspaceMixin):
         assembled = assemble_system_prompt(
             base_prompt=system_prompt,
             user_info=self._build_user_info(),
-            # 开启：引导模型用 web_search 工具；关闭/未配置：注入联网纪律——
-            # 禁止规划联网步骤、禁止借 execute/shell 的 curl/urllib 等联网取数，
-            # 需要外部数据时引导用户点地球开启。EasyAgent 收到的 enable_web_search
-            # 已是「web_search 工具实际注入与否」的解析值（manager._resolve_web_search_tool），
-            # 因此「请求开启但未配置 key」同样落入关闭分支（不再出现有提示词没工具的撒谎态）。
             web_search_prompt=WEB_SEARCH_SYSTEM_PROMPT
             if self.enable_web_search
-            else WEB_SEARCH_OFF_PROMPT_NOTE,
+            else "",
             extra=system_prompt_extra,
             hitl_note=HITL_SYSTEM_NOTE if self.enable_hitl else "",
         )
@@ -336,7 +327,7 @@ class EasyAgent(AgentWorkspaceMixin):
             f"[{self.sid}] 🧾 系统提示词已组装 | 终稿={len(assembled)} 字符 | "
             f"指纹={prompt_fingerprint(assembled)} | "
             f"基础={len(system_prompt.strip())} 字符 | "
-            f"联网搜索附加={len((WEB_SEARCH_SYSTEM_PROMPT if self.enable_web_search else WEB_SEARCH_OFF_PROMPT_NOTE).strip())} 字符({'开启' if self.enable_web_search else '关闭纪律'}) | "
+            f"联网搜索附加={len(WEB_SEARCH_SYSTEM_PROMPT.strip()) if self.enable_web_search else 0} 字符 | "
             f"动态附加={len(system_prompt_extra.strip())} 字符"
         )
         if system_prompt_extra.strip():
