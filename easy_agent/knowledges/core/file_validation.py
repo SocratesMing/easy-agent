@@ -30,28 +30,50 @@ _OFFICE_MEMBER = {
     "xlsx": "xl/workbook.xml",
     "pptx": "ppt/presentation.xml",
 }
-_DECLARED_MIME = {
-    "pdf": {"application/pdf"},
-    "doc": {"application/msword"},
-    "docx": {
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/zip",
-    },
-    "xls": {"application/vnd.ms-excel"},
-    "xlsx": {
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.ms-excel",
-        "application/zip",
-    },
-    "ppt": {"application/vnd.ms-powerpoint"},
-    "pptx": {
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        "application/zip",
-    },
-    "txt": {"text/plain"},
-    "md": {"text/plain", "text/markdown"},
-    "csv": {"text/plain", "text/csv", "application/vnd.ms-excel"},
+# 浏览器/Windows 的 MIME 映射并不总与扩展名严格对应：WPS、旧版 Office
+# 或企业镜像可能把 .pptx 报成 application/vnd.ms-powerpoint，反之亦然。
+# Office 类型按「同族新旧 MIME + zip 容器」宽松接受，真正的一致性由扩展名
+# 与可选的魔数校验保证。
+_CANONICAL_MIME = {
+    "pdf": "application/pdf",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xls": "application/vnd.ms-excel",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "ppt": "application/vnd.ms-powerpoint",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
+_ZIP_MIME = frozenset({"application/zip", "application/x-zip-compressed"})
+_POWERPOINT_ALIASES = frozenset(
+    {"application/mspowerpoint", "application/x-mspowerpoint"}
+)
+
+
+def _office_mime_set(*extensions: str) -> frozenset[str]:
+    """同一 Office 族的扩展名（如 doc/docx）共享彼此 MIME 与 zip 容器。"""
+
+    return frozenset(_CANONICAL_MIME[ext] for ext in extensions) | _ZIP_MIME
+
+
+_DECLARED_MIME = {
+    "pdf": frozenset({_CANONICAL_MIME["pdf"]}),
+    "doc": _office_mime_set("doc", "docx"),
+    "docx": _office_mime_set("doc", "docx"),
+    "xls": _office_mime_set("xls", "xlsx"),
+    "xlsx": _office_mime_set("xls", "xlsx"),
+    "ppt": _office_mime_set("ppt", "pptx") | _POWERPOINT_ALIASES,
+    "pptx": _office_mime_set("ppt", "pptx") | _POWERPOINT_ALIASES,
+    "txt": frozenset({"text/plain"}),
+    "md": frozenset({"text/plain", "text/markdown"}),
+    "csv": frozenset({"text/plain", "text/csv", "application/vnd.ms-excel"}),
+}
+
+
+def canonical_content_type(filename: str, content_type: str) -> str:
+    """按文件扩展名归一化已知 Office / PDF 的 MIME；其它类型保持原值。"""
+
+    extension = Path(filename).suffix.lower().lstrip(".")
+    return _CANONICAL_MIME.get(extension, content_type or "application/octet-stream")
 
 
 def _read_prefix(source: BinaryIO, length: int = 8192) -> bytes:
@@ -211,4 +233,4 @@ def validate_upload(
     _scan_for_virus(source, config)
 
 
-__all__ = ["UploadValidationError", "validate_upload"]
+__all__ = ["UploadValidationError", "canonical_content_type", "validate_upload"]

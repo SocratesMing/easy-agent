@@ -1,3 +1,21 @@
+// RAGFlow 当前不支持 PowerPoint 解析，上传前先在前端过滤，避免每次都收到上游错误
+export const UNSUPPORTED_KNOWLEDGE_UPLOAD_MESSAGE = '暂不支持 PPT/PPTX 格式上传，请转换为 PDF 或 DOCX 后再上传'
+
+function isUnsupportedKnowledgeUpload(fileName) {
+  const extension = String(fileName || '').split('.').pop().toLowerCase()
+  return extension === 'ppt' || extension === 'pptx'
+}
+
+export function splitUnsupportedUploads(items) {
+  const supported = []
+  let skipped = 0
+  for (const item of items) {
+    if (isUnsupportedKnowledgeUpload(item?.file?.name)) skipped += 1
+    else supported.push(item)
+  }
+  return { supported, skipped }
+}
+
 export function createOptimisticUploadDocument(file, item, now = new Date()) {
   const timestamp = now instanceof Date ? now.toISOString() : String(now)
   return {

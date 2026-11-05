@@ -31,7 +31,11 @@ from easy_agent.knowledges.core.config import (
     UPSTREAM_DOCUMENT_STATUS_MAPPING,
     UploadSecurityConfig,
 )
-from easy_agent.knowledges.core.file_validation import UploadValidationError, validate_upload
+from easy_agent.knowledges.core.file_validation import (
+    UploadValidationError,
+    canonical_content_type,
+    validate_upload,
+)
 from easy_agent.knowledges.core.models import (
     AllowedAction,
     DocumentListResponse,
@@ -89,6 +93,15 @@ logger = logging.getLogger(__name__)
 
 # 证据最低得分阈值：低于该分的 chunk 不进证据列表，作为本地兜底过滤
 MINIMUM_EVIDENCE_SCORE = 0.4
+
+# 远端删除按批次调用，避免单次请求携带过多 document_id
+REMOTE_DELETE_BATCH = 100
+
+# RAGFlow 暂不支持 PowerPoint 解析；即使管理员误把扩展名加回白名单也给出可操作提示
+UNSUPPORTED_PRESENTATION_EXTENSIONS = frozenset({"ppt", "pptx"})
+UNSUPPORTED_PRESENTATION_MESSAGE = (
+    "暂不支持 PPT/PPTX 格式上传，请转换为 PDF 或 DOCX 后再上传"
+)
 
 # 数据集创建与解析策略固定参数（扁平配置不承载，代码内固定）
 DATASET_PERMISSION = "me"
@@ -1135,8 +1148,8 @@ class KnowledgeService:
             return
         # 仅在有远端文档时解析数据集，避免删除空库时触发共享数据集创建
         dataset_id = await self._dataset_id_for(base)
-        for start in range(0, len(pending), 100):
-            chunk = pending[start : start + 100]
+        for start in range(0, len(pending), REMOTE_DELETE_BATCH):
+            chunk = pending[start : start + REMOTE_DELETE_BATCH]
             await self._delete_remote_documents(
                 dataset_id, [remote_id for _, remote_id in chunk]
             )
@@ -1390,26 +1403,64 @@ class KnowledgeService:
         assert row is not None
         return self._folder_summary(row, role)
 
+    @staticmethod
+    def _folder_subtree_ids(
+        folders: Iterable[Mapping[str, Any]], root_id: str
+    ) -> list[str]:
+        """返回 root 文件夹及其全部后代文件夹 ID。"""
+        children: dict[str, list[str]] = {}
+        for row in folders:
+            parent_id = row.get("parent_id")
+            if parent_id:
+                children.setdefault(str(parent_id), []).append(str(row["id"]))
+        ids: list[str] = []
+        stack = [root_id]
+        while stack:
+            current = stack.pop()
+            ids.append(current)
+            stack.extend(children.get(current, []))
+        return ids
+
     async def delete_folder(
         self, *, folder_id: str, principal: KnowledgePrincipal
     ) -> None:
-        """删除空文件夹；非空文件夹拒绝删除。"""
+        """删除文件夹及其全部内容（含子文件夹与文档）。
+
+        先同步删除子树内文档的远端（Ragflow）副本，再在同一事务内软删除本地
+        文档并硬删除文件夹；远端删除失败时保持本地原状，用户可重试。
+        """
 
         folder = await self._repo(self.repository.get_folder, folder_id)
         if folder is None:
             raise KnowledgeServiceError(
                 "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
             )
-        await self._authorized_base(
-            str(folder["base_id"]), principal, AllowedAction.DELETE_FOLDER
+        base_id = str(folder["base_id"])
+        base, _role = await self._authorized_base(
+            base_id, principal, AllowedAction.DELETE_FOLDER
         )
-        deleted = await self._repo(self.repository.delete_empty_folder, folder_id)
-        if not deleted:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_FOLDER_NOT_EMPTY",
-                "文件夹非空，无法删除",
-                status_code=409,
-            )
+        folders = await self._repo(self.repository.list_folders, base_id)
+        folder_ids = self._folder_subtree_ids(folders, folder_id)
+        documents = await self._repo(
+            self.repository.list_documents_in_folders, base_id, folder_ids
+        )
+        remote_ids = [
+            remote_id
+            for document in documents
+            if (remote_id := str(document.get("remote_document_id") or "").strip())
+        ]
+        if remote_ids:
+            dataset_id = await self._dataset_id_for(base)
+            for start in range(0, len(remote_ids), REMOTE_DELETE_BATCH):
+                await self._delete_remote_documents(
+                    dataset_id, remote_ids[start : start + REMOTE_DELETE_BATCH]
+                )
+        await self._repo(
+            self.repository.delete_folder_tree,
+            folder_ids=folder_ids,
+            deleted_at=datetime.now(UTC).isoformat(),
+            deleted_by=principal.user_id,
+        )
 
     # ---------------- 权限 ----------------
 
@@ -1814,8 +1865,15 @@ class KnowledgeService:
         只读取本地投影，不等待上游全量刷新：解析状态由后台
         ``KnowledgeParsePollWorker`` 按文档逐个拉取并即时落库。这样同一批
         上传的文档不会因为某个慢任务而卡住整页状态更新。
+
+        关键字搜索与状态筛选始终覆盖整个知识库：传了 ``query`` 或 ``status``
+        时忽略 ``folder_id`` / ``direct_only``，避免结果被当前目录层级限制。
         """
 
+        query = (query or "").strip() or None
+        if query or status:
+            folder_id = None
+            direct_only = False
         _, role = await self._authorized_base(base_id, principal)
         rows = await self._repo(
             self.repository.list_documents,
@@ -2009,6 +2067,12 @@ class KnowledgeService:
                 "KNOWLEDGE_INVALID_FILENAME", "文件名无效或过长", status_code=422
             )
         extension = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
+        if extension in UNSUPPORTED_PRESENTATION_EXTENSIONS:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_FILE_TYPE_NOT_ALLOWED",
+                UNSUPPORTED_PRESENTATION_MESSAGE,
+                status_code=422,
+            )
         if extension not in {
             value.lower() for value in self.config.limits.allowed_extensions
         }:
@@ -2033,13 +2097,16 @@ class KnowledgeService:
                 status_code=503 if exc.retryable else 422,
                 retryable=exc.retryable,
             ) from exc
+        # 浏览器可能按宿主注册表报出旧版/新版 Office MIME；落库与上游统一用
+        # 扩展名对应的标准 MIME，避免 RAGFlow 按声明类型拒收。
+        content_type = canonical_content_type(safe_name, content_type)
 
         document = await self._repo(
             self.repository.create_document,
             base_id=base_id,
             folder_id=folder_id,
             name=safe_name,
-            content_type=content_type or "application/octet-stream",
+            content_type=content_type,
             size_bytes=size_bytes,
             created_by=principal.user_id,
             status=DocumentStatus.PENDING.value,
@@ -2070,7 +2137,7 @@ class KnowledgeService:
             provider=self.original_store.provider,
             storage_key=storage_key,
             original_name=safe_name,
-            content_type=content_type or "application/octet-stream",
+            content_type=content_type,
             size_bytes=size_bytes,
             created_by=principal.user_id,
         )

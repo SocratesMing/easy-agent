@@ -245,8 +245,6 @@ knowledge:
       - xls
       - xlsx
       - csv
-      - ppt
-      - pptx
     max_documents_per_query: 500
     # 解析绝对超时（秒）：0 = 不限制；计时从真正开始解析算起，不含上游排队
     parse_timeout_seconds: ${KNOWLEDGE_PARSE_TIMEOUT_SECONDS:-0}

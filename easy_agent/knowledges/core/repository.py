@@ -460,20 +460,43 @@ class KnowledgeRepository:
             )
         return self.get_folder(folder_id)
 
-    def delete_empty_folder(self, folder_id: str) -> bool:
-        """仅删除既无文档也无子文件夹的空目录。"""
+    def delete_folder_tree(
+        self, *, folder_ids: Iterable[str], deleted_at: str, deleted_by: str
+    ) -> int:
+        """删除文件夹子树，并软删除其中的文档。
+
+        远端副本由服务层在调用前同步删除；本方法在同一事务内软删除子树中
+        未删除的文档、清理全部文档的目录引用，再硬删除文件夹行。返回删除的
+        文件夹数量。
+        """
+        ids = list(dict.fromkeys(str(folder_id) for folder_id in folder_ids))
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        timestamp = _now()
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
-            if self._count(
-                "SELECT COUNT(*) AS count FROM knowledge_documents WHERE folder_id=?", (folder_id,)
-            ):
-                return False
-            if self._count(
-                "SELECT COUNT(*) AS count FROM knowledge_folders WHERE parent_id=?", (folder_id,)
-            ):
-                return False
-            self.db._execute(cursor, "DELETE FROM knowledge_folders WHERE id=?", (folder_id,))
-            return cursor.rowcount > 0
+            self.db._execute(
+                cursor,
+                "UPDATE knowledge_documents SET status='deleted', deleted_at=?, "
+                "deleted_by=?, remote_document_id=NULL, progress=NULL, "
+                "folder_id=NULL, updated_at=? "
+                f"WHERE folder_id IN ({placeholders}) AND status!='deleted'",
+                (deleted_at, deleted_by, timestamp, *ids),
+            )
+            # 子文件夹里可能还有更早软删除的文档，一并清掉目录引用，避免悬空 folder_id
+            self.db._execute(
+                cursor,
+                "UPDATE knowledge_documents SET folder_id=NULL, updated_at=? "
+                f"WHERE folder_id IN ({placeholders})",
+                (timestamp, *ids),
+            )
+            self.db._execute(
+                cursor,
+                f"DELETE FROM knowledge_folders WHERE id IN ({placeholders})",
+                tuple(ids),
+            )
+            return int(cursor.rowcount or 0)
 
     # ---------------- 文档 ----------------
 
@@ -592,6 +615,19 @@ class KnowledgeRepository:
         return self._select_documents_where(
             f"{where} ORDER BY d.updated_at DESC LIMIT ? OFFSET ?",
             (*parameters, limit, offset),
+        )
+
+    def list_documents_in_folders(
+        self, base_id: str, folder_ids: Iterable[str]
+    ) -> list[dict[str, Any]]:
+        """返回指定文件夹子树内未删除的文档（供整棵目录删除时清理远端副本）。"""
+        ids = list(dict.fromkeys(str(folder_id) for folder_id in folder_ids))
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        return self._select_documents_where(
+            f"d.base_id=? AND d.folder_id IN ({placeholders}) AND d.status!='deleted'",
+            (base_id, *ids),
         )
 
     def count_documents_filtered(

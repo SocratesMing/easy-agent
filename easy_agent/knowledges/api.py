@@ -531,7 +531,7 @@ async def delete_folder(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> Response:
-    """删除文件夹（仅允许删除空文件夹）。"""
+    """删除文件夹及其全部内容（含子文件夹与文档）。"""
 
     await _call(service.delete_folder, folder_id=folder_id, principal=principal)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -553,7 +553,7 @@ async def list_documents(
     q: str | None = Query(default=None, max_length=200),
     direct_only: bool = Query(default=False),
 ) -> DocumentListResponse:
-    """分页列出知识库文档，支持状态过滤与关键字搜索。"""
+    """分页列出知识库文档，支持状态过滤与关键字搜索（搜索覆盖整个知识库）。"""
 
     return await _call(
         service.list_documents,
@@ -640,6 +640,7 @@ async def upload_document(
     """上传单个文档：先落盘原文再提交上游解析，返回 202 受理。"""
 
     filename = file.filename or "<未命名>"
+    declared_type = file.content_type or "application/octet-stream"
     try:
         size_bytes = await run_in_threadpool(_upload_size, file)
         if size_bytes > service.config.limits.max_request_size_mb * 1024 * 1024:
@@ -667,8 +668,9 @@ async def upload_document(
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {}
         logger.warning(
-            "[知识库] 文档上传失败 | 文件=%s | 知识库=%s | 用户=%s | %s | %s",
+            "[知识库] 文档上传失败 | 文件=%s | 类型=%s | 知识库=%s | 用户=%s | %s | %s",
             filename,
+            declared_type,
             base_id,
             principal.username,
             detail.get("code") or f"HTTP_{exc.status_code}",
@@ -676,8 +678,9 @@ async def upload_document(
         )
         raise
     logger.info(
-        "[知识库] 文档上传成功 | 文件=%s | 知识库=%s | 用户=%s | 文档ID=%s | 大小=%dKB",
+        "[知识库] 文档上传成功 | 文件=%s | 类型=%s | 知识库=%s | 用户=%s | 文档ID=%s | 大小=%dKB",
         filename,
+        declared_type,
         base_id,
         principal.username,
         accepted.document.id,

@@ -7,7 +7,24 @@ import {
   markOptimisticUploadStarted,
   mergeServerDocumentsWithOptimistic,
   optimisticUploadStatusText,
+  splitUnsupportedUploads,
+  UNSUPPORTED_KNOWLEDGE_UPLOAD_MESSAGE,
 } from './uploadPresentation.js'
+
+test('filters PPT/PPTX uploads with an actionable message', () => {
+  const items = [
+    { file: { name: 'deck.pptx' } },
+    { file: { name: 'legacy.PPT' } },
+    { file: { name: 'report.pdf' } },
+  ]
+
+  const { supported, skipped } = splitUnsupportedUploads(items)
+
+  assert.equal(skipped, 2)
+  assert.deepEqual(supported.map(item => item.file.name), ['report.pdf'])
+  assert.match(UNSUPPORTED_KNOWLEDGE_UPLOAD_MESSAGE, /PDF/)
+  assert.match(UNSUPPORTED_KNOWLEDGE_UPLOAD_MESSAGE, /PPTX/)
+})
 
 test('shows a selected upload immediately in the target folder', () => {
   const item = {

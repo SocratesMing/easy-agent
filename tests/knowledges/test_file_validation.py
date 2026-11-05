@@ -8,8 +8,14 @@ import pytest
 from easy_agent.knowledges.core.config import UploadSecurityConfig
 from easy_agent.knowledges.core.file_validation import (
     UploadValidationError,
+    canonical_content_type,
     validate_upload,
 )
+
+_PPTX_MIME = (
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+)
+_PPT_MIME = "application/vnd.ms-powerpoint"
 
 
 def _validate(
@@ -79,3 +85,23 @@ def test_binary_office_file_is_not_encoding_checked():
         filename="a.xlsx",
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type"),
+    [
+        # WPS / 旧版 Office / 企业镜像可能把 .pptx 报成旧 MIME 或 zip
+        ("a.pptx", _PPT_MIME),
+        ("a.pptx", "application/x-zip-compressed"),
+        ("a.ppt", _PPTX_MIME),
+    ],
+)
+def test_office_mime_variants_from_browser_are_accepted(filename, content_type):
+    _validate(b"PK\x03\x04probe", filename=filename, content_type=content_type)
+
+
+def test_canonical_content_type_normalizes_known_extensions():
+    assert canonical_content_type("a.pptx", _PPT_MIME) == _PPTX_MIME
+    assert canonical_content_type("a.ppt", _PPTX_MIME) == _PPT_MIME
+    assert canonical_content_type("a.txt", "text/custom") == "text/custom"
+    assert canonical_content_type("a.bin", "") == "application/octet-stream"
