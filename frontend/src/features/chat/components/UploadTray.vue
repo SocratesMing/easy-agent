@@ -120,8 +120,12 @@ onBeforeUnmount(() => { Object.values(errorHideTimers).forEach((timer) => clearT
 
 .uploaded-files-list {
   width: 100%;
-  display: flex;
-  flex-wrap: wrap;
+  /* 网格布局：列宽由整个网格统一决定、跨行一致，换行后的文件块与上一行逐列对齐。
+     之前用 flex 换行时，剩余空间按「本行文件数」独立分配（flex-grow 逐行拉伸），
+     最后一行文件数不满时卡片会被拉宽，行与行对不齐。
+     一行放几个由 220px 起步宽自动算（与改动前 flex 的分列规则一致）。 */
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px;
 }
 
@@ -135,8 +139,7 @@ onBeforeUnmount(() => { Object.values(errorHideTimers).forEach((timer) => clearT
   /* 右侧 26px 预留给卡片内右上角的 × 按钮，防止文件名顶到 × 下面 */
   padding: 6px 26px 6px 10px;
   border-radius: 12px;
-  /* 自适应等分：一行最多放 3 个（220px 起步、300px 封顶），宽度随容器伸缩 */
-  flex: 1 1 220px;
+  /* 宽度交给网格列统一分配（跨行一致）；不再用 flex 逐行伸缩 */
   max-width: 300px;
   min-width: 0;
   box-sizing: border-box;
