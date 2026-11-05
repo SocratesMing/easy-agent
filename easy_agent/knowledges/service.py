@@ -2935,8 +2935,12 @@ class KnowledgeService:
         *,
         session_id: str,
         principal: KnowledgePrincipal,
+        include_metadata: bool = False,
     ) -> list[dict[str, Any]]:
-        """返回所选知识库的安全文档清单（供聊天模型回答范围类问题）。"""
+        """返回所选知识库的安全文档清单（供聊天模型回答范围类问题）。
+
+        include_metadata=True 时仅附带二级来源元数据，供资料概况问题使用。
+        """
         scope = await self.get_session_scope(
             session_id=session_id, principal=principal
         )
@@ -2956,16 +2960,17 @@ class KnowledgeService:
             )
             for document in documents:
                 progress = self._normalized_progress(document.get("progress"))
-                catalog.append(
-                    {
-                        "base_id": str(base["id"]),
-                        "base_name": str(base["name"]),
-                        "document_id": str(document["id"]),
-                        "document_name": str(document["name"]),
-                        "status": str(document["status"]),
-                        "progress": float(progress) if progress is not None else None,
-                    }
-                )
+                entry = {
+                    "base_id": str(base["id"]),
+                    "base_name": str(base["name"]),
+                    "document_id": str(document["id"]),
+                    "document_name": str(document["name"]),
+                    "status": str(document["status"]),
+                    "progress": float(progress) if progress is not None else None,
+                }
+                if include_metadata:
+                    entry["report_second_source"] = document.get("report_second_source")
+                catalog.append(entry)
         return catalog
 
     # ---------------- 操作记录与会话范围 ----------------

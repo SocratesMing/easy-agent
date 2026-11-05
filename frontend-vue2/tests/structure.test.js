@@ -33,6 +33,7 @@ const MAX_NEW_FILE_LINES = 800
  * 2026-11-05 知识库上传前过滤 PPT/PPTX 后按实测值更新：1911 → 1912。
  * 2026-11-05 权限管理人员搜索后按实测值更新：1912 → 1918。
  * 2026-11-05 合并 audit-improvements（本站不挂载悬浮 AI 侧边栏）后 EasyAgentPage 按实测值更新：2035 → 2036。
+ * 2026-11-05 文件夹操作按钮移至文件夹行尾部后按实测值更新：1918 → 1921。
  * 拆分这些文件时同步删掉条目，避免预算变成"合法上限"。
  */
 const LINE_BUDGET = {
@@ -52,7 +53,7 @@ const LINE_BUDGET = {
   [`${MOD}features/chat/components/SessionList.vue`]: 1072,
   [`${MOD}features/tasks/components/ScheduledTasksPanel.vue`]: 967,
   [`${MOD}features/workspace/components/WorkspacePanel.vue`]: 954,
-  [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1918,
+  [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1921,
   [`${MOD}features/personnel/PersonnelManagement.vue`]: 1145,
   // 页面级深色覆盖（原 App.vue 非 scoped 样式块，只允许变短）
   [`${MOD}styles/theme-dark.css`]: 1195,

@@ -28,6 +28,16 @@ from easy_agent.knowledges.service import (
 
 _KNOWLEDGE_CHAT_TITLE_PREFIX = "[知识库问答]"
 
+# 面板默认第一问：仅依据二级来源元数据（缺失时用文档名）概括，不检索原文、不展示知识依据。
+METADATA_SUMMARY_QUESTION = "概括这批资料的情况信息"
+_METADATA_SUMMARY_TRAILING = "。．.？?！!；;：: \t\n\r"
+
+
+def is_metadata_summary_question(question: str) -> bool:
+    """判断是否为资料概况问题；仅该问题走二级来源/文档名总结。"""
+
+    return (question or "").strip().rstrip(_METADATA_SUMMARY_TRAILING) == METADATA_SUMMARY_QUESTION
+
 
 @dataclass(frozen=True)
 class KnowledgeChatContext:
@@ -167,6 +177,38 @@ def _build_knowledge_context(
     return "\n\n".join(lines)
 
 
+def _build_metadata_summary_context(document_catalog: list[dict]) -> str:
+    """构造资料概况任务的上下文：仅按二级来源总结，缺失时仅依据文档名。"""
+
+    lines = [
+        "## 资料概况总结任务",
+        "用户本轮要求“概括这批资料的情况信息”。本轮不检索原文，只依据下面的资料清单作答。",
+        "总结规则（必须遵守）：",
+        "1. 文档有二级来源（report_second_source）时，只按二级来源进行概括；",
+        "2. 文档没有二级来源时，只能依据文档名称概括，不得臆测文档内容；",
+        "3. 不得调用 access_knowledge_original 或其他工具读取原文，也不得编造资料细节；",
+        "4. 回答中不得出现 [知识依据N] 或其他引用标注，不得声称答案来自检索片段；",
+        "5. 不要提及同步渠道、同步方式等来源信息；清单未提供的信息不要猜测。",
+    ]
+    grouped: dict[str, list[dict]] = {}
+    for item in document_catalog or []:
+        base_name = str(item.get("base_name") or "知识库")[:120]
+        grouped.setdefault(base_name, []).append(item)
+    if not grouped:
+        lines.append("当前知识库没有可用文档。")
+        return "\n\n".join(lines)
+    for base_name, items in grouped.items():
+        lines.append(f"### 知识库={base_name}（共 {len(items)} 份文档）")
+        for item in items:
+            document_name = str(item.get("document_name") or "文档")[:180]
+            second_source = str(item.get("report_second_source") or "").strip()
+            if second_source:
+                lines.append(f"- 文档={document_name}；二级来源={second_source}")
+            else:
+                lines.append(f"- 文档={document_name}；无二级来源元数据，仅依据文档名称概括")
+    return "\n\n".join(lines)
+
+
 def _build_service(request: Request, db: Database) -> KnowledgeService:
     """按宿主运行态构造知识服务；未启用或客户端缺失时按 503 拒绝。"""
 
@@ -244,6 +286,22 @@ async def prepare_knowledge_chat(
         )
     if service is None:
         service = _build_service(request, db)
+    if is_metadata_summary_question(question):
+        # 该问题只依据二级来源元数据（缺失时用文档名）概括，不做向量检索，
+        # evidence 保持为空，前端因此不会渲染“知识依据”。
+        try:
+            document_catalog = await service.get_session_document_catalog(
+                session_id=session_id,
+                principal=principal,
+                include_metadata=True,
+            )
+        except KnowledgeServiceError as exc:
+            raise knowledge_http_error(exc) from exc
+        return KnowledgeChatContext(
+            context=_build_metadata_summary_context(document_catalog),
+            evidence=[],
+            warnings=[],
+        )
     try:
         result = await service.retrieve_session_evidence(
             session_id=session_id,
@@ -268,9 +326,11 @@ async def prepare_knowledge_chat(
 
 
 __all__ = [
+    "METADATA_SUMMARY_QUESTION",
     "KnowledgeChatContext",
     "authorize_scoped_chat",
     "empty_knowledge_context",
     "is_knowledge_panel_title",
+    "is_metadata_summary_question",
     "prepare_knowledge_chat",
 ]
