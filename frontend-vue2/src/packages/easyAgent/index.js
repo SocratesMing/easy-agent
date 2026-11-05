@@ -21,4 +21,7 @@ export {
   getRuntime as getEasyAgentConfig,
 } from './runtime/config.js'
 export { createVueRouterNavigation } from './runtime/navigation.js'
+// 被其他设备顶下线标记：宿主在自己的登录流程（如跳转内网登录页重新登录）完成后，
+// 可调用 clearAuthKicked() 让模块恢复自动免密登录；不调用时由用户在页面上点击「重新登录」
+export { clearAuthKicked, isAuthKicked } from './utils/request.js'
 export { DEFAULT_COLORS, readStoredThemeColors, setThemeColors } from './runtime/theme.js'

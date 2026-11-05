@@ -9,7 +9,7 @@ import './styles/base.css'
 
 export { default as AiSidebar } from './features/chat/components/AiSidebar.vue'
 export { chatStore } from './features/chat/store/chatStore.js'
-export { default as request, clearAuth, configureRequest, getStoredToken, storeAuth } from './utils/request.js'
+export { default as request, KICKED_MESSAGE, clearAuth, clearAuthKicked, configureRequest, getStoredToken, isAuthKicked, storeAuth } from './utils/request.js'
 export { passwordlessLogin } from './api/auth.js'
 export { getUserProfile } from './api/files.js'
 export { getModels } from './api/settings.js'

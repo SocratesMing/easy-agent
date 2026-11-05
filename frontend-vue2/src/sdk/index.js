@@ -14,12 +14,15 @@ import {
   AiSidebar,
   DEFAULT_COLORS,
   THEME_ROOT_CLASS,
+  KICKED_MESSAGE,
   chatStore,
   clearAuth,
+  clearAuthKicked,
   configureRequest,
   getModels,
   getStoredToken,
   getUserProfile,
+  isAuthKicked,
   passwordlessLogin,
   request,
   setExternalPageContext,
@@ -278,7 +281,17 @@ export function init(options = {}) {
   const sidebar = () => vm.$refs.sidebar;
 
   // ── 鉴权 ─────────────────────────────────────────────────────────
+  /** 被其他设备顶下线的错误：带 code 便于宿主 onAuthExpired / onError 识别并给出明确提示 */
+  function kickedError() {
+    const err = new Error(KICKED_MESSAGE);
+    err.code = "kicked";
+    return err;
+  }
+
   async function acquireToken({ forceLogin = false } = {}) {
+    // 被顶下线后不自动重新登录（getToken / 免密登录都会顶掉对方，造成多处无感互顶）；
+    // 需宿主在用户明确重新登录后调用 setToken，或清除 auth_kicked 标记后重新初始化
+    if (isAuthKicked() && !getStoredToken()) throw kickedError();
     if (typeof auth.getToken === "function") {
       const token = await auth.getToken();
       if (!token) throw new Error("getToken 未返回 token");
@@ -320,6 +333,7 @@ export function init(options = {}) {
     const canRelogin = typeof auth.getToken === "function" || !!auth.username;
     reauthing = (async () => {
       try {
+        if (isAuthKicked()) throw kickedError();
         if (!canRelogin) throw new Error("登录已过期");
         await acquireToken({ forceLogin: true });
         await loadProfile();
@@ -346,8 +360,9 @@ export function init(options = {}) {
       try {
         await loadProfile();
       } catch (e) {
-        // 复用的旧 token 已失效：能重新登录就重登一次
+        // 复用的旧 token 已失效：能重新登录就重登一次（被顶下线则不重登，避免互顶）
         const status = e && e.response && e.response.status;
+        if (isAuthKicked()) throw kickedError();
         if (
           status !== 401 ||
           !(typeof auth.getToken === "function" || auth.username)
@@ -431,6 +446,8 @@ export function init(options = {}) {
     /** 宿主刷新 token 后传入新 token */
     setToken: async token => {
       storeAuth(token, "");
+      // 宿主明确传入新 token = 用户已重新登录，解除被顶下线状态
+      clearAuthKicked();
       await loadProfile();
       if (sidebar()) await sidebar().loadSessions();
     },
