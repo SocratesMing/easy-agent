@@ -106,3 +106,42 @@ def test_classifier_uses_selected_model_without_changing_business_retries(monkey
 async def test_unavailable_model_stops_request(monkeypatch):
     monkeypatch.setattr(domain_gate, "get_runtime_agent_config", lambda: None)
     assert await domain_gate.finance_refusal("分析国债收益率") == domain_gate.CLASSIFICATION_UNAVAILABLE
+
+
+@pytest.mark.parametrize("refusal", [
+    domain_gate.FINANCE_REFUSAL, domain_gate.CLASSIFICATION_UNAVAILABLE,
+    "当前仅支持金融相关问题，请提出金融市场、投资研究或交易风险等方面的问题。",
+])
+async def test_refusals_do_not_hide_the_last_useful_finance_context(refusal):
+    original = [
+        {"role": "user", "content": "分析10年期国债收益率"},
+        {"role": "assistant", "content": "国债收益率分析框架：增长、通胀和货币政策。"},
+    ]
+    history = original + [
+        {"role": "user", "content": "你好"},
+        {"role": "assistant", "content": refusal},
+        {"role": "user", "content": "根据上面的回答，生成ppT"},
+        {"role": "assistant", "content": domain_gate.FINANCE_REFUSAL},
+    ]
+    model = SimpleNamespace(ainvoke=AsyncMock(return_value=SimpleNamespace(
+        content='{"is_finance": true}'
+    )))
+    await domain_gate.is_finance_question(model, "用它生成ppt", history)
+    payload = json.loads(model.ainvoke.await_args.args[0][1].content)
+    assert payload["recent_context"] == original
+    assert history[2]["content"] == "你好"  # 过滤不修改数据库历史。
+
+
+@pytest.mark.parametrize("selected", [[], ["pptx"]])
+async def test_skill_context_is_supplied_as_data(selected):
+    skills = [{"name": "pptx", "description": "创建、编辑演示文稿"}]
+    model = SimpleNamespace(ainvoke=AsyncMock(return_value=SimpleNamespace(
+        content='{"is_finance": true}'
+    )))
+    await domain_gate.is_finance_question(
+        model, "生成一份项目进度汇报PPT", available_skills=skills, selected_skills=selected
+    )
+    payload = json.loads(model.ainvoke.await_args.args[0][1].content)
+    assert payload["available_skills"] == skills
+    assert payload["selected_skills"] == selected
+    assert model.ainvoke.await_args.args[0][0].content == domain_gate.CLASSIFICATION_PROMPT

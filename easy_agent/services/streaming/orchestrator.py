@@ -826,6 +826,8 @@ async def chat_stream_generator(
     parsed_content: str | None = None,
     session_logger=None,
     pinned_skills: list[str] | None = None,
+    system_context: str = "",
+    scope_approved: bool = False,
 ) -> AsyncGenerator[str, None]:
     start_time = time.time()
     sid = session_id[-5:] if session_id else "new"
@@ -955,6 +957,8 @@ async def chat_stream_generator(
                 message_id=message_id,
                 rendered=message_content,
                 pinned_skills=pinned_skills,
+                system_context=system_context,
+                scope_approved=scope_approved,
             ),
         ):
             yield frame

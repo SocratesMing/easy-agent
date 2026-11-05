@@ -134,6 +134,24 @@ async def test_chat_prep_error_emits_error_frame_and_writes_nothing():
     assert db.persisted == []
 
 
+async def test_chat_passes_server_system_context_to_the_turn_input(monkeypatch):
+    captured = {}
+
+    async def fake_run(run, payload):
+        captured.update(payload)
+        yield 'data: {"type":"done"}\n\n'
+
+    monkeypatch.setattr(orchestrator, "_run_stream", fake_run)
+    await _frames(orchestrator.chat_stream_generator(
+        ChatRequest(message="生成ppt"), FakeDB(), _agent(FakeGraph([])), "s1", "m1", "tester",
+        system_context="本轮已通过服务端意图检查",
+        scope_approved=True,
+    ))
+    assert captured["turn_context"]["system_context"] == "本轮已通过服务端意图检查"
+    assert captured["turn_context"]["scope_approved"] is True
+    assert captured["messages"][-1].content == "生成ppt"
+
+
 async def test_chat_prep_cancel_propagates_without_empty_partial():
     """准备阶段被取消：没有可保存的内容，不写空 assistant 消息，取消继续上抛。"""
     db = _CancelledDB()

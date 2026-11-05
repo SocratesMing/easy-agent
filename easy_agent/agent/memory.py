@@ -11,6 +11,7 @@ deepagents 的 ``MemoryMiddleware`` 在 ``before_agent`` 里只要 state 已有
 （``docs/archive/audit-evidence-deepagents/exp_session_thread.py`` 实测）。
 ``memory_contents`` 是私有状态，不能经运行输入重置，所以这里重写加载钩子：每次运行都忽略
 已缓存的内容重新读取，其余逻辑（注入 system prompt、prompt cache 断点）原样继承。
+注入后重新排列服务端本轮说明，避免历史记忆中的过时拒答规则覆盖本轮服务范围判定。
 
 ``name`` 与框架默认项相同，经 ``create_deep_agent(middleware=...)`` 原位替换默认实例。
 """
@@ -20,6 +21,8 @@ from __future__ import annotations
 from typing import Any
 
 from deepagents.middleware.memory import MemoryMiddleware
+
+from easy_agent.agent.turn_context import render_turn_system_context
 
 _MEMORY_CONTENTS_KEY = "memory_contents"
 
@@ -40,3 +43,14 @@ class SessionMemoryMiddleware(MemoryMiddleware):
 
     async def abefore_agent(self, state, runtime, config):
         return await super().abefore_agent(_without_cached_memory(state), runtime, config)
+
+    def wrap_model_call(self, request, handler):
+        return super().wrap_model_call(
+            request, lambda with_memory: handler(render_turn_system_context(with_memory))
+        )
+
+    async def awrap_model_call(self, request, handler):
+        async def after_memory(with_memory):
+            return await handler(render_turn_system_context(with_memory))
+
+        return await super().awrap_model_call(request, after_memory)
