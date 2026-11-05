@@ -273,6 +273,19 @@ _WEB_SEARCH_PROMPT_NOTE = """## 联网搜索
 """
 
 
+# 联网搜索关闭/未配置时追加到系统提示词的纪律约束（agent/core.py 在关闭分支引用）。
+# 背景：关闭联网搜索只挡住了 web_search 工具，挡不住模型借 execute/shell 里的
+# curl / Python urllib 等直发网络请求（沙箱网络默认 host）。这段纪律明确禁止
+# 规划与执行任何联网取数步骤，把「地球按钮」变成 Agent 的网络总闸。
+# 注意：MCP/连接器等进程内工具调用不在此约束范围（它们不走 shell）。
+WEB_SEARCH_OFF_PROMPT_NOTE = """## 联网搜索（当前关闭）
+
+- 本轮未开启「联网搜索」：你没有 web_search 工具，禁止规划或执行任何访问外网获取数据的步骤，包括在 execute/shell 中用 curl、wget、ping 或 Python 的 urllib / requests / httpx 等方式发起网络请求来检索、下载数据。
+- 规划任务（write_todos）时不得出现「联网搜索 / 网上查询 / 检索最新数据」类步骤；所需信息只能来自：用户上传的文件、工作区文件、知识库，以及你已有的知识。
+- 如果任务确实需要最新的外部数据，或用户给出 URL 要求抓取网页，如实告知用户"当前未开启联网搜索"，请用户点击输入框的地球图标开启后再继续，不要自行尝试其他联网途径。
+"""
+
+
 # ── 注册表本体 ───────────────────────────────────────────────────────────
 #
 # 声明顺序 = 阅读顺序；实际注入顺序由 inject_order 决定，
@@ -609,6 +622,7 @@ __all__ = [
     "TOOL_REGISTRY",
     "ToolBuildContext",
     "ToolSpec",
+    "WEB_SEARCH_OFF_PROMPT_NOTE",
     "build_session_tools",
     "builtin_tool_names",
     "default_interrupt_tool_names",

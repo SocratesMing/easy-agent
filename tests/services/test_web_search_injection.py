@@ -158,3 +158,48 @@ def test_easy_agent_prompt_mentions_web_search(monkeypatch, tmp_path, agent_conf
 
     assert WEB_SEARCH_SYSTEM_PROMPT.strip() in enabled.system_prompt
     assert WEB_SEARCH_SYSTEM_PROMPT.strip() not in disabled.system_prompt
+
+
+def test_easy_agent_prompt_has_off_discipline_when_disabled(monkeypatch, tmp_path, agent_config):
+    """关闭联网搜索时注入「联网纪律」：禁规划联网步骤、禁 execute/shell 联网取数。"""
+    from easy_agent.tools.registry import WEB_SEARCH_OFF_PROMPT_NOTE
+
+    monkeypatch.setattr(EasyAgent, "_create_agent", lambda self: None)
+
+    disabled = EasyAgent(
+        config=agent_config,
+        system_prompt="BASE",
+        username="testuser",
+        session_id="sess-prompt-off2",
+        workspace_dir=tmp_path / "ws-off2",
+    )
+    enabled = EasyAgent(
+        config=agent_config,
+        system_prompt="BASE",
+        username="testuser",
+        session_id="sess-prompt-on2",
+        workspace_dir=tmp_path / "ws-on2",
+        enable_web_search=True,
+    )
+
+    # 关闭：纪律段在，且明确覆盖 shell 逃逸通道（curl/urllib）与规划（write_todos）
+    assert WEB_SEARCH_OFF_PROMPT_NOTE.strip() in disabled.system_prompt
+    assert "urllib" in disabled.system_prompt and "write_todos" in disabled.system_prompt
+    # 开启：不出现关闭纪律（两段互斥），引导段在
+    assert WEB_SEARCH_OFF_PROMPT_NOTE.strip() not in enabled.system_prompt
+    assert WEB_SEARCH_SYSTEM_PROMPT.strip() in enabled.system_prompt
+
+
+def test_off_discipline_note_content_contract():
+    """纪律段文案契约：必须封住 shell 逃逸、必须约束规划、必须引导用户开启。"""
+    from easy_agent.tools.registry import WEB_SEARCH_OFF_PROMPT_NOTE
+
+    text = WEB_SEARCH_OFF_PROMPT_NOTE
+    # shell 逃逸通道逐一点名（防止后续改文案时漏掉）
+    for token in ("curl", "wget", "urllib", "requests", "httpx", "execute"):
+        assert token in text, f"纪律段缺少对 {token} 的约束"
+    # 规划约束与引导开启
+    assert "write_todos" in text
+    assert "地球" in text
+    # 约束范围限定在 execute/shell（MCP/连接器等进程内工具调用不在文案约束范围）
+    assert "execute/shell" in text
