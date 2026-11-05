@@ -265,7 +265,11 @@ def test_truncation_caps_content_and_marks_evidence(monkeypatch):
     assert "truncated=true" in out
     assert "MCP output truncated:" in out
     assert "chars omitted" in out
-    assert len(out) < 250
+    # 提示要说明「截断≠数据量」并给出正确出路（分页），否则模型会去缩窗数总数
+    assert "与数据总量无关" in out
+    assert "分页参数" in out
+    # 边界放宽到 400：20 字符正文 + 信封 + 加长后的提示约 285。
+    assert len(out) < 400
 
 
 def test_multimodal_blocks_keep_images():

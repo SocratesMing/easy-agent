@@ -46,6 +46,12 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, StructuredTool
 
+from easy_agent.bootstrap.config_models import (
+    DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT,
+    DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT,
+    DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT,
+    DEFAULT_TOOL_PROGRESS_STOP_LIMIT,
+)
 from easy_agent.bootstrap.env import env_str
 
 logger = logging.getLogger("easy-agent.graph_cache")
@@ -286,6 +292,24 @@ def config_fingerprint(config: Any) -> dict[str, Any]:
         # 开关变化要重建图：中间件实例按 enabled 构造，换值不重建会沿用旧行为。
         "tool_progress_enabled": bool(
             getattr(agent_cfg, "tool_progress_enabled", True)
+        ),
+        # 四个止损阈值同样进中间件构造参数，改值必须重建图。
+        # 兜底值取 config_models 的常量，避免同一数字在多处各写一份。
+        "tool_progress_empty_limit": int(
+            getattr(agent_cfg, "tool_progress_empty_limit", None)
+            or DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT
+        ),
+        "tool_progress_converge_limit": int(
+            getattr(agent_cfg, "tool_progress_converge_limit", None)
+            or DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT
+        ),
+        "tool_progress_stop_limit": int(
+            getattr(agent_cfg, "tool_progress_stop_limit", None)
+            or DEFAULT_TOOL_PROGRESS_STOP_LIMIT
+        ),
+        "tool_progress_empty_hard_limit": int(
+            getattr(agent_cfg, "tool_progress_empty_hard_limit", None)
+            or DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT
         ),
         "result_log_truncate": int(
             getattr(tools_cfg, "result_log_truncate", 0) or 0

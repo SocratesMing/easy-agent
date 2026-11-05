@@ -13,6 +13,17 @@ from pydantic import BaseModel, Field, field_validator
 # 应用默认欢迎标题（Config.app_welcome_title 的兜底值）。
 DEFAULT_APP_WELCOME_TITLE = "Easy Agent，让工作更简单"
 
+# 工具进度中间件阈值的默认值（唯一来源）。
+# AgentConfig 字段默认值、build_agent_middleware 的 getattr 兜底、图缓存指纹三处
+# 都引用这里的常量——同一批数字只写一份，改默认值不会三处不同步。
+DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT = 3
+DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT = 8
+DEFAULT_TOOL_PROGRESS_STOP_LIMIT = 12
+# 硬顶：同一工具连续空结果到这个次数，无论本轮是否取到过数据都升级为「停止」。
+# 默认 = empty_limit * 3，覆盖「先取到 A 的数据、再对 B 反复空查」时
+# 「按工具计数 + has_data_once」判不出来的场景。
+DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT = DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT * 3
+
 # 联网搜索默认地址（config.yaml 未显式配置 api_url 时按 provider 取用）：
 #   tavily   —— Tavily Search API（https://docs.tavily.com）
 #   internal —— 内网 WebSearch 接口文档中的测试环境地址，生产地址需自行覆盖
@@ -141,6 +152,27 @@ class AgentConfig(BaseModel):
     的信号，容易在错误路径上反复重试直到把 ``max_steps`` 烧完。开启后给这类空结果
     补一句终止提示，并对「同工具 + 同参数连续重复」点名次数。只改工具结果文本，
     不改工具行为；出问题可置 false 一键回到旧行为。"""
+    tool_progress_empty_limit: int = DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT
+    """同一 MCP 工具连续空结果到几次注入「停止查询」指令（默认 3）。
+
+    只对「本轮从未取到过任何数据」生效：一旦取到过数据，空结果只提示
+    「该区间无数据」——分页到底、按月份分段遍历遇到空区间都是正常情况。
+    取到过数据后仍连续空查到 ``tool_progress_empty_hard_limit`` 次，照样会止损。"""
+    tool_progress_converge_limit: int = DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT
+    """同一 MCP 工具连续「无进展」到几次注入收敛提示（默认 8）。
+
+    无进展 = 空结果，或结果与之前某次**逐字节相同**（同一批数据被反复取回）。
+    分页取数每页内容不同，永不触发。"""
+    tool_progress_stop_limit: int = DEFAULT_TOOL_PROGRESS_STOP_LIMIT
+    """同一 MCP 工具连续无进展到几次要求停止并输出数据质量报告（默认 12）。
+
+    不得小于 ``tool_progress_converge_limit``，小了会被自动抬到该值。"""
+    tool_progress_empty_hard_limit: int = DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT
+    """同一 MCP 工具连续空结果到这个次数，无条件止损（默认 9 = 3 × 3）。
+
+    兜住「按工具名计数」判不出来的场景：先查 A 拿到了数据，再对 B 反复空查时
+    ``has_data_once`` 已经是 true，普通阈值不会升级。不得小于
+    ``tool_progress_empty_limit``，小了会被自动抬到该值。"""
     workspace_dir: str = "./workspace"
     memories_dir: str = "./memories"
     sessions_dir: str = "./sessions"
