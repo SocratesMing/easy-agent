@@ -32,11 +32,13 @@ const MAX_NEW_FILE_LINES = 800
  * 2026-11-04 知识库搜索改为输入即检索（300ms 防抖）后按实测值更新：1909 → 1911。
  * 2026-11-05 知识库上传前过滤 PPT/PPTX 后按实测值更新：1911 → 1912。
  * 2026-11-05 权限管理人员搜索后按实测值更新：1912 → 1918。
+ * 2026-11-05 合并 audit-improvements（本站不挂载悬浮 AI 侧边栏）后 EasyAgentPage 按实测值更新：2035 → 2036。
  * 拆分这些文件时同步删掉条目，避免预算变成"合法上限"。
  */
 const LINE_BUDGET = {
   // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
-  [`${MOD}EasyAgentPage.vue`]: 2035,
+  // 2026-11-05 合并 audit-improvements（注释停用 AiSidebar）后按实测值更新：2035 → 2036
+  [`${MOD}EasyAgentPage.vue`]: 2036,
   [`${MOD}features/chat/components/ChatInput.vue`]: 3613,
   [`${MOD}features/chat/components/ChatMessage.vue`]: 2644,
   [`${MOD}features/chat/components/AiSidebar.vue`]: 1725,
