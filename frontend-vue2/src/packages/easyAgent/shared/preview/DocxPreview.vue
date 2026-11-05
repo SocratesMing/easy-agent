@@ -5,7 +5,11 @@
 <script>
 import { renderAsync } from 'docx-preview'
 import { requestArrayBuffer } from '../../utils/request.js'
+import { fitDocxPages } from '../utils/docxPageFit.js'
 export default {
+  data() {
+    return { stopPageFit: null }
+  },
   props: {
     fileUrl: {
       type: String,
@@ -18,6 +22,7 @@ export default {
       if (!this.fileUrl || !container) return
 
       try {
+        if (this.stopPageFit) this.stopPageFit()
         container.innerHTML = ''
 
         // 走统一 axios 封装（自动带鉴权头），直接拿原始字节给 docx-preview 渲染
@@ -39,6 +44,7 @@ export default {
           renderFootnotes: true,
           renderEndnotes: true
         })
+        if (container.isConnected) this.stopPageFit = fitDocxPages(container)
       } catch (e) {
         console.error('Docx preview error:', e)
         container.innerHTML = '<div class="preview-error">文档预览失败</div>'
@@ -54,6 +60,7 @@ export default {
     }
   },
   beforeDestroy() {
+    if (this.stopPageFit) this.stopPageFit()
     const container = this.$refs.containerRef
     if (container) {
       container.innerHTML = ''
@@ -66,15 +73,35 @@ export default {
 .docx-preview-container {
   width: 100%;
   height: 100%;
-  overflow: auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
   background: #f5f5f5;
 }
 
-.docx-preview-container ::v-deep .docx-preview-content {
+.docx-preview-container ::v-deep .docx-preview-content-wrapper {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 100%;
+  padding: 16px 12px;
+  background: #f5f5f5;
+  gap: 16px;
+}
+
+.docx-preview-container ::v-deep .docx-page-frame {
+  flex-shrink: 0;
+  overflow: hidden;
   background: white;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  margin: 16px auto;
-  max-width: 816px;
+}
+
+.docx-preview-container ::v-deep section.docx-preview-content {
+  flex-shrink: 0;
+  margin: 0;
+  max-width: none;
+  transform-origin: top left;
+  box-shadow: none;
 }
 
 .preview-error {
