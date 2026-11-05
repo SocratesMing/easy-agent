@@ -227,8 +227,10 @@ def test_ensure_and_copy_to_staging(tmp_path):
     assert staged_file.read_bytes() == b"report"
     assert source_file.read_bytes() == b"report"  # 源文件不动
     assert time.time() - staged_file.stat().st_mtime < 60
-    # 同尺寸副本已存在：下一轮直接复用，不再重复拷贝
-    assert copy_to_staging(source_file, staged_file) is False
+    # 同名暂存文件已存在：下次一律用源文件最新内容覆盖
+    source_file.write_bytes(b"report-v2")
+    assert copy_to_staging(source_file, staged_file) is True
+    assert staged_file.read_bytes() == b"report-v2"
 
 
 def test_cleanup_stale_staging_files_keeps_failure_names(tmp_path):
@@ -279,11 +281,11 @@ async def test_stage_rows_batch_copies_and_reports_missing(tmp_path):
     assert not errors
     assert staged["101"].name == "报告_101.pdf"
     assert staged["101"].is_file()
-    assert stage_stats == {"copied": 1, "reused": 0, "copy_failed": 0}
+    assert stage_stats == {"copied": 1, "copy_failed": 0}
 
     staged_again, _, stage_stats_again = await engine.stage_rows(rows)
     assert staged_again["101"].is_file()
-    assert stage_stats_again["reused"] == 1
+    assert stage_stats_again["copied"] == 1  # 同名暂存文件直接覆盖
 
     _, missing_errors, _ = await engine.stage_rows(
         [parse_source_row({"id": "102", "batchid": "batch-404", "reportTitle": "x"})]
