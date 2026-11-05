@@ -145,7 +145,7 @@
         />
       </div>
 
-      <!-- AI 侧边栏：任意页面可唤起（默认隐藏），与主页面共用会话列表 -->
+      <!-- 本站页面不挂载悬浮 AI 侧边栏，侧边栏只通过 SDK 给第三方页面使用
       <AiSidebar
         v-if="userProfile.username && aiSidebarEnabled"
         :pageContext="aiPageContext"
@@ -153,6 +153,7 @@
         @open-in-main="handleOpenSessionInMain"
         @open-panel="openSkillCenterPanel"
       />
+      -->
 
       <div v-if="error" class="error-toast">
         {{ error }}
