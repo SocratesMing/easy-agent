@@ -175,6 +175,42 @@ def test_tool_progress_switch_off_from_config():
     assert progress.enabled is False
 
 
+def test_tool_progress_thresholds_come_from_config():
+    """四个阈值必须从 config.yaml（AgentConfig）传进中间件，不能被写死在构造处。"""
+    from easy_agent.bootstrap.config_models import (
+        DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT,
+        DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT,
+        DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT,
+        DEFAULT_TOOL_PROGRESS_STOP_LIMIT,
+    )
+
+    def build(**agent_kwargs):
+        config = SimpleNamespace(
+            agent=SimpleNamespace(**agent_kwargs),
+            tools=SimpleNamespace(result_log_truncate=0),
+        )
+        return next(
+            m
+            for m in middleware_mod.build_agent_middleware(config, 7)
+            if type(m).__name__ == "ToolProgressMiddleware"
+        )
+
+    defaulted = build()
+    assert defaulted.empty_limit == DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT
+    assert defaulted.converge_limit == DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT
+    assert defaulted.stop_limit == DEFAULT_TOOL_PROGRESS_STOP_LIMIT
+    assert defaulted.empty_hard_limit == DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT
+
+    custom = build(
+        tool_progress_empty_limit=1,
+        tool_progress_converge_limit=4,
+        tool_progress_stop_limit=6,
+        tool_progress_empty_hard_limit=5,
+    )
+    assert (custom.empty_limit, custom.converge_limit, custom.stop_limit,
+            custom.empty_hard_limit) == (1, 4, 6, 5)
+
+
 def test_easyagent_build_middleware_delegates(monkeypatch, lightweight_agent):
     captured: dict = {}
 

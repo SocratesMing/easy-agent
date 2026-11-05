@@ -35,7 +35,16 @@ logger = logging.getLogger("easy-agent")
 
 # 单次 MCP 结果进入模型上下文的文本上限（字符）。图片 / 文件等二进制块不截断。
 DEFAULT_MAX_CONTENT_CHARS = 20000
-_TRUNCATION_NOTICE = "\n...[MCP output truncated: {omitted} chars omitted]"
+# 截断提示必须说清「截断≠数据量」并给出正确出路（分页），否则模型会把
+# truncated=true 读成「数据还有更多」，转而用缩小时间窗口反复查询来数总数——
+# 那是探索型死循环的主要驱动之一。详见 docs/design/2026-11-05-tool-loop-termination-plan.md。
+_TRUNCATION_NOTICE = (
+    "\n...[MCP output truncated: {omitted} chars omitted]"
+    "（此截断由平台输出长度上限造成，与数据总量无关。需要完整数据时，"
+    "请用分页参数 page / offset / cursor / limit 继续取下一页；"
+    "不要用缩小时间窗口反复查询的方式统计总数或判定数据可用性；"
+    "已见内容足以判定时，直接下结论。）"
+)
 
 # 保守的「文本包装错误」启发式（FW-14）。只检查首个非空行，避免长文档中间
 # 偶尔出现 error 字样就误判。
