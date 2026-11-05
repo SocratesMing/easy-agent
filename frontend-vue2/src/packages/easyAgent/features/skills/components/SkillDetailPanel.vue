@@ -272,10 +272,30 @@ export default {
       }
     },
 
-    // 去试试：把提示词写进输入框草稿（ChatInput 挂载时会读取），并关闭面板回到对话
-    handleTry() {
+    // 去试试：
+    // 1) 公共技能且未安装时先自动装进用户清单（add-skill 只登记不复制，后端会
+    //    同步驱逐 Agent 缓存，下一轮对话即可用）；失败不阻断，退化为只预填草稿
+    //    （409「已添加」等价于已安装，同样按成功处理）；
+    // 2) 把该技能记为预选（insert_token: false：草稿正文已用自然语言点名技能，
+    //    不再往输入框插 /目录名 标签），发送时随 skills 字段上行，后端把技能
+    //    全文 pin 进本轮对话；
+    // 3) 预填提示词草稿（ChatInput 挂载时会读取），并关闭面板回到对话。
+    async handleTry() {
+      const name = (this.detail && this.detail.name) || this.dirName
+      if (this.detail && this.detail.scope === 'public' && !this.detail.added) {
+        try {
+          await addSkillToUser(this.dirName)
+          this.$emit('refresh')
+        } catch (e) {
+          // 安装失败不阻断「去试试」：技能不在清单里时后端解析不到本轮技能，
+          // 行为与修复前一致（预填草稿，模型按无该技能处理）
+        }
+      }
       try {
-        const name = (this.detail && this.detail.name) || this.dirName
+        sessionStorage.setItem('easy_agent_pending_skill',
+          JSON.stringify({ dir_name: this.dirName, name, insert_token: false }))
+      } catch (_) { /* sessionStorage 不可用时忽略 */ }
+      try {
         sessionStorage.setItem('easy_agent_input_draft', `用「${name}」技能帮我：`)
       } catch (_) { /* sessionStorage 不可用时忽略 */ }
       this.$emit('close')
