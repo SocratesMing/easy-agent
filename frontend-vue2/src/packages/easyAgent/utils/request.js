@@ -12,7 +12,9 @@
  * 401 续期与失效通知；配置在每次请求时读取，晚于 import 的 configureEasyAgent() 同样生效。
  *
  * 401：可续期时并发 401 合并为一次续期，原请求换新 token 最多重发一次；登录类接口与
- * 「被其他设备顶下线」不续期，直接失效。失效只清 Agent 自己的登录态并通知模块 / 宿主适配器，
+ * 「被其他设备顶下线」不续期，直接失效。被顶下线后在 localStorage 记下标记（auth_kicked），
+ * 标记存在期间任何 401 都不再自动续期 / 重登，必须由用户明确操作重新登录（或宿主清除标记），
+ * 避免同一账号多处使用时无感重登、无限互顶。失效只清 Agent 自己的登录态并通知模块 / 宿主适配器，
  * 不派发 window 事件，不影响宿主登录态。
  *
  * 模块使用自己的 axios 实例：宿主 axios 实例上的拦截器（如 401 跳登录页）不会作用到这里。
@@ -28,6 +30,10 @@ export const AUTH_EXPIRED_EVENT = 'auth-expired'
 export const USER_ACTIVITY_EVENT = 'user-activity'
 
 const KICKED_DETAIL = /其他设备|被迫下线/
+/** 被顶下线标记（localStorage，同源各页面 / 侧边栏 SDK 共享；值沿用旧版的 '1'） */
+export const AUTH_KICKED_KEY = 'auth_kicked'
+/** 被顶下线提示文案（与后端 KICKED_DETAIL 一致） */
+export const KICKED_MESSAGE = '您的账号在其他设备登录，您已被迫下线，请重新登录'
 // 登录类接口（含 /api/auth 旧前缀）本身 401 不续期，否则续期过程中的登录请求会等待自己
 const AUTH_ENDPOINT = /\/(agent|api)\/auth\//
 
@@ -145,13 +151,41 @@ function isKicked(detail) {
   return typeof detail === 'string' && KICKED_DETAIL.test(detail)
 }
 
+/** 是否处于「被其他设备顶下线、尚未由用户明确重新登录」状态 */
+export function isAuthKicked() {
+  try {
+    return localStorage.getItem(AUTH_KICKED_KEY) === '1'
+  } catch (_) {
+    return false
+  }
+}
+
+/** 记录被顶下线：此后 401 不再自动续期 / 重登，直到用户明确重新登录 */
+export function markAuthKicked() {
+  try {
+    localStorage.setItem(AUTH_KICKED_KEY, '1')
+  } catch (_) { /* localStorage 不可用时忽略 */ }
+}
+
+/** 清除被顶下线标记：用户明确重新登录成功后调用（宿主在自己的登录流程完成后也可调用） */
+export function clearAuthKicked() {
+  try {
+    localStorage.removeItem(AUTH_KICKED_KEY)
+  } catch (_) { /* ignore */ }
+}
+
 /** 401 未能续期：清理 Agent 登录态并派发失效 */
 function expireAuth(detail) {
   // 打印原因，便于区分：空闲超时 / 被顶下线 / token 失效
   console.warn('[auth] 401 未授权，判定登出 | 原因:', detail || '(无 detail)')
-  const reason = isKicked(detail) ? 'kicked' : 'expired'
-  if (reason === 'kicked') localStorage.setItem('auth_kicked', '1')
+  const wasKicked = isAuthKicked()
+  const hadToken = !!getStoredToken()
+  // 被顶下线后残留请求（已无 token）的 401 仍按 kicked 处理，提示不会被「登录已过期」覆盖
+  const reason = isKicked(detail) || wasKicked ? 'kicked' : 'expired'
+  if (reason === 'kicked') markAuthKicked()
   clearAuth()
+  // 已经通知过被顶下线且本地已无 token：不重复通知模块 / 宿主（避免宿主退出逻辑被反复触发）
+  if (wasKicked && !hadToken) return
   dispatchAuthExpired({ reason, detail: typeof detail === 'string' ? detail : '' })
 }
 
@@ -162,9 +196,9 @@ function currentRefresher() {
   return null
 }
 
-/** 登录类接口与「被顶下线」不续期 */
+/** 登录类接口、「被顶下线」以及被顶下线标记存在期间都不续期（续期 = 重新登录，会反过来顶掉对方） */
 function canRenew(url, detail) {
-  return !!currentRefresher() && !isKicked(detail) && !AUTH_ENDPOINT.test(url || '')
+  return !!currentRefresher() && !isKicked(detail) && !isAuthKicked() && !AUTH_ENDPOINT.test(url || '')
 }
 
 /** 续期 token：并发 401 合并为一次；token 已被别的请求换过则直接用新的 */

@@ -1150,6 +1150,10 @@ async function ensureCurrentSession(initialTitle = '') {
   if (!currentSessionId.value) {
     const newSession = await createSession(initialTitle || '新会话', userProfile.value.username || null)
     currentSessionId.value = newSession.session_id
+    // 预创建的 DB 会话即当前展示会话：同步标记 loadedSessionId，
+    // 否则随后的流式事件会被 runInSession 视为「后台会话」只写入
+    // sessionStates 缓冲而不渲染，表现为一直"正在思考"、刷新后才出现。
+    loadedSessionId.value = newSession.session_id
     const existingIndex = sessions.value.findIndex(s => s.session_id === newSession.session_id)
     if (existingIndex === -1) {
       const session = {
