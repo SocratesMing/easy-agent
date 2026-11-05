@@ -11,10 +11,11 @@
 1. 知识库会话鉴权（fail-closed）最先；
 2. 打开 / 新建会话，然后 ``reject_concurrent_stream``——409 必须在用户消息落库之前，
    否则会话里会多出一条没有回复的用户消息；
-3. 专家分支：提示词 → 依赖技能补装 → 职责范围预检（硬闸）→ 命中即短路拒答。
+3. 仅普通聊天做金融范围预检（失败关闭，专家 / 知识库面板跳过）→ 技能解析；
+4. 专家分支：提示词 → 依赖技能补装 → 职责范围预检（硬闸）→ 命中即短路拒答。
    预检必须早于文件解析与知识库检索：被拒答的消息不该为这些付成本，更重要的是
    「Agent 未创建」时任何工具都不可达（提示词层面的边界块做不到这点）；
-4. 待修改专家绑定 → 知识库检索 → 上传文件上下文 → 用户消息落库 → 建 Agent → 登记 run。
+5. 待修改专家绑定 → 知识库检索 → 上传文件上下文 → 用户消息落库 → 建 Agent → 登记 run。
 
 事件循环约束（第 1 节通用约定第 7 条）：数据库层是同步的，查库 / 写库都经
 ``asyncio.to_thread`` / ``run_blocking`` 放进线程；进程内状态（Agent 缓存、流锁、
@@ -52,6 +53,7 @@ from easy_agent.services.sessions import (
     uploads as file_context,
 )
 from easy_agent.services.agents import (
+    domain_gate,
     manager as agent_manager,
     tool_scope,
 )
@@ -407,7 +409,7 @@ class TurnPlan:
 
 @dataclass(frozen=True)
 class RefusalPlan:
-    """专家相关性预检拒答：不建 Agent、不登记 run，只推一条极简拒答流。"""
+    """输入预检拒答：不建 Agent、不登记 run，只推一条极简拒答流。"""
 
     session_id: str
     sid: str
@@ -435,7 +437,7 @@ async def prepare_turn(
     repo: ChatRepository,
     username: str,
 ) -> TurnPlan | RefusalPlan:
-    """准备一轮流式聊天：返回 ``TurnPlan``（正常）或 ``RefusalPlan``（专家预检拒答）。
+    """准备一轮流式聊天：返回 ``TurnPlan``（正常）或 ``RefusalPlan``（输入预检拒答）。
 
     调用方（路由）负责参数校验；本函数按模块顶部注释的顺序完成全部准备，并把本轮流
     （``event_stream``）一并构造好。异常统一用 ``easy_agent.models.exceptions`` 里的领域
@@ -454,7 +456,6 @@ async def prepare_turn(
     )
 
     sid = session_id[-5:] if session_id else "new"
-    turn = resolve_request_skills(request.skills, request.message, username, sid)
 
     logger.info(
         f"[{sid}] 聊天请求 | message: {request.message[:50]}{'...' if len(request.message) > 50 else ''} | "
@@ -467,11 +468,50 @@ async def prepare_turn(
     # 数据库层是同步的：本轮的查库 / 落库都放进线程，不占事件循环（并发的 SSE 流不跟着停）
     session_id, workspace_name = await asyncio.to_thread(
         open_turn_session,
-        repo, session_id, username, request.message, request.files, turn.fallback_name,
+        repo, session_id, username, request.message, request.files,
     )
 
     # 并发互斥：同一会话同一时刻只允许一条流式生成（必须在用户消息落库之前）
     reject_concurrent_stream(session_id)
+
+    # 普通聊天金融范围硬闸；知识库面板和专家对话沿用原有处理。
+    # 位置在鉴权之后、技能准备 / 附件解析 / 检索 / Agent 创建之前。
+    session = await asyncio.to_thread(repo.get_session, session_id)
+    if not request.expert_agent_id and not is_knowledge_panel_title(session.title):
+        refusal = await domain_gate.finance_refusal(
+            request.message,
+            getattr(session, "messages", None) or [],
+            model_name=request.model,
+            session_id=session_id,
+            has_attachments=bool(request.files),
+        )
+        if refusal is not None:
+            await asyncio.to_thread(
+                expert_runtime.persist_user_turn,
+                repo.experts, session_id, username, request,
+                request.expert_agent_id or "", request.skills or [], turn_id=message_id,
+            )
+            expert_runtime.session_logger_for(session_id, username).log_user_message(
+                message=request.message, files=request.files, message_id=message_id,
+            )
+            return RefusalPlan(
+                session_id=session_id,
+                sid=sid,
+                classification=(
+                    "finance_unavailable"
+                    if refusal == domain_gate.CLASSIFICATION_UNAVAILABLE else "non_finance"
+                ),
+                refusal=refusal,
+                event_stream=expert_runtime.refusal_event_stream(session_id, repo.experts, refusal),
+            )
+
+    turn = resolve_request_skills(request.skills, request.message, username, sid)
+    # 只选技能时继续沿用技能展示名作为空会话标题。
+    if turn.fallback_name and not request.message.strip() and not request.files:
+        await asyncio.to_thread(
+            open_turn_session, repo, session_id, username, request.message,
+            request.files, turn.fallback_name,
+        )
 
     # ── 专家分支：提示词加载 + 依赖技能补装 + 职责范围预检（硬闸）──────────
     # 顺序不能动：预检必须早于文件解析与知识库检索——被拒答的消息不该为这些付成本，
