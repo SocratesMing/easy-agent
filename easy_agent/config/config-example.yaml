@@ -48,6 +48,10 @@ streaming:
 # ===== Agent =====
 max_steps: ${MAX_STEPS:-100}                      # 单轮最大执行步数
 tool_progress_enabled: ${TOOL_PROGRESS_ENABLED:-true}  # 工具空结果终止提示 + 原地打转提醒（只改结果文本，不改工具行为）
+tool_progress_empty_limit: ${TOOL_PROGRESS_EMPTY_LIMIT:-3}      # MCP 同一目标连续空结果到几次要求停止（仅在从未取到过数据时生效）
+tool_progress_converge_limit: ${TOOL_PROGRESS_CONVERGE_LIMIT:-8}  # MCP 同工具连续「无进展」到几次提示收敛（分页取数不计入）
+tool_progress_stop_limit: ${TOOL_PROGRESS_STOP_LIMIT:-12}        # MCP 同工具连续「无进展」到几次要求停机并输出数据质量报告
+tool_progress_empty_hard_limit: ${TOOL_PROGRESS_EMPTY_HARD_LIMIT:-9}  # MCP 同工具连续空结果到几次无条件止损（兜「先查到 A 又反复查 B」的场景）
 workspace_dir: "${WORKSPACE_DIR:-/qts/workspace}" # 工作区根目录，实际按用户/会话隔离
 memories_dir: "${MEMORIES_DIR:-/qts/memories}"    # 长期记忆根目录，实际 {memories_dir}/{username}/AGENTS.md
 sessions_dir: "${SESSIONS_DIR:-/qts/sessions}"    # 会话数据目录，实际 {sessions_dir}/{username}/{session_id}.json
