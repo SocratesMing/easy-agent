@@ -79,6 +79,7 @@ def build_summarization_middleware(
     from deepagents.middleware.summarization import SummarizationMiddleware
 
     from easy_agent.agent.turn_context import TurnAwareSummarizationMiddleware  # 延迟导入：导入期重依赖：避免加载 langchain/deepagents 等重依赖
+    from easy_agent.agent.token_counting import count_context_tokens
 
     settings = summarization_settings(config, model_key)
     label = str(getattr(model, "model_name", None) or getattr(model, "model", None) or "model")
@@ -90,4 +91,4 @@ def build_summarization_middleware(
             "摘要阈值 | %s | trigger=%s keep=%s", label, settings["trigger"], settings["keep"]
         )
     cls = TurnAwareSummarizationMiddleware if render_turn else SummarizationMiddleware
-    return cls(model, backend=backend, **settings)
+    return cls(model, backend=backend, token_counter=count_context_tokens, **settings)
