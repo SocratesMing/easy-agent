@@ -527,6 +527,9 @@ defineExpose({
   overflow: visible;
 }
 
+/* 保留输入区完整高度，避免操作栏被裁剪；空间不足时由预置卡片区滚动。 */
+.composer { flex-shrink: 0; }
+
 /* 回车发送后，输入框平滑下移到底部 */
 .chat-content.is-bottom .composer {
   animation: composerDropIn 0.45s cubic-bezier(0.22, 1, 0.36, 1);

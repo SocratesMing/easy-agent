@@ -596,6 +596,8 @@ export default {
   overflow: visible;
 }
 
+/* 保留输入区完整高度，避免操作栏被裁剪；空间不足时由预置卡片区滚动。 */
+.composer { flex-shrink: 0; }
 /* 回车发送后，输入框平滑下移到底部 */
 .chat-content.is-bottom .composer {
   animation: composerDropIn 0.45s cubic-bezier(0.22, 1, 0.36, 1);
@@ -970,8 +972,6 @@ export default {
 .scroll-btn.next {
   bottom: 170px;
 }
-
-
 
 /* 不再需要按面板宽度做避让（原 260px 硬编码在可拖拽后必然错位）：
    按钮已改为相对 .chat-container 定位，聊天区收窄时自动跟随。 */
