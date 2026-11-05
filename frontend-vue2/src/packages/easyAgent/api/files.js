@@ -1,4 +1,4 @@
-import request, { clearAuthKicked, requestBlob, requestText } from '../utils/request.js'
+import request, { requestBlob, requestText } from '../utils/request.js'
 
 export async function uploadFile(sessionId, file, onProgress, signal) {
   const formData = new FormData()
@@ -62,13 +62,10 @@ export async function deleteFile(sessionId, file) {
 }
 
 export async function getUserProfile() {
-  const profile = await request(
+  return request(
     { url: '/agent/auth/profile', method: 'get' },
     '获取用户资料失败'
   )
-  // 当前 token 仍然有效：本端就是最新登录，残留的「被顶下线」标记作废
-  clearAuthKicked()
-  return profile
 }
 
 export async function getSessionGeneratedFiles(sessionId) {

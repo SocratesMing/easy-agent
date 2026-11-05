@@ -16,10 +16,12 @@
 
     <!-- 登录页关闭时（嵌入宿主 / 生产）：无有效登录态时的兜底提示 -->
     <div v-else-if="authBlocked" class="auth-blocked">
-      <AuthKickedNotice v-if="authBlockedReason === 'kicked'" :sign-in-enabled="signInEnabled" :relogin="handleAdapterSignIn" />
-      <div v-else class="auth-blocked-box">
+      <div class="auth-blocked-box">
         <h2>未授权访问</h2>
-        <p v-if="signInEnabled">
+        <p v-if="authBlockedReason === 'kicked'">
+          您的账号已在其他设备或页面登录，本页已退出。请刷新页面重新进入。
+        </p>
+        <p v-else-if="signInEnabled">
           免密登录未成功（未获取到宿主登录信息或后端校验未通过）。请从门户系统重新进入本页面。
         </p>
         <p v-else>登录页已关闭，且未配置免密登录。请联系管理员分配账号后使用账号密码登录。</p>
@@ -172,7 +174,6 @@ const UserManagementPanel = () => import('./features/personnel/PersonnelManageme
 const KnowledgeWorkbench = () => import('./features/knowledge/KnowledgeWorkbench.vue')
 import SidebarResizeHandle from './features/knowledge/SidebarResizeHandle.vue'
 import Welcome from './features/chat/components/Welcome.vue'
-import AuthKickedNotice from './features/chat/components/AuthKickedNotice.vue'
 import WorkspacePanel from './features/workspace/components/WorkspacePanel.vue'
 const SettingsPanel = () => import('./features/settings/components/SettingsPanel.vue')
 import AiSidebar from './features/chat/components/AiSidebar.vue'
@@ -182,7 +183,7 @@ import chatSessionMixin, { parseMCPResult } from './features/chat/mixins/chatSes
 import { chatStore } from './features/chat/store/chatStore.js'
 import { buildPageContext } from './utils/pageContext.js'
 import { applyApprovalRequests } from './utils/hitlApproval.js'
-import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin, runSignIn, isAuthKicked } from './api/auth.js'
+import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin, runSignIn } from './api/auth.js'
 import { getKnowledgeStatus, getModels as fetchModels } from './api/settings.js'
 import { isRestorableUserProfile } from './utils/userProfile.js'
 import { getRuntime } from './runtime/config.js'
@@ -228,7 +229,6 @@ function setReactive(target, key, value) {
 export default {
   components: {
     AiSidebar,
-    AuthKickedNotice,
     SidebarResizeHandle,
     KnowledgeWorkbench,
     Chat,
@@ -251,8 +251,8 @@ export default {
       welcomeTitle: getRuntime().app.welcomeTitle,
       // 「未授权」提示态（登录页关闭且免密登录未成功时显示）
       authBlocked: false,
-      // 未授权原因：kicked = 被其他设备顶下线（含刷新 / 重新进入页面；不自动重新登录，避免两端互踢）
-      authBlockedReason: isAuthKicked() ? 'kicked' : '',
+      // 未授权原因：kicked = 被其他设备顶下线（不自动重新登录，避免两端互踢）
+      authBlockedReason: '',
       duplicateInstance: false,
       presetQuestions: [],
       isSidebarCollapsed: false,
@@ -801,10 +801,10 @@ export default {
     //   · signIn 返回 { profile } 时直接用作展示资料（与原门户免密一致，不调 /auth/profile），
     //     只返回 true 时按 /agent/auth/profile 加载；
     //   · 未配置 signIn、返回 false 或抛错时返回 false，由 initApp 回落到已存登录态。
-    async handleAdapterSignIn(options) {
+    async handleAdapterSignIn() {
       if (!this.signInEnabled) return false
       try {
-        const result = await runSignIn(options) // { manual: true }：被顶下线后用户点击「重新登录」
+        const result = await runSignIn()
         if (!result) return false
         let profile = result.profile
         if (!profile) {

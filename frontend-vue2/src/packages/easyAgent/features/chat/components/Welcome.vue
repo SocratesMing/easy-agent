@@ -77,7 +77,7 @@
 </template>
 
 <script>
-import { login, register, isAuthKicked, KICKED_MESSAGE } from '../../../api/auth.js'
+import { login, register } from '../../../api/auth.js'
 import { getLoginPolicy } from '../../personnel/api.js'
 import { getRuntime } from '../../../runtime/config.js'
 import { createAutoDismiss } from '../../../utils/autoDismiss.js'
@@ -118,10 +118,10 @@ export default {
   },
   mounted() {
     getLoginPolicy().then(policy => { this.selfRegistrationEnabled = policy.self_registration_enabled === true }).catch(() => {})
-    // 检测是否因单点登录被踢下线（账号在其他设备登录）。标记不在这里清除：
-    // 用户明确登录成功后由登录接口清除，此前任何地方都不会自动重新登录（避免互顶）
-    if (isAuthKicked()) {
-      this.error = KICKED_MESSAGE
+    // 检测是否因单点登录被踢下线（账号在其他设备登录）
+    if (localStorage.getItem('auth_kicked') === '1') {
+      localStorage.removeItem('auth_kicked')
+      this.error = '您的账号在其他设备登录，您已被迫下线，请重新登录'
     }
     this.$nextTick(() => {
       if (this.$refs.usernameInput) this.$refs.usernameInput.focus()

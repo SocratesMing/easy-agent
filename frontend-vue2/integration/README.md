@@ -63,7 +63,7 @@
 | `auth.urlLogin` | `false` | 地址栏 `?username=&user_id=` 免密直登（仅外网开发联调） |
 | `auth.signIn(helpers)` | — | 用宿主身份换 Agent token：`helpers.passwordlessLogin(username, userId)` / `helpers.setToken(token, username)`；返回 `false`=未登录，`true`=已拿 token（模块调 `/agent/auth/profile`），`{ profile }`=已拿 token 并提供展示资料 |
 | `auth.refresh()` | 同 `signIn` | 401 时的续期；并发 401 合并为一次，原请求最多重发一次；登录类接口与「被顶下线」不续期 |
-| `auth.onExpired({ reason })` | — | Agent 登录态失效通知（`expired` / `kicked`）；**只代表 Agent**，不要据此登出宿主。`kicked` 每次被顶下线只通知一次，宿主可在此执行自己的退出逻辑（如跳转内网登录页） |
+| `auth.onExpired({ reason })` | — | Agent 登录态失效通知（`expired` / `kicked`）；**只代表 Agent**，不要据此登出宿主 |
 | `app.title` / `welcomeTitle` | `Easy Agent` / `Easy Agent，让工作化繁为简` | 侧栏标题、首页欢迎语（后端 `app_welcome_title` 仍可覆盖） |
 | `app.setDocumentTitle` | `false` | 是否写 `document.title` |
 | `navigation.getQuery(vm)` / `replaceQuery(vm, patch)` | 不读写地址 | 模块只读写 `session` / `panel` 两个 query 键；`createVueRouterNavigation()` 给出 vue-router 3 实现（保留 path、hash、其他 query，`replace` 不加历史） |
@@ -173,12 +173,6 @@
   Agent」的要求。网关要求的附加头用 `api.headers()` 提供。
 - 401：可续期时并发合并为一次续期、原请求最多重发一次；登录类接口（`/agent/auth/`、`/api/auth/`）与
   「被其他设备顶下线」不续期；失效只清 Agent 自己的 token，经模块内事件与 `auth.onExpired` 通知，**不派发 window 事件**。
-- 被顶下线：在 localStorage 记 `auth_kicked=1`。标记存在期间**任何 401 都不续期、`auth.signIn` 不自动执行**
-  （刷新 / 重新进入页面也一样），页面显示「账号已在其他设备登录」与「重新登录」按钮，只有用户点击才会重新登录，
-  避免同一账号多处无感重登、无限互顶。显式登录成功（含点击重新登录、`setToken`）或已存 token 被
-  `/agent/auth/profile` 确认有效时清除标记。宿主在自己的登录流程完成后（例如用户在内网登录页重新登录回来）
-  可调用 `import { clearAuthKicked } from '@/packages/easyAgent'` 的 `clearAuthKicked()` 恢复自动免密登录；
-  不调用则由用户在页面上点一次「重新登录」。
 - FormData 上传不手写 multipart boundary；SSE 只由 `api/sse.js` 的 `readSSE` 解析；取消（`AbortSignal`）在续期等待期间同样生效。
 
 ## 6. 依赖
