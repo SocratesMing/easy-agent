@@ -24,12 +24,14 @@ const MAX_NEW_FILE_LINES = 800
  *  2026-11-05 权限管理人员搜索后按实测值更新：1912 → 1919；
  *  2026-11-05 文件夹操作按钮移至文件夹行尾部后按实测值更新：1919 → 1922；
  *  2026-11-06 联网开关镜像（重试路径带上 enableWebSearch）后按实测值更新：
- *    App.vue 3163 → 3167、ChatInput 4721 → 4730、Chat 1026 → 986） */
+ *    App.vue 3163 → 3167、ChatInput 4721 → 4730、Chat 1026 → 986；
+ *  2026-11-06 「我的专家」改服务端分页（+ 关键字下推接口）后按实测值更新：
+ *    ChatInput 4730 → 4824、ExpertListPanel 2089 → 2188） */
 const LINE_BUDGET = {
   'App.vue': 3167,
-  'features/chat/components/ChatInput.vue': 4730,
+  'features/chat/components/ChatInput.vue': 4824,
   'features/chat/components/ChatMessage.vue': 2523,
-  'features/experts/components/ExpertListPanel.vue': 2089,
+  'features/experts/components/ExpertListPanel.vue': 2188,
   'features/connectors/components/ConnectorListPanel.vue': 1547,
   'features/settings/components/SettingsPanel.vue': 1226,
   'features/skills/components/SkillListPanel.vue': 1245,

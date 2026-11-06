@@ -37,16 +37,20 @@ const MAX_NEW_FILE_LINES = 800
  * 2026-11-06 联网开关镜像（重试路径带上 enableWebSearch）后按实测值更新：
  *   EasyAgentPage 2036 → 2045、ChatInput 3613 → 3622、Chat 1122 → 1123、
  *   AiSidebar 1725 → 1726；chatSession 原 1205 已被既有改动突破，一并按实测校正为 1217。
+ * 2026-11-06 「我的专家」改服务端分页（+ 关键字下推接口）后按实测值更新：
+ *   ChatInput 3622 → 3688（新增 loadMyExpertsPage / loadMoreMyExperts / 防抖 watcher，
+ *   同时删掉了走不到的 expert 分支与本地 slice 逻辑）、ExpertListPanel 2152 → 2253
+ *   （新增 loadMinePage / loadMoreMine / onContentScroll，删掉了 refreshSilently）。
  * 拆分这些文件时同步删掉条目，避免预算变成"合法上限"。
  */
 const LINE_BUDGET = {
   // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
   // 2026-11-05 合并 audit-improvements（注释停用 AiSidebar）后按实测值更新：2035 → 2036
   [`${MOD}EasyAgentPage.vue`]: 2045,
-  [`${MOD}features/chat/components/ChatInput.vue`]: 3622,
+  [`${MOD}features/chat/components/ChatInput.vue`]: 3688,
   [`${MOD}features/chat/components/ChatMessage.vue`]: 2644,
   [`${MOD}features/chat/components/AiSidebar.vue`]: 1726,
-  [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2152,
+  [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2253,
   [`${MOD}features/chat/mixins/chatSession.js`]: 1217,
   [`${MOD}features/connectors/components/ConnectorListPanel.vue`]: 1504,
   [`${MOD}features/skills/components/SkillListPanel.vue`]: 1260,
