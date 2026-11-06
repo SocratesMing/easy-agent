@@ -4,7 +4,7 @@ import { createSession, listSessions, getChatHistory, deleteSession, sendMessage
 import { deleteFile, getSessionGeneratedFiles } from '../../../api/files.js'
 import { authFetch } from '../../../api/auth.js'
 import { chatBus, chatStore, syncPendingApprovalFlag as setPendingApprovalFlag } from '../store/chatStore.js'
-import { createStreamChunkHandler as createChunkHandler } from '../services/chunkHandler.js'
+import { createStreamChunkHandler as createChunkHandler, resumeUsageBase } from '../services/chunkHandler.js'
 import streamLifecycle from './streamLifecycle.js'
 import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
 
@@ -1020,6 +1020,7 @@ export default {
         isResume: true,
         assistantMsgId,
         streamSessionId: sessionId,
+        ...resumeUsageBase(this.sessionDuration, this.iterationCount, this.messages[msgIdx]), // 扣掉本条中断前已计入的耗时/步数
         initialBlockOrder: (() => {
           const i = this.messages.findIndex(m => m.id === assistantMsgId)
           return i !== -1 ? this.messages[i].blocks.length : 0

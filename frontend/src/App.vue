@@ -149,7 +149,7 @@ import WorkspacePanel from './features/workspace/components/WorkspacePanel.vue'
 const SettingsPanel = defineAsyncComponent(() => import('./features/settings/components/SettingsPanel.vue'))
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
 import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from './utils/hitlApproval.js'
-import { createStreamChunkHandler } from './features/chat/composables/useStreamChunks.js'
+import { createStreamChunkHandler, resumeUsageBase } from './features/chat/composables/useStreamChunks.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getKnowledgeStatus, getModels as fetchModels } from './api/settings.js'
@@ -1653,12 +1653,10 @@ async function handleToolApproval(decision, target) {
     isResume: true,
     assistantMsgId,
     streamSessionId: sessionId,
+    ...resumeUsageBase(sessionDuration.value, iterationCount.value, messages.value[msgIdx]), // 扣掉本条中断前已计入的耗时/步数
     runInSession,
     state: buildStreamState(),
-    initialBlockOrder: (() => {
-      const i = messages.value.findIndex(m => m.id === assistantMsgId)
-      return i !== -1 ? messages.value[i].blocks.length : 0
-    })(),
+    initialBlockOrder: msgIdx !== -1 ? messages.value[msgIdx].blocks.length : 0,
     onApprovalRequired: (data) => {
       // 嵌套审批
       syncPendingApprovalFlag(sessionId, true)

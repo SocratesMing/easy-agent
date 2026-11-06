@@ -91,9 +91,17 @@ export function createStreamChunkHandler(vm, ctx) {
     if (data.auto_compress_tokens) patch.auto_compress_tokens = data.auto_compress_tokens
     return patch
   }
+  // 记下这条消息自己的累计耗时 / 步数：审批续跑时据此从会话合计里扣掉中断前已计入的部分
+  const rememberMessageUsage = (data) => {
+    const idx = findIdx()
+    if (idx === -1 || typeof data.step_count !== 'number') return
+    const msg = vm.messages[idx]
+    msg.usage = { ...msg.usage, step_count: data.step_count, elapsed_time: data.elapsed_time || 0 }
+  }
   const applyUsage = (data, sid) => {
     const patch = usagePatchFrom(data)
     const match = !sid || vm.currentSessionId === sid
+    rememberMessageUsage(data)
     if (ctx.attachMode) {
       // 重挂载回放：token_usage/done 携带的 elapsed_time 是原始流从头开始的
       // 累计值，应 SET 而非累加（isResume 分支的累加语义只适用于 HITL 续跑）
@@ -111,33 +119,20 @@ export function createStreamChunkHandler(vm, ctx) {
       }
       return
     }
-    if (ctx.isResume) {
-      if (match) {
-        Object.assign(vm.sessionUsage, patch)
-        if (typeof data.elapsed_time === 'number') vm.sessionDuration = Math.round((vm.sessionDuration + data.elapsed_time) * 10) / 10
-        if (typeof data.step_count === 'number') vm.iterationCount = data.step_count
-      } else {
-        const cached = vm.sessionStates[sid]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-          if (typeof data.elapsed_time === 'number') cached.sessionDuration = Math.round(((cached.sessionDuration || 0) + data.elapsed_time) * 10) / 10
-          if (typeof data.step_count === 'number') cached.iterationCount = data.step_count
-        }
-      }
+    // elapsed_time / step_count 是这条消息的累计值（审批续跑也接着中断前往下算），
+    // 会话合计 = 流开始前其余消息的合计 + 本条累计值
+    const newDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
+    const newIterations = typeof data.step_count === 'number' ? ctx.preStreamIterationCount + data.step_count : null
+    if (match) {
+      Object.assign(vm.sessionUsage, patch)
+      if (newDuration !== null) vm.sessionDuration = newDuration
+      if (newIterations !== null) vm.iterationCount = newIterations
     } else {
-      const newDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
-      const newIterations = typeof data.step_count === 'number' ? ctx.preStreamIterationCount + data.step_count : null
-      if (match) {
-        Object.assign(vm.sessionUsage, patch)
-        if (newDuration !== null) vm.sessionDuration = newDuration
-        if (newIterations !== null) vm.iterationCount = newIterations
-      } else {
-        const cached = vm.sessionStates[sid]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-          if (newDuration !== null) cached.sessionDuration = newDuration
-          if (newIterations !== null) cached.iterationCount = newIterations
-        }
+      const cached = vm.sessionStates[sid]
+      if (cached) {
+        cached.sessionUsage = { ...cached.sessionUsage, ...patch }
+        if (newDuration !== null) cached.sessionDuration = newDuration
+        if (newIterations !== null) cached.iterationCount = newIterations
       }
     }
   }

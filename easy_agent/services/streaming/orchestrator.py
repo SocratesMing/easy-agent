@@ -1118,6 +1118,9 @@ async def resume_stream_generator(
     blocks = snapshot.blocks
     tool_call_records = snapshot.tool_call_records
     current_step = snapshot.current_step
+    # 计时接着中断前已用的耗时往下算（等待审批的时间不计）：续跑下发和落库的
+    # elapsed_time 与 step_count 一样是这条消息的累计值，落库不再丢掉中断前那段。
+    start_time -= snapshot.elapsed_time
     last_context_tokens = 0
     pending_tool_call_ids = snapshot.pending_tool_call_ids
     original_user_msg = ""  # 触发 HITL 的原始用户消息，供记忆生成使用
