@@ -38,10 +38,10 @@ class _SnapshotStore:
     def __init__(self):
         self.blob = None
 
-    def save_agent_checkpoint(self, session_id, blob):
+    def save_checkpoint(self, session_id, blob):
         self.blob = blob
 
-    def load_agent_checkpoint(self, session_id):
+    def load_checkpoint(self, session_id):
         return self.blob
 
 

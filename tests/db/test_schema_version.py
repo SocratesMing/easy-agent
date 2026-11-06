@@ -159,7 +159,7 @@ def test_expected_tables_match_created_schema(sqlite_path):
         names = {r[0] for r in cur.fetchall()}
     assert set(EXPECTED_TABLES).issubset(names)
     assert names.isdisjoint(
-        {"fmqt_lock", "tool_call_records", "thinking_records", "agent_checkpoints"}
+        {"fmqt_lock", "tool_call_records", "thinking_records"}
     )
 
 

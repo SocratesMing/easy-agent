@@ -744,6 +744,9 @@ async def prepare_turn(
     # （见 api/connectors.py 的 /agent/connectors/session），agent_manager 按会话读取。
     # expert_agent_id 只用于「专家变更 -> 驱逐缓存 Agent」，提示词已在上面的
     # system_prompt_extra 里拼好（专家切换立即生效，不串用上一轮的人设）。
+    from easy_agent.persistence.checkpoints import refresh_session_checkpointer
+
+    await refresh_session_checkpointer(session_id)
     agent = await get_or_create_agent_for_session(
         session_id, username, workspace_name, model_name=request.model,
         system_prompt_extra=system_prompt_extra,
@@ -850,6 +853,9 @@ async def prepare_resume(
     # 原样复用、人设保留；要么为 ""（缓存已失效）—— 等价于通用 Agent 重建，
     # 行为与引入专家模块之前逐字一致。
     # 连接器无需传参：agent_manager 直接读该会话的开关记录，缓存失效时按同一套集合重建。
+    from easy_agent.persistence.checkpoints import refresh_session_checkpointer
+
+    await refresh_session_checkpointer(session_id)
     agent = await get_or_create_agent_for_session(
         session_id,
         username,
