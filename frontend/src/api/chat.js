@@ -1,6 +1,7 @@
 import { API_BASE_URL } from '../config.js'
 import { getAuthHeaders, authFetch } from './auth.js'
 import { readSSE } from './sse.js'
+import { recoverChatStream } from '../shared/utils/chatStreamRecovery.js'
 
 export async function createSession(title, username = null) {
   const body = { title }
@@ -75,31 +76,40 @@ export async function getChatHistory(sessionId) {
 }
 
 // 查询会话当前是否仍有进行中的流式任务（页面刷新后判断是否需要重新挂载）
-export async function getStreamStatus(sessionId) {
+export async function getStreamStatus(sessionId, signal) {
   const response = await authFetch(
-    `${API_BASE_URL}/agent/chat/stream/status?session_id=${encodeURIComponent(sessionId)}`
+    `${API_BASE_URL}/agent/chat/stream/status?session_id=${encodeURIComponent(sessionId)}`,
+    { signal }
   )
   if (!response.ok) {
-    throw new Error('查询流式状态失败')
+    const error = new Error('查询流式状态失败')
+    error.status = response.status
+    throw error
   }
   return response.json()
 }
 
-// 挂载到进行中的流式任务：先回放已产生的全部事件，再持续接收后续事件
-export async function attachStream(sessionId, onChunk, signal) {
-  const controller = new AbortController()
-  const abortSignal = signal || controller.signal
-
+async function openLiveResponse(sessionId, signal) {
   const response = await authFetch(
     `${API_BASE_URL}/agent/chat/stream/live?session_id=${encodeURIComponent(sessionId)}`,
-    { signal: abortSignal }
+    { signal }
   )
   if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '挂载流式输出失败')
+    const payload = await response.json().catch(() => ({}))
+    const error = new Error(payload.detail || '挂载流式输出失败')
+    error.status = response.status
+    throw error
   }
+  return response
+}
 
-  await readSSE(response, onChunk, { signal: abortSignal })
+function readChatResponse(response, sessionId, onChunk, signal) {
+  return recoverChatStream({ response, sessionId, onChunk, signal, readSSE,
+    getStatus: getStreamStatus, openLive: openLiveResponse })
+}
+
+export async function attachStream(sessionId, onChunk, signal) {
+  await readChatResponse(null, sessionId, onChunk, signal)
 }
 
 export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, skills = [], pendingExpertId = '', expertAgentId = '', extra = null) {
@@ -152,16 +162,7 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
     throw new Error(error.detail || '发送消息失败')
   }
 
-  await readSSE(
-    response,
-    (data) => {
-      if (data.type === 'done') {
-        console.log('[SSE] Received done event:', JSON.stringify(data).substring(0, 500))
-      }
-      onChunk(data)
-    },
-    { signal: abortSignal }
-  )
+  await readChatResponse(response, sessionId, onChunk, abortSignal)
 }
 
 export async function resumeStream(sessionId, threadId, decisions, onChunk, signal, messageId) {
@@ -187,7 +188,7 @@ export async function resumeStream(sessionId, threadId, decisions, onChunk, sign
     throw new Error(error.detail || '恢复执行失败')
   }
 
-  await readSSE(response, onChunk, { signal: abortSignal })
+  await readChatResponse(response, sessionId, onChunk, abortSignal)
 }
 
 function generateMessageId() {

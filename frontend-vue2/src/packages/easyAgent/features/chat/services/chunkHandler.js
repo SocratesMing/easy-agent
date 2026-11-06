@@ -10,6 +10,7 @@
 import { chatBus } from '../store/chatStore.js'
 import { setReactive } from '../../../utils/reactiveSet.js'
 import { parseMCPResult } from '../../../utils/mcpResult.js'
+import { createStreamCheckpoint, STREAM_RECONNECTING_MESSAGE } from '../../../shared/utils/chatStreamRecovery.js'
 import { setExpertLastSession } from '../../../shared/utils/expertSession.js'
 
 export function createStreamChunkHandler(vm, ctx) {
@@ -143,7 +144,40 @@ export function createStreamChunkHandler(vm, ctx) {
     }
   }
 
+  let replaying = false
+  const checkpoint = createStreamCheckpoint(() => ({
+    message: vm.messages.find(m => m.id === ctx.assistantMsgId) || null,
+    usage: vm.sessionUsage, duration: vm.sessionDuration, iterations: vm.iterationCount,
+  }), base => {
+    const idx = findIdx()
+    if (idx !== -1) {
+      const message = base.message || { ...vm.messages[idx], content: '', thinking: '', tool_calls: [], blocks: [] }
+      setReactive(vm.messages, idx, { ...message, loading: true })
+    }
+    Object.assign(vm.sessionUsage, base.usage)
+    vm.sessionDuration = base.duration
+    vm.iterationCount = base.iterations
+  })
+
   const onChunk = (data) => {
+    if (data.type === 'stream_connection') {
+      if (!ctx.streamSessionId || vm.currentSessionId === ctx.streamSessionId) {
+        if (data.status === 'reconnecting') vm.error = STREAM_RECONNECTING_MESSAGE
+        else if (vm.error === STREAM_RECONNECTING_MESSAGE) vm.error = null
+      }
+      return
+    }
+    if (data.type === 'stream_replay') {
+      checkpoint.restore()
+      currentBlock = null
+      currentThinking = ''
+      currentContent = ''
+      currentToolCalls = []
+      blockOrderCounter = ctx.initialBlockOrder || 0
+      replaying = true
+      return
+    }
+    checkpoint.capture()
     const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success, title } = data
 
     if (eventType === 'start') {
@@ -167,7 +201,7 @@ export function createStreamChunkHandler(vm, ctx) {
           vm.$set(vm.attachedStreamingSessions, data.session_id, 'displayed')
         }
         vm.markStreaming(ctx.streamSessionId || vm.currentSessionId)
-        if (data.session_id) chatBus.$emit('stream-started', { sessionId: data.session_id, origin: vm._uid })
+        if (data.session_id && !replaying) chatBus.$emit('stream-started', { sessionId: data.session_id, origin: vm._uid })
       }
     } else if (eventType === 'token_usage') {
       applyUsage(data, ctx.streamSessionId)

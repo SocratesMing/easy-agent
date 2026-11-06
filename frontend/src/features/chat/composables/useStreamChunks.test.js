@@ -75,3 +75,15 @@ test('没有注入 runInSession 时也能派发（防御分支）', () => {
   handler.onChunk({ type: 'content', content: 'ok' })
   assert.ok(messages.value[0])
 })
+
+test('主页面回放重建本轮内容，不重复正文和累计用量', () => {
+  const { messages, state, handler } = makeHarness()
+  const events = [{ type: 'content', content: '风险分析', step: 1 }, { type: 'token_usage', elapsed_time: 2, step_count: 1 }]
+  for (const event of events) handler.onChunk(event)
+  const expected = JSON.stringify(messages.value)
+  handler.onChunk({ type: 'stream_replay' })
+  for (const event of events) handler.onChunk(event)
+  assert.equal(JSON.stringify(messages.value), expected)
+  assert.equal(state.sessionDuration.value, 2)
+  assert.equal(state.iterationCount.value, 1)
+})

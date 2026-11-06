@@ -11,6 +11,7 @@
  * - 每个流创建一个 handler 实例，实例内部闭包保存 currentBlock 等中间状态。
  */
 
+import { createStreamCheckpoint, STREAM_RECONNECTING_MESSAGE } from '../../../shared/utils/chatStreamRecovery.js'
 import { setExpertLastSession } from '../../../shared/utils/expertSession.js'
 
 export function createStreamChunkHandler(messages, ctx) {
@@ -163,7 +164,41 @@ export function createStreamChunkHandler(messages, ctx) {
     }
   }
 
+  let replaying = false
+  const checkpoint = createStreamCheckpoint(() => ({
+    message: messages.value.find(m => m.id === ctx.assistantMsgId) || null,
+    usage: sessionUsage.value, duration: sessionDuration.value, iterations: iterationCount.value,
+  }), base => {
+    const idx = findIdx()
+    if (idx !== -1) {
+      const message = base.message || { ...messages.value[idx], content: '', thinking: '', tool_calls: [], blocks: [] }
+      messages.value[idx] = { ...message, loading: true }
+    }
+    Object.assign(sessionUsage.value, base.usage)
+    sessionDuration.value = base.duration
+    iterationCount.value = base.iterations
+  })
+
   function onChunk(data) {
+    if (data.type === 'stream_connection') {
+      if (!ctx.streamSessionId || currentSessionId.value === ctx.streamSessionId) {
+        if (data.status === 'reconnecting') error.value = STREAM_RECONNECTING_MESSAGE
+        else if (error.value === STREAM_RECONNECTING_MESSAGE) error.value = null
+      }
+      return
+    }
+    if (data.type === 'stream_replay') {
+      checkpoint.restore()
+      currentBlock = null
+      currentThinking = ''
+      currentContent = ''
+      currentToolCalls = []
+      blockOrderCounter = ctx.initialBlockOrder || 0
+      totalThinkingDuration = 0
+      replaying = true
+      return
+    }
+    checkpoint.capture()
     const { type: eventType, content, duration, step, tool_name, tool_call_id: toolCallId, arguments: args, result, success, title } = data
     const sid = ctx.streamSessionId
 
@@ -189,7 +224,7 @@ export function createStreamChunkHandler(messages, ctx) {
           attachedStreamingSessions.value[data.session_id] = 'displayed'
         }
         markStreaming(ctx.streamSessionId || currentSessionId.value)
-        if (data.session_id && onStreamStarted) onStreamStarted(data.session_id)
+        if (data.session_id && onStreamStarted && !replaying) onStreamStarted(data.session_id)
       }
     } else if (eventType === 'token_usage') {
       applyUsage(data, ctx.streamSessionId)

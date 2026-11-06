@@ -393,7 +393,9 @@ export async function fetchWithAuth(url, init = {}) {
  */
 export async function handleStreamResponse(response) {
   if (response.status === 401) {
-    throw new Error('登录已过期，请重新登录')
+    const error = new Error('登录已过期，请重新登录')
+    error.status = 401
+    throw error
   }
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}))

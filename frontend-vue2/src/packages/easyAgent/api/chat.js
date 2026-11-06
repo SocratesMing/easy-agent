@@ -5,6 +5,7 @@ import request, {
   streamUrl,
 } from '../utils/request.js'
 import { readSSE } from './sse.js'
+import { recoverChatStream } from '../shared/utils/chatStreamRecovery.js'
 
 export async function createSession(title, username = null) {
   const data = { title }
@@ -71,27 +72,32 @@ export async function getChatHistory(sessionId) {
   }
 }
 
-export async function getStreamStatus(sessionId) {
+export async function getStreamStatus(sessionId, signal) {
   return request(
     {
       url: '/agent/chat/stream/status',
       method: 'get',
       params: { session_id: sessionId },
+      signal,
     },
     '查询流式状态失败'
   )
 }
 
+async function openLiveResponse(sessionId, signal) {
+  return handleStreamResponse(await fetchWithAuth(
+    streamUrl(`/agent/chat/stream/live?session_id=${encodeURIComponent(sessionId)}`),
+    { signal, headers: streamHeaders() }
+  ))
+}
+
+function readChatResponse(response, sessionId, onChunk, signal) {
+  return recoverChatStream({ response, sessionId, onChunk, signal, readSSE,
+    getStatus: getStreamStatus, openLive: openLiveResponse })
+}
+
 export async function attachStream(sessionId, onChunk, signal) {
-  const controller = new AbortController()
-  const abortSignal = signal || controller.signal
-  const response = await handleStreamResponse(
-    await fetchWithAuth(streamUrl(`/agent/chat/stream/live?session_id=${encodeURIComponent(sessionId)}`), {
-      signal: abortSignal,
-      headers: streamHeaders(),
-    })
-  )
-  await readSSE(response, onChunk, { signal: abortSignal })
+  await readChatResponse(null, sessionId, onChunk, signal)
 }
 
 export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, pageContext = null, skills = [], pendingExpertId = '', expertAgentId = '', extra = null) {
@@ -136,7 +142,7 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
       signal: abortSignal,
     })
   )
-  await readSSE(response, onChunk, { signal: abortSignal })
+  await readChatResponse(response, sessionId, onChunk, abortSignal)
 }
 
 export async function resumeStream(
@@ -162,7 +168,7 @@ export async function resumeStream(
       signal: abortSignal,
     })
   )
-  await readSSE(response, onChunk, { signal: abortSignal })
+  await readChatResponse(response, sessionId, onChunk, abortSignal)
 }
 
 function generateMessageId() {

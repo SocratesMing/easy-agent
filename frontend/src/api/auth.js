@@ -45,7 +45,9 @@ export async function authFetch(url, options = {}) {
     }
     clearAuth()
     dispatchAuthExpired()
-    throw new Error('登录已过期，请重新登录')
+    const error = new Error('登录已过期，请重新登录')
+    error.status = 401
+    throw error
   }
 
   return response
