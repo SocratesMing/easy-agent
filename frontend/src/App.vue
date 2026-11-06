@@ -1399,7 +1399,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   // 用于用户中途切换会话时，把用量更新写入所属会话的缓存而非当前显示
   let streamSessionId = currentSessionId.value
 
-  let contentWithFiles = message.trim().replace(/\s+/g, ' ')
+  let contentWithFiles = message.trim() // 只去首尾空白：换行与缩进是用户原话，气泡按纯文本原样展示
 
   const userMessage = {
     id: userMsgId,

@@ -71,6 +71,14 @@ def test_title_truncates_long_text(monkeypatch):
     assert title == body[: chat_turn.SESSION_TITLE_MAX_LEN] + "..."
 
 
+def test_title_collapses_multiline_message(monkeypatch):
+    """前端保留用户输入的换行与缩进，标题仍只占一行。"""
+    _patch_skills(monkeypatch)
+    message = "/docx 帮我整理下面的日志\n\n    ERROR  连接超时\n\tWARN　重试"
+    title = chat_turn.generate_session_title(message, None, "u")
+    assert title == "帮我整理下面的日志 ERROR 连接超时 WARN 重试"
+
+
 def test_title_without_username_keeps_raw_message(monkeypatch):
     """拿不到用户（未登录/内部调用）时不去猜技能，但连接器指令仍按固定格式摘掉。"""
     _patch_skills(monkeypatch)
