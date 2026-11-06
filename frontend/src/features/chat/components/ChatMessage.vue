@@ -118,8 +118,7 @@
           />
         </div>
         <template v-for="(block, idx) in finalContentBlocks" :key="'c'+block.origIndex">
-          <!-- 用户消息：技能标签与正文放在同一个气泡内横向排列（标签在左、正文在右），
-               避免标签独占一行；老数据正文里的 /技能名 指令由 displayContent 去掉 -->
+          <!-- 用户消息：技能标签与正文同一气泡横排（标签在左）；老数据的 /技能名 由 displayContent 去掉；正文按纯文本展示 -->
           <div
             v-if="block.type === 'content' && message.role === 'user'"
             class="message-text user-bubble"
@@ -135,7 +134,7 @@
                 <span class="message-skill-chip-name">{{ skill.name || skill.dir_name }}</span>
               </span>
             </span>
-            <MarkdownBody v-if="block.content" class="user-bubble-body" :content="block.content" :cite-map="citeNumberMap" />
+            <UserMessageText v-if="block.content" class="user-bubble-body" :content="block.content" />
           </div>
           <MarkdownBody v-else-if="block.type === 'content'" class="message-text" :content="block.content" :cite-map="citeNumberMap" />
         </template>
@@ -228,6 +227,7 @@
 import { ref, computed, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
 import { ensureHighlighter } from '../composables/useMarkdownRenderer.js'
 import MarkdownBody from './MarkdownBody.vue'
+import UserMessageText from './UserMessageText.vue'
 import KnowledgeEvidence from '../../knowledge/KnowledgeEvidence.vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'

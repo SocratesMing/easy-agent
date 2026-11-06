@@ -344,7 +344,7 @@ export default {
     },
     renderedMarkdown() {
       if (!this.textContent) return ''
-      return renderMarkdown(this.textContent, mdRenderer, { sourceCards: false })
+      return renderMarkdown(this.textContent, mdRenderer, { sourceCards: false, remoteImages: 'inline' })
     }
   },
   watch: {
