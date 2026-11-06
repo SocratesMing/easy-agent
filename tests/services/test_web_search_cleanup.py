@@ -10,7 +10,13 @@
 
 from __future__ import annotations
 
-from easy_agent.tools.web_search import _clean_summary, _dedupe_items, _format_items
+from easy_agent.tools.web_search import (
+    _clean_summary,
+    _dedupe_items,
+    _format_items,
+    _looks_like_listing_page,
+    _tavily_result_to_page_item,
+)
 
 # 新浪财经类站点的导航栏：一长串用空格分隔的栏目名，没有句读标点。
 _NAV_BAR = " ".join(
@@ -225,3 +231,100 @@ def test_dedupe_empty_body_does_not_collapse_results():
     kept = _dedupe_items(items)
 
     assert len(kept) == 2
+
+
+# ── 列表 / 聚合页：一个链接装多条新闻 ─────────────────────────────────
+#
+# 现场故障：文章页尾部拖一段「相关新闻」列表，列表里 15 条标题各有其事。
+# 模型把这些标题当成 15 条独立新闻，全部挂上当前文章页的链接，于是用户
+# 点开每一行的来源，看到的都是同一篇文章。
+
+# 倍可亲文章页真实抽取片段（侧栏标题 + 「>> 更多」入口 + 正文开头）。
+_BACKCHINA_RAW = """• 好声音没夺冠,执意嫁爱奇艺总裁,今官宣离婚后...
+ • 刘欢去世才1个多月，杨坤又传来坏消息.....
+ • 刘晓庆发文：被人算计，看着我好欺负.....
+ • 刘恺威带黎纪君与友人相聚，环抱女友浪漫又幸福
+ • 投诉有效果？TVB花旦张曦雯大尺度戏份只剩2秒
+ • 香港知名歌手亲证已秘婚一年，用情歌公开婚讯
+ • 叶非夜回应被郭宇欣起诉，要实名举报其偷税漏税
+ • 章子怡穿露肩裙亮相户外活动 冻得发抖登上热搜
+ • 林青霞欢度72岁生日 红衣配钻石珠宝优雅依旧
+ • 影帝豪宅被巨坑吞噬！凯奇自曝：我现在无家可归
+ • 陈奕迅一家三口集体取关黄泽林，愤怒又内疚...
+ >> 更多 娱乐八卦 文章 [...] “造星” 套路，猫狗们靠着主人的流量buff，一步步走出内宅，
+站到了聚光灯中央。比如孟子义，把自家的泰迪巧克力带进综艺节目《五十公里桃花坞》当“飞行嘉宾”。
+"""
+
+
+def test_clean_summary_drops_bullet_headline_list():
+    """侧栏「一行一条标题」的推荐列表必须整段剥掉，正文保留。"""
+    cleaned = _clean_summary(_BACKCHINA_RAW)
+
+    for headline in (
+        "刘恺威",
+        "章子怡",
+        "林青霞",
+        "陈奕迅",
+        "香港知名歌手",
+        "TVB花旦",
+        "凯奇",
+        "好声音",
+    ):
+        assert headline not in cleaned, headline
+    assert ">> 更多 娱乐八卦 文章" not in cleaned
+    assert "造星" in cleaned
+    assert "孟子义" in cleaned
+
+
+def test_clean_summary_keeps_short_bullet_list():
+    """正文自己用的列表（1~2 条项目符号）不能被误删。"""
+    raw = (
+        "记者了解到以下两点。\n"
+        "• 一是资金面保持宽松\n"
+        "• 二是长端供给压力仍在\n"
+        "整体判断不变。"
+    )
+    cleaned = _clean_summary(raw)
+
+    assert "资金面保持宽松" in cleaned
+    assert "长端供给压力仍在" in cleaned
+
+
+def test_listing_page_detected_by_url():
+    """频道页 / 关键词页的路径里没有文章 ID，直接判为列表页。"""
+    assert _looks_like_listing_page("https://www.backchina.com/news/entertainments", "")
+    assert _looks_like_listing_page("https://ent.163.com/keywords/5/a/51af/1.html", "")
+    assert _looks_like_listing_page("https://news.example.com/tags/entertainment", "")
+    # 真正的文章页不能误判：路径里有日期与文章 ID
+    assert not _looks_like_listing_page(
+        "https://www.backchina.com/news/2026/11/06/1055312.html?from=wyty", "“造星”套路正文。"
+    )
+    assert not _looks_like_listing_page("https://www.163.com/dy/article/LAVD5ROJ0517U8SU.html", "")
+
+
+def test_format_items_marks_listing_page():
+    """列表页结果要显式标注，模型才知道它不能当某条新闻的来源。"""
+    item = _item("娱乐八卦 - 倍可亲", "https://www.backchina.com/news/entertainments", _BACKCHINA_RAW)
+    item["listing"] = True
+    text = _format_items([item], 10, 500)
+
+    assert "列表/频道/关键词聚合页" in text
+    assert "不能作为某条新闻的来源链接" in text
+
+
+def test_tavily_item_flags_listing_page_but_not_article():
+    """归一化时就判定好：文章页即使是「大侧栏」也不能被当成列表页。"""
+    listing = _tavily_result_to_page_item(
+        {"url": "https://www.backchina.com/news/entertainments", "title": "娱乐八卦", "content": ""}
+    )
+    article = _tavily_result_to_page_item(
+        {
+            "url": "https://www.backchina.com/news/2026/11/06/1055312.html",
+            "title": "掀翻半个娱乐圈的顶流 真面目一出让人绷不住了",
+            "content": _BACKCHINA_RAW,
+        }
+    )
+
+    assert listing["listing"] is True
+    assert article["listing"] is False
+
