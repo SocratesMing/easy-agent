@@ -1,5 +1,10 @@
 # 多副本：每个 pod 独立的 SQLite checkpoint + 粘性会话
 
+> **已被后续实现取代（2026-11-05）**：Kubernetes 多副本配置现在使用
+> `EASY_CHECKPOINT_BACKEND=mysql`，checkpoint 快照共享存储于业务 MySQL 的
+> `agent_checkpoints` 表。SQLite `emptyDir` 会随 Pod 重建清空，因此无法满足待审批状态跨 Pod
+> 恢复。当前实现与运行配置以 `docs/architecture-current.md` 和 `deploy/k8s/agent-deployment.yaml` 为准。
+
 - 日期：2026-10-21
 - 状态：已实施（2026-10-21，尚未提交）。§11 的待确认项按推荐处理：清单示例用 ingress-nginx、前端与 API 同源、接受 pod 重建时等待中的审批作废、多副本时上传改为 `EASY_UPLOAD_BACKEND=store`。实施时另修了一处：`langgraph-checkpoint-sqlite` 原在可选依赖 `sqlite-saver` 里，镜像（`uv export --extra docs`）和 CI 都没装，官方 SQLite saver 导入失败、静默回退到业务库快照；已挪进主依赖
 - 更新（2026-10-29）：路径改到 config.yaml 的 `checkpoint.sqlite_path`（`config-example.yaml` 示例 `${CHECKPOINT_DIR:-/qts/checkpoint}/{pod}.db`）。YAML 没配时用旧环境变量 `EASY_CHECKPOINT_SQLITE_PATH`，再没有默认 `/qts/checkpoint/{pod}.db`；`auto` 不再因为业务库是 MySQL、没配路径而回退业务库快照。k8s 清单改为把 pod 本地的 emptyDir 挂到 `/qts/checkpoint`。下文的 `EASY_CHECKPOINT_SQLITE_PATH` / `data/checkpoints/{pod}.db` 是当时的写法

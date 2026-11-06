@@ -140,10 +140,8 @@ database:
 
 # ===== HITL 审批 checkpoint =====
 checkpoint:
-  # 人工审批断点的 SQLite 文件（官方 AsyncSqliteSaver）。{pod} 启动时换成 pod 名
-  # （EASY_POD_NAME → POD_NAME → HOSTNAME），每个 pod 一个文件；相对路径按项目根解析。
-  # 不配置时默认 /qts/checkpoint/{pod}.db。要放 pod 本地盘，不能放 NAS 等网络盘（SQLite WAL 不能跨主机）。
-  # 本机开发可在 .env.dev 里设 CHECKPOINT_DIR=data/checkpoints。
+  # 后端由 EASY_CHECKPOINT_BACKEND 选择。多副本部署用 mysql，快照共享保存在业务 MySQL；
+  # auto/sqlite 使用本机 SQLite 文件。
   sqlite_path: "${CHECKPOINT_DIR:-/qts/checkpoint}/{pod}.db"
 
 # ===== 人员账号 =====

@@ -6,7 +6,7 @@
 ## 1. 运行时入口
 
 - `main.py` / `easy-web`（`easy_agent/bootstrap/web_runner.py`）→ `easy_agent.app:app`（FastAPI）。
-- `app.py` lifespan：初始化环境/日志/配置 → 启动知识库 → DB → 提示词/技能发现 → Agent 配置 → 移植专家目录扫描 → HITL checkpointer（官方 SQLite saver / 进程内回退）→ 调度器（多 worker 保护）。
+- `app.py` lifespan：初始化环境/日志/配置 → 启动知识库 → DB → 提示词/技能发现 → Agent 配置 → 移植专家目录扫描 → HITL checkpointer（SQLite / MySQL 共享快照 / 进程内回退）→ 调度器（多 worker 保护）。
 - 配置：`easy_agent/config/config.yaml`（gitignored，单文件）；模板 `config-example.yaml`；环境变量来自 `.env.{AGENT_ENV}`；`EASY_CONFIG` 可覆盖路径。`config.py` 只保留 `Config`（加载/解析/路径 helpers）；Pydantic 配置模型在 `config_models.py`，键校验与 `${VAR}` 展开在 `config_validation.py`，均由 `config.py` re-export（批次 1A）。
 - 运行期配置持有者：`easy_agent/bootstrap/runtime_config.py`（基础层只读，避免 config → services 循环）。
 
@@ -18,7 +18,7 @@
 | `backends/shell.py` | `LocalShellBackend` + 虚拟路径翻译 + bwrap/Landlock/fail-closed 策略 |
 | `sandboxing/sandbox.py` / `landlock.py` / `fs_safety.py` | 命令沙箱、Landlock 降级、外部目录挂载安全校验 |
 | `agent/hitl.py` | 破坏性命令识别、execute 工具描述、按 config.yaml 的 `hitl` 段构造 `interrupt_on` |
-| `persistence/checkpoints.py` | 官方 `AsyncSqliteSaver` 与自研 `PersistentMemorySaver`（裁剪后写业务库） |
+| `persistence/checkpoints.py` | 官方 `AsyncSqliteSaver` 与自研 `PersistentMemorySaver`（可选 MySQL 共享快照） |
 | `persistence/stores.py` | 自研 LangGraph `BaseStore`（SQLite/MySQL） |
 | `agent/summarization.py` | 建图期替换官方摘要工厂 + 缺失降级护栏 |
 | `agent/subagents.py` / `agent/skills.py` | 子代理定义；技能发现（根 `skills/` 为 canonical，包内副本回退） |
@@ -64,7 +64,7 @@
 - SQLite（单机开发，启用 WAL/busy_timeout/synchronous=NORMAL）或 MySQL（多副本生产，代码禁止静默降级）。
 - 会话消息行表 `session_messages`；`sessions.messages` 为 legacy 大字段（仅历史会话回退读取）。
 - 领域 schema 通过 `db/schema_registry.py` 注册，`Database.init_tables()` 统一执行。
-- LangGraph checkpointer：默认（`EASY_CHECKPOINT_BACKEND=auto`）用官方 `AsyncSqliteSaver`，文件路径取 config.yaml 的 `checkpoint.sqlite_path`（没配时用旧环境变量 `EASY_CHECKPOINT_SQLITE_PATH`，再没有是 `/qts/checkpoint/{pod}.db`；相对路径按仓库根解析，`synchronous=NORMAL`）；显式 `EASY_CHECKPOINT_BACKEND=legacy`，或单 pod 时 SQLite 打不开，才用 `PersistentMemorySaver`（进程内，不写业务库，重启后审批状态不在；只按 thread 数裁剪，最多 3 个 thread；thread 内 checkpoint 全部保留，`messages` 是增量存储）；删除会话时一并删除它在官方 saver 里的 thread，定时任务每次运行结束后删除自己的 thread（DA-03 P0）。Postgres checkpointer / Store 已移除（2026-10-21，生产只有 MySQL），LangGraph Store 固定为业务库 `SqlStore`。多副本时每个 pod 用自己的 SQLite 文件：路径里的 `{pod}`（默认路径已带）启动时换成实例名，`EASY_STICKY_SESSIONS=1` 确认 Ingress 已配 cookie 粘性会话，每个 pod 一个 worker；其余多副本组合启动时 fail-fast，这种模式下 SQLite 打不开也不回退进程内 checkpointer。审批记下所在实例（`pending_approval.instance`），恢复请求落到别的 pod、或本 pod 找不到这条审批的 checkpoint 时返回 409；删除会话后，其余 pod 由后台对账（`EASY_CHECKPOINT_GC_INTERVAL`，默认 600 秒）补删「会话已不存在」的 thread（`docs/design/2026-10-21-per-pod-sqlite-checkpoints.md`）。
+- LangGraph checkpointer：默认（`EASY_CHECKPOINT_BACKEND=auto`）用官方 `AsyncSqliteSaver`，文件路径取 config.yaml 的 `checkpoint.sqlite_path`（没配时用旧环境变量 `EASY_CHECKPOINT_SQLITE_PATH`，再没有是 `/qts/checkpoint/{pod}.db`；相对路径按仓库根解析，`synchronous=NORMAL`）；单机显式 `EASY_CHECKPOINT_BACKEND=legacy` 或 SQLite 打不开时使用进程内 `PersistentMemorySaver`。多副本生产显式设为 `EASY_CHECKPOINT_BACKEND=mysql`，`PersistentMemorySaver` 将 session 快照写入业务库 `agent_checkpoints`，Pod 重建或请求落到其他副本时从共享库恢复；新消息和 resume 前刷新缓存快照。所有 saver 快照限制 12 MiB、每 session 保留最近 3 个 thread，thread 内 checkpoint 全保留（`messages` 是增量存储）。删除会话时删除共享快照。Postgres checkpointer / Store 已移除（2026-10-21），LangGraph Store 固定为业务库 `SqlStore`。
 
 ## 4. 前端
 

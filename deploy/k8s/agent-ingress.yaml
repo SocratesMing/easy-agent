@@ -1,8 +1,8 @@
 # Sticky-session Ingress for agent-deployment.yaml (ingress-nginx).
 #
-# HITL checkpoints live in one SQLite file per pod, so a pending approval can only be
-# resumed on the pod that recorded it. Cookie affinity pins each browser to one pod;
-# "persistent" mode keeps existing users where they are when the deployment scales up.
+# Cookie affinity keeps browser requests on one pod; "persistent" mode keeps existing
+# users where they are when the deployment scales up. HITL checkpoint state is shared
+# through MySQL and approvals can resume after Pod replacement or on another replica.
 # The frontend must call the API on the same origin (default: relative /agent/... paths),
 # otherwise the browser does not send the cookie. Do not rely on Service
 # sessionAffinity: ClientIP, behind the Ingress every request comes from the controller.
