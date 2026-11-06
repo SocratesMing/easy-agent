@@ -156,9 +156,19 @@ export function init(options = {}) {
     tokenKey: shareLogin ? MAIN_TOKEN_KEY : SDK_TOKEN_KEY,
     usernameKey: shareLogin ? MAIN_USERNAME_KEY : SDK_USERNAME_KEY,
     // 401：换新 token 后由请求层把失败的请求重发一次，用户无感
-    refreshAuth: () => relogin(),
+    refreshAuth: () => {
+      // 优先取宿主的init options
+      if (typeof options.refreshAuth === "function")
+        return options.refreshAuth();
+      return relogin();
+    },
     // 无法重发的场景（如上传）：续期后刷新会话列表
     onAuthExpired: () => {
+      // 优先取宿主的init options
+      if (typeof options.onAuthExpired === "function") {
+        options.onAuthExpired();
+        return;
+      }
       handleAuthExpired();
     },
   });
@@ -313,7 +323,7 @@ export function init(options = {}) {
     chatStore.username = profile.username;
   }
 
-  /** 重新获取 token：并发调用合并为一次，成功 resolve true；失败通知宿主 onAuthExpired */
+  /** 重新获取 token：并发调用合并为一次，成功 resolve true；失败通知宿主 onReLoginFailed */
   function relogin() {
     if (bootstrapping || destroyed) return Promise.resolve(false);
     if (reauthing) return reauthing;
@@ -325,8 +335,8 @@ export function init(options = {}) {
         await loadProfile();
         return true;
       } catch (e) {
-        if (typeof options.onAuthExpired === "function")
-          options.onAuthExpired(e);
+        if (typeof options.onReLoginFailed === "function")
+          options.onReLoginFailed(e);
         else console.warn("[EasyAgentSidebar] 登录已过期：", e && e.message);
         return false;
       } finally {
@@ -334,6 +344,29 @@ export function init(options = {}) {
       }
     })();
     return reauthing;
+  }
+
+  function logout() {
+    clearAuth();
+    destroy();
+  }
+
+  function destroy() {
+    if (destroyed) return;
+    destroyed = true;
+    window.removeEventListener("popstate", onPopState);
+    window.removeEventListener("hashchange", onPopState);
+    if (dockTarget) {
+      dockTarget.style.marginRight = dockOriginalMargin;
+      dockTarget.style.transition = dockOriginalTransition;
+    }
+    vm.$destroy();
+    hostEl.remove();
+    setExternalPageContext("");
+    chatStore.sessions = [];
+    chatStore.streamingSessions = [];
+    chatStore.username = "";
+    current = null;
   }
 
   async function handleAuthExpired() {
@@ -434,28 +467,10 @@ export function init(options = {}) {
       await loadProfile();
       if (sidebar()) await sidebar().loadSessions();
     },
+    relogin,
     /** 宿主用户登出时调用：清除 SDK 保存的登录态并销毁侧边栏 */
-    logout: () => {
-      clearAuth();
-      api.destroy();
-    },
-    destroy: () => {
-      if (destroyed) return;
-      destroyed = true;
-      window.removeEventListener("popstate", onPopState);
-      window.removeEventListener("hashchange", onPopState);
-      if (dockTarget) {
-        dockTarget.style.marginRight = dockOriginalMargin;
-        dockTarget.style.transition = dockOriginalTransition;
-      }
-      vm.$destroy();
-      hostEl.remove();
-      setExternalPageContext("");
-      chatStore.sessions = [];
-      chatStore.streamingSessions = [];
-      chatStore.username = "";
-      current = null;
-    },
+    logout,
+    destroy,
   };
 
   current = api;
