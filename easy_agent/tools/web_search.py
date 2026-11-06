@@ -239,6 +239,34 @@ _BREADCRUMB_RE = re.compile(r"^[^。！？\n]{0,40}(?:\s*[>»›]\s*[^。！？\
 #: 摘要为空时给模型的占位说明（避免模型把「没有正文」当成「没有这条新闻」）。
 _NO_SUMMARY_PLACEHOLDER = "（该页面未能抽取到正文，仅有标题与链接，不要据此推断内容）"
 
+# ── 列表 / 聚合页 ─────────────────────────────────────────────────────
+#: 侧栏「相关新闻 / 热门排行」与频道页会把多条新闻渲染成一行一条的短标题，
+#: 行首带项目符号。模型会把这些标题当成一条条独立新闻，再统一挂上当前页面的
+#: 链接——「每条新闻的来源都指向同一个地址」就是这么来的，渲染前必须剥掉。
+#: 只认真正的项目符号，不认 markdown 的 ``-`` / ``*``，避免误删正文列表。
+_HEADLINE_BULLET_RE = re.compile(r"^\s*[•·●○▪◆]\s*\S")
+#: 标题一般不超过这个长度；超过说明是正文句子而不是标题。
+_HEADLINE_MAX_CHARS = 40
+#: 列表页页脚的入口片段（``>> 更多 娱乐八卦 文章``），本身不是正文；
+#: 尾巴上的 ``[...]`` 是抽取服务插入的截断标记，一并去掉。
+_MORE_LINK_RE = re.compile(r"(?:>>|»|›)\s*更多[^\n]{0,24}?文章\s*(?:\[\.{2,3}\])?\s*")
+#: 抽取服务插入的行内截断标记
+_TRUNCATION_MARK_RE = re.compile(r"\s*\[\.{2,3}\]\s*")
+#: 列表 / 频道 / 关键词聚合页的 URL 特征：路径里没有文章 ID，只有栏目名或关键词页。
+_LISTING_PATH_RE = re.compile(
+    r"/(?:keywords?|tags?|topics?|channels?|list|categor(?:y|ies)|search|"
+    r"entertainments?|index\.(?:html?|shtml?))(?:/|$)",
+    re.I,
+)
+#: 列表页结果的摘要占位：不把一页几十条标题喂给模型，否则它还是会拆成多行、
+#: 共用这一个链接。只保留「这是一页多标题」这个事实。
+_LISTING_SUMMARY = "（该页为列表页，一页含多条互不相关的新闻标题，正文已省略）"
+#: 渲染时给列表页结果加的一句提醒（模型据此判断不能直接当来源）。
+_LISTING_NOTE = (
+    "    注意: 该页是列表/频道/关键词聚合页，一页内有多条互不相关的标题，"
+    "只能当检索线索，不能作为某条新闻的来源链接"
+)
+
 
 def _looks_like_page_fragment(para: str) -> bool:
     """判断一段是页面控件 / 元信息（面包屑、时间、来源、分享按钮）。
@@ -279,6 +307,64 @@ def _looks_like_nav_paragraph(para: str) -> bool:
     return sum(len(token) for token in tokens) / len(tokens) < 8
 
 
+def _looks_like_headline(line: str) -> bool:
+    """判断一行是不是「侧栏 / 频道页里的新闻标题」（不是正文句子）。"""
+    text = _HEADLINE_BULLET_RE.sub("", line).strip()
+    if not text or len(text) > _HEADLINE_MAX_CHARS:
+        return False
+    # 标题常以「！」「？」结尾，但不会有句号；带句号的更可能是正文列表项，不能删
+    return "。" not in text
+
+
+def _strip_headline_lists(text: str) -> str:
+    """剥掉「一页多条标题」的列表块（侧栏推荐、频道列表、关键词聚合页）。
+
+    判定：连续 ≥3 行都是短标题（行首带项目符号、长度 ≤40、无句末标点）。
+    单条或两条项目符号不动——正文自己用的列表不能被误删。
+    """
+    lines = str(text or "").splitlines()
+    if len(lines) < 3:
+        return str(text or "")
+    drop = [False] * len(lines)
+    run: list[int] = []
+
+    def _flush() -> None:
+        if len(run) >= 3:
+            for pos in run:
+                drop[pos] = True
+        run.clear()
+
+    for idx, line in enumerate(lines):
+        if _looks_like_headline(line):
+            run.append(idx)
+        else:
+            _flush()
+    _flush()
+    if not any(drop):
+        return str(text or "")
+    return "\n".join(line for idx, line in enumerate(lines) if not drop[idx])
+
+
+def _looks_like_listing_page(link: str, summary: str) -> bool:
+    """判断某条结果是不是「列表 / 频道 / 关键词聚合页」。
+
+    这类页面一个 URL 里装了几十条不同新闻的标题，模型照抄时会把这些标题
+    拆成多行、共用同一个链接，读者点开自然对不上。渲染时标注出来，并在
+    提示词层面禁止拿它当来源。
+    """
+    try:
+        path = urlparse(str(link or "")).path or ""
+    except ValueError:
+        path = ""
+    if path and _LISTING_PATH_RE.search(path):
+        return True
+    lines = [line.strip() for line in str(summary or "").splitlines() if line.strip()]
+    if len(lines) < 8:
+        return False
+    short = [line for line in lines if len(line) <= 30 and not re.search(r"[。！？]", line)]
+    return len(short) / len(lines) >= 0.6
+
+
 def _clean_summary(text: str, title: str = "") -> str:
     """剥掉网页抓取文本里的导航、侧栏、推荐、版权等非正文内容。
 
@@ -299,6 +385,12 @@ def _clean_summary(text: str, title: str = "") -> str:
     if heading:
         cut = min(cut, heading.start())
     raw = raw[:cut]
+
+    # 侧栏 / 频道页的「一行一条标题」列表连噪声标记都没有，单独剥一遍；
+    # 不剥的话模型会把每条标题当成一条独立新闻，再统一挂上当前页面的链接。
+    raw = _strip_headline_lists(raw)
+    raw = _MORE_LINK_RE.sub("", raw)
+    raw = _TRUNCATION_MARK_RE.sub(" ", raw)
 
     paragraphs = [part.strip() for part in re.split(r"\n\s*\n", raw)]
     kept = [
@@ -420,15 +512,20 @@ def _format_items(items: list[dict[str, Any]], max_results: int, main_text_max_c
         link = str(item.get("link") or "").strip()
         hostname = str(item.get("hostname") or "").strip()
         published = str(item.get("publishedTime") or "").strip()
-        # 先清洗（去掉导航/侧栏/版权/重复标题）再截断，让正文开头优先占据预算
-        summary = _clean_summary(item.get("summary") or "", title)
-        if not summary and main_text_max_chars:
-            summary = _clean_summary(item.get("mainText") or "", title)
-        if summary and main_text_max_chars and len(summary) > main_text_max_chars:
-            # Tavily 的 content 可能是整页正文（尤其 PDF），必须截断避免撑爆上下文
-            summary = summary[:main_text_max_chars] + "…"
-        elif not summary:
-            summary = _NO_SUMMARY_PLACEHOLDER
+        listing = bool(item.get("listing"))
+        if listing:
+            # 列表页的正文就是几十条别人的标题，喂给模型只会被拆成多行共用这个链接
+            summary = _LISTING_SUMMARY
+        else:
+            # 先清洗（去掉导航/侧栏/版权/重复标题）再截断，让正文开头优先占据预算
+            summary = _clean_summary(item.get("summary") or "", title)
+            if not summary and main_text_max_chars:
+                summary = _clean_summary(item.get("mainText") or "", title)
+            if summary and main_text_max_chars and len(summary) > main_text_max_chars:
+                # Tavily 的 content 可能是整页正文（尤其 PDF），必须截断避免撑爆上下文
+                summary = summary[:main_text_max_chars] + "…"
+            elif not summary:
+                summary = _NO_SUMMARY_PLACEHOLDER
 
         lines.append(f"[{idx}] {title}")
         if link:
@@ -445,6 +542,8 @@ def _format_items(items: list[dict[str, Any]], max_results: int, main_text_max_c
             lines.append(f"    {meta}")
         if summary:
             lines.append(f"    摘要: {summary}")
+        if listing:
+            lines.append(_LISTING_NOTE)
     return "\n".join(lines)
 
 
@@ -455,12 +554,18 @@ def _tavily_result_to_page_item(result: dict[str, Any]) -> dict[str, Any]:
         hostname = urlparse(link).netloc
     except ValueError:
         hostname = ""
+    content = str(result.get("content") or "").strip()
+    title = str(result.get("title") or "").strip()
     return {
-        "title": str(result.get("title") or "").strip(),
+        "title": title,
         "link": link,
         "hostname": hostname,
         "publishedTime": _format_published(result.get("published_date")),
-        "summary": str(result.get("content") or "").strip(),
+        "summary": content,
+        # 列表 / 频道 / 关键词聚合页：一页多条新闻，不能当单条新闻的来源。
+        # 用清洗后的文本判断——真正的文章页也可能拖一大段侧栏标题，
+        # 直接看原文会把它误判成列表页。
+        "listing": _looks_like_listing_page(link, _clean_summary(content, title)),
     }
 
 
@@ -619,6 +724,8 @@ class WebSearchTool(BaseTool):
 
         raw_count = len(items)
         items = _dedupe_items(items)
+        # 列表页排在最后：它只剩「一页多标题」这个事实，别占掉文章页的展示名额
+        items.sort(key=lambda entry: bool(entry.get("listing")))
         formatted = _format_items(items, self.max_results, self.main_text_max_chars)
         shown = min(len(items), self.max_results)
         logger.info(
@@ -698,6 +805,8 @@ class WebSearchTool(BaseTool):
 
         raw_count = len(items)
         items = _dedupe_items(items)
+        # 列表页排在最后：它只剩「一页多标题」这个事实，别占掉文章页的展示名额
+        items.sort(key=lambda entry: bool(entry.get("listing")))
         formatted = _format_items(items, self.max_results, self.main_text_max_chars)
         shown = min(len(items), self.max_results)
         logger.info(

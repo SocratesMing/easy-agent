@@ -141,14 +141,20 @@ def persist_partial(
     start_time: float,
     with_approval: bool = False,
     raise_on_error: bool = False,
+    fallback_note: str | None = None,
 ) -> None:
     """保存「进行中」的 assistant 消息（取消 / 异常 / HITL 中断共用）。
 
     ``raise_on_error=True`` 用于恢复流取消路径：原实现不吞异常，保持行为一致。
+    ``fallback_note`` 只在异常兜底时传：超时截断的兜底文案随消息一起落库（进
+    ``extra_data``），前端刷新/切会话后仍显示；默认 ``None`` 时消息结构与改动前一致。
     """
     try:
         partial_msg = _partial_message_dict(
-            proc, time.time() - start_time, with_approval=with_approval
+            proc,
+            time.time() - start_time,
+            with_approval=with_approval,
+            fallback_note=fallback_note,
         )
         _message_port(db).update_last_assistant_message(session_id, partial_msg)
     except Exception as e:

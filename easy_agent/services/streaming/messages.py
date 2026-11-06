@@ -202,11 +202,17 @@ def build_assistant_message_dict(
     result_limit: int | None = None,
     reasoning_tokens: int = 0,
     context_length: int | None = None,
+    fallback_note: str | None = None,
 ) -> dict:
     """构建用于持久化/返回的 assistant 消息字典（常规结束、HITL 中断、取消等场景共用）。
 
     ``context_length`` 是本轮所用模型的上下文窗口：会话不记录所用模型（输入框可以逐轮
     切换），会话接口靠它还原占用率的分母；未知时不写这个键。
+
+    ``fallback_note`` 是「这一轮没跑完」的兜底说明（目前只有模型流式超时会带）。它作为
+    消息的**额外顶层键**落库：消息表只固定 role/content/timestamp，其余键进 ``extra_data``
+    JSON，读回时原样 update 回来，所以**不需要改表结构**。默认 ``None`` 时不写这个键，
+    正常消息与改动前的 JSON 完全一致。
     """
     _raw_content = content or ""
     # 过滤空/纯空白的 content block，避免持久化与历史会话渲染空正文
@@ -225,7 +231,7 @@ def build_assistant_message_dict(
     }
     if context_length:
         usage["context_length"] = int(context_length)
-    return {
+    message = {
         "role": "assistant",
         "content": _raw_content if _raw_content.strip() else "",
         "timestamp": datetime.now().isoformat(),
@@ -235,10 +241,23 @@ def build_assistant_message_dict(
         "blocks": _clean_blocks or None,
         "usage": usage,
     }
+    if fallback_note:
+        message["fallback_note"] = fallback_note
+    return message
 
 
-def _partial_message_dict(proc, elapsed_time: float, *, with_approval: bool = False) -> dict:
-    """从当前 StreamProcessor 构建「进行中」的 assistant 消息（增量/HITL/取消/异常共用）。"""
+def _partial_message_dict(
+    proc,
+    elapsed_time: float,
+    *,
+    with_approval: bool = False,
+    fallback_note: str | None = None,
+) -> dict:
+    """从当前 StreamProcessor 构建「进行中」的 assistant 消息（增量/HITL/取消/异常共用）。
+
+    ``fallback_note`` 仅异常兜底传值：超时截断时把兜底文案一起落库，前端刷新/切会话后
+    仍能显示（前端 ``syncSessionFromServer`` 是整表替换，不落库就会丢）。
+    """
     return build_assistant_message_dict(
         content=proc.accumulated_response,
         thinking=proc.accumulated_thinking,
@@ -252,4 +271,5 @@ def _partial_message_dict(proc, elapsed_time: float, *, with_approval: bool = Fa
         elapsed_time=elapsed_time,
         step_count=proc.current_step,
         context_length=getattr(proc, "context_length", None),
+        fallback_note=fallback_note,
     )
