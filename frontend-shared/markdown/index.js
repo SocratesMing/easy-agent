@@ -18,44 +18,42 @@
 // 注意 marked 5.x 起已移除 headerIds / mangle 选项，标题不再生成 id（与旧版关闭时行为一致）。
 // 2026-11-06 中文排版两处修正（见 setupMarkedExtensions）：删除线只认 ~~ 双波浪线；强调与删除线的
 // 定界符按 CJK 友好规则识别（./cjkFriendly.js 依赖 marked 17 的内部规则名，升级 marked 时须回归单测）。
+// 2026-11-06 剩余问题修复：来源卡片 / 知识依据改用占位标记 + marked 扩展（不再往源文本注入
+// HTML），因此 renderer.html 可以默认转义模型写的原始 HTML；预处理统一经
+// ./codeRegions.js 保护代码；流式渲染走 ./streamingTail.js 与 renderMarkdownBlocks()。
 import { marked } from 'marked'
 import katexExtension from 'marked-katex-extension'
-import { markedEmoji } from 'marked-emoji'
 import { nameToEmoji } from 'gemoji'
 import markedCjkFriendly from './cjkFriendly.js'
 import { createInlineMathExtension } from './math.js'
 import { CODE_COPY_ONCLICK, sanitizeHtml } from './sanitize.js'
+import { CODE_HOLDER_PREFIX, protectCodeRegions } from './codeRegions.js'
+import { MARKER_PREFIX, parseMarker, sourceCardMarker } from './markers.js'
+import { bufferStreamingTail } from './streamingTail.js'
 
 // 预览组件（Excel 兜底表格、docx 链接）经 markdownSetup 同一出口拿消毒函数
 export { isSafeLinkUrl, neutralizeUnsafeLinks, sanitizeHtml } from './sanitize.js'
+export { citationMarker, sourceCardMarker } from './markers.js'
+export { protectCodeRegions } from './codeRegions.js'
+export { bufferStreamingTail } from './streamingTail.js'
 
 let initialized = false
 
 // 将模型可能“内联”写出的块级公式 $$...$$ 与 \[...\] 规整到独立行，
 // 否则 marked-katex-extension 的块级规则要求 $$ 位于行首（\[ \] 更是完全不认），
 // 模型把公式嵌在段落中间（如 `text$$x$$text`）时不会被识别，最终以纯文本显示。
-// 处理前先保护代码块/行内代码，避免把代码里的 $ 误当公式。
+// 代码区域（``` / ~~~ 围栏、缩进代码块、多反引号行内代码、流式未闭合围栏）整体保护。
 export function normalizeMathDelimiters(content) {
   if (typeof content !== 'string') return content
-  const protectedChunks = []
-  const placeholder = (chunk) => {
-    protectedChunks.push(chunk)
-    return ' CODE' + (protectedChunks.length - 1) + ' '
-  }
-  // 末位分支 (?:```|$) 用于保护「流式输出中尚未闭合」的代码块：
-  // 此时没有结尾 ```，若只匹配成对围栏，代码里的 $ 会被后面的公式规整当成数学公式改写，
-  // 导致流式过程中代码被 KaTeX 渲染成公式（样式错乱），流结束后才恢复正常。
-  let s = content
-    .replace(/```[\s\S]*?(?:```|$)/g, placeholder)
-    .replace(/`[^`\n]+`/g, placeholder)
-  s = s.replace(/\$\$([\s\S]+?)\$\$/g, (_, inner) => '\n\n$$\n' + inner.trim() + '\n$$\n\n')
-  // \[ … \] 同样规整成 $$ 块。前面是反斜杠的不动（LaTeX 换行加间距 \\[2pt]、转义的反斜杠），
-  // 内容只有数字的也不动（\[1\] 多半是转义的方括号）
-  s = s.replace(/(^|[^\\])\\\[([\s\S]+?)\\\]/g, (all, lead, inner) =>
-    /^\s*\d*\s*$/.test(inner) ? all : lead + '\n\n$$\n' + inner.trim() + '\n$$\n\n'
-  )
-  s = s.replace(/ CODE(\d+) /g, (_, i) => protectedChunks[+i])
-  return s
+  return protectCodeRegions(content, (s) => {
+    let out = s.replace(/\$\$([\s\S]+?)\$\$/g, (_, inner) => '\n\n$$\n' + inner.trim() + '\n$$\n\n')
+    // \[ … \] 同样规整成 $$ 块。前面是反斜杠的不动（LaTeX 换行加间距 \\[2pt]、转义的反斜杠），
+    // 内容只有数字的也不动（\[1\] 多半是转义的方括号）
+    out = out.replace(/(^|[^\\])\\\[([\s\S]+?)\\\]/g, (all, lead, inner) =>
+      /^\s*\d*\s*$/.test(inner) ? all : lead + '\n\n$$\n' + inner.trim() + '\n$$\n\n'
+    )
+    return out
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +64,9 @@ export function normalizeMathDelimiters(content) {
 //   [东方财富收评](https://xxx.html)
 //   https://xxx.html（无标题时以域名作为卡片标题）
 // 完整地址放在卡片 title 属性里，悬停可查看但界面不展示。
+//
+// 2026-11-06：只往源文本放占位标记（./markers.js），HTML 由 marked 扩展生成；
+// 同时收紧判定，命令行 / 表格行 / 完整句子 / 含反引号的行一律不改写。
 // ---------------------------------------------------------------------------
 
 const SOURCE_CARD_ICON =
@@ -97,6 +98,12 @@ function buildSourceCardHtml(title, url) {
   )
 }
 
+/** 知识依据锚点：数据全部来自标记，display 由渲染器转义 */
+function buildCitationHtml(display) {
+  const d = escapeHtml(display)
+  return '<a class="ke-cite" data-cite="' + d + '">[知识依据' + d + ']</a>'
+}
+
 // 裸 URL 的字符集：只认 ASCII 里合法的 URL 字符，不用 \S+。
 // 模型的中文回复常把 URL 紧贴在中文/全角标点里（「…/a.html。这是下一句」），
 // \S+ 会把后面整句中文一起吞进 href，正文内容随之从界面上消失。
@@ -112,6 +119,14 @@ const URL_ONLY_RE = new RegExp('^(' + URL_BODY + ')\\s*(' + TRAIL_PUNCT + ')\\s*
 const MD_LINK_LINE_RE = new RegExp(
   '^\\[([^\\]\\n]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)\\s*(' + TRAIL_PUNCT + ')\\s*$'
 )
+
+// 命令行里带 URL 是极常见的（git clone / curl / npm install），不能整行变卡片
+const COMMAND_RE = /(?:^|[\s（(：:])(?:git|curl|wget|pip3?|npm|npx|yarn|pnpm|docker|kubectl|sudo|apt|apt-get|yum|dnf|brew|composer|mvn|gradle|make|ssh|scp|rsync|tar|cd|ls|cat|echo|export|python3?|node)(?:\s|['"`])/i
+
+// 「标题」明显是完整句子时不是来源行：含句号/逗号，或带指引性动词的中文长串。
+// 注意不误伤「凤凰财经/中国证券报」「东方财富收评」这类纯名词的来源名。
+const SENTENCE_PUNCT = /[。！？；，、]/
+const SENTENCE_VERB = /(?:参考|参阅|详见|参见|查看|请看|安装|使用|运行|执行|下载|访问|了解|解释|说明|介绍|获取|克隆|点击|打开|输入|复制|如何|为什么|可以|建议)/
 
 /**
  * 拆分 URL 与其后紧跟的收尾标点。
@@ -144,6 +159,13 @@ function hasUnclosedMarkdown(line) {
   return opens > closes
 }
 
+/** 标题是否是一句完整的话（而非来源名） */
+function looksLikeSentence(title) {
+  if (SENTENCE_PUNCT.test(title)) return true
+  const han = (title.match(/[\u4e00-\u9fff]/g) || []).length
+  return han >= 4 && SENTENCE_VERB.test(title)
+}
+
 /**
  * 行内裸 URL 规整：把紧邻中文/全角标点的裸 URL 收口成 <url> 自动链接。
  * 否则 marked 的 GFM 自动链接会把 URL 后面的中文一起算进链接，
@@ -152,14 +174,16 @@ function hasUnclosedMarkdown(line) {
  */
 function normalizeInlineUrls(line) {
   if (!line || line.indexOf('http') === -1) return line
-  // 来源卡片是已经生成好的 HTML（标题可能就是 URL），不能再包一层链接
-  if (line.indexOf('msg-source-card') !== -1) return line
+  // 代码占位符里的地址已经处理过，不能再包一层链接。
+  // 注意不能因为「行里有知识依据标记」就整行跳过：同一行里的裸 URL 仍需收口，
+  // 否则 marked 的 GFM 自动链接会把 URL 后面的中文一起吞进 href。
+  if (line.indexOf(CODE_HOLDER_PREFIX) !== -1) return line
   const held = []
   const hold = (chunk) => {
     held.push(chunk)
     return '\u0000' + (held.length - 1) + '\u0000'
   }
-  // 保护已有 markdown 链接/图片、HTML 标签（来源卡片就是 HTML）与 <url> 自动链接
+  // 保护已有 markdown 链接/图片、HTML 标签与 <url> 自动链接
   const s = line
     .replace(/!?\[[^\]\n]*\]\([^)\s]*\)/g, hold)
     .replace(/<[^>]*>/g, hold)
@@ -205,100 +229,197 @@ export function linkifyText(text) {
   return html + escapeHtml(source.slice(last))
 }
 
-// 单行改写：命中来源链接模式则生成卡片 HTML（保留列表/标题前缀），否则原样返回
-function beautifySourceLine(raw) {
+/**
+ * 单行解析：命中来源链接模式则返回卡片数据，否则返回 null。
+ * 保留列表 / 标题前缀，改写后前缀仍留在 markdown 源文本里。
+ */
+function parseSourceLine(raw) {
   const lead = raw.match(/^(\s*(?:[-*+]|\d+[.)])?\s*#{0,6}\s*)/)
   const prefix = lead ? lead[1] : ''
   const line = raw.slice(prefix.length)
-  if (!line) return raw
+  if (!line) return null
+  // 表格行（含无首尾竖线的写法）、含反引号的行、命令行都不参与改写
+  if (line.indexOf('|') !== -1 || line.indexOf('`') !== -1 || COMMAND_RE.test(line)) return null
 
   // 1. markdown 链接独立成行：[标题](url)
   let m = line.match(MD_LINK_LINE_RE)
-  if (m) {
-    return prefix + buildSourceCardHtml(m[1].trim(), m[2]) + (m[3] || '')
-  }
+  if (m) return { prefix, title: m[1].trim(), url: m[2], tail: m[3] || '' }
 
   // 2. 标题 + 裸链接：「东方财富收评：url」「凤凰财经/中国证券报 url」
   m = line.match(TITLE_URL_RE)
   if (m) {
     // 流式期间未闭合的 markdown 链接不当作来源行，避免卡片标题里露出 [ ] 字面量
-    if (hasUnclosedMarkdown(m[1])) return raw
-    let title = m[1].trim().replace(/[*_~`]+/g, '').replace(/[（(]+$/, '').trim()
+    if (hasUnclosedMarkdown(m[1])) return null
+    const title = m[1].trim().replace(/[*_~`]+/g, '').replace(/[（(]+$/, '').trim()
     // 结论句里顺带提到链接（标题里还有其他 URL）时不算来源行，保持普通渲染
-    if (!title || /https?:\/\//i.test(title) || title.length > 60) return raw
+    if (!title || /https?:\/\//i.test(title) || title.length > 60) return null
+    if (looksLikeSentence(title)) return null
     const { url, tail } = splitUrlTail(m[2])
-    if (!url) return raw
-    return prefix + buildSourceCardHtml(title, url) + (m[3] || '') + tail
+    if (!url) return null
+    return { prefix, title, url, tail: (m[3] || '') + tail }
   }
 
   // 3. 纯链接行：没有可展示的标题，用域名替代
   m = line.match(URL_ONLY_RE)
   if (m) {
     const { url, tail } = splitUrlTail(m[1])
-    if (!url) return raw
-    return prefix + buildSourceCardHtml(getSourceCardDomain(url), url) + (m[2] || '') + tail
+    if (!url) return null
+    return { prefix, title: getSourceCardDomain(url), url, tail: (m[2] || '') + tail }
   }
-
-  return raw
-}
-
-/** 判断该行是不是来源卡片（无列表前缀的独立卡片行才参与横向合并） */
-function isCardLine(line) {
-  return /^<a class="msg-source-card"[^]*<\/a>[。，、；：！？…,.;:!?'"）】》」』]*$/.test(line)
+  return null
 }
 
 /** 连续卡片行包进 flex 容器：横向排列、装不下自动换行 */
-function wrapSourceCards(cardLines) {
-  return '<span class="msg-source-cards">' + cardLines.join(' ') + '</span>'
+function wrapSourceCards(cardHtmlLines) {
+  return '<span class="msg-source-cards">' + cardHtmlLines.join(' ') + '</span>'
 }
 
 /**
- * 来源链接美化：把 AI 回复里的「标题 + 链接」行改写成来源卡片。
- * 连续的卡片行合并成一个 flex 容器（从左到右排列，超出自动换行）。
- * 代码块（含流式期间未闭合的围栏）整体保护，其中的 URL 不改写。
+ * 来源链接美化：把 AI 回复里的「标题 + 链接」行换成占位标记。
+ * 连续的卡片行合并成一个标记（对应一个 flex 容器）。
+ * 代码区域整体保护，其中的 URL / 公式 / `[知识依据N]` 均不改写。
  *
  * @param {string} content markdown 文本
  * @returns {string} 替换后的 markdown 文本
- * @example
- * beautifySourceLinks('东方财富收评 https://finance.eastmoney.com/a/1.html')
  */
 export function beautifySourceLinks(content) {
   if (typeof content !== 'string' || !content) return content
-  const parts = content.split(/(```[\s\S]*?(?:```|$))/)
-  let out = ''
-  for (let i = 0; i < parts.length; i++) {
-    if (i % 2 === 1) {
-      // 奇数段是代码块本体，原样保留
-      out += parts[i]
-      continue
-    }
-    const lines = parts[i]
-      .split('\n')
-      .map(beautifySourceLine)
-      .map(normalizeInlineUrls)
+  return protectCodeRegions(content, (text) => {
+    const lines = text.split('\n').map((raw) => {
+      if (raw.indexOf(CODE_HOLDER_PREFIX) !== -1) return raw
+      const parsed = parseSourceLine(raw)
+      if (!parsed) return normalizeInlineUrls(raw)
+      const marker = sourceCardMarker([{ title: parsed.title, url: parsed.url }])
+      if (parsed.prefix) return { line: parsed.prefix + marker + parsed.tail, card: null }
+      return { line: marker + parsed.tail, card: { title: parsed.title, url: parsed.url } }
+    })
+
     const grouped = []
-    let pendingCards = null
-    for (const line of lines) {
-      if (isCardLine(line)) {
-        if (pendingCards) pendingCards.push(line)
-        else pendingCards = [line]
-        continue
-      }
-      if (pendingCards) {
-        grouped.push(wrapSourceCards(pendingCards))
-        pendingCards = null
-      }
-      grouped.push(line)
+    let pending = []
+    const flush = () => {
+      if (!pending.length) return
+      grouped.push(sourceCardMarker(pending))
+      pending = []
     }
-    if (pendingCards) grouped.push(wrapSourceCards(pendingCards))
-    out += grouped.join('\n')
+    for (const entry of lines) {
+      if (typeof entry === 'string') {
+        flush()
+        grouped.push(entry)
+      } else if (entry.card) {
+        pending.push(entry.card)
+      } else {
+        flush()
+        grouped.push(entry.line)
+      }
+    }
+    flush()
+    return grouped.join('\n')
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 原始 HTML：模型回复里写 `<b>` / `<Vec<T>>` / `<script>` 时，marked 会放行标签，
+// DOMPurify 再删掉不认识的部分（<script> 连内容一起删），于是正文吞字。
+// 只放行一个小白名单，其余 html token 当文本转义输出；文件预览传 rawHtml: 'allow'。
+// ---------------------------------------------------------------------------
+const RAW_HTML_ALLOW = new Set(['br', 'sub', 'sup', 'kbd', 'details', 'summary'])
+const RAW_TAG_RE = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<![^>]*>|<\/?([A-Za-z][A-Za-z0-9-]*)(?:\s[^<>]*?)?\/?>/g
+
+function escapeRawHtml(text) {
+  return String(text == null ? '' : text).replace(RAW_TAG_RE, (tag, name) => {
+    if (name && RAW_HTML_ALLOW.has(name.toLowerCase())) {
+      return tag.startsWith('</') ? '</' + name.toLowerCase() + '>' : '<' + name.toLowerCase() + '>'
+    }
+    return escapeHtml(tag)
+  })
+}
+
+// ---------------------------------------------------------------------------
+// emoji 短代码：gemoji 全量映射会把 `root:x:0:0`、`比例 a:b:c`、`status:ok:200`
+// 里的 `:x:` / `:b:` / `:ok:` 替换掉。这里只在前后都是行首/空白/标点时替换，
+// 并排除 1~2 个字母的短名与常见英文词。
+// ---------------------------------------------------------------------------
+const EMOJI_TOKEN_RE = /^:([A-Za-z0-9_+-]+):/
+const EMOJI_SEARCH_RE = /:([A-Za-z0-9_+-]+):/
+const EMOJI_BOUNDARY = /[\s\u0000-\u001f(（[「『《〈,，。；;:：!！?？、>》」』〉)）]/
+const EMOJI_BLOCKLIST = new Set([
+  'id', 'ok', 'on', 'cn', 'it', 'new', 'cool', 'vs', 'so', 'up', 'us', 'uk', 'eu',
+  'tm', 'cc', 'wc', 'ab', 'cl', 'io', 'ai', 'free', 'soon', 'end', 'top', 'hot',
+])
+
+function emojiBoundaryOk(tokens, src, rawLen) {
+  const last = tokens && tokens.length ? tokens[tokens.length - 1] : null
+  if (last) {
+    if (last.type !== 'text') return false
+    const ch = (last.raw || last.text || '').slice(-1)
+    if (ch && !EMOJI_BOUNDARY.test(ch)) return false
   }
-  return out
+  const next = src.charAt(rawLen)
+  if (next && !EMOJI_BOUNDARY.test(next)) return false
+  return true
+}
+
+function easyAgentMarkerExtension() {
+  return {
+    name: 'easyAgentMarkers',
+    level: 'inline',
+    start(src) {
+      const i = src.indexOf(MARKER_PREFIX)
+      return i >= 0 ? i : undefined
+    },
+    tokenizer(src) {
+      const parsed = parseMarker(src)
+      if (!parsed) return
+      // marked 按扩展名（而非 token.type）注册 renderer，所有标记共用一个类型
+      return {
+        type: 'easyAgentMarkers',
+        kind: parsed.type,
+        raw: parsed.raw,
+        cards: parsed.cards,
+        display: parsed.display,
+      }
+    },
+    renderer(token) {
+      if (token.kind === 'src') {
+        return wrapSourceCards(token.cards.map((c) => buildSourceCardHtml(c.title, c.url)))
+      }
+      return buildCitationHtml(token.display)
+    },
+  }
+}
+
+function easyAgentEmojiExtension() {
+  return {
+    name: 'easyAgentEmoji',
+    level: 'inline',
+    start(src) {
+      const m = EMOJI_SEARCH_RE.exec(src)
+      return m ? m.index : undefined
+    },
+    tokenizer(src, tokens) {
+      const m = EMOJI_TOKEN_RE.exec(src)
+      if (!m) return
+      const name = m[1]
+      if (/^[a-z]{1,2}$/i.test(name) || EMOJI_BLOCKLIST.has(name.toLowerCase())) return
+      const emoji = nameToEmoji[name] || nameToEmoji[name.toLowerCase()]
+      if (!emoji || !emojiBoundaryOk(tokens, src, m[0].length)) return
+      return { type: 'easyAgentEmoji', raw: m[0], name, emoji }
+    },
+    renderer(token) {
+      return (
+        '<span class="github-emoji" role="img" aria-label=":' + escapeHtml(token.name) + ':">' +
+        token.emoji + '</span>'
+      )
+    },
+  }
 }
 
 export function setupMarkedExtensions() {
   if (initialized) return
   initialized = true
+
+  // 占位标记最先注册：它的开头是 NUL，不会与任何 markdown 语法冲突
+  marked.use({ extensions: [easyAgentMarkerExtension()] })
 
   // 数学公式：$$...$$ 块级与 KaTeX 渲染器沿用 marked-katex-extension；行内公式换成中文友好的定界规则
   // （./math.js：$ 紧挨汉字、全角标点也能识别，认 \( \)，美元金额与 shell 变量不会被当成公式）
@@ -315,21 +436,7 @@ export function setupMarkedExtensions() {
   })
 
   // GitHub 风格 emoji 短代码，例如 :smile: :rocket: :fire: :+1: :tada:
-  // gemoji.nameToEmoji 提供 短代码 -> unicode 字符 的完整映射
-  marked.use(
-    markedEmoji({
-      emojis: nameToEmoji,
-      renderer(token) {
-        return (
-          '<span class="github-emoji" role="img" aria-label=":' +
-          token.name +
-          ':">' +
-          token.emoji +
-          '</span>'
-        )
-      },
-    })
-  )
+  marked.use({ extensions: [easyAgentEmojiExtension()] })
 
   // 中日韩文字紧挨强调符时也能识别：`**注意：**请勿删除`、`这是**“重点”**内容`。
   // CommonMark 的定界规则把汉字当普通字母，这类写法的加粗要么原样露出星号，要么和后面的 ** 错配。
@@ -432,28 +539,47 @@ export function installCodeCopyHandler() {
   }
 }
 
+// 渲染器的逐次渲染状态挂在实例上：marked.parse / parser 都是同步调用，
+// 不存在并发交错；不用全局变量，多个渲染器实例互不干扰。
+const RENDER_STATE = new WeakMap()
+const BLOCK_CACHES = new WeakMap()
+const BLOCK_CACHE_MAX = 200
+const PARSE_OPTIONS = { breaks: true, gfm: true, async: false }
+
+function renderState(renderer, options) {
+  let state = RENDER_STATE.get(renderer)
+  if (!state) {
+    state = { partial: false, rawHtml: 'escape' }
+    RENDER_STATE.set(renderer, state)
+  }
+  state.partial = !!options.partial
+  state.rawHtml = options.rawHtml === 'allow' ? 'allow' : 'escape'
+  return state
+}
+
 /**
  * 创建统一的 markdown 渲染器（ChatMessage / FilePreview 共用同一套代码块结构）
  *
  * marked 17.x 的 Renderer 回调为 token 对象签名：
- *   code({ text, lang, escaped }) / link({ href, title, tokens })
+ *   code({ text, lang, escaped }) / link({ href, title, tokens }) / html({ text })
  * link 的可见文本需自行用 this.parser.parseInline(tokens) 渲染（覆盖后 marked 不再代劳）。
  *
  * @param {Object} options 配置
- * @param {(code: string, lang: string) => string} options.highlight 高亮函数，返回完整代码块 HTML（含 <pre>）
+ * @param {(code: string, lang: string, state: {partial: boolean}) => string} options.highlight
+ *   高亮函数，返回完整代码块 HTML（含 <pre>）；state.partial 为流式中间帧
  * @param {boolean} [options.externalLinks=true] 是否为外链添加 target="_blank" rel="noopener noreferrer"
  * @returns {Object} marked Renderer 实例
- * @example
- * const renderer = createMarkdownRenderer({ highlight: highlightCode })
  */
 export function createMarkdownRenderer({ highlight, externalLinks = true }) {
   const renderer = new marked.Renderer()
+  const state = { partial: false, rawHtml: 'escape' }
+  RENDER_STATE.set(renderer, state)
 
   renderer.code = function ({ text, lang }) {
     const code = text || ''
     const rawLang = (lang || '').trim().split(/\s+/)[0]
     const langLabel = escapeHtml(rawLang || 'text')
-    const highlighted = typeof highlight === 'function' ? highlight(code, rawLang) : ''
+    const highlighted = typeof highlight === 'function' ? highlight(code, rawLang, state) : ''
     return (
       '<div class="code-block-wrapper">' +
       '<div class="code-header">' +
@@ -463,6 +589,11 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
       highlighted +
       '</div>'
     )
+  }
+
+  // 默认把模型写的原始 HTML 当文本显示，只放行小白名单；文件预览等可信场景传 rawHtml: 'allow'
+  renderer.html = function ({ text }) {
+    return state.rawHtml === 'allow' ? text : escapeRawHtml(text)
   }
 
   if (externalLinks) {
@@ -493,38 +624,109 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
 }
 
 /**
+ * lexer / parser 是 marked 的独立函数，不会自动合并通过 marked.use 注册的
+ * defaults.extensions；必须显式带上，否则 KaTeX、CJK、占位标记等扩展全部失效。
+ */
+function parseOptions(renderer) {
+  return { ...marked.defaults, ...PARSE_OPTIONS, renderer }
+}
+
+/** 把 token 列表渲染成已消毒的 HTML（单块与整篇共用同一条出口） */
+function tokensToHtml(tokens, renderer, options) {
+  const html = marked.parser(tokens, parseOptions(renderer))
+  // 任务列表项打上 class，样式据此去掉圆点（li:has(> input) 需要 Chrome 105+，内网浏览器不支持）
+  const tasked = html.replace(/<li><input /g, '<li class="task-list-item"><input ')
+  // marked 不过滤原始 HTML 与 javascript: 链接：产物一律清洗后再交给 v-html
+  return sanitizeHtml(tasked, { remoteImages: options.remoteImages === 'inline' ? 'inline' : 'link' })
+}
+
+/** 与渲染选项拼成缓存键：不同策略下的同一块文本不能共用 HTML */
+function modeOf(options) {
+  return (options.rawHtml === 'allow' ? 'A' : 'E') +
+    (options.partial ? 'P' : 'F') +
+    (options.remoteImages === 'inline' ? 'I' : 'L')
+}
+
+function hashText(text) {
+  let h = 0
+  for (let i = 0; i < text.length; i++) h = ((h << 5) - h + text.charCodeAt(i)) | 0
+  return String(h)
+}
+
+function prepareMarkdown(content, options) {
+  const src = options.partial ? bufferStreamingTail(content) : content
+  const math = normalizeMathDelimiters(src)
+  return options.sourceCards === false ? math : beautifySourceLinks(math)
+}
+
+/**
  * 统一渲染入口：规整数学公式后按 gfm + 换行策略渲染，产物经 DOMPurify 清洗
  *
  * @param {string} content markdown 文本
  * @param {Object} renderer createMarkdownRenderer 创建的渲染器
- * @param {{ sourceCards?: boolean, remoteImages?: 'link' | 'inline' }} [options]
+ * @param {{ sourceCards?: boolean, remoteImages?: 'link'|'inline', rawHtml?: 'escape'|'allow', partial?: boolean }} [options]
  *   sourceCards=false 时不做来源卡片改写（文件/文档预览）；
- *   remoteImages 默认 'link'：外站图片改成链接、不自动加载（防提示注入借图片地址外带数据），文件预览传 'inline'
+ *   remoteImages 默认 'link'：外站图片改成链接、不自动加载（防提示注入借图片地址外带数据），文件预览传 'inline'；
+ *   rawHtml 默认 'escape'：模型写的原始 HTML 当文本显示，只放行 br/sub/sup/kbd/details/summary；
+ *   partial=true 为流式中间帧：缓冲末行、代码块不做自动语言识别
  * @returns {string} 已消毒、可直接 v-html 的 HTML 字符串
- * @example
- * renderMarkdown('**hi**', renderer)
- * renderMarkdown(fileText, renderer, { sourceCards: false, remoteImages: 'inline' })
  */
 export function renderMarkdown(content, renderer, options = {}) {
   if (!content) return ''
-  // sourceCards：AI 回复里「标题 + 链接」行美化成来源卡片（隐藏裸 URL）。只适用于对话；
-  // 文件 / 文档预览应如实渲染作者写的链接，传 { sourceCards: false }。
-  const sourceCards = options.sourceCards !== false
+  setupMarkedExtensions() // 幂等：直接从内核调用时也能保证扩展已注册
+  renderState(renderer, options)
   try {
-    const math = normalizeMathDelimiters(content)
-    const html = marked.parse(sourceCards ? beautifySourceLinks(math) : math, {
-      renderer,
-      breaks: true,
-      gfm: true,
-      // 显式同步：KaTeX / emoji 扩展均为同步扩展，结果直接是 HTML 字符串
-      async: false,
-    })
-    // 任务列表项打上 class，样式据此去掉圆点（li:has(> input) 需要 Chrome 105+，内网浏览器不支持）
-    const tasked = html.replace(/<li><input /g, '<li class="task-list-item"><input ')
-    // marked 不过滤原始 HTML 与 javascript: 链接：产物一律清洗后再交给 v-html
-    return sanitizeHtml(tasked, { remoteImages: options.remoteImages === 'inline' ? 'inline' : 'link' })
+    const prepared = prepareMarkdown(content, options)
+    return tokensToHtml(marked.lexer(prepared, parseOptions(renderer)), renderer, options)
   } catch (e) {
     console.error('Markdown 渲染失败:', e)
     return escapeHtml(content)
+  }
+}
+
+/**
+ * 分块渲染：以顶层 token.raw 为键缓存已完成块的 HTML，只重渲最后一块。
+ * MarkdownBody 用 v-for 逐块 v-html，流式期间已完成块的 DOM 不再被替换
+ * （文字可选中、图片不闪），且单次渲染从「整篇」降到「一个块」。
+ *
+ * @param {string} content markdown 文本
+ * @param {Object} renderer createMarkdownRenderer 创建的渲染器
+ * @param {Object} [options] 同 renderMarkdown
+ * @returns {Array<{key: string, html: string}>} 按原文顺序的块列表
+ */
+export function renderMarkdownBlocks(content, renderer, options = {}) {
+  if (!content) return []
+  setupMarkedExtensions()
+  renderState(renderer, options)
+  try {
+    const prepared = prepareMarkdown(content, options)
+    const tokens = marked.lexer(prepared, parseOptions(renderer))
+    let cache = BLOCK_CACHES.get(renderer)
+    if (!cache) {
+      cache = new Map()
+      BLOCK_CACHES.set(renderer, cache)
+    }
+    const mode = modeOf(options)
+    const blocks = []
+    for (let i = 0; i < tokens.length; i++) {
+      const raw = tokens[i].raw || ''
+      const isLast = i === tokens.length - 1
+      const cacheKey = raw + '\u0000' + mode
+      let html = isLast ? null : cache.get(cacheKey)
+      if (html == null) {
+        html = tokensToHtml([tokens[i]], renderer, options)
+        // 流式中间帧的 HTML 与最终结果不同，且只缓存完整块
+        if (!isLast && !options.partial && raw.length <= 20000) {
+          if (cache.size >= BLOCK_CACHE_MAX) cache.delete(cache.keys().next().value)
+          cache.set(cacheKey, html)
+        }
+      }
+      if (!html) continue
+      blocks.push({ key: i + ':' + hashText(cacheKey), html })
+    }
+    return blocks
+  } catch (e) {
+    console.error('Markdown 分块渲染失败:', e)
+    return [{ key: '0', html: escapeHtml(content) }]
   }
 }
