@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import io
 
+import pytest
+
 from easy_agent.knowledges.core.models import (
     DocumentStatus,
     OperationPhase,
     OperationStatus,
 )
 from easy_agent.knowledges.core.repository import KnowledgeRepository
-from easy_agent.knowledges.ragflow import RagflowNotFoundError
+from easy_agent.knowledges.ragflow import RagflowError, RagflowNotFoundError
 
 from .test_shared_dataset import (
     _FakeRagflow,
@@ -231,6 +233,68 @@ async def test_retry_resets_parse_timer(db, tmp_path):
     document = repository.get_document(document_id)
     assert document["status"] == DocumentStatus.PROCESSING.value
     assert document["parse_started_at"] != OLD_PARSE_STARTED_AT
+
+
+async def test_retry_upload_failure_preserves_remote_id_for_second_attempt(db, tmp_path):
+    """首次重试若 _submit_to_ragflow 失败，remote_document_id 不应被提前清掉，
+    否则下一次重试在本地原文不可用时会报"文档原文件不可用"。
+
+    回归用例：retry_document 原先在 _submit_to_ragflow 之前就把 remote_id 置空、
+    同时删除上游旧副本，一旦重新上传失败，两个"原文来源"同时丢失。
+    """
+
+    class _FailOnceUploadRagflow(_StatusFakeRagflow):
+        """上传在第 N 次调用时失败，其余正常。"""
+
+        def __init__(self, *, fail_on_call: int = 2, **kw):
+            super().__init__(**kw)
+            self._fail_on_call = fail_on_call
+            self._upload_count = 0
+
+        async def upload_documents(self, dataset_id, files):
+            self._upload_count += 1
+            if self._upload_count == self._fail_on_call:
+                raise RagflowError("模拟重试时 RAGFlow 上传失败")
+            return await super().upload_documents(dataset_id, files)
+
+    ragflow = _FailOnceUploadRagflow(fail_on_call=2)
+    service = _make_service(db, ragflow, tmp_path)
+    base = _create_base_row(db)
+    document_id, _ = await _upload(service, base)
+    repository = KnowledgeRepository(db)
+    old_remote_id = repository.get_document(document_id)["remote_document_id"]
+    assert old_remote_id, "初始上传应有 remote_id"
+    repository.update_document(document_id, status=DocumentStatus.FAILED.value)
+
+    # 第一次重试：_submit_to_ragflow 抛 RagflowError
+    with pytest.raises(Exception):
+        await service.retry_document(
+            document_id=document_id,
+            principal=_principal(),
+            request_id="req-retry-fail",
+        )
+
+    # 关键断言：失败后 remote_id 必须仍在，不能被提前清掉
+    doc_after_fail = repository.get_document(document_id)
+    assert doc_after_fail["remote_document_id"] == old_remote_id, (
+        f"retry 失败后 remote_id 被清掉了！期望 {old_remote_id}, "
+        f"实际 {doc_after_fail['remote_document_id']}"
+    )
+    assert doc_after_fail["status"] == DocumentStatus.FAILED.value
+
+    # 同时，旧 RAGFlow 副本也不该被删除（还没成功就删是双杀）
+    assert old_remote_id not in ragflow.deleted
+
+    # 第二次重试：upload_documents 第 3 次调用，正常成功
+    accepted = await service.retry_document(
+        document_id=document_id,
+        principal=_principal(),
+        request_id="req-retry-again",
+    )
+    assert accepted.document.status == DocumentStatus.PENDING
+    new_remote_id = repository.get_document(document_id)["remote_document_id"]
+    assert new_remote_id != old_remote_id
+    assert old_remote_id in ragflow.deleted, "成功后旧副本应被清理"
 
 
 async def test_pause_and_resume_restart_parse_timer(db, tmp_path):

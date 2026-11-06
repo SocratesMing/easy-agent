@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -101,10 +101,10 @@ def test_sanitize_title_strips_illegal_chars():
     assert sanitize_title('a<b>c:d"e/f\\g|h?i*j') == "a_b_c_d_e_f_g_h_i_j"
 
 
-def test_iter_windows_splits_by_days():
+def test_iter_windows_splits_by_step():
     start = datetime(2026, 10, 1, tzinfo=UTC)
     end = datetime(2026, 10, 16, tzinfo=UTC)
-    windows = list(_iter_windows(start, end, 7))
+    windows = list(_iter_windows(start, end, timedelta(days=7)))
     assert [item[0].day for item in windows] == [1, 8, 15]
     assert windows[-1][1] == end
 
@@ -143,7 +143,9 @@ def test_source_table_required_and_validated():
     query = build_source_query("my_reports")
     assert "FROM `my_reports`" in query
     assert "batchid" in query and "attacUrl" not in query
-    assert "%(start)s" in query and "%(end)s" in query
+    assert "create_time >= %(start)s" in query
+    assert "create_time < %(end)s" in query
+    assert "publishDate >=" not in query
 
 
 def test_source_sync_start_delay_validates_non_negative():
@@ -281,7 +283,7 @@ async def test_stage_rows_batch_copies_and_reports_missing(tmp_path):
     assert not errors
     assert staged["101"].name == "报告_101.pdf"
     assert staged["101"].is_file()
-    assert stage_stats == {"copied": 1, "copy_failed": 0}
+    assert stage_stats == {"copied": 1, "copy_failed": 0, "missing_source": 0}
 
     staged_again, _, stage_stats_again = await engine.stage_rows(rows)
     assert staged_again["101"].is_file()
