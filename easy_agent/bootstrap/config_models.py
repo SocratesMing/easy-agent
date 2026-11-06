@@ -46,6 +46,16 @@ class RetryConfig(BaseModel):
     max_retries: int = 3
 
 
+class PromptEnhancementConfig(BaseModel):
+    """独立草稿增强：引用模型配置键，不跟随当前聊天模型。"""
+
+    model: str = Field(default="deepseek", min_length=1)
+    timeout_seconds: float = Field(default=30, gt=0, le=120)
+    max_input_chars: int = Field(default=10000, gt=0, le=100000)
+    max_output_chars: int = Field(default=20000, gt=0, le=200000)
+    max_output_tokens: int = Field(default=8192, gt=0, le=65536)
+
+
 class ProviderConfig(BaseModel):
     """Individual provider/model configuration"""
 

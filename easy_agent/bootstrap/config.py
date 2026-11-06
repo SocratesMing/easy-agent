@@ -32,6 +32,7 @@ from easy_agent.bootstrap.config_models import (  # noqa: F401 - 兼容重导出
     PersonnelConfig,
     PresetQuestionGroup,
     ProviderConfig,
+    PromptEnhancementConfig,
     RetryConfig,
     SQLiteConfig,
     StreamingConfig,
@@ -84,6 +85,7 @@ class Config(BaseModel):
     agent: AgentConfig
     tools: ToolsConfig
     summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
+    prompt_enhancement: PromptEnhancementConfig = Field(default_factory=PromptEnhancementConfig)
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
     distributed_lock: DistributedLockConfig = Field(
         default_factory=DistributedLockConfig
@@ -284,6 +286,7 @@ class Config(BaseModel):
                 "agent": cls._agent_section(data),
                 "tools": data.get("tools", {}),
                 "summarization": data.get("summarization", {}),
+                "prompt_enhancement": _get_section(data, "prompt_enhancement") or {},
                 "personnel": data.get("personnel", {}),
                 "database": cls._database_section(data.get("database", {})),
                 # 这几段写成非键值映射时按默认值处理

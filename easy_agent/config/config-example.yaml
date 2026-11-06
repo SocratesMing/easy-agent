@@ -274,3 +274,11 @@ knowledge:
       database: "${COL_SQL_DB:-}" # 研报 SQL 必填，不复用主库
       charset: "${COL_SQL_CHARSET:-utf8mb4}"
       table: "${COL_SQL_TABLE:-}"       # 研报源表名（必填，源库已存在）
+
+# 输入框提示词增强（独立调用；更改总时限时同步调整前端 35 秒等待上限）
+prompt_enhancement:
+  model: "deepseek"
+  timeout_seconds: 30
+  max_input_chars: 10000
+  max_output_chars: 20000
+  max_output_tokens: 8192

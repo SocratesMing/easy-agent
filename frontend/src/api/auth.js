@@ -62,11 +62,13 @@ export function getStoredUsername() {
 }
 
 export function storeAuth(token, username) {
+  if (getStoredUsername() !== username) window.dispatchEvent(new CustomEvent('auth-changed'))
   localStorage.setItem(TOKEN_KEY, token)
   localStorage.setItem(USERNAME_KEY, username)
 }
 
 export function clearAuth() {
+  window.dispatchEvent(new CustomEvent('auth-changed'))
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(USERNAME_KEY)
 }

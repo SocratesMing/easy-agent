@@ -79,6 +79,7 @@ from easy_agent.api import (
     auth_router,
     completion_router,
     prompts_router,
+    prompt_enhancement_router,
     settings_router,
     skill_center_router,
     connectors_router,
@@ -714,6 +715,7 @@ app.include_router(files_router)
 app.include_router(auth_router)
 app.include_router(completion_router)
 app.include_router(prompts_router)
+app.include_router(prompt_enhancement_router)
 app.include_router(settings_router)
 app.include_router(skill_center_router)
 app.include_router(connectors_router)

@@ -58,6 +58,9 @@
             v-tip.hover="'输入消息，Enter 发送 · Shift+Enter 换行 · 输入 / 唤起技能选择'"
             @keydown="onKeydown"
             @beforeinput="onBeforeInput"
+            @paste="invalidateEnhancement"
+            @compositionstart="enhancementCompositionStart"
+            @compositionend="enhancementCompositionEnd"
             @input="onInput"
             @focus="updateCaretLine"
             @blur="hideCaretLine"
@@ -512,6 +515,7 @@
         </div>
         
         <div class="right-actions">
+          <PromptEnhancementActions :enabled="canEnhance" :state="enhancement" @enhance="enhancePrompt" />
           <div 
             v-if="showTokenRing" 
             ref="ringRef"
@@ -575,7 +579,7 @@
             @click="send"
             class="action-btn send-btn"
             :class="{ active: canSend }"
-            :disabled="!canSend || disabled || preparingFiles"
+            :disabled="!canSend || disabled || preparingFiles || enhancement.pending"
             v-tip="'发送（Enter）'"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -678,7 +682,10 @@ import { expertAvatarChar, expertAvatarClass } from '../../../utils/expertAvatar
 import { formatSize } from '../../../utils/format.js'
 import SkillPicker from './SkillPicker.vue'
 import UploadTray from './UploadTray.vue'
+import { usePromptEnhancement } from '../composables/usePromptEnhancement.js'
+import { useContextDuration, useContextRing } from '../composables/useContextUsage.js'
 import ModelPicker from './ModelPicker.vue'
+import PromptEnhancementActions from './PromptEnhancementActions.vue'
 import KnowledgeScopeSelector from '../../knowledge/KnowledgeScopeSelector.vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
 import SkillIcon from '../../../shared/components/SkillIcon.vue'
@@ -991,6 +998,12 @@ const preselectedSkillDirs = ref(new Set())
 // pending_expert_id 字段上行，后端校验归属后绑定为 save_expert 的修改目标。
 const pendingExpertEditId = ref('')
 
+const { enhancement, canEnhance, invalidateEnhancement, enhancePrompt,
+  enhancementCompositionStart, enhancementCompositionEnd } = usePromptEnhancement({
+  props, message, tokenMap, knownSkills, preselectedSkillDirs, pendingExpertEditId,
+  preparingFiles, textareaRef, autoResize, syncMirror,
+})
+
 const selectedSkillDirs = computed(() => {
   const dirs = new Set(preselectedSkillDirs.value)
   for (const dir of skillDirsInText(message.value, tokenMap.value)) dirs.add(dir)
@@ -1236,6 +1249,7 @@ function handleTokenDeleteKey(event) {
  * 拦截后自行整段删标签；拦不到的情况由 onInput 的差分自愈兜底（见 reconcileTokenDeletion）。
  */
 function onBeforeInput(event) {
+  invalidateEnhancement()
   if (event.isComposing) return
   const deleteBackward = event.inputType === 'deleteContentBackward'
   const deleteForward = event.inputType === 'deleteContentForward'
@@ -2233,31 +2247,7 @@ const showTokenPopup = ref(false)
 // ========== 会话耗时 ==========
 // 后台未返回耗时数据（sessionDuration<=0）且「会话信息」弹窗打开时，前端按 1s
 // 间隔本地计时，让会话耗时实时更新；后台有数据时直接用后台值。
-const liveDuration = ref(0)
-let durationTimer = null
-const shouldCountLive = computed(
-  () => showTokenPopup.value && (!props.sessionDuration || props.sessionDuration <= 0)
-)
-const displayDuration = computed(() =>
-  shouldCountLive.value ? liveDuration.value : (props.sessionDuration || 0)
-)
-function startLiveDuration() {
-  stopLiveDuration()
-  liveDuration.value = 0
-  durationTimer = setInterval(() => {
-    liveDuration.value += 1
-  }, 1000)
-}
-function stopLiveDuration() {
-  if (durationTimer) {
-    clearInterval(durationTimer)
-    durationTimer = null
-  }
-}
-watch(shouldCountLive, (on) => {
-  if (on) startLiveDuration()
-  else stopLiveDuration()
-})
+const formattedDuration = useContextDuration(props, showTokenPopup)
 
 // 搜索词一变，列表条数就变，面板高度必须跟着重算（底边会随条数上下浮动，
 // 变多/变少都要重算；是否关闭由 schedulePlusClose 的「聚焦保护」负责）。
@@ -2266,19 +2256,6 @@ watch(subpanelKeyword, () => nextTick(syncSubpanelBox))
 // 搜索时列表变了但面板高度不重算 —— 表现就是「搜索后高度不跟着收，只有专家面板对」。
 watch(skillSearch, () => nextTick(syncSubpanelBox))
 
-const formattedDuration = computed(() => {
-  const total = Math.floor(displayDuration.value)
-  const h = Math.floor(total / 3600)
-  const m = Math.floor((total % 3600) / 60)
-  const s = total % 60
-  if (h > 0) {
-    return `${h}小时${m}分${s}秒`
-  }
-  if (m > 0) {
-    return `${m}分${s}秒`
-  }
-  return `${s}秒`
-})
 
 function toggleTokenPopup() {
   showTokenPopup.value = !showTokenPopup.value
@@ -2290,29 +2267,7 @@ function closeTokenPopup() {
   }
 }
 
-const showTokenRing = computed(() => {
-  // 首页（尚未进入任何会话）不展示会话级用量：登录/注册后会从全局配置把
-  // context_length 写进 sessionUsage，但此时没有任何实际用量，
-  // 不能凭这个就显示上下文占用环。
-  if (!props.sessionId) return false
-  return props.sessionUsage.input_tokens > 0 || props.sessionUsage.output_tokens > 0 || props.sessionUsage.reasoning_tokens > 0 || props.sessionUsage.context_tokens > 0 || props.sessionDuration > 0 || props.iterationCount > 0
-})
-
-const contextPercent = computed(() => {
-  const u = props.sessionUsage
-  if (!u.context_length || u.context_length <= 0) return 0
-  // 分子使用「当前轮次的上下文窗口占用」(context_tokens)：即本轮喂给模型的输入 token 数，
-  // 与 context_length（上下文窗口上限）对比（已不再统计会话累计总量）。
-  const ctxTokens = u.context_tokens || 0
-  return Math.min(100, Math.round(ctxTokens / u.context_length * 100))
-})
-
-const contextColor = computed(() => {
-  const p = contextPercent.value
-  if (p >= 80) return '#ef4444'
-  if (p >= 50) return '#f59e0b'
-  return '#22c55e'
-})
+const { showTokenRing, contextPercent, contextColor } = useContextRing(props)
 
 const ringRef = ref(null)
 
@@ -2559,7 +2514,7 @@ async function preparePendingFiles() {
 }
 
 async function send() {
-  if (!canSend.value || props.disabled || preparingFiles.value) return
+  if (!canSend.value || props.disabled || preparingFiles.value || enhancement.value.pending) return
   preparingFiles.value = true
   try {
     // 新对话的知识选择只存在本地：先取快照，再上传附件（上传会先创建会话）
@@ -2660,6 +2615,7 @@ function autoResize() {
 }
 
 function onInput(event) {
+  invalidateEnhancement()
   const ta = event?.target || textareaRef.value
   // 移动端兜底（见 utils/skillPillTokens.js 的 reconcileTokenDeletion）：Android Chrome 的
   // Backspace 不给 keydown、部分浏览器也没有 beforeinput，浏览器只啃掉标签的一两个字时，
@@ -2751,7 +2707,6 @@ onUnmounted(() => {
   if (offConnectorsChanged) offConnectorsChanged()
   if (connectorNoticeTimer) clearTimeout(connectorNoticeTimer)
   cancelPlusClose()
-  stopLiveDuration()
   if (uploadNoticeTimer) clearTimeout(uploadNoticeTimer)
 })
 

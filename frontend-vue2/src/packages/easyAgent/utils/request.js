@@ -117,12 +117,14 @@ export function getStoredUsername() {
 
 /** 保存登录态（token + 用户名） */
 export function storeAuth(token, username) {
+  if (getStoredUsername() !== username) emitRuntimeEvent('auth-changed')
   localStorage.setItem(authConfig().tokenKey, token)
   localStorage.setItem(authConfig().usernameKey, username)
 }
 
 /** 清除登录态 */
 export function clearAuth() {
+  emitRuntimeEvent('auth-changed')
   localStorage.removeItem(authConfig().tokenKey)
   localStorage.removeItem(authConfig().usernameKey)
 }

@@ -60,6 +60,9 @@
             v-tip:hover="'输入消息，Enter 发送 · Shift+Enter 换行 · 输入 / 唤起技能选择'"
             @keydown="onKeydown"
             @beforeinput="onBeforeInput"
+            @paste="invalidateEnhancement"
+            @compositionstart="enhancementCompositionStart"
+            @compositionend="enhancementCompositionEnd"
             @input="onInput"
             @focus="updateCaretLine"
             @blur="hideCaretLine"
@@ -241,6 +244,7 @@
         </div>
         
         <div class="right-actions">
+          <PromptEnhancementActions :enabled="canEnhance" :state="enhancement" @enhance="enhancePrompt" />
           <div 
             v-if="showTokenRing" 
             ref="ringRef"
@@ -305,7 +309,7 @@
             @click="send" 
             class="action-btn send-btn"
             :class="{ active: canSend }"
-            :disabled="!canSend || disabled || preparingFiles"
+            :disabled="!canSend || disabled || preparingFiles || enhancement.pending"
             v-tip="'发送（Enter）'"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -409,6 +413,7 @@ import PlusSubpanelHeader from './PlusSubpanelHeader.vue'
 import PlusList from './PlusList.vue'
 import PlusMenu from './PlusMenu.vue'
 import ModelPicker from './ModelPicker.vue'
+import PromptEnhancementActions from './PromptEnhancementActions.vue'
 import UploadTray from './UploadTray.vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
 import SkillIcon from '../../../shared/components/SkillIcon.vue'
@@ -446,8 +451,12 @@ const TEXTAREA_MAX_ROWS = 5
 const TEXTAREA_LINE_HEIGHT = 24
 const TEXTAREA_MAX_HEIGHT = TEXTAREA_MAX_ROWS * TEXTAREA_LINE_HEIGHT
 
+import promptEnhancementMixin from '../mixins/promptEnhancementMixin.js'
+import contextUsageMixin from '../mixins/contextUsageMixin.js'
+
 export default {
-  components: { FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList, PlusList, PlusSubpanelHeader },
+  mixins: [promptEnhancementMixin, contextUsageMixin],
+  components: { PromptEnhancementActions, FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList, PlusList, PlusSubpanelHeader },
   directives: { tip },
   props: {
     disabled: { type: Boolean, default: false },
@@ -752,58 +761,7 @@ export default {
         descParts: splitByQuery(skill.description || '暂无描述', this.skillQuery),
       }))
     },
-    // 后台未返回耗时数据（sessionDuration<=0）且「会话信息」弹窗打开时，前端按 1s
-    // 间隔本地计时，让会话耗时实时更新；后台有数据时直接用后台值。
-    shouldCountLive() {
-      return this.showTokenPopup && (!this.sessionDuration || this.sessionDuration <= 0)
-    },
-    displayDuration() {
-      return this.shouldCountLive ? this.liveDuration : (this.sessionDuration || 0)
-    },
-    formattedDuration() {
-      const total = Math.floor(this.displayDuration)
-      const h = Math.floor(total / 3600)
-      const m = Math.floor((total % 3600) / 60)
-      const s = total % 60
-      if (h > 0) {
-        return `${h}小时${m}分${s}秒`
-      }
-      if (m > 0) {
-        return `${m}分${s}秒`
-      }
-      return `${s}秒`
-    },
-    // 首页（尚未进入任何会话）不展示会话级用量：登录/注册后会从全局配置把
-    // context_length 写进 sessionUsage，但此时没有任何实际用量，
-    // 不能凭这个就显示上下文占用环。
-    showTokenRing() {
-      if (!this.sessionId) return false
-      return this.sessionUsage.input_tokens > 0 || this.sessionUsage.output_tokens > 0 || this.sessionUsage.reasoning_tokens > 0 || this.sessionUsage.context_tokens > 0 || this.sessionDuration > 0 || this.iterationCount > 0
-    },
-    contextPercent() {
-      const u = this.sessionUsage
-      if (!u.context_length || u.context_length <= 0) return 0
-      // 分子使用「当前轮次的上下文窗口占用」(context_tokens)：即本轮喂给模型的输入 token 数，
-      // 与 context_length（上下文窗口上限）对比（已不再统计会话累计总量）。
-      const ctxTokens = u.context_tokens || 0
-      return Math.min(100, Math.round(ctxTokens / u.context_length * 100))
-    },
-    contextColor() {
-      const p = this.contextPercent
-      if (p >= 80) return '#ef4444'
-      if (p >= 50) return '#f59e0b'
-      return '#22c55e'
-    },
-    popupStyle() {
-      const ring = this.$refs.ringRef
-      if (!ring) return {}
-      const rect = ring.getBoundingClientRect()
-      return {
-        position: 'fixed',
-        bottom: `${window.innerHeight - rect.top + 10}px`,
-        right: `${window.innerWidth - rect.right - 8}px`,
-      }
-    },
+
   },
   watch: {
     // 搜索词一变，列表条数就变，面板高度必须跟着重算（底边会随条数上下浮动，
@@ -1931,7 +1889,7 @@ export default {
       )
     },
     async send() {
-      if (!this.canSend || this.disabled || this.preparingFiles) return
+      if (!this.canSend || this.disabled || this.preparingFiles || this.enhancement.pending) return
       this.preparingFiles = true
       try {
         // 新对话的知识选择只存在本地：先取快照，再上传附件（上传会先创建会话）
@@ -2049,6 +2007,7 @@ export default {
       mirror.scrollTop = ta.scrollTop
     },
     onInput(event) {
+      this.invalidateEnhancement()
       const ta = (event && event.target) || this.$refs.textareaRef
       // 移动端兜底（见 utils/skillPillTokens.js 的 reconcileTokenDeletion）：Android Chrome 的
       // Backspace 不给 keydown、部分浏览器也没有 beforeinput，浏览器只啃掉标签的一两个字时，
@@ -2318,6 +2277,7 @@ export default {
      * 拦截后自行整段删标签；拦不到的情况由 onInput 的差分自愈兜底（见 reconcileTokenDeletion）。
      */
     onBeforeInput(event) {
+      this.invalidateEnhancement()
       if (event.isComposing) return
       const deleteBackward = event.inputType === 'deleteContentBackward'
       const deleteForward = event.inputType === 'deleteContentForward'
