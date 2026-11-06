@@ -17,6 +17,7 @@ import {
   createMarkdownRenderer,
   escapeHtml,
   renderMarkdown as renderMarkdownHtml,
+  renderMarkdownBlocks as renderMarkdownBlocksHtml,
 } from '../../../markdownSetup.js'
 
 setupMarkedExtensions()
@@ -76,7 +77,10 @@ function fallbackBlock(code) {
  * @param {string} [lang] 语言标识（可为短名，如 py/js）
  * @returns {string} HTML
  */
-export function highlightCode(code, lang) {
+export function highlightCode(code, lang, state) {
+  // 流式中间帧：代码块多半还没写完，不做 shiki 高亮，只输出转义纯文本；
+  // 流结束后按原文完整渲染，最终 HTML 不变。
+  if (state && state.partial) return fallbackBlock(code)
   if (!highlighter.value) return fallbackBlock(code)
 
   const normalized = lang ? lang.toLowerCase() : 'text'
@@ -101,6 +105,11 @@ export const markdownRenderer = createMarkdownRenderer({ highlight: highlightCod
  * @param {string} content markdown 文本
  * @returns {string} HTML
  */
-export function renderMarkdown(content) {
-  return renderMarkdownHtml(content, markdownRenderer)
+export function renderMarkdown(content, options = {}) {
+  return renderMarkdownHtml(content, markdownRenderer, options)
+}
+
+/** 分块渲染（流式对话用）：已完成块命中缓存，只重渲最后一块 */
+export function renderMarkdownBlocks(content, options = {}) {
+  return renderMarkdownBlocksHtml(content, markdownRenderer, options)
 }
