@@ -806,6 +806,15 @@ export default {
     },
   },
   watch: {
+    // 联网开关的真身在本组件，但发送动作不止「输入框回车」一条：消息下方「重新发送」
+    // 走的是页面层的 handleRetry，不经过这里。父级没有镜像就只能用默认值 false 发请求，
+    // 于是出现「按钮亮着、请求却是关网」。所以状态一变就上报，immediate 保证挂载时先对齐一次。
+    webSearchEnabled: {
+      immediate: true,
+      handler(val) {
+        this.$emit('web-search-change', Boolean(val))
+      },
+    },
     // 搜索词一变，列表条数就变，面板高度必须跟着重算（底边会随条数上下浮动，
     // 所以变多/变少都要重算；是否关闭由 schedulePlusClose 的「聚焦保护」负责）。
     subpanelKeyword() {

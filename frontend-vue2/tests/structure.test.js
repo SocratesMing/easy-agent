@@ -34,22 +34,25 @@ const MAX_NEW_FILE_LINES = 800
  * 2026-11-05 权限管理人员搜索后按实测值更新：1912 → 1918。
  * 2026-11-05 合并 audit-improvements（本站不挂载悬浮 AI 侧边栏）后 EasyAgentPage 按实测值更新：2035 → 2036。
  * 2026-11-05 文件夹操作按钮移至文件夹行尾部后按实测值更新：1918 → 1921。
+ * 2026-11-06 联网开关镜像（重试路径带上 enableWebSearch）后按实测值更新：
+ *   EasyAgentPage 2036 → 2045、ChatInput 3613 → 3622、Chat 1122 → 1123、
+ *   AiSidebar 1725 → 1726；chatSession 原 1205 已被既有改动突破，一并按实测校正为 1217。
  * 拆分这些文件时同步删掉条目，避免预算变成"合法上限"。
  */
 const LINE_BUDGET = {
   // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
   // 2026-11-05 合并 audit-improvements（注释停用 AiSidebar）后按实测值更新：2035 → 2036
-  [`${MOD}EasyAgentPage.vue`]: 2036,
-  [`${MOD}features/chat/components/ChatInput.vue`]: 3613,
+  [`${MOD}EasyAgentPage.vue`]: 2045,
+  [`${MOD}features/chat/components/ChatInput.vue`]: 3622,
   [`${MOD}features/chat/components/ChatMessage.vue`]: 2644,
-  [`${MOD}features/chat/components/AiSidebar.vue`]: 1725,
+  [`${MOD}features/chat/components/AiSidebar.vue`]: 1726,
   [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2152,
-  [`${MOD}features/chat/mixins/chatSession.js`]: 1205,
+  [`${MOD}features/chat/mixins/chatSession.js`]: 1217,
   [`${MOD}features/connectors/components/ConnectorListPanel.vue`]: 1504,
   [`${MOD}features/skills/components/SkillListPanel.vue`]: 1260,
   [`${MOD}shared/preview/FilePreview.vue`]: 1164,
   [`${MOD}features/settings/components/SettingsPanel.vue`]: 1128,
-  [`${MOD}features/chat/components/Chat.vue`]: 1122,
+  [`${MOD}features/chat/components/Chat.vue`]: 1123,
   [`${MOD}features/chat/components/SessionList.vue`]: 1072,
   [`${MOD}features/tasks/components/ScheduledTasksPanel.vue`]: 967,
   [`${MOD}features/workspace/components/WorkspacePanel.vue`]: 954,

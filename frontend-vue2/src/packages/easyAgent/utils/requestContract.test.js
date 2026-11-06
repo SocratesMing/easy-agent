@@ -45,7 +45,6 @@ const server = http.createServer((request, response) => {
     if (auth !== `Bearer ${validToken}`) {
       return json(401, { detail: kicked ? '您的账号在其他设备登录，您已被迫下线，请重新登录' : '登录已过期或未登录，请重新登录' })
     }
-    if (url.pathname.endsWith('/agent/auth/profile')) return json(200, { username: 'u1' })
     if (url.pathname.endsWith('/agent/json')) return json(200, { data: { nested: true }, ok: 1 }, { 'X-Trace': 'abc' })
     if (url.pathname.endsWith('/agent/text')) {
       response.writeHead(200, { 'Content-Type': 'application/json' })
@@ -190,63 +189,6 @@ test('被其他设备顶下线：不续期，直接失效并记录 kicked', asyn
   } finally {
     off()
   }
-})
-
-test('被顶下线后不再无感重登：残留 401 不续期、不重复通知，signIn 只在用户明确操作时执行', async () => {
-  let signIns = 0
-  const events = []
-  const off = onRuntimeEvent('auth-expired', (e) => events.push(e.reason))
-  setup({
-    token: 'old',
-    auth: {
-      signIn: async ({ passwordlessLogin }) => {
-        signIns += 1
-        await passwordlessLogin('host_user', 'E1')
-        return true
-      },
-    },
-  })
-  kicked = true
-  try {
-    await assert.rejects(req.default({ url: '/agent/json' }))
-    assert.deepEqual(events, ['kicked'])
-    assert.equal(store.get('auth_kicked'), '1')
-
-    // 残留请求（已无 token，后端回「登录已过期」）：不续期、不重登，也不重复派发失效
-    kicked = false
-    await assert.rejects(req.default({ url: '/agent/json' }))
-    const res = await req.fetchWithAuth(`${origin}/agent/json`)
-    assert.equal(res.status, 401)
-    req.notifyUnauthorized('/agent/upload', '登录已过期')
-    await new Promise((r) => setTimeout(r, 0))
-    assert.equal(signIns, 0)
-    assert.deepEqual(events, ['kicked'])
-
-    // 刷新 / 重新进入页面时的自动登录同样被拦下
-    assert.equal(await runSignIn(), null)
-    assert.equal(signIns, 0)
-
-    // 用户点击「重新登录」：执行 signIn，成功后清除标记，之后恢复正常续期
-    const result = await runSignIn({ manual: true })
-    assert.ok(result)
-    assert.equal(signIns, 1)
-    assert.equal(store.has('auth_kicked'), false)
-    assert.equal((await req.default({ url: '/agent/json' })).ok, 1)
-  } finally {
-    off()
-  }
-})
-
-test('被顶下线后 token 仍被确认有效（如宿主重新登录后传入新 token）时清除标记', async () => {
-  setup({ token: 'good' })
-  store.set('auth_kicked', '1')
-  const { getUserProfile } = await import('../api/files.js')
-  store.set('mini_agent_token', 'stale')
-  await assert.rejects(getUserProfile())
-  assert.equal(req.isAuthKicked(), true, '资料接口 401 时保留标记')
-  store.set('mini_agent_token', 'good')
-  assert.equal((await getUserProfile()).username, 'u1')
-  assert.equal(req.isAuthKicked(), false)
 })
 
 test('登录类接口（含 /api/auth 旧前缀）401 不续期，避免续期等待自己', async () => {

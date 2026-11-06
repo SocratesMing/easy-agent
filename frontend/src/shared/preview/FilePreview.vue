@@ -41,8 +41,8 @@
           <div v-else-if="isPdfConverted" class="preview-pptx">
             <iframe v-if="pptxPdfUrl" :src="pptxPdfUrl" class="pptx-iframe" title="PPTX 预览"></iframe>
           </div>
-          <div v-else-if="isDocx" class="preview-docx">
-            <vue-office-docx :src="docxUrl" @error="handleDocxError" />
+          <div v-else-if="isDocx" ref="docxWrapRef" class="preview-docx">
+            <vue-office-docx :src="docxUrl" @rendered="neutralizeUnsafeLinks($refs.docxWrapRef)" @error="handleDocxError" />
           </div>
           <div v-else-if="isExcel" class="preview-excel">
             <vue-office-excel
@@ -119,6 +119,9 @@ import {
   createMarkdownRenderer,
   renderMarkdown,
   installCodeCopyHandler,
+  escapeHtml,
+  sanitizeHtml,
+  neutralizeUnsafeLinks,
 } from '../../markdownSetup.js'
 import hljs from '../markdown/hljs.js'
 import 'highlight.js/styles/github.css'
@@ -325,12 +328,6 @@ const csvData = computed(() => {
   return { headers, rows }
 })
 
-function escapeHtml(text) {
-  const div = document.createElement('div')
-  div.textContent = text
-  return div.innerHTML
-}
-
 // 预览/下载基础 URL：定时任务工作目录走独立端点，否则走会话文件端点
 const previewBaseUrl = computed(() => props.taskId
   ? `${API_BASE_URL}/agent/scheduled-tasks/${props.taskId}/workspace/file`
@@ -526,13 +523,14 @@ function onExcelRendered() {
 
 // @vue-office/excel 解析含批注/drawing 的 xlsx 时会抛 anchors 错误，
 // 这里用 SheetJS 将各 sheet 渲染为 HTML 表格作为兜底。
+// sheet_to_html 不转义 data-v 属性（单元格原值），内容能跳出属性注入标签：必须消毒后再 v-html。
 async function buildExcelTables(ab) {
   try {
     const XLSX = await loadXlsx()
     const wb = XLSX.read(ab, { type: 'array' })
     excelSheets.value = wb.SheetNames.map((name) => ({
       name,
-      html: XLSX.utils.sheet_to_html(wb.Sheets[name]),
+      html: sanitizeHtml(XLSX.utils.sheet_to_html(wb.Sheets[name])),
     }))
     excelFallback.value = true
   } catch (err) {

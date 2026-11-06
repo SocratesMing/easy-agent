@@ -43,6 +43,7 @@ const EXTERNAL_TOOLING = {
   '@vue/cli-plugin-babel': '外网构建工具',
   autoprefixer: '外网构建工具',
   postcss: '外网构建工具',
+  jsdom: '外网单元测试的 DOM 环境（HTML 消毒用例跑 DOMPurify）',
 }
 
 function lockInfo(lock, name) {

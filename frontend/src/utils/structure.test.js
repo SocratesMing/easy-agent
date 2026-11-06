@@ -22,17 +22,19 @@ const MAX_NEW_FILE_LINES = 800
  *  2026-11-04 知识库搜索改为输入即检索（300ms 防抖）后按实测值更新：1909 → 1911；
  *  2026-11-05 知识库上传前过滤 PPT/PPTX 后按实测值更新：1911 → 1912；
  *  2026-11-05 权限管理人员搜索后按实测值更新：1912 → 1919；
- *  2026-11-05 文件夹操作按钮移至文件夹行尾部后按实测值更新：1919 → 1922） */
+ *  2026-11-05 文件夹操作按钮移至文件夹行尾部后按实测值更新：1919 → 1922；
+ *  2026-11-06 联网开关镜像（重试路径带上 enableWebSearch）后按实测值更新：
+ *    App.vue 3163 → 3167、ChatInput 4721 → 4730、Chat 1026 → 986） */
 const LINE_BUDGET = {
-  'App.vue': 3163,
-  'features/chat/components/ChatInput.vue': 4721,
+  'App.vue': 3167,
+  'features/chat/components/ChatInput.vue': 4730,
   'features/chat/components/ChatMessage.vue': 2523,
   'features/experts/components/ExpertListPanel.vue': 2089,
   'features/connectors/components/ConnectorListPanel.vue': 1547,
   'features/settings/components/SettingsPanel.vue': 1226,
   'features/skills/components/SkillListPanel.vue': 1245,
   'shared/preview/FilePreview.vue': 1130,
-  'features/chat/components/Chat.vue': 1026,
+  'features/chat/components/Chat.vue': 986,
   'features/chat/components/SessionList.vue': 1038,
   'features/workspace/components/WorkspacePanel.vue': 978,
   'features/tasks/components/ScheduledTasksPanel.vue': 842,

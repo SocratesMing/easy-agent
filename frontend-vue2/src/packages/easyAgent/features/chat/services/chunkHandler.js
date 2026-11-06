@@ -12,6 +12,19 @@ import { setReactive } from '../../../utils/reactiveSet.js'
 import { parseMCPResult } from '../../../utils/mcpResult.js'
 import { setExpertLastSession } from '../../../shared/utils/expertSession.js'
 
+/**
+ * 审批续跑前的会话用量基数：会话合计扣掉被中断这条消息已计入的耗时 / 步数。
+ * 续跑下发的是这条消息的累计值（含中断前），基数 + 累计值即会话合计，中断前那段不会算两次。
+ * message.usage 来自历史消息（刷新后），或流式过程中 rememberMessageUsage 记下的值。
+ */
+export function resumeUsageBase(sessionDuration, iterationCount, message) {
+  const usage = (message && message.usage) || {}
+  return {
+    preStreamDuration: Math.max(0, (sessionDuration || 0) - (usage.elapsed_time || 0)),
+    preStreamIterationCount: Math.max(0, (iterationCount || 0) - (usage.step_count || 0)),
+  }
+}
+
 export function createStreamChunkHandler(vm, ctx) {
   let currentBlock = null
   let currentThinking = ''
@@ -92,9 +105,17 @@ export function createStreamChunkHandler(vm, ctx) {
     if (data.auto_compress_tokens) patch.auto_compress_tokens = data.auto_compress_tokens
     return patch
   }
+  // 记下这条消息自己的累计耗时 / 步数：审批续跑时据此从会话合计里扣掉中断前已计入的部分
+  const rememberMessageUsage = (data) => {
+    const idx = findIdx()
+    if (idx === -1 || typeof data.step_count !== 'number') return
+    const msg = vm.messages[idx]
+    msg.usage = { ...msg.usage, step_count: data.step_count, elapsed_time: data.elapsed_time || 0 }
+  }
   const applyUsage = (data, sid) => {
     const patch = usagePatchFrom(data)
     const match = !sid || vm.currentSessionId === sid
+    rememberMessageUsage(data)
     if (ctx.attachMode) {
       // 重挂载回放：token_usage/done 携带的 elapsed_time 是原始流从头开始的
       // 累计值，应 SET 而非累加（isResume 分支的累加语义只适用于 HITL 续跑）
@@ -112,33 +133,20 @@ export function createStreamChunkHandler(vm, ctx) {
       }
       return
     }
-    if (ctx.isResume) {
-      if (match) {
-        Object.assign(vm.sessionUsage, patch)
-        if (typeof data.elapsed_time === 'number') vm.sessionDuration = Math.round((vm.sessionDuration + data.elapsed_time) * 10) / 10
-        if (typeof data.step_count === 'number') vm.iterationCount = data.step_count
-      } else {
-        const cached = vm.sessionStates[sid]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-          if (typeof data.elapsed_time === 'number') cached.sessionDuration = Math.round(((cached.sessionDuration || 0) + data.elapsed_time) * 10) / 10
-          if (typeof data.step_count === 'number') cached.iterationCount = data.step_count
-        }
-      }
+    // elapsed_time / step_count 是这条消息的累计值（审批续跑也接着中断前往下算），
+    // 会话合计 = 流开始前其余消息的合计（续跑见 resumeUsageBase）+ 本条累计值
+    const newDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
+    const newIterations = typeof data.step_count === 'number' ? ctx.preStreamIterationCount + data.step_count : null
+    if (match) {
+      Object.assign(vm.sessionUsage, patch)
+      if (newDuration !== null) vm.sessionDuration = newDuration
+      if (newIterations !== null) vm.iterationCount = newIterations
     } else {
-      const newDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
-      const newIterations = typeof data.step_count === 'number' ? ctx.preStreamIterationCount + data.step_count : null
-      if (match) {
-        Object.assign(vm.sessionUsage, patch)
-        if (newDuration !== null) vm.sessionDuration = newDuration
-        if (newIterations !== null) vm.iterationCount = newIterations
-      } else {
-        const cached = vm.sessionStates[sid]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-          if (newDuration !== null) cached.sessionDuration = newDuration
-          if (newIterations !== null) cached.iterationCount = newIterations
-        }
+      const cached = vm.sessionStates[sid]
+      if (cached) {
+        cached.sessionUsage = { ...cached.sessionUsage, ...patch }
+        if (newDuration !== null) cached.sessionDuration = newDuration
+        if (newIterations !== null) cached.iterationCount = newIterations
       }
     }
   }
@@ -397,18 +405,31 @@ export function createStreamChunkHandler(vm, ctx) {
       }
     } else if (eventType === 'error') {
       const idx = findIdx()
+      // code === 'timeout'：模型流式静默超时（一次模型调用 120 秒没收到新 chunk）。
+      // 半成品和兜底文案后端已经落库，这里的差别只有「怎么展示」：
+      //   - 不写 message.error，也不设 vm.error —— 那是红色报错且 5 秒后自动消失；
+      //   - 改写 message.fallback_note，由 ChatMessage 在正文后渲染常驻灰条。
+      // 其他异常（步数用尽等）code 为 undefined，走原来的红字路径，行为不变。
+      const timedOut = data.code === 'timeout'
       if (idx !== -1) {
         vm.messages[idx].loading = false
-        vm.messages[idx].error = data.content || '处理失败'
+        if (!timedOut) vm.messages[idx].error = data.content || '处理失败'
         if (!ctx.isResume) {
           for (const blk of vm.messages[idx].blocks) {
             if (blk.type === 'thinking' && blk.duration == null) blk.duration = 0
-            if (blk.type === 'tool_call' && blk.duration == null) { blk.duration = 0; blk.success = false; if (!blk.result) blk.result = data.content || '执行中断' }
+            if (blk.type === 'tool_call' && blk.duration == null) {
+              blk.duration = 0
+              blk.success = false
+              if (!blk.result) blk.result = timedOut ? '执行中断: 访问超时' : (data.content || '执行中断')
+            }
           }
         }
-        setReactive(vm.messages, idx, { ...vm.messages[idx], blocks: [...vm.messages[idx].blocks] })
+        const patch = { ...vm.messages[idx], blocks: [...vm.messages[idx].blocks] }
+        // 新增键必须放进被替换的对象里：Vue2 直接给原对象添属性不会触发视图更新
+        if (timedOut && data.content) patch.fallback_note = data.content
+        setReactive(vm.messages, idx, patch)
       }
-      vm.error = data.content || '处理失败'
+      if (!timedOut) vm.error = data.content || '处理失败'
     }
   }
 

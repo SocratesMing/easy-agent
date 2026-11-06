@@ -16,10 +16,12 @@
 
     <!-- 登录页关闭时（嵌入宿主 / 生产）：无有效登录态时的兜底提示 -->
     <div v-else-if="authBlocked" class="auth-blocked">
-      <AuthKickedNotice v-if="authBlockedReason === 'kicked'" :sign-in-enabled="signInEnabled" :relogin="handleAdapterSignIn" />
-      <div v-else class="auth-blocked-box">
+      <div class="auth-blocked-box">
         <h2>未授权访问</h2>
-        <p v-if="signInEnabled">
+        <p v-if="authBlockedReason === 'kicked'">
+          您的账号已在其他设备或页面登录，本页已退出。请刷新页面重新进入。
+        </p>
+        <p v-else-if="signInEnabled">
           免密登录未成功（未获取到宿主登录信息或后端校验未通过）。请从门户系统重新进入本页面。
         </p>
         <p v-else>登录页已关闭，且未配置免密登录。请联系管理员分配账号后使用账号密码登录。</p>
@@ -121,6 +123,7 @@
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @send-message="handleSendMessage"
+        @web-search-change="handleWebSearchChange"
         @create-session="ensureCurrentSession"
         @remove-file="handleRemoveFile"
         @stop="handleStop"
@@ -172,7 +175,6 @@ const UserManagementPanel = () => import('./features/personnel/PersonnelManageme
 const KnowledgeWorkbench = () => import('./features/knowledge/KnowledgeWorkbench.vue')
 import SidebarResizeHandle from './features/knowledge/SidebarResizeHandle.vue'
 import Welcome from './features/chat/components/Welcome.vue'
-import AuthKickedNotice from './features/chat/components/AuthKickedNotice.vue'
 import WorkspacePanel from './features/workspace/components/WorkspacePanel.vue'
 const SettingsPanel = () => import('./features/settings/components/SettingsPanel.vue')
 import AiSidebar from './features/chat/components/AiSidebar.vue'
@@ -182,7 +184,7 @@ import chatSessionMixin, { parseMCPResult } from './features/chat/mixins/chatSes
 import { chatStore } from './features/chat/store/chatStore.js'
 import { buildPageContext } from './utils/pageContext.js'
 import { applyApprovalRequests } from './utils/hitlApproval.js'
-import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin, runSignIn, isAuthKicked } from './api/auth.js'
+import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin, runSignIn } from './api/auth.js'
 import { getKnowledgeStatus, getModels as fetchModels } from './api/settings.js'
 import { isRestorableUserProfile } from './utils/userProfile.js'
 import { getRuntime } from './runtime/config.js'
@@ -228,7 +230,6 @@ function setReactive(target, key, value) {
 export default {
   components: {
     AiSidebar,
-    AuthKickedNotice,
     SidebarResizeHandle,
     KnowledgeWorkbench,
     Chat,
@@ -248,11 +249,14 @@ export default {
       // 模型选择：从配置加载可选列表，默认选 active model
       availableModels: [],
       selectedModel: null,
+      // 联网开关的镜像（真身在 ChatInput）：发送只有「输入框」一条路走 $emit('send')，
+      // 重试/续发不经过输入框，必须从这里取当前状态，否则会落回默认值 false。
+      webSearchEnabled: false,
       welcomeTitle: getRuntime().app.welcomeTitle,
       // 「未授权」提示态（登录页关闭且免密登录未成功时显示）
       authBlocked: false,
-      // 未授权原因：kicked = 被其他设备顶下线（含刷新 / 重新进入页面；不自动重新登录，避免两端互踢）
-      authBlockedReason: isAuthKicked() ? 'kicked' : '',
+      // 未授权原因：kicked = 被其他设备顶下线（不自动重新登录，避免两端互踢）
+      authBlockedReason: '',
       duplicateInstance: false,
       presetQuestions: [],
       isSidebarCollapsed: false,
@@ -801,10 +805,10 @@ export default {
     //   · signIn 返回 { profile } 时直接用作展示资料（与原门户免密一致，不调 /auth/profile），
     //     只返回 true 时按 /agent/auth/profile 加载；
     //   · 未配置 signIn、返回 false 或抛错时返回 false，由 initApp 回落到已存登录态。
-    async handleAdapterSignIn(options) {
+    async handleAdapterSignIn() {
       if (!this.signInEnabled) return false
       try {
-        const result = await runSignIn(options) // { manual: true }：被顶下线后用户点击「重新登录」
+        const result = await runSignIn()
         if (!result) return false
         let profile = result.profile
         if (!profile) {
@@ -1159,9 +1163,17 @@ export default {
         if (data.auto_compress_tokens) patch.auto_compress_tokens = data.auto_compress_tokens
         return patch
       }
+      // 记下这条消息自己的累计耗时 / 步数：审批续跑时据此从会话合计里扣掉中断前已计入的部分
+      const rememberMessageUsage = (data) => {
+        const idx = findIdx()
+        if (idx === -1 || typeof data.step_count !== 'number') return
+        const msg = this.messages[idx]
+        msg.usage = { ...msg.usage, step_count: data.step_count, elapsed_time: data.elapsed_time || 0 }
+      }
       const applyUsage = (data, sid) => {
         const patch = usagePatchFrom(data)
         const match = !sid || this.currentSessionId === sid
+        rememberMessageUsage(data)
         if (ctx.attachMode) {
           // 重挂载回放：token_usage/done 携带的 elapsed_time 是原始流从头开始的
           // 累计值，应 SET 而非累加（isResume 分支的累加语义只适用于 HITL 续跑）
@@ -1179,33 +1191,20 @@ export default {
           }
           return
         }
-        if (ctx.isResume) {
-          if (match) {
-            Object.assign(this.sessionUsage, patch)
-            if (typeof data.elapsed_time === 'number') this.sessionDuration = Math.round((this.sessionDuration + data.elapsed_time) * 10) / 10
-            if (typeof data.step_count === 'number') this.iterationCount = data.step_count
-          } else {
-            const cached = this.sessionStates[sid]
-            if (cached) {
-              cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-              if (typeof data.elapsed_time === 'number') cached.sessionDuration = Math.round(((cached.sessionDuration || 0) + data.elapsed_time) * 10) / 10
-              if (typeof data.step_count === 'number') cached.iterationCount = data.step_count
-            }
-          }
+        // elapsed_time / step_count 是这条消息的累计值（审批续跑也接着中断前往下算），
+        // 会话合计 = 流开始前其余消息的合计（续跑见 resumeUsageBase）+ 本条累计值
+        const newDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
+        const newIterations = typeof data.step_count === 'number' ? ctx.preStreamIterationCount + data.step_count : null
+        if (match) {
+          Object.assign(this.sessionUsage, patch)
+          if (newDuration !== null) this.sessionDuration = newDuration
+          if (newIterations !== null) this.iterationCount = newIterations
         } else {
-          const newDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
-          const newIterations = typeof data.step_count === 'number' ? ctx.preStreamIterationCount + data.step_count : null
-          if (match) {
-            Object.assign(this.sessionUsage, patch)
-            if (newDuration !== null) this.sessionDuration = newDuration
-            if (newIterations !== null) this.iterationCount = newIterations
-          } else {
-            const cached = this.sessionStates[sid]
-            if (cached) {
-              cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-              if (newDuration !== null) cached.sessionDuration = newDuration
-              if (newIterations !== null) cached.iterationCount = newIterations
-            }
+          const cached = this.sessionStates[sid]
+          if (cached) {
+            cached.sessionUsage = { ...cached.sessionUsage, ...patch }
+            if (newDuration !== null) cached.sessionDuration = newDuration
+            if (newIterations !== null) cached.iterationCount = newIterations
           }
         }
       }
@@ -1781,6 +1780,10 @@ export default {
         }
       }
     },
+    // ChatInput 的联网开关变化上报：存一份镜像，供不经过输入框的发送路径（重试）复用
+    handleWebSearchChange(enabled) {
+      this.webSearchEnabled = Boolean(enabled)
+    },
     handleRetry(content) {
       // 直接重新发送消息内容，不经过输入框
       console.log('[handleRetry] content type:', typeof content, 'value:', content)
@@ -1798,8 +1801,9 @@ export default {
           return
         }
 
-        // 直接调用发送
-        this.handleSendMessage(content.trim())
+        // 重试不经过输入框，联网开关必须从镜像取：漏传会落回 enableWebSearch 默认值 false，
+        // 表现为「小地球亮着、后端收到 web_search: False」，模型据关闭态纪律回答未联网。
+        this.handleSendMessage(content.trim(), [], null, true, this.webSearchEnabled)
       }
     },
     handleStop() {

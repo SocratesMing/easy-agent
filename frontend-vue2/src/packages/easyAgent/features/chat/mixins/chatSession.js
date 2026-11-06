@@ -4,7 +4,7 @@ import { createSession, listSessions, getChatHistory, deleteSession, sendMessage
 import { deleteFile, getSessionGeneratedFiles } from '../../../api/files.js'
 import { authFetch } from '../../../api/auth.js'
 import { chatBus, chatStore, syncPendingApprovalFlag as setPendingApprovalFlag } from '../store/chatStore.js'
-import { createStreamChunkHandler as createChunkHandler } from '../services/chunkHandler.js'
+import { createStreamChunkHandler as createChunkHandler, resumeUsageBase } from '../services/chunkHandler.js'
 import streamLifecycle from './streamLifecycle.js'
 import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
 
@@ -49,6 +49,9 @@ export default {
       // 之前误引用 handleSendMessage 的局部变量 assistantMsgId 导致停止按钮抛 ReferenceError）
       streamingAssistantId: null,
       error: null,
+      // 联网开关镜像（真身在 ChatInput）：重试等不经过输入框的发送路径从这里取状态，
+      // 否则 handleSendMessage 的 enableWebSearch 会落回默认值 false。
+      webSearchEnabled: false,
       currentAbortController: null,
       // HITL: 审批待处理状态，存储 { threadId, assistantMsgId }
       pendingApproval: null,
@@ -439,14 +442,7 @@ export default {
         st = {
           messages: [],
           isStreaming: true,
-          sessionUsage: {
-            input_tokens: 0,
-            output_tokens: 0,
-            reasoning_tokens: 0,
-            context_length: this.sessionUsage.context_length,
-            auto_compress_tokens: null,
-            context_tokens: 0,
-          },
+          sessionUsage: { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: this.sessionUsage.context_length, auto_compress_tokens: null, context_tokens: 0 },
           sessionDuration: 0,
           iterationCount: 0,
           abortController: null,
@@ -599,9 +595,7 @@ export default {
       if (!this.currentSessionId) {
         const newSession = await createSession(initialTitle || '新会话', chatStore.username || null)
         this.currentSessionId = newSession.session_id
-        // 预创建的 DB 会话即当前展示会话：同步标记 loadedSessionId，
-        // 否则随后的流式事件会被 runInSession 视为「后台会话」只写入
-        // sessionStates 缓冲而不渲染，表现为一直"正在思考"、刷新后才出现。
+        // 预创建的会话就是展示中会话：不同步 loadedSessionId，流式事件会被 runInSession 当成后台会话只写缓存（一直"正在思考"）
         this.loadedSessionId = newSession.session_id
         const existingIndex = this.sessions.findIndex(s => s.session_id === newSession.session_id)
         if (existingIndex === -1) {
@@ -1026,6 +1020,7 @@ export default {
         isResume: true,
         assistantMsgId,
         streamSessionId: sessionId,
+        ...resumeUsageBase(this.sessionDuration, this.iterationCount, this.messages[msgIdx]), // 扣掉本条中断前已计入的耗时/步数
         initialBlockOrder: (() => {
           const i = this.messages.findIndex(m => m.id === assistantMsgId)
           return i !== -1 ? this.messages[i].blocks.length : 0
@@ -1118,6 +1113,11 @@ export default {
         }
       }
     },
+    // ChatInput 的联网开关变化上报：存一份镜像，供不经过输入框的发送路径（重试）复用。
+    // 与 EasyAgentPage.vue 的同名实现保持一致（Vue 2 组件方法优先于 mixin，两处都要改）。
+    handleWebSearchChange(enabled) {
+      this.webSearchEnabled = Boolean(enabled)
+    },
     handleRetry(content) {
       // 直接重新发送消息内容，不经过输入框
       console.log('[handleRetry] content type:', typeof content, 'value:', content)
@@ -1135,8 +1135,8 @@ export default {
           return
         }
 
-        // 直接调用发送
-        this.handleSendMessage(content.trim())
+        // 重试不经过输入框，联网开关必须从镜像取：漏传会落回 enableWebSearch 默认值 false
+        this.handleSendMessage(content.trim(), [], null, true, this.webSearchEnabled)
       }
     },
     handleStop() {

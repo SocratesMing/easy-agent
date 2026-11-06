@@ -121,6 +121,7 @@
         :draft-key="draftKey"
         :consume-pending-skill="!isSidebar"
         @send="onSend"
+        @web-search-change="$emit('web-search-change', $event)"
         :disabled="isStreaming"
         :isStreaming="isStreaming"
         :session-id="currentSessionId"

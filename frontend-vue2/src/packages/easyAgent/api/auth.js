@@ -1,16 +1,12 @@
 import request, {
   AUTH_EXPIRED_EVENT,
-  AUTH_KICKED_KEY,
-  KICKED_MESSAGE,
   USER_ACTIVITY_EVENT,
   clearAuth,
-  clearAuthKicked,
   dispatchAuthExpired,
   dispatchUserActivity,
   getAuthHeaders,
   getStoredToken,
   getStoredUsername,
-  isAuthKicked,
   requestRaw,
   setDefaultAuthRefresher,
   storeAuth,
@@ -19,17 +15,13 @@ import { getRuntime } from '../runtime/config.js'
 
 export {
   AUTH_EXPIRED_EVENT,
-  AUTH_KICKED_KEY,
-  KICKED_MESSAGE,
   USER_ACTIVITY_EVENT,
   clearAuth,
-  clearAuthKicked,
   dispatchAuthExpired,
   dispatchUserActivity,
   getAuthHeaders,
   getStoredToken,
   getStoredUsername,
-  isAuthKicked,
   storeAuth,
 }
 
@@ -63,8 +55,6 @@ export async function login(username, password) {
     '登录失败'
   )
   storeAuth(data.access_token, data.username)
-  // 新登录成功即顶掉了旧登录：本端不再处于「被顶下线」状态
-  clearAuthKicked()
   return data
 }
 
@@ -80,8 +70,6 @@ export async function passwordlessLogin(username, userId = '0') {
     '免密登录失败'
   )
   storeAuth(data.access_token, data.username)
-  // 新登录成功即顶掉了旧登录：本端不再处于「被顶下线」状态
-  clearAuthKicked()
   return data
 }
 
@@ -100,8 +88,6 @@ export async function register(username, password, employeeId = '') {
     '注册失败'
   )
   storeAuth(data.access_token, data.username)
-  // 新登录成功即顶掉了旧登录：本端不再处于「被顶下线」状态
-  clearAuthKicked()
   return data
 }
 
@@ -178,19 +164,11 @@ let signingIn = null
  * signIn 返回 false / null 表示无法登录；true 表示已拿到 token；
  * { profile: { username, organization_id, email } } 表示已拿到 token 并提供展示资料。
  *
- * 被其他设备顶下线后（isAuthKicked()）不再自动执行：只有用户明确点击「重新登录」时
- * 以 { manual: true } 调用才会执行，避免同一账号多处无感重登、无限互顶。
- *
- * @param {{ manual?: boolean }} [options]
  * @returns {Promise<null | { profile: object | null, contextLength: number | null }>}
  */
-export function runSignIn(options = {}) {
+export function runSignIn() {
   const signIn = getRuntime().auth.signIn
   if (typeof signIn !== 'function') return Promise.resolve(null)
-  if (isAuthKicked() && !options.manual) {
-    console.warn('[登录] 账号已在其他设备登录（被顶下线），不自动重新登录，等待用户明确操作')
-    return Promise.resolve(null)
-  }
   if (signingIn) return signingIn
   signingIn = (async () => {
     let loginData = null
@@ -202,7 +180,6 @@ export function runSignIn(options = {}) {
       setToken: (token, username = '') => {
         if (!token) throw new Error('setToken 需要 Agent token')
         storeAuth(token, username || '')
-        clearAuthKicked()
       },
     }
     try {

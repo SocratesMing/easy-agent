@@ -64,3 +64,21 @@ test('任务列表项带 task-list-item class（不依赖 :has()，旧版 Chrome
   assert.equal((html.match(/<li class="task-list-item"><input /g) || []).length, 2)
   assert.ok(html.includes('<li>普通项</li>'))
 })
+
+test('表格单元格里的 markdown 链接可点击，且不被误判成来源卡片', () => {
+  const md = [
+    '| # | 事件 | 来源 / 时间 |',
+    '|---|---|---|',
+    '| 1 | 中期选举 | [第一财经](https://www.yicai.com/a.html) 11-05 10:00 UTC；[NBC](https://www.nbcnews.com/x) 11-04 23:51 UTC |',
+  ].join('\n')
+  const html = render(md)
+  assert.ok(html.includes('<table>'), html)
+  // 表格内的链接与正文链接同样在新标签页打开
+  assert.ok(html.includes(`<a href="https://www.yicai.com/a.html" ${NEW_TAB}>第一财经</a>`), html)
+  assert.ok(html.includes(`<a href="https://www.nbcnews.com/x" ${NEW_TAB}>NBC</a>`), html)
+  // 时间留在链接外面，不变进卡片标题
+  assert.ok(html.includes('11-05 10:00 UTC'), html)
+  // 来源卡片的正则要求整行匹配，表格行以 | 开头不会命中
+  assert.ok(!html.includes('msg-source-card'), html)
+})
+

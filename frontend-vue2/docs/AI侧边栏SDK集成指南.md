@@ -351,23 +351,14 @@ EasyAgentSidebar.init({
 
 ### 5.4 token 过期与登出
 
-使用 `getToken` 或 `username` + `userId` 时，请求遇到 401（token 过期）会自动重新获取 token，并把失败的请求（含正在发送的消息）用新 token 重发一次，用户无感；并发的多个 401 只换取一次。重新获取失败才回调 `onAuthExpired`。`getToken` 每次被调用都应返回一个新的有效 token，不要返回缓存的旧 token。
-
-**被其他设备顶下线**（账号在别处登录）时不会自动重新获取 token：SDK 在 localStorage 记下 `auth_kicked=1`，
-此后 401 续期、页面重新加载时的自动登录都不再执行，`onAuthExpired` / `onError` 收到 `error.code === 'kicked'`
-的错误。宿主应明确提示用户（或执行自己的退出、跳转登录页逻辑），**不要在回调里直接 `setToken` 重新登录**，
-否则同一账号在多处会无感互相顶替。用户明确重新登录后再调用 `sidebar.setToken(token)`（会清除标记）。
+使用 `getToken` 或 `username` + `userId` 时，请求遇到 401（token 过期 / 被顶下线）会自动重新获取 token，并把失败的请求（含正在发送的消息）用新 token 重发一次，用户无感；并发的多个 401 只换取一次。重新获取失败才回调 `onAuthExpired`。`getToken` 每次被调用都应返回一个新的有效 token，不要返回缓存的旧 token。
 
 ```js
 const sidebar = EasyAgentSidebar.init({
   baseURL: 'https://agent.example.com',
   auth: { token: initialToken },
   // 使用静态 token 时，过期后 SDK 无法自行续期，会回调这里
-  onAuthExpired: async (error) => {
-    if (error && error.code === 'kicked') {
-      alert('您的账号已在其他设备登录，AI 助手已退出，请重新登录后使用')
-      return
-    }
+  onAuthExpired: async () => {
     const { token } = await fetch('/api/easy-agent/token').then(r => r.json())
     await sidebar.setToken(token)
   },
@@ -630,8 +621,7 @@ npm publish --registry https://npm.example.com/
   嵌入内网宿主时该参数经宿主路由读取（保留其他 query 与 hash）；
 - SDK 的挂载点外层是模块根节点 `.easy-agent-root`（模块的限域重置与主题变量以它为范围），`theme`
   覆盖同时写在 `:host` 与该根节点上；SDK 自带一份模块副本，与同页的嵌入页面配置、token 互不影响；
-- 401 续期时遇到「其他设备登录 / 被迫下线」不再自动重新登录（避免两端互相挤下线），直接走 `onAuthExpired`（`error.code === 'kicked'`）；
-  被顶下线标记 `auth_kicked` 存在期间，残留 401 与重新初始化同样不自动登录，直到 `setToken` 或用户明确登录。
+- 401 续期时遇到「其他设备登录 / 被迫下线」不再自动重新登录（避免两端互相挤下线），直接走 `onAuthExpired`。
 
 ### Node 14 兼容
 

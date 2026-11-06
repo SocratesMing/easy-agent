@@ -97,6 +97,7 @@
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @sendMessage="handleSendMessage"
+        @webSearchChange="webSearchEnabled = $event"
         @createSession="ensureCurrentSession"
         @removeFile="handleRemoveFile"
         @stop="handleStop"
@@ -148,7 +149,7 @@ import WorkspacePanel from './features/workspace/components/WorkspacePanel.vue'
 const SettingsPanel = defineAsyncComponent(() => import('./features/settings/components/SettingsPanel.vue'))
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
 import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from './utils/hitlApproval.js'
-import { createStreamChunkHandler } from './features/chat/composables/useStreamChunks.js'
+import { createStreamChunkHandler, resumeUsageBase } from './features/chat/composables/useStreamChunks.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getKnowledgeStatus, getModels as fetchModels } from './api/settings.js'
@@ -280,6 +281,9 @@ const isStreaming = computed(() => isSessionStreaming(currentSessionId.value))
 const streamingAssistantId = ref(null)
 const error = ref(null)
 const currentAbortController = ref(null)
+// 联网开关的镜像（真身在 ChatInput）：发送只有「输入框」一条路走 emit('send')，
+// 重试不经过输入框，必须从这里取当前状态，否则会落回默认值 false。
+const webSearchEnabled = ref(false)
 // HITL: 审批待处理状态，存储 { threadId, assistantMsgId }
 const pendingApproval = ref(null)
 const sessionUsage = ref({ input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: null, auto_compress_tokens: null, context_tokens: 0 })
@@ -1649,12 +1653,10 @@ async function handleToolApproval(decision, target) {
     isResume: true,
     assistantMsgId,
     streamSessionId: sessionId,
+    ...resumeUsageBase(sessionDuration.value, iterationCount.value, messages.value[msgIdx]), // 扣掉本条中断前已计入的耗时/步数
     runInSession,
     state: buildStreamState(),
-    initialBlockOrder: (() => {
-      const i = messages.value.findIndex(m => m.id === assistantMsgId)
-      return i !== -1 ? messages.value[i].blocks.length : 0
-    })(),
+    initialBlockOrder: msgIdx !== -1 ? messages.value[msgIdx].blocks.length : 0,
     onApprovalRequired: (data) => {
       // 嵌套审批
       syncPendingApprovalFlag(sessionId, true)
@@ -1758,8 +1760,10 @@ function handleRetry(content) {
       return
     }
     
-    // 直接调用发送
-    handleSendMessage(content.trim())
+    // 重试不经过输入框，联网开关必须从镜像取：漏传会落回 enableWebSearch 默认值 false，
+    // 表现为「小地球亮着、后端收到 web_search: False」，模型据关闭态纪律回答未联网。
+    // 第 4 位是 enableDeepThink，第 5 位才是 enableWebSearch，别错位。
+    handleSendMessage(content.trim(), [], null, true, webSearchEnabled.value)
   }
 }
 

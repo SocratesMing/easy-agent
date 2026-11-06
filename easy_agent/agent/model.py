@@ -17,6 +17,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_openai import ChatOpenAI
 
 from easy_agent.bootstrap.config import Config, LLMConfig, RetryConfig
+from easy_agent.bootstrap.env import env_bool
 
 logger = logging.getLogger(__name__)
 #: 模型入口参数 / 请求 / 原始返回报文日志：只写 proc 文件，不进控制台
@@ -40,7 +41,7 @@ LLM_REQUEST_LOG_ENV = "EASY_LLM_REQUEST_LOG"
 
 
 def llm_request_log_enabled() -> bool:
-    return os.environ.get(LLM_REQUEST_LOG_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+    return env_bool(LLM_REQUEST_LOG_ENV)
 
 
 def _mask_secret(value) -> str:
