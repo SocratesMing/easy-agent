@@ -328,7 +328,7 @@ def _strip_headline_lists(text: str) -> str:
     drop = [False] * len(lines)
     run: list[int] = []
 
-    def _flush() -> None:
+    def _flush_run() -> None:
         if len(run) >= 3:
             for pos in run:
                 drop[pos] = True
@@ -338,8 +338,8 @@ def _strip_headline_lists(text: str) -> str:
         if _looks_like_headline(line):
             run.append(idx)
         else:
-            _flush()
-    _flush()
+            _flush_run()
+    _flush_run()
     if not any(drop):
         return str(text or "")
     return "\n".join(line for idx, line in enumerate(lines) if not drop[idx])

@@ -619,6 +619,42 @@ async def test_resume_stream_golden_decision_merge_and_authoritative_blocks():
     assert final_tool_block["approval_status"] == "approved"
 
 
+async def test_resume_stream_continues_elapsed_from_pre_interrupt_part():
+    """续跑接着中断前已用的耗时计时：下发与落库的 elapsed_time 都包含中断前那段。
+
+    此前续跑从 0 计时，落库时把中断前的耗时覆盖掉，刷新后会话耗时少算这一段。
+    """
+    messages = _resume_messages()
+    messages[-1]["usage"] = {"step_count": 1, "elapsed_time": 30.0}
+    graph = FakeGraph(
+        [[{"type": "content", "content": " done"}]],
+        states=[
+            _hitl_state(),
+            SimpleNamespace(next=None, tasks=[], values={"messages": []}),
+        ],
+    )
+    db = FakeDB(messages)
+
+    frames = await _collect(
+        resume_stream_generator(
+            db,
+            _agent(graph),
+            "s1",
+            "s1-m1",
+            [{"type": "approve"}],
+            session_logger=FakeLogger(),
+            message_id="m1",
+        )
+    )
+    done = _events(frames)[-1]
+
+    assert 30 <= done["usage"]["elapsed_time"] < 40
+    assert done["elapsed_time"] == done["usage"]["elapsed_time"]
+    # step_count 本来就是这条消息的累计值，口径不变
+    assert done["usage"]["step_count"] == 1
+    assert 30 <= db.persisted[-1]["usage"]["elapsed_time"] < 40
+
+
 async def test_resume_stale_approval_emits_error_instead_of_fake_run():
     """checkpointer 里已没有待审批中断：恢复流下发 error，而不是带着 decisions 空跑。
 

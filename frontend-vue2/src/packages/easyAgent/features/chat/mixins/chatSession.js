@@ -4,7 +4,7 @@ import { createSession, listSessions, getChatHistory, deleteSession, sendMessage
 import { deleteFile, getSessionGeneratedFiles } from '../../../api/files.js'
 import { authFetch } from '../../../api/auth.js'
 import { chatBus, chatStore, syncPendingApprovalFlag as setPendingApprovalFlag } from '../store/chatStore.js'
-import { createStreamChunkHandler as createChunkHandler } from '../services/chunkHandler.js'
+import { createStreamChunkHandler as createChunkHandler, resumeUsageBase } from '../services/chunkHandler.js'
 import streamLifecycle from './streamLifecycle.js'
 import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
 
@@ -764,7 +764,7 @@ export default {
       // 用于用户中途切换会话时，把用量更新写入所属会话的缓存而非当前显示
       let streamSessionId = this.currentSessionId
 
-      const contentWithFiles = message.trim().replace(/\s+/g, ' ')
+      const contentWithFiles = message.trim() // 只去首尾空白：换行与缩进是用户原话，气泡按纯文本原样展示
       const pageContext = this.getPageContextForSend() || null
 
       const userMessage = {
@@ -1020,6 +1020,7 @@ export default {
         isResume: true,
         assistantMsgId,
         streamSessionId: sessionId,
+        ...resumeUsageBase(this.sessionDuration, this.iterationCount, this.messages[msgIdx]), // 扣掉本条中断前已计入的耗时/步数
         initialBlockOrder: (() => {
           const i = this.messages.findIndex(m => m.id === assistantMsgId)
           return i !== -1 ? this.messages[i].blocks.length : 0

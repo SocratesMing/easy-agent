@@ -16,10 +16,14 @@
 // 结尾（"、]、) 等）、且结尾 ** 后紧跟全角标点（：、（、、等）时，加粗不会被解析。
 // 实例：会话 xzz/6d3ae63e 的「**放量破位、呈"三连阴"**：10/13 …」渲染为字面量 **。
 // 注意 marked 5.x 起已移除 headerIds / mangle 选项，标题不再生成 id（与旧版关闭时行为一致）。
+// 2026-11-06 中文排版两处修正（见 setupMarkedExtensions）：删除线只认 ~~ 双波浪线；强调与删除线的
+// 定界符按 CJK 友好规则识别（./cjkFriendly.js 依赖 marked 17 的内部规则名，升级 marked 时须回归单测）。
 import { marked } from 'marked'
 import katexExtension from 'marked-katex-extension'
 import { markedEmoji } from 'marked-emoji'
 import { nameToEmoji } from 'gemoji'
+import markedCjkFriendly from './cjkFriendly.js'
+import { createInlineMathExtension } from './math.js'
 import { CODE_COPY_ONCLICK, sanitizeHtml } from './sanitize.js'
 
 // 预览组件（Excel 兜底表格、docx 链接）经 markdownSetup 同一出口拿消毒函数
@@ -27,8 +31,8 @@ export { isSafeLinkUrl, neutralizeUnsafeLinks, sanitizeHtml } from './sanitize.j
 
 let initialized = false
 
-// 将模型可能“内联”写出的块级公式 $$...$$ 规整到独立行，
-// 否则 marked-katex-extension 的行内规则要求 $$ 前后有空格、块级规则要求 $$ 位于行首，
+// 将模型可能“内联”写出的块级公式 $$...$$ 与 \[...\] 规整到独立行，
+// 否则 marked-katex-extension 的块级规则要求 $$ 位于行首（\[ \] 更是完全不认），
 // 模型把公式嵌在段落中间（如 `text$$x$$text`）时不会被识别，最终以纯文本显示。
 // 处理前先保护代码块/行内代码，避免把代码里的 $ 误当公式。
 export function normalizeMathDelimiters(content) {
@@ -45,6 +49,11 @@ export function normalizeMathDelimiters(content) {
     .replace(/```[\s\S]*?(?:```|$)/g, placeholder)
     .replace(/`[^`\n]+`/g, placeholder)
   s = s.replace(/\$\$([\s\S]+?)\$\$/g, (_, inner) => '\n\n$$\n' + inner.trim() + '\n$$\n\n')
+  // \[ … \] 同样规整成 $$ 块。前面是反斜杠的不动（LaTeX 换行加间距 \\[2pt]、转义的反斜杠），
+  // 内容只有数字的也不动（\[1\] 多半是转义的方括号）
+  s = s.replace(/(^|[^\\])\\\[([\s\S]+?)\\\]/g, (all, lead, inner) =>
+    /^\s*\d*\s*$/.test(inner) ? all : lead + '\n\n$$\n' + inner.trim() + '\n$$\n\n'
+  )
   s = s.replace(/ CODE(\d+) /g, (_, i) => protectedChunks[+i])
   return s
 }
@@ -291,15 +300,19 @@ export function setupMarkedExtensions() {
   if (initialized) return
   initialized = true
 
-  // 数学公式：$$...$$ 块级、 $...$ 行内（标准模式，避免把普通美元金额误判为公式）
-  marked.use(
-    katexExtension({
-      throwOnError: false,
-      nonStandard: false,
-      strict: false,
-      errorColor: '#cc0000',
-    })
-  )
+  // 数学公式：$$...$$ 块级与 KaTeX 渲染器沿用 marked-katex-extension；行内公式换成中文友好的定界规则
+  // （./math.js：$ 紧挨汉字、全角标点也能识别，认 \( \)，美元金额与 shell 变量不会被当成公式）
+  const katexExt = katexExtension({
+    throwOnError: false,
+    nonStandard: false,
+    strict: false,
+    errorColor: '#cc0000',
+  })
+  marked.use({
+    extensions: katexExt.extensions.map((ext) =>
+      ext.name === 'inlineKatex' ? createInlineMathExtension(ext.renderer) : ext
+    ),
+  })
 
   // GitHub 风格 emoji 短代码，例如 :smile: :rocket: :fire: :+1: :tada:
   // gemoji.nameToEmoji 提供 短代码 -> unicode 字符 的完整映射
@@ -317,6 +330,22 @@ export function setupMarkedExtensions() {
       },
     })
   )
+
+  // 中日韩文字紧挨强调符时也能识别：`**注意：**请勿删除`、`这是**“重点”**内容`。
+  // CommonMark 的定界规则把汉字当普通字母，这类写法的加粗要么原样露出星号，要么和后面的 ** 错配。
+  marked.use(markedCjkFriendly())
+
+  // 删除线只认 ~~双波浪线~~。中文里单个 ~ 是范围符（3~5 天、1.2495~2505），GFM 的单波浪线删除线
+  // 会把同一段里的两个范围配成一对：~ 被吞掉，中间的文字被划掉。
+  // 必须注册在 CJK 扩展之后：marked 先调用后注册的 tokenizer，返回 false 才交给先注册的那个；
+  // 返回 undefined 表示「这里不是删除线」，到此为止。
+  marked.use({
+    tokenizer: {
+      del(src) {
+        return src.startsWith('~~') ? false : undefined
+      },
+    },
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -440,6 +469,11 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
     renderer.link = function ({ href, title, tokens }) {
       const url = href || ''
       const text = this.parser.parseInline(tokens)
+      // 没有协议的相对地址 / 页内锚点（模型写的 report.docx、/workspace/…，脚注 [^1] 被当成的链接定义）：
+      // 点了会在本页跳转、离开对话，只显示文字，悬停可看到原地址
+      if (!/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(url.trim())) {
+        return `<span class="md-link-disabled" title="${escapeHtml(url)}">${text}</span>`
+      }
       const isExternal = /^https?:\/\//i.test(url)
       const titleAttr = title ? ` title="${escapeHtml(title)}"` : ''
       const extra = isExternal ? EXTERNAL_LINK_ATTRS : ''
@@ -463,11 +497,13 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
  *
  * @param {string} content markdown 文本
  * @param {Object} renderer createMarkdownRenderer 创建的渲染器
- * @param {{ sourceCards?: boolean }} [options] sourceCards=false 时不做来源卡片改写（文件/文档预览）
+ * @param {{ sourceCards?: boolean, remoteImages?: 'link' | 'inline' }} [options]
+ *   sourceCards=false 时不做来源卡片改写（文件/文档预览）；
+ *   remoteImages 默认 'link'：外站图片改成链接、不自动加载（防提示注入借图片地址外带数据），文件预览传 'inline'
  * @returns {string} 已消毒、可直接 v-html 的 HTML 字符串
  * @example
  * renderMarkdown('**hi**', renderer)
- * renderMarkdown(fileText, renderer, { sourceCards: false })
+ * renderMarkdown(fileText, renderer, { sourceCards: false, remoteImages: 'inline' })
  */
 export function renderMarkdown(content, renderer, options = {}) {
   if (!content) return ''
@@ -486,7 +522,7 @@ export function renderMarkdown(content, renderer, options = {}) {
     // 任务列表项打上 class，样式据此去掉圆点（li:has(> input) 需要 Chrome 105+，内网浏览器不支持）
     const tasked = html.replace(/<li><input /g, '<li class="task-list-item"><input ')
     // marked 不过滤原始 HTML 与 javascript: 链接：产物一律清洗后再交给 v-html
-    return sanitizeHtml(tasked)
+    return sanitizeHtml(tasked, { remoteImages: options.remoteImages === 'inline' ? 'inline' : 'link' })
   } catch (e) {
     console.error('Markdown 渲染失败:', e)
     return escapeHtml(content)

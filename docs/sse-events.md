@@ -21,6 +21,10 @@
 | `done` | 正常结束 | `session_id`、`message_id`、`finish_reason` | 全部 |
 | `error` | 失败/取消 | `content` | 全部 |
 
+`token_usage` 与 `done.usage` 里的 `elapsed_time` / `step_count` 是**这条 assistant 消息**的累计值：
+审批续跑接着中断前的值往下算（等待审批的时间不计），与落库的 `usage` 一致。前端的会话合计 =
+流开始前其余消息的合计 + 本条累计值；续跑时先从会话合计里扣掉这条消息中断前已计入的部分。
+
 ## HITL 审批：`approval_required` 与 `/agent/chat/resume`（DA-02，2026-10-19）
 
 并行的 `task` 子代理各自触发审批时，图里会同时挂着多个中断。`action_requests` 下发**全部**

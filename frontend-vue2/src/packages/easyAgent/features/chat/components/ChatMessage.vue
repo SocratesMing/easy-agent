@@ -130,8 +130,7 @@
           />
         </div>
         <template v-for="(block, idx) in finalContentBlocks">
-          <!-- 用户消息：技能标签与正文放在同一个气泡内横向排列（标签在左、正文在右），
-               避免标签独占一行；正文里的 /技能名 指令已去掉，由标签承载 -->
+          <!-- 用户消息：技能标签与正文同一气泡横排（标签在左）；/技能名 指令已去掉、由标签承载；正文按纯文本展示 -->
           <div
             v-if="block.type === 'content' && message.role === 'user'"
             :key="'cu'+block.origIndex"
@@ -148,7 +147,7 @@
                 <span class="message-skill-chip-name">{{ skill.name || skill.dir_name }}</span>
               </span>
             </span>
-            <MarkdownBody v-if="block.content" class="user-bubble-body" :content="block.content" :cite-map="citeNumberMap" />
+            <UserMessageText v-if="block.content" class="user-bubble-body" :content="block.content" />
           </div>
           <MarkdownBody v-else-if="block.type === 'content'" :key="'c'+block.origIndex" class="message-text" :content="block.content" :cite-map="citeNumberMap" />
         </template>
@@ -254,6 +253,7 @@ import {
   copyTextToClipboard,
 } from '../../../markdownSetup.js'
 import MarkdownBody from './MarkdownBody.vue'
+import UserMessageText from './UserMessageText.vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
 import KnowledgeEvidence from '../../knowledge/KnowledgeEvidence.vue'
 import SkillIcon from '../../../shared/components/SkillIcon.vue'
@@ -295,7 +295,7 @@ function isProcessType(b) {
 installCodeCopyHandler()
 
 export default {
-  components: { FileIcon, ToolCallCard, KnowledgeEvidence, SkillIcon, MarkdownBody, MessageError },
+  components: { FileIcon, ToolCallCard, KnowledgeEvidence, SkillIcon, MarkdownBody, UserMessageText, MessageError },
   props: {
     message: {
       type: Object,
