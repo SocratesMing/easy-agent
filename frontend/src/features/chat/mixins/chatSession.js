@@ -475,7 +475,7 @@ export default {
       this.iterationCount = st.iterationCount
       this.currentTodos = st.todos
       this.streamingAssistantId = st.streamingAssistantId
-      if (ctx) ctx.assistantMsgId = st.assistantMsgId
+      if (ctx) Object.assign(ctx, { assistantMsgId: st.assistantMsgId, stateSwapped: true })
       const restore = () => {
         st.messages = this.messages
         st.sessionUsage = this.sessionUsage
@@ -483,7 +483,7 @@ export default {
         st.iterationCount = this.iterationCount
         st.todos = this.currentTodos
         st.streamingAssistantId = this.streamingAssistantId
-        if (ctx) st.assistantMsgId = ctx.assistantMsgId
+        if (ctx) st.assistantMsgId = Object.assign(ctx, { stateSwapped: false }).assistantMsgId
         this.sessionStates[sid] = st
         this.messages = saved.messages
         this.sessionUsage = saved.usage

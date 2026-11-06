@@ -472,11 +472,13 @@ export default {
         return value
       })
       // 不用缓存覆盖 ctx.assistantMsgId：ctx 属于这条流，覆盖会让后台事件丢失（切回无实时过程）
+      if (ctx) ctx.stateSwapped = true
       const restore = () => {
         SESSION_FIELDS.forEach(([vmKey, stKey], i) => {
           st[stKey] = this[vmKey]
           this[vmKey] = saved[i]
         })
+        if (ctx) ctx.stateSwapped = false
         this.$set(this.sessionStates, sid, st)
       }
       let result
