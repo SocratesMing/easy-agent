@@ -74,6 +74,8 @@ FALLBACK_UPDATE_MEMORY_PROMPT = """你是一个会话记忆管理助手。根据
 ## 一律不记
 
 寒暄、一次性执行过程、原始日志、临时状态、可从代码直接读出的内容；密钥 / token / 密码（报错含敏感值须脱敏）。
+工具与环境的状态：本轮有无某个工具、联网开没开、能否执行 shell、沙箱限制、已装技能 / 连接器清单。
+（只允许写元规则：「工具可用性以本轮实际注入的清单为准」。）
 
 ## 写法
 
@@ -380,6 +382,10 @@ def update_memory_after_session(
         if len(updated) > target_chars:
             updated = _hard_truncate(updated, target_chars)
 
+        # 检测「工具/环境状态」类描述（只记日志）：会话记忆每轮重新注入，
+        # 「本轮没有 web_search」写进去会让下一轮跳过工具核对。
+        log_tool_state_findings(updated, scope="会话")
+
         # sidecar 写入与 Markdown 覆盖必须在同一把锁内完成（可重入）：
         # 否则并发写会看到 Markdown 与 sidecar 对应不同 revision / 内容的组合。
         with memory_lock(memory_file):
@@ -515,6 +521,68 @@ def strip_role_scope_clauses(text: str) -> tuple[str, list[str]]:
     return cleaned, dropped
 
 
+# --------------------------------------------------------------------------- #
+# 「工具 / 环境能力状态」检测（现阶段只记日志，不删内容）
+#
+# 提示词（memory_update.md / long_term_memory.md）要求模型不要写工具状态，但框架
+# deepagents 的 <memory_guidelines> 明确鼓励写「how to use tools」，模型照做的概率不低；
+# 而记忆每次都会重新注入，一条「本轮没有 web_search」就足以让下一轮不再核对工具清单。
+#
+# 这里只在落盘前**检测并打日志**：正则误删会伤用户画像（「我在 Windows 上用 shell 做分析」
+# 这类正常背景容易被当成能力快照），先观察命中率，确认没有误伤再改为剔除。
+# --------------------------------------------------------------------------- #
+
+#: 只认「能力名词 + 否定/状态词」的紧邻组合，避免大范围误伤
+_TOOL_STATE_PATTERNS = (
+    re.compile(
+        r"(?:没有|无|未开启|未启用|不可用|不可|不能|无法|禁用|禁|不支持|缺少)[^。；;\n]{0,12}"
+        r"(?:web_search|联网|网络|shell|沙箱|连接器|行情源|数据源|技能清单)"
+    ),
+    re.compile(
+        r"(?:web_search|联网搜索|联网|shell|沙箱)[^。；;\n]{0,8}"
+        r"(?:未开启|不可用|被禁用|禁用|不允许|已关闭|关闭)"
+    ),
+)
+#: 出现这些词说明写的是「以本轮为准」的元规则——正是我们想要的那一条，不算命中
+_TOOL_STATE_META_HINTS = ("以本轮", "每轮", "实际注入", "当轮")
+#: 子句切分：只判到分句粒度，避免「一句元规则 + 一句能力快照」被整行放过
+_TOOL_STATE_SPLIT_RE = re.compile(r"(?<=[。；;！!？?\n])|(?<=[，,])")
+
+
+def find_tool_state_clauses(text: str) -> list[str]:
+    """找出记忆里「工具 / 环境能力状态」类子句（含元规则的子句不算）。
+
+    粒度是「子句」而非整行：真实污染长这样——
+    「联网以本轮实际注入工具清单为准，……；不可 shell/脚本抓外网；Windows 沙箱禁 shell」，
+    同一个列表项里既有正确的元规则又有过期的能力快照，整行判会漏掉后者。
+    """
+    hits: list[str] = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        for clause in _TOOL_STATE_SPLIT_RE.split(stripped):
+            clause = _BULLET_PREFIX_RE.sub("", clause or "").strip()
+            if not clause:
+                continue
+            if any(hint in clause for hint in _TOOL_STATE_META_HINTS):
+                continue
+            if any(p.search(clause) for p in _TOOL_STATE_PATTERNS):
+                hits.append(clause)
+    return hits
+
+
+def log_tool_state_findings(text: str, *, scope: str) -> None:
+    """把命中的能力快照写进日志：用于验证提示词改动是否生效、命中率有多高。"""
+    hits = find_tool_state_clauses(text)
+    if not hits:
+        return
+    logger.warning(
+        f"🧠 {scope}记忆含 {len(hits)} 处「工具/环境状态」描述"
+        f"（应改写为元规则「以本轮实际注入的清单为准」）| 样例: {hits[:3]}"
+    )
+
+
 FALLBACK_LONG_TERM_MEMORY_PROMPT = """你是用户长期记忆管理助手。请根据本次对话更新用户长期记忆（AGENTS.md），只沉淀跨会话长期有效、能帮助下次会话快速理解用户的个人信息与背景。
 
 ## 记入（满足其一方可记入）
@@ -528,6 +596,8 @@ FALLBACK_LONG_TERM_MEMORY_PROMPT = """你是用户长期记忆管理助手。请
 
 一次性任务及其结果、临时状态、单会话内的中间结论、完整执行过程、寒暄内容、密钥 / token / 密码和其他隐私数据。
 判据：只在本次会话成立的信息一律不写。
+工具与环境的能力状态（同样禁止）：某个工具有没有、联网开没开、能否执行 shell、沙箱限制、
+已装技能清单、连接器列表、有没有行情源 / 数据源——这份记忆注入每个专家会话，写进来就是过期能力快照。
 
 ## 写法要求
 
@@ -625,6 +695,10 @@ def _sanitize_long_term_update(updated: str, *, llm, max_chars: int) -> str | No
     if not _has_meaningful_content(updated):
         logger.warning("剔除角色职责后长期记忆已无实际条目，保留原文件不写入")
         return None
+
+    # 检测「工具/环境能力状态」类描述（只记日志，不删内容）：这类条目会让下一轮
+    # 直接沿用「没有网 / 不能 shell」的旧结论，不再核对本轮实际注入的工具清单。
+    log_tool_state_findings(updated, scope="用户长期")
 
     target_chars = max_chars
     compression_threshold = min(LONG_TERM_COMPRESS_THRESHOLD, target_chars)

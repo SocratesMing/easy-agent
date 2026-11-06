@@ -121,6 +121,7 @@
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @send-message="handleSendMessage"
+        @web-search-change="handleWebSearchChange"
         @create-session="ensureCurrentSession"
         @remove-file="handleRemoveFile"
         @stop="handleStop"
@@ -248,6 +249,9 @@ export default {
       // 模型选择：从配置加载可选列表，默认选 active model
       availableModels: [],
       selectedModel: null,
+      // 联网开关的镜像（真身在 ChatInput）：发送只有「输入框」一条路走 $emit('send')，
+      // 重试/续发不经过输入框，必须从这里取当前状态，否则会落回默认值 false。
+      webSearchEnabled: false,
       welcomeTitle: getRuntime().app.welcomeTitle,
       // 「未授权」提示态（登录页关闭且免密登录未成功时显示）
       authBlocked: false,
@@ -1781,6 +1785,10 @@ export default {
         }
       }
     },
+    // ChatInput 的联网开关变化上报：存一份镜像，供不经过输入框的发送路径（重试）复用
+    handleWebSearchChange(enabled) {
+      this.webSearchEnabled = Boolean(enabled)
+    },
     handleRetry(content) {
       // 直接重新发送消息内容，不经过输入框
       console.log('[handleRetry] content type:', typeof content, 'value:', content)
@@ -1798,8 +1806,9 @@ export default {
           return
         }
 
-        // 直接调用发送
-        this.handleSendMessage(content.trim())
+        // 重试不经过输入框，联网开关必须从镜像取：漏传会落回 enableWebSearch 默认值 false，
+        // 表现为「小地球亮着、后端收到 web_search: False」，模型据关闭态纪律回答未联网。
+        this.handleSendMessage(content.trim(), [], null, true, this.webSearchEnabled)
       }
     },
     handleStop() {
