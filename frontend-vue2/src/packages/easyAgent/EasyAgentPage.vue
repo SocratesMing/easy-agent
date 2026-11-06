@@ -1527,19 +1527,36 @@ export default {
             }
           }
         } else if (eventType === 'error') {
+          // code === 'timeout'：模型流式静默超时。半成品和兜底文案后端已经落库，
+          // 这里只决定「怎么展示」：
+          //   - 不写 message.error、也不设 this.error —— 那是粉底红字条 + 页面底部弹窗；
+          //   - 改写 message.fallback_note，由 ChatMessage 在正文后渲染常驻灰条。
+          // 其他异常（步数用尽等）code 为 undefined，走原来的报错路径，行为不变。
+          // 注意：本方法是 EasyAgentPage 内的同名实现（覆盖 chatSession mixin 的
+          // createStreamChunkHandler），与 features/chat/services/chunkHandler.js 是
+          // 两份独立代码，改动必须两处同步。
+          const timedOut = data.code === 'timeout'
           const idx = findIdx()
           if (idx !== -1) {
             this.messages[idx].loading = false
-            this.messages[idx].error = data.content || '处理失败'
+            if (!timedOut) this.messages[idx].error = data.content || '处理失败'
             if (!ctx.isResume) {
               for (const blk of this.messages[idx].blocks) {
                 if (blk.type === 'thinking' && blk.duration == null) blk.duration = 0
-                if (blk.type === 'tool_call' && blk.duration == null) { blk.duration = 0; blk.success = false; if (!blk.result) blk.result = data.content || '执行中断' }
+                if (blk.type === 'tool_call' && blk.duration == null) {
+                  blk.duration = 0
+                  blk.success = false
+                  if (!blk.result) blk.result = timedOut ? '执行中断: 访问超时' : (data.content || '执行中断')
+                }
               }
             }
-            setReactive(this.messages, idx, { ...this.messages[idx], blocks: [...this.messages[idx].blocks] })
+            // Vue2 直接给原对象加新键不会触发渲染，必须把 fallback_note 放进
+            // 待替换对象里再 setReactive
+            const patch = { ...this.messages[idx], blocks: [...this.messages[idx].blocks] }
+            if (timedOut && data.content) patch.fallback_note = data.content
+            setReactive(this.messages, idx, patch)
           }
-          this.error = data.content || '处理失败'
+          if (!timedOut) this.error = data.content || '处理失败'
         }
       }
 
