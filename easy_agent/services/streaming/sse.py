@@ -10,9 +10,10 @@ SSE 序列化实现，统一生产入口见 ``services/streaming/emitter.py`` �
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from typing import Any, Mapping
+
+from easy_agent.bootstrap.env import env_str
 
 # 事件类型（与 docs/sse-events.md 保持一致，CI 的契约测试会校验）。
 
@@ -164,8 +165,8 @@ def heartbeat_interval_seconds() -> float:
     环境变量优先，与其它 ``EASY_*`` 开关一致；模板里该键本身就引用同名环境变量，
     因此两种写法结果相同。
     """
-    raw = os.environ.get(SSE_HEARTBEAT_ENV)
-    if raw is not None and raw.strip():
+    raw = env_str(SSE_HEARTBEAT_ENV)
+    if raw:
         try:
             return float(raw)
         except ValueError:

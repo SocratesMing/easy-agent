@@ -368,9 +368,6 @@ class Database:
     def get_or_create_passwordless_user(self, *args, **kwargs):
         return users_repo.get_or_create_passwordless_user(self, *args, **kwargs)
 
-    def update_user(self, *args, **kwargs):
-        return users_repo.update_user(self, *args, **kwargs)
-
     def update_user_password(self, *args, **kwargs):
         return users_repo.update_user_password(self, *args, **kwargs)
 

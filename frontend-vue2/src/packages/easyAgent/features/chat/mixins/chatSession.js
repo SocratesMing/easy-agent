@@ -439,14 +439,7 @@ export default {
         st = {
           messages: [],
           isStreaming: true,
-          sessionUsage: {
-            input_tokens: 0,
-            output_tokens: 0,
-            reasoning_tokens: 0,
-            context_length: this.sessionUsage.context_length,
-            auto_compress_tokens: null,
-            context_tokens: 0,
-          },
+          sessionUsage: { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: this.sessionUsage.context_length, auto_compress_tokens: null, context_tokens: 0 },
           sessionDuration: 0,
           iterationCount: 0,
           abortController: null,
@@ -599,9 +592,7 @@ export default {
       if (!this.currentSessionId) {
         const newSession = await createSession(initialTitle || '新会话', chatStore.username || null)
         this.currentSessionId = newSession.session_id
-        // 预创建的 DB 会话即当前展示会话：同步标记 loadedSessionId，
-        // 否则随后的流式事件会被 runInSession 视为「后台会话」只写入
-        // sessionStates 缓冲而不渲染，表现为一直"正在思考"、刷新后才出现。
+        // 预创建的会话就是展示中会话：不同步 loadedSessionId，流式事件会被 runInSession 当成后台会话只写缓存（一直"正在思考"）
         this.loadedSessionId = newSession.session_id
         const existingIndex = this.sessions.findIndex(s => s.session_id === newSession.session_id)
         if (existingIndex === -1) {
