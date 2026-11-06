@@ -48,6 +48,10 @@ streaming:
 # ===== Agent =====
 max_steps: ${MAX_STEPS:-100}                      # 单轮最大执行步数
 tool_progress_enabled: ${TOOL_PROGRESS_ENABLED:-true}  # 工具空结果终止提示 + 原地打转提醒（只改结果文本，不改工具行为）
+tool_progress_empty_limit: ${TOOL_PROGRESS_EMPTY_LIMIT:-3}      # MCP 同一目标连续空结果到几次要求停止（仅在从未取到过数据时生效）
+tool_progress_converge_limit: ${TOOL_PROGRESS_CONVERGE_LIMIT:-8}  # MCP 同工具连续「无进展」到几次提示收敛（分页取数不计入）
+tool_progress_stop_limit: ${TOOL_PROGRESS_STOP_LIMIT:-12}        # MCP 同工具连续「无进展」到几次要求停机并输出数据质量报告
+tool_progress_empty_hard_limit: ${TOOL_PROGRESS_EMPTY_HARD_LIMIT:-9}  # MCP 同工具连续空结果到几次无条件止损（兜「先查到 A 又反复查 B」的场景）
 workspace_dir: "${WORKSPACE_DIR:-/qts/workspace}" # 工作区根目录，实际按用户/会话隔离
 memories_dir: "${MEMORIES_DIR:-/qts/memories}"    # 长期记忆根目录，实际 {memories_dir}/{username}/AGENTS.md
 sessions_dir: "${SESSIONS_DIR:-/qts/sessions}"    # 会话数据目录，实际 {sessions_dir}/{username}/{session_id}.json
@@ -243,8 +247,6 @@ knowledge:
       - xls
       - xlsx
       - csv
-      - ppt
-      - pptx
     max_documents_per_query: 500
     # 解析绝对超时（秒）：0 = 不限制；计时从真正开始解析算起，不含上游排队
     parse_timeout_seconds: ${KNOWLEDGE_PARSE_TIMEOUT_SECONDS:-0}
@@ -253,14 +255,14 @@ knowledge:
     enabled: ${KNOWLEDGE_SOURCE_SYNC_ENABLED:-false}
     owner_username: "admin"     # 入库归属用户（需已存在，以该用户身份上传并授权）
     file_root: "${SOURCE_SYNC_FILE_ROOT:-}"  # 源目录（绝对路径，必填）：按文档 SQL 的 batchid 在此目录下匹配同名文件
-    staging_dir: "${SOURCE_SYNC_STAGING_DIR:-}"  # 暂存目录（绝对路径，可选）：先把本批文件拷贝到这里，READY 后删除暂存副本；留空=直接读源目录
+    staging_dir: "${SOURCE_SYNC_STAGING_DIR:-}"  # 暂存目录（绝对路径，可选）：先把本批文件拷贝到这里（同名文件直接覆盖），READY 后删除暂存副本；留空=直接读源目录
     staging_retention_hours: 24  # 暂存残留清理阈值（小时）：每轮同步开始时清理超过该时长的残留文件
     base_id: ""                # 精确指定入库的知识库 ID（同名库有多个时用它锁定）；留空则按 base_name 查找/新建
     base_name: "报告库"  # 按这个名字找知识库，找不到才新建（新建固定为团队公共库）；base_id 为空时生效
     lookback_days: 7           # 按 publishDate 取最近 N 天
     start_date: ""             # 首次回填起始日期 YYYY-MM-DD
     start_delay_minutes: 0     # 启动后延迟多少分钟执行第一次同步（0 = 启动即执行）
-    interval_minutes: 60       # 两次同步的间隔；0 = 只执行一次（在 start_delay_minutes 之后）
+    interval_minutes: 60       # 固定间隔触发（按首次执行时刻对齐，不等待上一轮解析完成；超时跳过错过点）；0 = 只执行一次
     max_inflight: 10           # 同时在途（排队/解析中）文档上限
     poll_interval_seconds: 15  # 轮询在途文档解析状态的间隔（秒）
     max_attempts: 3            # 单篇文档上传/解析失败后的最大重试次数

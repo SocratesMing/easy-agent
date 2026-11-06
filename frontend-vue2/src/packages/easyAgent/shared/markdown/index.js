@@ -6,6 +6,7 @@
 //   源文件：frontend-shared/markdown/index.js
 //   同步：npm run sync:shared（copies 到 <app>/src/shared/markdown/index.js）
 //   约束：src/utils/structure.test.js 只允许此文件 import marked
+//   安全：renderMarkdown 的产物统一经 ./sanitize.js（DOMPurify）清洗后才交给 v-html
 //
 // 版本约定：marked 锁定 17.x（Renderer 回调为 token 对象签名）。
 // ─────────────────────────────────────────────────────────────
@@ -22,6 +23,10 @@ import { marked } from 'marked'
 import katexExtension from 'marked-katex-extension'
 import { markedEmoji } from 'marked-emoji'
 import { nameToEmoji } from 'gemoji'
+import { CODE_COPY_ONCLICK, sanitizeHtml } from './sanitize.js'
+
+// 预览组件（Excel 兜底表格、docx 链接）经 markdownSetup 同一出口拿消毒函数
+export { isSafeLinkUrl, neutralizeUnsafeLinks, sanitizeHtml } from './sanitize.js'
 
 let initialized = false
 
@@ -318,7 +323,8 @@ export function setupMarkedExtensions() {
 }
 
 // ---------------------------------------------------------------------------
-// 代码块复制：markdown 渲染产物通过 v-html 注入，按钮用 inline onclick 调全局函数。
+// 代码块复制：markdown 渲染产物通过 v-html 注入，按钮用 inline onclick 调全局函数
+// （消毒时只放行渲染器写死的 CODE_COPY_ONCLICK，见 ./sanitize.js）。
 // 由 ChatMessage / FilePreview 共用，故注册在模块级且幂等，避免重复定义。
 // ---------------------------------------------------------------------------
 
@@ -426,7 +432,7 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
       '<div class="code-block-wrapper">' +
       '<div class="code-header">' +
       `<span class="code-lang">${langLabel}</span>` +
-      `<button class="code-copy-btn" onclick="copyCode(this)">${CODE_COPY_SVG}<span>复制</span></button>` +
+      `<button class="code-copy-btn" onclick="${CODE_COPY_ONCLICK}">${CODE_COPY_SVG}<span>复制</span></button>` +
       '</div>' +
       highlighted +
       '</div>'
@@ -456,12 +462,12 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
 }
 
 /**
- * 统一渲染入口：规整数学公式后按 gfm + 换行策略渲染
+ * 统一渲染入口：规整数学公式后按 gfm + 换行策略渲染，产物经 DOMPurify 清洗
  *
  * @param {string} content markdown 文本
  * @param {Object} renderer createMarkdownRenderer 创建的渲染器
  * @param {{ sourceCards?: boolean }} [options] sourceCards=false 时不做来源卡片改写（文件/文档预览）
- * @returns {string} HTML 字符串
+ * @returns {string} 已消毒、可直接 v-html 的 HTML 字符串
  * @example
  * renderMarkdown('**hi**', renderer)
  * renderMarkdown(fileText, renderer, { sourceCards: false })
@@ -481,7 +487,9 @@ export function renderMarkdown(content, renderer, options = {}) {
       async: false,
     })
     // 任务列表项打上 class，样式据此去掉圆点（li:has(> input) 需要 Chrome 105+，内网浏览器不支持）
-    return html.replace(/<li><input /g, '<li class="task-list-item"><input ')
+    const tasked = html.replace(/<li><input /g, '<li class="task-list-item"><input ')
+    // marked 不过滤原始 HTML 与 javascript: 链接：产物一律清洗后再交给 v-html
+    return sanitizeHtml(tasked)
   } catch (e) {
     console.error('Markdown 渲染失败:', e)
     return escapeHtml(content)

@@ -402,23 +402,14 @@ def build_staged_name(title: Any, record_id: str, source_file: str | Path) -> st
 
 
 def copy_to_staging(source_file: Path, staged_file: Path) -> bool:
-    """把源文件原子拷贝到暂存路径，返回 True=实际拷贝，False=复用已有副本。
+    """把源文件原子拷贝到暂存路径；同名副本已存在时直接覆盖。
 
     先写 ``xxx.part`` 再 ``os.replace``，避免进程中断留下半截文件；
-    目标已存在、大小一致且不比源文件旧时直接复用，避免每轮重复拷贝大文件。
+    同名副本一律覆盖，保证暂存内容始终是源文件的最新版本。
+    返回 True=已写入，False=源文件与目标路径相同（无需拷贝）。
     """
     if source_file.resolve() == staged_file.resolve():
         return False
-    if staged_file.exists():
-        source_stat = source_file.stat()
-        staged_stat = staged_file.stat()
-        # 大小一致且暂存副本不比源文件旧：视为同一版本，直接复用；
-        # 源文件在上次暂存后又被更新（mtime 更新）时重新拷贝。
-        if (
-            staged_stat.st_size == source_stat.st_size
-            and staged_stat.st_mtime >= source_stat.st_mtime
-        ):
-            return False
     staged_file.parent.mkdir(parents=True, exist_ok=True)
     # 带 PID 的临时名：多进程部署时避免两个进程抢同一个 .part 文件
     temp_file = staged_file.with_name(
@@ -819,11 +810,12 @@ class SourceSyncEngine:
         返回值：
         - staged：record_id → 暂存文件路径；
         - errors：record_id → 暂存失败原因（上传前就会写进台账）；
-        - stats：{"copied": n, "reused": n, "copy_failed": n}。
+        - stats：{"copied": n, "copy_failed": n}。
+        同名暂存文件会被最新源文件直接覆盖。
 
         只有去重通过的新记录才会走到这里，不会重复拷贝已入库文件。
         """
-        stage_stats = {"copied": 0, "reused": 0, "copy_failed": 0}
+        stage_stats = {"copied": 0, "copy_failed": 0}
         if self._staging_dir is None:
             return {}, {}, stage_stats
 
@@ -846,9 +838,7 @@ class SourceSyncEngine:
                 row.title, row.record_id, source_file
             )
             try:
-                copied = await run_in_threadpool(
-                    copy_to_staging, source_file, staged_file
-                )
+                await run_in_threadpool(copy_to_staging, source_file, staged_file)
             except Exception as exc:  # noqa: BLE001 — 单条失败不阻断整批
                 reason = f"暂存拷贝失败: {exc}"
                 errors[row.record_id] = reason[:1000]
@@ -862,19 +852,13 @@ class SourceSyncEngine:
                 )
                 continue
             staged[row.record_id] = staged_file
-            if copied:
-                stage_stats["copied"] += 1
-                logger.info(
-                    "文档已暂存 | id=%s src=%s dst=%s",
-                    row.record_id,
-                    source_file,
-                    staged_file,
-                )
-            else:
-                stage_stats["reused"] += 1
-                logger.info(
-                    "文档暂存复用 | id=%s dst=%s", row.record_id, staged_file
-                )
+            stage_stats["copied"] += 1
+            logger.info(
+                "文档已暂存（同名覆盖） | id=%s src=%s dst=%s",
+                row.record_id,
+                source_file,
+                staged_file,
+            )
         return staged, errors, stage_stats
 
     async def _delete_staged_file(self, path: Path) -> str:
@@ -1282,13 +1266,16 @@ class SourceSyncEngine:
         start_date: str | None = None,
         limit: int | None = None,
         dry_run: bool = False,
+        wait_for_inflight: bool = True,
     ) -> dict[str, int]:
         """执行一次完整的同步，返回统计信息。
 
         参数：
             start_date: 覆盖配置里的起始日期（YYYY-MM-DD），用于首次回填或补数据；
             limit:      最多扫描多少条源记录，主要给测试/演练用（达到后提前结束）；
-            dry_run:    演习模式：不建库、不上传，只打印“本来会入库”的清单。
+            dry_run:    演习模式：不建库、不上传，只打印“本来会入库”的清单；
+            wait_for_inflight: 收尾时是否等在途文档解析完成。定时触发传 False，
+                        只提交本批上传就返回；一次性/命令行场景保持 True。
 
         整体流程：
             1. 确定目标知识库（base_id）；
@@ -1296,7 +1283,8 @@ class SourceSyncEngine:
             3. 恢复上次中断时还在途的文档，并清理超期暂存残留；
             4. 按窗口拉取源记录：已入库→跳过，失败→重试；
             5. 新记录先批量拷贝到暂存目录，再从暂存文件上传；
-            6. 等在途文档全部解析完（READY 后删除暂存副本），打印统计。
+            6. wait_for_inflight=True 时等在途文档全部解析完（READY 后删除暂存副本），
+               再打印统计；定时触发传 False，剩余解析交给下一轮回收。
         """
         # stats 是本次同步的“统计计数器”，最终会打印到日志，也作为返回值给调用方：
         #   scanned  : 从文档 SQL 读到的记录条数
@@ -1307,8 +1295,7 @@ class SourceSyncEngine:
         #   ready    : 直接确认为已完成的条数
         #   planned  : dry-run 模式下“本来会入库”的条数
         #   truncated: 是否因为 limit 提前停止（1=是，0=否）
-        #   copied   : 本批实际拷贝到暂存目录的文件数
-        #   reused   : 暂存目录已有同尺寸副本、直接复用的文件数
+        #   copied   : 本批实际写入暂存目录的文件数（同名覆盖）
         #   copy_failed: 暂存拷贝失败条数
         #   staged_deleted: READY/DELETED 后删除的暂存文件数
         #   staged_cleanup_failed: 暂存文件删除失败数
@@ -1323,7 +1310,6 @@ class SourceSyncEngine:
             "planned": 0,
             "truncated": 0,
             "copied": 0,
-            "reused": 0,
             "copy_failed": 0,
             "staged_deleted": 0,
             "staged_cleanup_failed": 0,
@@ -1520,12 +1506,11 @@ class SourceSyncEngine:
                     stats[key] += value
                 logger.info(
                     "研报 SQL 批量暂存完成 | start=%s end=%s rows=%s "
-                    "copied=%s reused=%s failed=%s",
+                    "copied=%s failed=%s",
                     window_start_at,
                     window_end_at,
                     len(pending_rows),
                     stage_stats["copied"],
-                    stage_stats["reused"],
                     stage_stats["copy_failed"],
                 )
 
@@ -1564,9 +1549,9 @@ class SourceSyncEngine:
             if limit is not None and stats["scanned"] >= limit:
                 break
 
-        # 【收尾】所有记录都处理完后，等在途文档一个个结束（完成或失败），
-        # 直到 inflight 为空，才认为本次同步真正完成
-        while inflight and not dry_run:
+        # 【收尾】wait_for_inflight=True 时，等在途文档一个个结束（完成或失败）；
+        # 定时触发传 False：只提交本批上传就返回，剩余解析交给下一轮开头回收。
+        while wait_for_inflight and inflight and not dry_run:
             inflight, batch_stats = await self.refresh_inflight(
                 inflight, base_id=base_id
             )
@@ -1610,6 +1595,7 @@ async def run_source_sync(
     start_date: str | None = None,
     limit: int | None = None,
     dry_run: bool = False,
+    wait_for_inflight: bool = True,
 ) -> dict[str, int]:
     """执行一次文档同步（启动钩子 / CLI / 测试共用）。
 
@@ -1667,7 +1653,12 @@ async def run_source_sync(
     )
     # 加锁：如果已有同步在跑，这里会排队等待，避免两路同时上传
     async with _RUN_LOCK:
-        return await engine.run(start_date=start_date, limit=limit, dry_run=dry_run)
+        return await engine.run(
+            start_date=start_date,
+            limit=limit,
+            dry_run=dry_run,
+            wait_for_inflight=wait_for_inflight,
+        )
 
 
 async def startup_source_sync(app) -> None:
@@ -1710,33 +1701,56 @@ async def startup_source_sync(app) -> None:
 
 
 async def _sync_loop(app) -> None:
-    """后台循环：延迟启动 → 反复执行同步 → 按间隔睡眠。
+    """后台循环：按固定间隔触发同步，不等待上一轮解析完成。
 
     说明：
-    - start_delay_minutes > 0 时，先等几分钟再第一次执行，
+    - 触发时刻固定在「首次执行时刻 + k * interval_minutes」上，与上一轮跑了多久无关；
+      某轮执行超过间隔时跳过错过的触发点，不补跑；
+    - 每轮只负责扫描＋暂存＋提交上传，在途文档的解析进度由下一轮开头的
+      refresh_inflight 回收，避免“等全部解析完再计时”；
+    - start_delay_minutes > 0 时先等几分钟再第一次执行，
       给应用一个“启动缓冲”，避免刚起来就抢资源；
-    - interval_minutes <= 0 表示“只跑一次”，跑完就退出循环；
+    - interval_minutes <= 0 表示“只跑一次”，此时保留等解析结束的收尾行为；
     - CancelledError 必须原样抛出：吞掉它会导致任务无法被正常取消，
       关闭服务时可能卡住。
     """
     sync_config = app.state.knowledge_config.source_sync
     delay = int(getattr(sync_config, "start_delay_minutes", 0))
+    interval = int(getattr(sync_config, "interval_minutes", 0))
+    loop = asyncio.get_running_loop()
     try:
         if delay > 0:
             logger.info("研报 SQL 同步将在 %s 分钟后首次执行", delay)
             await asyncio.sleep(delay * 60)  # 分钟换算成秒
-        while True:
+        if interval <= 0:
+            # 只跑一次：等全部在途文档解析结束再退出（命令行/补数据场景）
             try:
                 await run_source_sync(app)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.error("研报 SQL 同步失败: %s", exc)
+            return
+        next_tick = loop.time()
+        while True:
+            try:
+                # 定时触发只提交下一批，不等在途解析完成；剩余解析由下一轮回收
+                await run_source_sync(app, wait_for_inflight=False)
             except asyncio.CancelledError:
                 raise  # 取消信号：必须往上抛，不能当成普通错误吞掉
             except Exception as exc:  # noqa: BLE001
                 # 单次同步失败只记日志，不退出循环——下一轮还会再试
                 logger.error("研报 SQL 同步失败: %s", exc)
-            interval = int(getattr(sync_config, "interval_minutes", 0))
-            if interval <= 0:
-                break  # 配置为 0：只跑一次
-            await asyncio.sleep(interval * 60)
+            next_tick += interval * 60
+            now = loop.time()
+            if next_tick <= now:
+                # 本轮执行超过一个间隔：对齐到下一个未来触发点，错过的直接跳过
+                missed = int((now - next_tick) // (interval * 60)) + 1
+                logger.warning(
+                    "研报 SQL 同步执行超过触发间隔，跳过 %s 个触发点", missed
+                )
+                next_tick += missed * interval * 60
+            await asyncio.sleep(next_tick - now)
     except asyncio.CancelledError:
         raise
 

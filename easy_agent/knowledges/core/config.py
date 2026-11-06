@@ -65,7 +65,7 @@ class LimitsConfig(BaseModel):
     max_request_size_mb: int = Field(default=110, gt=0)
     max_filename_utf8_bytes: int = Field(default=127, gt=0)
     allowed_extensions: list[str] = Field(
-        default_factory=lambda: ["pdf", "doc", "docx", "txt", "md", "xls", "xlsx", "csv", "ppt", "pptx"]
+        default_factory=lambda: ["pdf", "doc", "docx", "txt", "md", "xls", "xlsx", "csv"]
     )
     max_documents_per_query: int = Field(default=500, gt=0)
     # 解析绝对超时秒数；0 = 不限制（批量同步场景推荐）。

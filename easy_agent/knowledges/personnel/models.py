@@ -8,6 +8,9 @@ from typing import Literal
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 AccountStatus = Literal["active", "disabled"]
+# 系统管理员专职部门：admin 账号固定归属该部门，作为公共空间建库的兜底部门，
+# 其他账号不允许被分配到此部门。
+ADMIN_DEPARTMENT_ID = "admin"
 # Usernames become directory names in the legacy EasyAgent workspace layout.
 # A dot is deliberately excluded because the current directory sanitizer removes
 # it, which would make e.g. ``john.doe`` collide with ``johndoe``.
@@ -76,6 +79,8 @@ class PersonnelBase(BaseModel):
     def fill_department_id(self) -> "PersonnelBase":
         if not self.department_id:
             self.department_id = self.department_name
+        if self.department_id.casefold() == ADMIN_DEPARTMENT_ID:
+            raise ValueError(f"部门 {ADMIN_DEPARTMENT_ID} 为系统管理员专用，不可分配给其他账号")
         return self
 
 

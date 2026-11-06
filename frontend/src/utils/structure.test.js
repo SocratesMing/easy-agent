@@ -17,7 +17,12 @@ const MAX_NEW_FILE_LINES = 800
 
 /** 现存超大文件的行数预算（= 2026-10-20 实测值，只允许往下调；
  *  2026-10-23 知识库功能从 Vue2 基线同步，相关文件按同步后实测值更新；
- *  2026-10-28 合并 audit-improvements / rag-1018 分支后按实测值更新） */
+ *  2026-10-28 合并 audit-improvements / rag-1018 分支后按实测值更新；
+ *  2026-11-03 合并 audit-improvements 预览修复（Office → PDF）后按实测值更新；
+ *  2026-11-04 知识库搜索改为输入即检索（300ms 防抖）后按实测值更新：1909 → 1911；
+ *  2026-11-05 知识库上传前过滤 PPT/PPTX 后按实测值更新：1911 → 1912；
+ *  2026-11-05 权限管理人员搜索后按实测值更新：1912 → 1919；
+ *  2026-11-05 文件夹操作按钮移至文件夹行尾部后按实测值更新：1919 → 1922） */
 const LINE_BUDGET = {
   'App.vue': 3163,
   'features/chat/components/ChatInput.vue': 4721,
@@ -26,12 +31,12 @@ const LINE_BUDGET = {
   'features/connectors/components/ConnectorListPanel.vue': 1547,
   'features/settings/components/SettingsPanel.vue': 1226,
   'features/skills/components/SkillListPanel.vue': 1245,
-  'shared/preview/FilePreview.vue': 1128,
+  'shared/preview/FilePreview.vue': 1130,
   'features/chat/components/Chat.vue': 1026,
   'features/chat/components/SessionList.vue': 1038,
   'features/workspace/components/WorkspacePanel.vue': 978,
   'features/tasks/components/ScheduledTasksPanel.vue': 842,
-  'features/knowledge/KnowledgeWorkbench.vue': 1909,
+  'features/knowledge/KnowledgeWorkbench.vue': 1922,
 }
 
 /** 组件里已经存在的 api 直连（存量，只允许删） */

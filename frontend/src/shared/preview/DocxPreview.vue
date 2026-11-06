@@ -6,6 +6,7 @@
 import { ref, onMounted, watch, onUnmounted } from 'vue'
 import { renderAsync } from 'docx-preview'
 import { fitDocxPages } from '../utils/docxPageFit.js'
+import { neutralizeUnsafeLinks } from '../markdown/sanitize.js'
 
 const props = defineProps({
   fileUrl: {
@@ -49,9 +50,16 @@ async function loadDocx() {
       renderHeaders: true,
       renderFooters: true,
       renderFootnotes: true,
-      renderEndnotes: true
+      renderEndnotes: true,
+      // altChunk 是嵌在 docx 里的整段 HTML，docx-preview 会塞进不带 sandbox 的同源
+      // iframe（srcdoc）：打开预览就会在本站执行其中的脚本。只显示正文，不渲染它
+      renderAltChunks: false
     })
-    if (containerRef.value) stopPageFit = fitDocxPages(containerRef.value)
+    if (containerRef.value) {
+      // 去掉文档中的不安全链接，保留链接文字，再适配页面宽度。
+      neutralizeUnsafeLinks(containerRef.value)
+      stopPageFit = fitDocxPages(containerRef.value)
+    }
   } catch (e) {
     console.error('Docx preview error:', e)
     if (containerRef.value) {

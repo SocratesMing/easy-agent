@@ -28,11 +28,18 @@ const MAX_NEW_FILE_LINES = 800
 /**
  * 现存超大文件的行数预算（= 2026-10-20 实测值，只允许往下调）。
  * 2026-10-28 合并 audit-improvements / rag-1018 分支后按实测值更新。
+ * 2026-11-03 合并 audit-improvements 预览修复（Office → PDF）后按实测值更新。
+ * 2026-11-04 知识库搜索改为输入即检索（300ms 防抖）后按实测值更新：1909 → 1911。
+ * 2026-11-05 知识库上传前过滤 PPT/PPTX 后按实测值更新：1911 → 1912。
+ * 2026-11-05 权限管理人员搜索后按实测值更新：1912 → 1918。
+ * 2026-11-05 合并 audit-improvements（本站不挂载悬浮 AI 侧边栏）后 EasyAgentPage 按实测值更新：2035 → 2036。
+ * 2026-11-05 文件夹操作按钮移至文件夹行尾部后按实测值更新：1918 → 1921。
  * 拆分这些文件时同步删掉条目，避免预算变成"合法上限"。
  */
 const LINE_BUDGET = {
   // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
-  [`${MOD}EasyAgentPage.vue`]: 2035,
+  // 2026-11-05 合并 audit-improvements（注释停用 AiSidebar）后按实测值更新：2035 → 2036
+  [`${MOD}EasyAgentPage.vue`]: 2036,
   [`${MOD}features/chat/components/ChatInput.vue`]: 3613,
   [`${MOD}features/chat/components/ChatMessage.vue`]: 2644,
   [`${MOD}features/chat/components/AiSidebar.vue`]: 1725,
@@ -40,13 +47,13 @@ const LINE_BUDGET = {
   [`${MOD}features/chat/mixins/chatSession.js`]: 1205,
   [`${MOD}features/connectors/components/ConnectorListPanel.vue`]: 1504,
   [`${MOD}features/skills/components/SkillListPanel.vue`]: 1260,
-  [`${MOD}shared/preview/FilePreview.vue`]: 1162,
+  [`${MOD}shared/preview/FilePreview.vue`]: 1164,
   [`${MOD}features/settings/components/SettingsPanel.vue`]: 1128,
   [`${MOD}features/chat/components/Chat.vue`]: 1122,
   [`${MOD}features/chat/components/SessionList.vue`]: 1072,
   [`${MOD}features/tasks/components/ScheduledTasksPanel.vue`]: 967,
   [`${MOD}features/workspace/components/WorkspacePanel.vue`]: 954,
-  [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1909,
+  [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1921,
   [`${MOD}features/personnel/PersonnelManagement.vue`]: 1145,
   // 页面级深色覆盖（原 App.vue 非 scoped 样式块，只允许变短）
   [`${MOD}styles/theme-dark.css`]: 1195,

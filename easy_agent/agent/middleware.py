@@ -55,12 +55,38 @@ def build_agent_middleware(config, max_steps) -> list:
     # ToolErrorMiddleware 转换后的 ToolMessage（异常已变成错误文本），
     # 从而对「空结果」补终止信号。错误文本自带重试提示，这里会跳过不重复加。
     from easy_agent.agent.tool_progress import ToolProgressMiddleware  # 延迟导入：导入期重依赖：避免加载 langchain/deepagents 等重依赖
+    from easy_agent.bootstrap.config_models import (  # 阈值默认值的唯一来源，不在本文件重写数字
+        DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT,
+        DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT,
+        DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT,
+        DEFAULT_TOOL_PROGRESS_STOP_LIMIT,
+    )
 
+    agent_cfg = getattr(config, "agent", None)
     middleware.append(
         ToolProgressMiddleware(
-            enabled=bool(
-                getattr(getattr(config, "agent", None), "tool_progress_enabled", True)
-            )
+            enabled=bool(getattr(agent_cfg, "tool_progress_enabled", True)),
+            # 四个阈值都取自 config.yaml 的 agent 段（AgentConfig.tool_progress_*），
+            # 这里 getattr 的第二个参数只是「配置对象没有该属性时」的兜底
+            # （测试用 SimpleNamespace 构造配置），值来自 config_models 的常量。
+            # 四个键都进图缓存指纹（graph_cache.config_fingerprint），
+            # 改配置会重建图，不会沿用旧中间件实例。
+            empty_limit=int(
+                getattr(agent_cfg, "tool_progress_empty_limit", None)
+                or DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT
+            ),
+            converge_limit=int(
+                getattr(agent_cfg, "tool_progress_converge_limit", None)
+                or DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT
+            ),
+            stop_limit=int(
+                getattr(agent_cfg, "tool_progress_stop_limit", None)
+                or DEFAULT_TOOL_PROGRESS_STOP_LIMIT
+            ),
+            empty_hard_limit=int(
+                getattr(agent_cfg, "tool_progress_empty_hard_limit", None)
+                or DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT
+            ),
         )
     )
     middleware.append(

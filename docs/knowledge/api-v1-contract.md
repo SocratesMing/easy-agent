@@ -60,6 +60,19 @@ differences. It must be disabled for in-bank deployment.
 | Administration | `GET /admin/health`, `/admin/metrics` | Health JSON / Prometheus text |
 | Administration | `GET /admin/audits`, `/admin/alerts`, `/admin/reconciliation/*` | Admin-only operational records |
 
+`DELETE /folders/{folder_id}` is recursive: it removes the folder together with its
+descendant folders and documents. Documents are soft-deleted locally (originals retained)
+and their RAGFlow copies are deleted synchronously; the operation is rejected without
+local changes when the upstream deletion fails.
+
+Document listing accepts `q` for name search and `status` for parse-state filtering.
+When either is present it always covers the whole base and ignores `folder_id` /
+`direct_only`, so filtering is never narrowed by the folder currently being browsed.
+
+PPT/PPTX uploads are rejected with `422 KNOWLEDGE_FILE_TYPE_NOT_ALLOWED` and an
+actionable message (convert to PDF or DOCX first) because the configured RAGFlow does
+not parse presentations. The frontend filters these files before calling the API.
+
 ## Module capability behavior
 
 `GET /capabilities` is always registered and does not require RAGFlow to be

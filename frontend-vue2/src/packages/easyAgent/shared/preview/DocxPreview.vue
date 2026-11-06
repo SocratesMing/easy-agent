@@ -4,6 +4,7 @@
 
 <script>
 import { renderAsync } from 'docx-preview'
+import { neutralizeUnsafeLinks } from '../markdown/sanitize.js'
 import { requestArrayBuffer } from '../../utils/request.js'
 import { fitDocxPages } from '../utils/docxPageFit.js'
 export default {
@@ -42,9 +43,16 @@ export default {
           renderHeaders: true,
           renderFooters: true,
           renderFootnotes: true,
-          renderEndnotes: true
+          renderEndnotes: true,
+          // altChunk 是嵌在 docx 里的整段 HTML，docx-preview 会塞进不带 sandbox 的同源
+          // iframe（srcdoc）：打开预览就会在本站执行其中的脚本。只显示正文，不渲染它
+          renderAltChunks: false
         })
-        if (container.isConnected) this.stopPageFit = fitDocxPages(container)
+        // 去掉文档中的不安全链接，保留链接文字，再适配页面宽度。
+        neutralizeUnsafeLinks(container)
+        if (container.isConnected) {
+          this.stopPageFit = fitDocxPages(container)
+        }
       } catch (e) {
         console.error('Docx preview error:', e)
         container.innerHTML = '<div class="preview-error">文档预览失败</div>'

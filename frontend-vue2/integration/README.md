@@ -186,6 +186,7 @@
 | axios | ^1.7.9 | 1.20.0 | 1.7.9 | 待宿主确认 | 需要 1.x（实例头合并、`signal` 取消）；宿主若是 0.x 需评估升级或并存方案 |
 | marked | ^17.0.6 | 17.0.6 | 17.0.6 | 待宿主确认 | `engines: node>=20` 只在安装时警告（npm 6 不阻断）；打包在 Node 14 下通过 |
 | marked-emoji / marked-katex-extension / gemoji | ^2.0.3 / ^5.1.10 / ^8.1.0 | 2.0.3 / 5.1.13 / 8.1.0 | 同左 | 待宿主确认 | Markdown 扩展 |
+| dompurify | ^3.4.17 | 3.4.17 | 3.4.17（Node 14.20 打包通过） | 待宿主确认 | 2026-11-03 新增：markdown 渲染产物与预览 HTML 进 v-html 前消毒（`shared/markdown/sanitize.js`）。无需额外配置；产物不含 `?.` / `??`；许可 MPL-2.0 OR Apache-2.0 |
 | katex | ^0.16.47 | 0.16.47 | 0.16.47 | 待宿主确认 | 引入 `katex.min.css`（选择器均为 `.katex*`，另有一条 `body{counter-reset:katex…}`）；字体随宿主构建输出 |
 | highlight.js | ^11.11.1 | 11.12.0 | 11.12.0 | 待宿主确认 | 只注册常用语言；主题样式是模块内限域副本 |
 | monaco-editor | ^0.53.0 | 0.53.0 | 0.53.0 | 待宿主确认 | mcp.json 编辑器；worker 见第 7 节 |

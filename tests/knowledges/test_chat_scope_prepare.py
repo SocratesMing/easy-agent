@@ -116,3 +116,78 @@ async def test_prepare_persists_scope_with_real_service(monkeypatch, db):
     )
     assert scope == [str(base["id"])]
     assert context.evidence == []
+
+
+def test_is_metadata_summary_question_matches_only_the_exact_question():
+    assert chat_bridge.is_metadata_summary_question("概括这批资料的情况信息")
+    assert chat_bridge.is_metadata_summary_question(" 概括这批资料的情况信息？ ")
+    assert not chat_bridge.is_metadata_summary_question("概括这批资料的核心结论")
+    assert not chat_bridge.is_metadata_summary_question(
+        "概括这批资料的情况信息并引用原文"
+    )
+
+
+async def test_metadata_summary_question_uses_catalog_without_retrieval(monkeypatch, db):
+    """资料概况问题只读二级来源元数据：不走向量检索，也不产出知识依据。"""
+
+    base = _create_base_row(db)
+    principal = _principal()
+    session_id = "session-summary"
+    db.create_session(
+        SessionModel(
+            session_id=session_id,
+            title="新会话",
+            messages=[],
+            created_at="2026-10-27T00:00:00",
+            updated_at="2026-10-27T00:00:00",
+            username=principal.username,
+            workspace_name=f"ws-{session_id}",
+        )
+    )
+    calls = {}
+
+    async def fake_retrieve(self, **kwargs):
+        raise AssertionError("资料概况问题不应检索原文")
+
+    async def fake_catalog(self, **kwargs):
+        calls["include_metadata"] = kwargs.get("include_metadata")
+        return [
+            {
+                "base_id": str(base["id"]),
+                "base_name": "研报库",
+                "document_name": "宏观周报.pdf",
+                "status": "ready",
+                "report_second_source": "券商",
+            },
+            {
+                "base_id": str(base["id"]),
+                "base_name": "研报库",
+                "document_name": "临时笔记.docx",
+                "status": "ready",
+                "report_second_source": None,
+            },
+        ]
+
+    monkeypatch.setattr(
+        chat_bridge, "get_knowledge_principal", lambda request, database: principal
+    )
+    monkeypatch.setattr(KnowledgeService, "retrieve_session_evidence", fake_retrieve)
+    monkeypatch.setattr(KnowledgeService, "get_session_document_catalog", fake_catalog)
+
+    context = await chat_bridge.prepare_knowledge_chat(
+        request=_request(),
+        db=db,
+        session_id=session_id,
+        question="概括这批资料的情况信息",
+        knowledge_base_ids=[str(base["id"])],
+    )
+
+    assert calls["include_metadata"] is True
+    assert context.evidence == []
+    assert context.warnings == []
+    assert "二级来源=券商" in context.context
+    assert "临时笔记.docx；无二级来源元数据，仅依据文档名称概括" in context.context
+    assert "不得出现 [知识依据N]" in context.context
+    assert "不要提及同步渠道" in context.context
+    assert "source_sync" not in context.context
+    assert "报告标题" not in context.context
