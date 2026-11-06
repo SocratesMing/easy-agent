@@ -196,6 +196,220 @@ def _format_published(value: Any) -> str:
     return parsed.strftime("%Y-%m-%d %H:%M %Z").strip()
 
 
+# ── 摘要清洗 ──────────────────────────────────────────────────────────
+#: 网页抓取文本里，这些标记之后基本是侧栏 / 推荐 / 版权等非正文内容。
+_SUMMARY_NOISE_MARKERS = (
+    "更多精彩内容",
+    "责任编辑",
+    "【编辑",
+    "相关推荐",
+    "相关阅读",
+    "推荐阅读",
+    "热门推荐",
+    "猜你喜欢",
+    "延伸阅读",
+    "扫一扫",
+    "打开APP",
+    "下载APP",
+    "上一篇",
+    "下一篇",
+    "版权所有",
+    "免责声明",
+    "免责条款",
+    "举报/反馈",
+)
+#: 侧栏小标题（如「#### 国内新闻精选：」），其后的推荐列表不是正文。
+_SIDEBAR_HEADING_RE = re.compile(
+    r"^#{2,6}\s*\S{0,12}?(?:精选|推荐|排行|热点|热门|相关|猜你|延伸|更多)",
+    re.M,
+)
+#: 表格残留行（形如「| |」「| | |」），至少含一个竖线，不误伤正常空行。
+_EMPTY_TABLE_ROW_RE = re.compile(r"^(?:\s*\|)+\s*$", re.M)
+#: 页面控件 / 元信息段落的特征词（面包屑、分享按钮、字号切换等）。
+_FRAGMENT_KEYWORDS = ("分享到", "字体：", "字体:", "打印本页", "关闭窗口", "字号：")
+#: 纯时间戳行，可带「来源：xxx」尾巴（2026-11-05 17:01:40  来源：新华网）。
+_TIMESTAMP_LINE_RE = re.compile(
+    r"^\d{4}\s*[-/年.]?\s*\d{1,2}\s*[-/月.]?\s*\d{1,2}日?"
+    r"(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\s*(?:来源[:：].*)?$"
+)
+#: 纯来源说明行（来源：新华网 / 文章来源：xxx）。
+_SOURCE_LINE_RE = re.compile(r"^(?:来源|文章来源|作者)[:：]\s*\S{1,24}$")
+#: 面包屑导航（新华网 > 时政 > 正文）。
+_BREADCRUMB_RE = re.compile(r"^[^。！？\n]{0,40}(?:\s*[>»›]\s*[^。！？\n]{1,20}){1,4}$")
+#: 摘要为空时给模型的占位说明（避免模型把「没有正文」当成「没有这条新闻」）。
+_NO_SUMMARY_PLACEHOLDER = "（该页面未能抽取到正文，仅有标题与链接，不要据此推断内容）"
+
+
+def _looks_like_page_fragment(para: str) -> bool:
+    """判断一段是页面控件 / 元信息（面包屑、时间、来源、分享按钮）。
+
+    只认明确特征，不按长度泛删——太短的正常摘要（如只有一句短语）必须
+    保留，否则会连正文一起丢掉。
+    """
+    text = para.strip()
+    if not text:
+        return True
+    if len(text) < 60 and text.startswith(_FRAGMENT_KEYWORDS):
+        return True
+    if _TIMESTAMP_LINE_RE.match(text):
+        return True
+    if _SOURCE_LINE_RE.match(text):
+        return True
+    if _BREADCRUMB_RE.match(text):
+        return True
+    return False
+
+
+def _looks_like_nav_paragraph(para: str) -> bool:
+    """判断一段文本是导航 / 栏目索引，而不是正文。
+
+    导航段特征：一长串用空格分隔的短词、几乎没有句读标点。中文正文段落
+    一定有逗号或句号，因此不会误伤；英文段落整体跳过（按 ASCII 占比判断）。
+    """
+    text = para.strip()
+    if len(text) < 30:
+        return False
+    if sum(1 for ch in text if ch.isascii()) / len(text) > 0.5:
+        return False
+    if sum(text.count(ch) for ch in "。！？；，、") >= 2:
+        return False
+    tokens = text.split()
+    if len(tokens) < 8:
+        return False
+    return sum(len(token) for token in tokens) / len(tokens) < 8
+
+
+def _clean_summary(text: str, title: str = "") -> str:
+    """剥掉网页抓取文本里的导航、侧栏、推荐、版权等非正文内容。
+
+    联网结果的 ``summary`` 是整页抽取文本，常常整段都是导航栏（新浪财经等
+    尤其明显），或末尾接一段「国内新闻精选」侧栏列表。这些内容会被模型
+    当成新闻事实引用，也会让不同文章的摘要高度相似、在去重时互相误判，
+    因此渲染前先清洗一次。传入 ``title`` 时会顺带去掉摘要里重复的标题。
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    cut = len(raw)
+    for marker in _SUMMARY_NOISE_MARKERS:
+        pos = raw.find(marker)
+        if pos != -1:
+            cut = min(cut, pos)
+    heading = _SIDEBAR_HEADING_RE.search(raw)
+    if heading:
+        cut = min(cut, heading.start())
+    raw = raw[:cut]
+
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", raw)]
+    kept = [
+        part
+        for part in paragraphs
+        if part
+        and not _looks_like_nav_paragraph(part)
+        and not _looks_like_page_fragment(part)
+    ]
+    title_key = _title_key(title)
+    if title_key:
+        # 页面顶部和正文开头常把标题重复两三遍，标题已经单独渲染过了
+        kept = [
+            part
+            for part in kept
+            if _title_key(re.sub(r"^#{1,6}\s*", "", part)) != title_key
+        ]
+    cleaned = _EMPTY_TABLE_ROW_RE.sub("", "\n\n".join(kept))
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+# ── 同事件去重 ────────────────────────────────────────────────────────
+#: 摘要 3-gram Jaccard 相似度达到该值即视为同一事件的不同转载。
+#: 实测：同一篇央行报告的多个转载 0.66；清洗后不相关新闻 <0.1。
+_DEDUPE_SIMILARITY = 0.55
+#: 清洗后摘要短于该长度时不做相似度判重：信息太少，相同反而可能是噪声
+#: （如多条结果都只抓到「摘要内容」或空正文），误合并会丢真实结果。
+_DEDUPE_MIN_SUMMARY_CHARS = 80
+_TITLE_SITE_SUFFIX_RE = re.compile(r"\s*[-_|｜–—]\s*[^-_|｜–—]{1,14}$")
+_TITLE_PUNCT_RE = re.compile(r"[\s！!，,。.：:；;、\"'“”‘’()（）《》【】\[\]]")
+
+
+def _title_key(title: str) -> str:
+    """标题归一化：去掉站名后缀、标点与空白，用于判重。"""
+    text = _TITLE_SITE_SUFFIX_RE.sub("", str(title or "").strip())
+    return _TITLE_PUNCT_RE.sub("", text)
+
+
+def _shingles(text: str, size: int = 3) -> set[str]:
+    """把文本切成 3-gram 字符片段集合（中文按字切，无需分词）。"""
+    normalized = re.sub(r"\s+", "", text)
+    if not normalized:
+        return set()
+    if len(normalized) <= size:
+        return {normalized}
+    return {normalized[i : i + size] for i in range(len(normalized) - size + 1)}
+
+
+def _jaccard(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    inter = len(left & right)
+    if not inter:
+        return 0.0
+    return inter / (len(left) + len(right) - inter)
+
+
+def _dedupe_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """同一事件的多个转载只保留一条，避免模型把各家细节混着标注。
+
+    同一条新闻常被多家转述，摘要各截一段、内容互有缺失。模型看到几份
+    「看起来一样」的来源时，会把 A 家的数字挂到 B 家的链接上，最终用户
+    点开链接发现对不上。这里按「URL 相同 / 标题归一化相同 / 摘要相似度
+    超过阈值」聚簇，每簇保留信息量（清洗后摘要长度）最大的一条。
+    """
+    prepared: list[tuple[dict[str, Any], str, set[str]]] = []
+    seen_urls: set[str] = set()
+    seen_titles: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        link = str(item.get("link") or "").strip()
+        if link and link in seen_urls:
+            continue
+        title_key = _title_key(item.get("title"))
+        if title_key and title_key in seen_titles:
+            continue
+        if link:
+            seen_urls.add(link)
+        if title_key:
+            seen_titles.add(title_key)
+        summary = _clean_summary(
+            item.get("summary") or item.get("mainText") or "", str(item.get("title") or "")
+        )
+        shingle = (
+            _shingles(summary) if len(summary) >= _DEDUPE_MIN_SUMMARY_CHARS else set()
+        )
+        prepared.append((item, summary, shingle))
+
+    kept: list[dict[str, Any]] = []
+    kept_summaries: list[str] = []
+    kept_shingles: list[set[str]] = []
+    for item, summary, shingle in prepared:
+        target = -1
+        for idx, existing in enumerate(kept_shingles):
+            if _jaccard(shingle, existing) >= _DEDUPE_SIMILARITY:
+                target = idx
+                break
+        if target < 0:
+            kept.append(item)
+            kept_summaries.append(summary)
+            kept_shingles.append(shingle)
+        elif len(summary) > len(kept_summaries[target]):
+            # 同一事件换用信息更完整的那条，位置仍按首次出现排
+            kept[target] = item
+            kept_summaries[target] = summary
+            kept_shingles[target] = shingle
+    return kept
+
+
 def _format_items(items: list[dict[str, Any]], max_results: int, main_text_max_chars: int) -> str:
     """把归一化后的结果渲染为模型易读的文本（控制上下文体积）。"""
     lines: list[str] = []
@@ -206,16 +420,15 @@ def _format_items(items: list[dict[str, Any]], max_results: int, main_text_max_c
         link = str(item.get("link") or "").strip()
         hostname = str(item.get("hostname") or "").strip()
         published = str(item.get("publishedTime") or "").strip()
-        summary = str(item.get("summary") or "").strip()
+        # 先清洗（去掉导航/侧栏/版权/重复标题）再截断，让正文开头优先占据预算
+        summary = _clean_summary(item.get("summary") or "", title)
         if not summary and main_text_max_chars:
-            main_text = str(item.get("mainText") or "").strip()
-            if main_text:
-                summary = main_text[:main_text_max_chars]
-                if len(main_text) > main_text_max_chars:
-                    summary += "…"
-        elif summary and main_text_max_chars and len(summary) > main_text_max_chars:
+            summary = _clean_summary(item.get("mainText") or "", title)
+        if summary and main_text_max_chars and len(summary) > main_text_max_chars:
             # Tavily 的 content 可能是整页正文（尤其 PDF），必须截断避免撑爆上下文
             summary = summary[:main_text_max_chars] + "…"
+        elif not summary:
+            summary = _NO_SUMMARY_PLACEHOLDER
 
         lines.append(f"[{idx}] {title}")
         if link:
@@ -404,16 +617,21 @@ class WebSearchTool(BaseTool):
                 + "。请尝试更换更具体的检索词。"
             )
 
+        raw_count = len(items)
+        items = _dedupe_items(items)
         formatted = _format_items(items, self.max_results, self.main_text_max_chars)
         shown = min(len(items), self.max_results)
         logger.info(
-            "Tavily 搜索完成 | request_id=%s | query=%s | 返回 %s 条（展示 %s 条）",
-            request_id, query, len(items), shown,
+            "Tavily 搜索完成 | request_id=%s | query=%s | 返回 %s 条（同事件合并后 %s 条，展示 %s 条）",
+            request_id, query, raw_count, len(items), shown,
         )
+        merged = raw_count - len(items)
         return (
             f"联网搜索完成（来源 Tavily"
             + (f"，requestId: {request_id}" if request_id else "")
-            + f"，共 {len(items)} 条结果，展示前 {shown} 条）：\n\n{formatted}"
+            + f"，共 {raw_count} 条结果"
+            + (f"，其中 {merged} 条与其它结果是同一事件，已合并" if merged else "")
+            + f"，展示前 {shown} 条）：\n\n{formatted}"
         )
 
     # ── 内网 WebSearch 接口（provider=internal） ──────────────────────
@@ -478,13 +696,17 @@ class WebSearchTool(BaseTool):
             logger.info("联网搜索无结果 | requestId=%s | query=%s", resp_request_id, query)
             return f"联网搜索未找到相关结果（requestId: {resp_request_id}）。请尝试更换更具体的检索词。"
 
+        raw_count = len(items)
+        items = _dedupe_items(items)
         formatted = _format_items(items, self.max_results, self.main_text_max_chars)
         shown = min(len(items), self.max_results)
         logger.info(
-            "联网搜索完成 | requestId=%s | query=%s | 返回 %s 条（展示 %s 条）",
-            resp_request_id, query, len(items), shown,
+            "联网搜索完成 | requestId=%s | query=%s | 返回 %s 条（同事件合并后 %s 条，展示 %s 条）",
+            resp_request_id, query, raw_count, len(items), shown,
         )
+        merged = raw_count - len(items)
         return (
-            f"联网搜索完成（requestId: {resp_request_id}，共 {len(items)} 条结果，展示前 {shown} 条）：\n\n"
-            f"{formatted}"
+            f"联网搜索完成（requestId: {resp_request_id}，共 {raw_count} 条结果"
+            + (f"，其中 {merged} 条与其它结果是同一事件，已合并" if merged else "")
+            + f"，展示前 {shown} 条）：\n\n{formatted}"
         )
