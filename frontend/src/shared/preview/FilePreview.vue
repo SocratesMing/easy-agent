@@ -42,7 +42,7 @@
             <iframe v-if="pptxPdfUrl" :src="`${pptxPdfUrl}#navpanes=0&view=FitH`" class="pptx-iframe" title="PPTX 预览"></iframe>
           </div>
           <div v-else-if="isDocx" class="preview-docx">
-            <vue-office-docx :src="docxUrl" @error="handleDocxError" />
+            <DocxPreview v-if="docxUrl" :array-buffer="docxUrl" @error="handleDocxError" />
           </div>
           <div v-else-if="isExcel" class="preview-excel">
             <vue-office-excel
@@ -127,13 +127,13 @@ import 'highlight.js/styles/github.css'
 setupMarkedExtensions()
 installCodeCopyHandler()
 // 预览库按需加载：只有打开对应类型文件时才拉取
-const VueOfficeDocx = defineAsyncComponent(() => import('@vue-office/docx/lib/v3/vue-office-docx.mjs'))
+const DocxPreview = defineAsyncComponent(() => import('./DocxPreview.vue'))
 const VueOfficeExcel = defineAsyncComponent(() => import('@vue-office/excel/lib/v3/vue-office-excel.mjs'))
 let xlsxPromise = null
 function loadXlsx() {
   if (!xlsxPromise) xlsxPromise = import('xlsx')
   return xlsxPromise
-}import '@vue-office/docx/lib/v3/index.css'
+}
 import '@vue-office/excel/lib/v3/index.css'
 import { getStoredToken } from '../../api/auth.js'
 import { getExpertMd } from '../../api/expert.js'
