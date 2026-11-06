@@ -37,6 +37,9 @@ export default {
       // 之前误引用 handleSendMessage 的局部变量 assistantMsgId 导致停止按钮抛 ReferenceError）
       streamingAssistantId: null,
       error: null,
+      // 联网开关镜像（真身在 ChatInput）：重试等不经过输入框的发送路径从这里取状态，
+      // 否则 handleSendMessage 的 enableWebSearch 会落回默认值 false。
+      webSearchEnabled: false,
       currentAbortController: null,
       // HITL: 审批待处理状态，存储 { threadId, assistantMsgId }
       pendingApproval: null,

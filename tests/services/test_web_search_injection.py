@@ -203,3 +203,23 @@ def test_off_discipline_note_content_contract():
     assert "地球" in text
     # 约束范围限定在 execute/shell（MCP/连接器等进程内工具调用不在文案约束范围）
     assert "execute/shell" in text
+    # 复述历史结果时的引用格式与时间习惯（来源可点击、时间符合国人阅读习惯）
+    assert "北京时间" in text and "MM-dd HH:mm" in text
+    assert "反引号" in text and "裸 URL" in text
+
+
+def test_web_search_notes_citation_and_time_contract():
+    """开启/关闭两段提示词共同契约：来源必须 markdown 链接、时间一律北京时间 MM-dd HH:mm。"""
+    from easy_agent.tools.registry import WEB_SEARCH_OFF_PROMPT_NOTE, require_tool_spec
+
+    on_note = require_tool_spec("web_search").prompt_note
+    off_note = WEB_SEARCH_OFF_PROMPT_NOTE
+
+    for text in (on_note, off_note):
+        assert "北京时间" in text, "提示词必须要求换算北京时间"
+        assert "MM-dd HH:mm" in text, "提示词必须约束时间格式"
+        assert "不要出现「UTC」字样" in text, "提示词必须禁止 UTC 展示"
+        assert "[媒体名](完整URL)" in text or "[媒体名](链接)" in text, "来源必须走 markdown 链接"
+    # 开启段的示例不再教模型写 UTC（旧示例时间已移除；文案中仅保留 UTC+8 换算说明）
+    assert "10:00 UTC" not in on_note
+    assert "09:00 UTC" not in on_note

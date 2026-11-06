@@ -220,6 +220,7 @@
               @selectExpert="handleUseExpert"
               @clearExpert="selectedExpert = null"
               @sendMessage="handleSendMessage"
+              @webSearchChange="handleWebSearchChange"
               @createSession="ensureCurrentSession"
               @removeFile="handleRemoveFile"
               @stop="handleStop"
