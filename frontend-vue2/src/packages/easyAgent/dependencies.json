@@ -28,6 +28,19 @@
         "shared/preview/DocxPreview.vue"
       ]
     },
+    "dompurify": {
+      "range": "^3.4.17",
+      "locked": "3.4.17",
+      "license": "(MPL-2.0 OR Apache-2.0)",
+      "nodeEngines": null,
+      "declaredIn": "dependencies",
+      "specifiers": [
+        "dompurify"
+      ],
+      "usedBy": [
+        "shared/markdown/sanitize.js"
+      ]
+    },
     "element-ui": {
       "range": "^2.15.14",
       "locked": "2.15.14",
@@ -224,6 +237,7 @@
     "@vue/cli-service": "外网独立应用与 SDK 的构建工具（宿主用自己的构建链）",
     "@vue/cli-plugin-babel": "外网构建工具",
     "autoprefixer": "外网构建工具",
-    "postcss": "外网构建工具"
+    "postcss": "外网构建工具",
+    "jsdom": "外网单元测试的 DOM 环境（HTML 消毒用例跑 DOMPurify）"
   }
 }

@@ -58,9 +58,7 @@ configureEasyAgent({
         },
       }
     },
-    // 只表示 Agent 登录态失效（reason: expired | kicked），宿主登录不受影响：可以提示，不要在这里登出宿主。
-    // kicked（被其他设备顶下线）时模块不会自动重登；如需按内网要求退出并跳转内网登录页，可在这里处理，
-    // 用户在内网重新登录回来后可调用 clearAuthKicked() 恢复自动免密登录（不调用则需用户点「重新登录」）
+    // 只表示 Agent 登录态失效（reason: expired | kicked），宿主登录不受影响：可以提示，不要在这里登出宿主
     onExpired({ reason }) {
       console.warn(`[EasyAgent] Agent 登录态失效：${reason}`)
     },

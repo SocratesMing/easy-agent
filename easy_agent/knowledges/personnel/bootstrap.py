@@ -5,6 +5,7 @@ from easy_agent.bootstrap.env import env_str
 import uuid
 from datetime import datetime
 
+from easy_agent.db.repositories.user_repository import UserRepository
 from easy_agent.knowledges.personnel.models import ADMIN_DEPARTMENT_ID
 from easy_agent.models.db import UserModel
 from easy_agent.utils.auth import hash_password, verify_password
@@ -29,7 +30,7 @@ def _sync_admin_department(db, user):
     user.department_id = ADMIN_DEPARTMENT_ID
     if not user.department_name:
         user.department_name = ADMIN_DEPARTMENT_ID
-    db.update_user(user)
+    UserRepository(db).update_user(user)
     return db.get_user_by_username("admin") or user
 
 

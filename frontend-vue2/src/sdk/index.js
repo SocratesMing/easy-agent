@@ -14,15 +14,12 @@ import {
   AiSidebar,
   DEFAULT_COLORS,
   THEME_ROOT_CLASS,
-  KICKED_MESSAGE,
   chatStore,
   clearAuth,
-  clearAuthKicked,
   configureRequest,
   getModels,
   getStoredToken,
   getUserProfile,
-  isAuthKicked,
   passwordlessLogin,
   request,
   setExternalPageContext,
@@ -159,9 +156,19 @@ export function init(options = {}) {
     tokenKey: shareLogin ? MAIN_TOKEN_KEY : SDK_TOKEN_KEY,
     usernameKey: shareLogin ? MAIN_USERNAME_KEY : SDK_USERNAME_KEY,
     // 401：换新 token 后由请求层把失败的请求重发一次，用户无感
-    refreshAuth: () => relogin(),
+    refreshAuth: () => {
+      // 优先取宿主的init options
+      if (typeof options.refreshAuth === "function")
+        return options.refreshAuth();
+      return relogin();
+    },
     // 无法重发的场景（如上传）：续期后刷新会话列表
     onAuthExpired: () => {
+      // 优先取宿主的init options
+      if (typeof options.onAuthExpired === "function") {
+        options.onAuthExpired();
+        return;
+      }
       handleAuthExpired();
     },
   });
@@ -281,17 +288,7 @@ export function init(options = {}) {
   const sidebar = () => vm.$refs.sidebar;
 
   // ── 鉴权 ─────────────────────────────────────────────────────────
-  /** 被其他设备顶下线的错误：带 code 便于宿主 onAuthExpired / onError 识别并给出明确提示 */
-  function kickedError() {
-    const err = new Error(KICKED_MESSAGE);
-    err.code = "kicked";
-    return err;
-  }
-
   async function acquireToken({ forceLogin = false } = {}) {
-    // 被顶下线后不自动重新登录（getToken / 免密登录都会顶掉对方，造成多处无感互顶）；
-    // 需宿主在用户明确重新登录后调用 setToken，或清除 auth_kicked 标记后重新初始化
-    if (isAuthKicked() && !getStoredToken()) throw kickedError();
     if (typeof auth.getToken === "function") {
       const token = await auth.getToken();
       if (!token) throw new Error("getToken 未返回 token");
@@ -326,21 +323,20 @@ export function init(options = {}) {
     chatStore.username = profile.username;
   }
 
-  /** 重新获取 token：并发调用合并为一次，成功 resolve true；失败通知宿主 onAuthExpired */
+  /** 重新获取 token：并发调用合并为一次，成功 resolve true；失败通知宿主 onReLoginFailed */
   function relogin() {
     if (bootstrapping || destroyed) return Promise.resolve(false);
     if (reauthing) return reauthing;
     const canRelogin = typeof auth.getToken === "function" || !!auth.username;
     reauthing = (async () => {
       try {
-        if (isAuthKicked()) throw kickedError();
         if (!canRelogin) throw new Error("登录已过期");
         await acquireToken({ forceLogin: true });
         await loadProfile();
         return true;
       } catch (e) {
-        if (typeof options.onAuthExpired === "function")
-          options.onAuthExpired(e);
+        if (typeof options.onReLoginFailed === "function")
+          options.onReLoginFailed(e);
         else console.warn("[EasyAgentSidebar] 登录已过期：", e && e.message);
         return false;
       } finally {
@@ -348,6 +344,29 @@ export function init(options = {}) {
       }
     })();
     return reauthing;
+  }
+
+  function logout() {
+    clearAuth();
+    destroy();
+  }
+
+  function destroy() {
+    if (destroyed) return;
+    destroyed = true;
+    window.removeEventListener("popstate", onPopState);
+    window.removeEventListener("hashchange", onPopState);
+    if (dockTarget) {
+      dockTarget.style.marginRight = dockOriginalMargin;
+      dockTarget.style.transition = dockOriginalTransition;
+    }
+    vm.$destroy();
+    hostEl.remove();
+    setExternalPageContext("");
+    chatStore.sessions = [];
+    chatStore.streamingSessions = [];
+    chatStore.username = "";
+    current = null;
   }
 
   async function handleAuthExpired() {
@@ -360,9 +379,8 @@ export function init(options = {}) {
       try {
         await loadProfile();
       } catch (e) {
-        // 复用的旧 token 已失效：能重新登录就重登一次（被顶下线则不重登，避免互顶）
+        // 复用的旧 token 已失效：能重新登录就重登一次
         const status = e && e.response && e.response.status;
-        if (isAuthKicked()) throw kickedError();
         if (
           status !== 401 ||
           !(typeof auth.getToken === "function" || auth.username)
@@ -446,33 +464,13 @@ export function init(options = {}) {
     /** 宿主刷新 token 后传入新 token */
     setToken: async token => {
       storeAuth(token, "");
-      // 宿主明确传入新 token = 用户已重新登录，解除被顶下线状态
-      clearAuthKicked();
       await loadProfile();
       if (sidebar()) await sidebar().loadSessions();
     },
+    relogin,
     /** 宿主用户登出时调用：清除 SDK 保存的登录态并销毁侧边栏 */
-    logout: () => {
-      clearAuth();
-      api.destroy();
-    },
-    destroy: () => {
-      if (destroyed) return;
-      destroyed = true;
-      window.removeEventListener("popstate", onPopState);
-      window.removeEventListener("hashchange", onPopState);
-      if (dockTarget) {
-        dockTarget.style.marginRight = dockOriginalMargin;
-        dockTarget.style.transition = dockOriginalTransition;
-      }
-      vm.$destroy();
-      hostEl.remove();
-      setExternalPageContext("");
-      chatStore.sessions = [];
-      chatStore.streamingSessions = [];
-      chatStore.username = "";
-      current = null;
-    },
+    logout,
+    destroy,
   };
 
   current = api;
