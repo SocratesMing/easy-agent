@@ -129,7 +129,8 @@ test('缓冲末行：setext 标题、半截表格、未闭合强调/公式不露
   assert.equal(bufferStreamingTail('以下是要点：\n-'), '以下是要点：')
   assert.equal(bufferStreamingTail('| a | b |\n|---'), '| a | b |')
   assert.equal(bufferStreamingTail('这段**还没写完'), '')
-  assert.equal(bufferStreamingTail('$$\nx^2'), '$$\nx^2') // 未闭合围栏整段保留
+  assert.equal(bufferStreamingTail('$$\nx^2'), '') // 块公式未闭合：先不显示，不露出 TeX 源码（交接文档第 11 项）
+  assert.equal(bufferStreamingTail('```\n$$\nx^2'), '```\n$$\nx^2') // 未闭合代码围栏整段保留
   const mid = render('以下是要点：\n-', { partial: true })
   assert.ok(!mid.includes('<h2>'), mid)
   assert.ok(!render('这是 **重点', { partial: true }).includes('**'))

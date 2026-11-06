@@ -546,7 +546,7 @@ export function installCodeCopyHandler() {
 // 不存在并发交错；不用全局变量，多个渲染器实例互不干扰。
 const RENDER_STATE = new WeakMap()
 const BLOCK_CACHES = new WeakMap()
-const BLOCK_CACHE_MAX = 200
+const BLOCK_CACHE_MAX = 400
 const PARSE_OPTIONS = { breaks: true, gfm: true, async: false }
 
 function renderState(renderer, options) {
@@ -595,8 +595,15 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
   }
 
   // 默认把模型写的原始 HTML 当文本显示，只放行小白名单；文件预览等可信场景传 rawHtml: 'allow'
-  renderer.html = function ({ text }) {
-    return state.rawHtml === 'allow' ? text : escapeRawHtml(text)
+  renderer.html = function ({ text, block }) {
+    if (state.rawHtml === 'allow') return text
+    const escaped = escapeRawHtml(text)
+    // 以标签开头的行会被识别成块级 HTML：转义成文字后按普通段落显示（保留换行），
+    // 否则没有 <p> 包裹、段落样式缺失，多行内容还会挤成一行。白名单里的 details 块保持原结构
+    if (block && !/^\s*<\/?(?:details|summary)\b/i.test(escaped)) {
+      return '<p>' + escaped.replace(/\s+$/, '').replace(/\n/g, '<br>') + '</p>\n'
+    }
+    return escaped
   }
 
   if (externalLinks) {
@@ -688,9 +695,9 @@ export function renderMarkdown(content, renderer, options = {}) {
 }
 
 /**
- * 分块渲染：以顶层 token.raw 为键缓存已完成块的 HTML，只重渲最后一块。
- * MarkdownBody 用 v-for 逐块 v-html，流式期间已完成块的 DOM 不再被替换
- * （文字可选中、图片不闪），且单次渲染从「整篇」降到「一个块」。
+ * 分块渲染：以顶层 token.raw 为键缓存已完成块的 HTML（中间帧与最终渲染分别缓存），只重渲最后一块。
+ * MarkdownBody 用 patchMarkdownBlocks（./blockDom.js）把各块节点直接放进根节点（不加包裹层），
+ * 内容没变的块保留原节点（文字可选中、图片不闪），且单次渲染从「整篇」降到「一个块」。
  *
  * @param {string} content markdown 文本
  * @param {Object} renderer createMarkdownRenderer 创建的渲染器
@@ -709,27 +716,46 @@ export function renderMarkdownBlocks(content, renderer, options = {}) {
       cache = new Map()
       BLOCK_CACHES.set(renderer, cache)
     }
-    const mode = modeOf(options)
+    // 引用式链接的定义（[x]: url，以及被当成定义的脚注 [^1]: …）会改变其它块的渲染，一并进缓存键
+    const defs = tokens.links && Object.keys(tokens.links).length ? hashText(JSON.stringify(tokens.links)) : ''
+    const mode = modeOf(options) + defs
     const blocks = []
     for (let i = 0; i < tokens.length; i++) {
       const raw = tokens[i].raw || ''
       const isLast = i === tokens.length - 1
       const cacheKey = raw + '\u0000' + mode
       let html = isLast ? null : cache.get(cacheKey)
-      if (html == null) {
+      if (html != null) {
+        // 命中即刷新位置（LRU），正在流式输出的长回答的前面几块不会先被淘汰
+        cache.delete(cacheKey)
+        cache.set(cacheKey, html)
+      } else {
         html = tokensToHtml([tokens[i]], renderer, options)
-        // 流式中间帧的 HTML 与最终结果不同，且只缓存完整块
-        if (!isLast && !options.partial && raw.length <= 20000) {
+        // 最后一块还在增长，不缓存。中间帧也要写缓存（键里的模式已区分中间帧与最终渲染，
+        // 两者只有代码块高亮不同）——只在最终渲染时写的话，流式期间每帧都会把所有块重渲一遍
+        if (!isLast && raw.length <= 20000) {
           if (cache.size >= BLOCK_CACHE_MAX) cache.delete(cache.keys().next().value)
           cache.set(cacheKey, html)
         }
       }
       if (!html) continue
-      blocks.push({ key: i + ':' + hashText(cacheKey), html })
+      // key 只看位置与原文、不含模式：中间帧与最终渲染之间 key 不变，
+      // MarkdownBody 按 key + HTML 判断是否复用节点，内容没变的块 DOM 不动
+      blocks.push({ key: i + ':' + hashText(raw), html })
     }
     return blocks
   } catch (e) {
     console.error('Markdown 分块渲染失败:', e)
     return [{ key: '0', html: escapeHtml(content) }]
   }
+}
+
+/**
+ * 清掉某个渲染器的分块缓存。高亮器异步就绪（Vue3 的 shiki）后调用：
+ * 缓存里是就绪前渲染的未高亮代码块，不清掉会一直命中旧结果。
+ *
+ * @param {Object} renderer createMarkdownRenderer 创建的渲染器
+ */
+export function clearMarkdownBlockCache(renderer) {
+  BLOCK_CACHES.delete(renderer)
 }

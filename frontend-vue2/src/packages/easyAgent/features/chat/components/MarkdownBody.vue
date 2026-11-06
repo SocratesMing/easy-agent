@@ -1,14 +1,13 @@
 <template>
-  <!-- v-html 产物不带 scope id，样式由父组件（ChatMessage/FilePreview）的 ::v-deep 规则接管 -->
-  <div>
-    <!-- 逐块 v-html：流式期间已完成块的 DOM 不会被整体替换，文字可选中、图片不闪。
-         display:contents 让包裹层不产生盒子，父组件的既有样式选择器无需改动 -->
-    <div v-for="block in blocks" :key="block.key" class="md-block" style="display:contents" v-html="block.html"></div>
-  </div>
+  <!-- 子节点由 patchMarkdownBlocks 逐块维护（不用 v-html、不加包裹层）：DOM 结构与整篇渲染一致，
+       父组件 p:first-child 等结构选择器照常生效；内容没变的块保留原节点，流式期间选中的文字不丢、图片不闪。
+       样式由父组件（ChatMessage/FilePreview）的 ::v-deep 规则接管 -->
+  <div></div>
 </template>
 
 <script>
 import { linkKnowledgeCitations } from '../../../shared/markdown/citations.js'
+import { patchMarkdownBlocks } from '../../../shared/markdown/blockDom.js'
 import { renderMarkdownBlocks } from '../../../shared/markdown/render.js'
 
 // 流式期间每帧最多一次中间帧；分片停止 150ms 后按原文做一次最终渲染
@@ -28,16 +27,6 @@ export default {
       default: () => ({}),
     },
   },
-  data() {
-    return {
-      blocks: [],
-      pending: '',
-      frameTimer: null,
-      frameId: null,
-      settleTimer: null,
-      started: false,
-    }
-  },
   watch: {
     content: {
       immediate: true,
@@ -48,41 +37,55 @@ export default {
     citeMap: {
       deep: true,
       handler() {
-        if (this.started) this.render(false)
+        if (this.md.started) this.render(false)
       },
     },
+  },
+  beforeCreate() {
+    // 非响应式状态：rendered 里存的是 DOM 节点，放进 data 会被 Vue 2 深度观测
+    this.md = { pending: '', blocks: [], rendered: [], frameTimer: null, frameId: null, settleTimer: null, started: false }
+  },
+  mounted() {
+    // 首次渲染发生在挂载前（immediate watcher），挂载后把结果写进 DOM
+    this.flush()
   },
   beforeDestroy() {
     this.clearTimers()
   },
   methods: {
     clearTimers() {
-      if (this.frameTimer) clearTimeout(this.frameTimer)
-      if (this.settleTimer) clearTimeout(this.settleTimer)
-      if (this.frameId != null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.frameId)
-      this.frameTimer = null
-      this.frameId = null
-      this.settleTimer = null
+      const md = this.md
+      if (md.frameTimer) clearTimeout(md.frameTimer)
+      if (md.settleTimer) clearTimeout(md.settleTimer)
+      if (md.frameId != null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(md.frameId)
+      md.frameTimer = null
+      md.frameId = null
+      md.settleTimer = null
     },
     queue(value) {
-      this.pending = value || ''
+      const md = this.md
+      md.pending = value || ''
       this.clearTimers()
       // 首次渲染（历史消息、静态内容）直接出最终态，不走流式中间帧
-      if (!this.started) {
-        this.started = true
+      if (!md.started) {
+        md.started = true
         this.render(false)
         return
       }
       if (typeof requestAnimationFrame === 'function') {
-        this.frameId = requestAnimationFrame(() => this.render(true))
+        md.frameId = requestAnimationFrame(() => this.render(true))
       } else {
-        this.frameTimer = setTimeout(() => this.render(true), FRAME_MS)
+        md.frameTimer = setTimeout(() => this.render(true), FRAME_MS)
       }
-      this.settleTimer = setTimeout(() => this.render(false), SETTLE_MS)
+      md.settleTimer = setTimeout(() => this.render(false), SETTLE_MS)
     },
     render(partial) {
-      const text = linkKnowledgeCitations(this.pending, this.citeMap)
-      this.blocks = renderMarkdownBlocks(text, { partial })
+      this.md.blocks = renderMarkdownBlocks(linkKnowledgeCitations(this.md.pending, this.citeMap), { partial })
+      this.flush()
+    },
+    flush() {
+      if (!this.$el || this.$el.nodeType !== 1) return
+      this.md.rendered = patchMarkdownBlocks(this.$el, this.md.rendered, this.md.blocks)
     },
   },
 }

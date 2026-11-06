@@ -10,11 +10,12 @@
  * 模板/计算属性里直接用 `renderMarkdown(content)`。
  */
 
-import { shallowRef } from 'vue'
+import { ref, shallowRef } from 'vue'
 import { createHighlighter } from 'shiki'
 import {
   setupMarkedExtensions,
   createMarkdownRenderer,
+  clearMarkdownBlockCache,
   escapeHtml,
   renderMarkdown as renderMarkdownHtml,
   renderMarkdownBlocks as renderMarkdownBlocksHtml,
@@ -46,12 +47,21 @@ const LANGS = [
 const highlighter = shallowRef(null)
 let initPromise = null
 
+/**
+ * 高亮器就绪的次数（0 → 1）。MarkdownBody 监听它在 shiki 加载完成后重渲：
+ * 分块渲染是命令式调用，不会像 computed 那样自动追踪 highlighter。
+ */
+export const highlighterVersion = ref(0)
+
 /** 初始化 shiki（首次加载完成后全局复用；失败只告警，不影响纯文本渲染） */
 export function ensureHighlighter() {
   if (highlighter.value || initPromise) return initPromise
   initPromise = createHighlighter({ themes: ['github-light'], langs: LANGS })
     .then((instance) => {
       highlighter.value = instance
+      // 分块缓存里是就绪前渲染的未高亮代码块：清掉再通知重渲，否则会一直命中旧结果
+      clearMarkdownBlockCache(markdownRenderer)
+      highlighterVersion.value++
       return instance
     })
     .catch((e) => {
