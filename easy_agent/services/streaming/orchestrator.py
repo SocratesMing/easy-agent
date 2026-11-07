@@ -490,9 +490,13 @@ def _log_stream_diagnostics(sid: str, proc) -> None:
         sample = getattr(proc, "invalid_tool_call_sample", "")
         logger.warning(f"[{sid}] ⚠️ 非法工具调用（参数未闭合）| {sample}")
     pending_of = getattr(proc, "pending_arg_stream_names", None)
-    pending = pending_of() if callable(pending_of) else []
-    if pending:
-        logger.warning(f"[{sid}] ⚠️ 参数流未闭合 | {', '.join(pending)}")
+    pending = pending_of() if callable(pending_of) else None
+    # isinstance 收窄：getattr 拿到的是 object，替身若返回非列表（或压根没有该方法）
+    # 一律当「无残留」，日志不因为替身形态不同而报错或 TypeError。
+    if isinstance(pending, list) and pending:
+        logger.warning(
+            f"[{sid}] ⚠️ 参数流未闭合 | {', '.join(str(item) for item in pending)}"
+        )
 
 
 def _build_final_message(

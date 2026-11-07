@@ -6,7 +6,7 @@ import { authFetch } from '../../../api/auth.js'
 import { chatBus, chatStore, syncPendingApprovalFlag as setPendingApprovalFlag } from '../store/chatStore.js'
 import { createStreamChunkHandler as createChunkHandler, resumeUsageBase } from '../services/chunkHandler.js'
 import streamLifecycle from './streamLifecycle.js'
-import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
+import { applyApprovalRequests, buildResumeDecisions, derivePendingApproval, markApprovalDecision } from '../../../utils/hitlApproval.js'
 
 // 会话级界面字段 → sessionStates 缓存字段，后台流事件期间换入（runInSession）；含 pendingApproval：多会话同时待审批时各自持有
 const SESSION_FIELDS = [['messages', 'messages'], ['sessionUsage', 'sessionUsage'], ['sessionDuration', 'sessionDuration'], ['iterationCount', 'iterationCount'], ['currentTodos', 'todos'], ['streamingAssistantId', 'streamingAssistantId'], ['pendingApproval', 'pendingApproval']]
@@ -183,13 +183,10 @@ export default {
       return !!sid && this.streamingSessions.includes(sid)
     },
     // ---- 会话列表"待审批"标识 ----
-    // 判定口径与 ChatMessage 的 hasPendingApproval 一致：tool_call 块 pending，
-    // 或消息级 pending_approval（thread_id）仍存在。历史接口可能给数组形态，一并兼容。
+    // 口径收敛到 derivePendingApproval：只看最后一条 assistant 消息的消息级载荷，
+    // 不再用工具块的 approval_status 判（那是展示态，会留下"有徽标、没按钮"的死状态）。
     hasPendingApprovalInMessages(msgs) {
-      return (msgs || []).some(m =>
-        (m.pending_approval && (m.pending_approval.thread_id || (Array.isArray(m.pending_approval) && m.pending_approval.length))) ||
-        (Array.isArray(m.blocks) && m.blocks.some(b => b.type === 'tool_call' && b.approval_status === 'pending'))
-      )
+      return derivePendingApproval(msgs)
     },
     // 待审批产生/消失时增删列表徽标标记（store 共享，主面板与侧边栏同时可见）
     syncPendingApprovalFlag(sessionId, hasPending) {
@@ -568,9 +565,8 @@ export default {
             }
             return b
           })
-          // 子代理内部的审批没有对应工具卡片，靠消息级独立面板展示，也算待审批
-          const hasPending = blocks.some(b => b.type === 'tool_call' && b.approval_status === 'pending') ||
-            unmatchedApprovalRequests({ ...msg, blocks }).length > 0
+          // 判据与列表徽标同源：消息级载荷 + 还有可作答对象（卡片或消息级面板）
+          const hasPending = derivePendingApproval([{ ...msg, blocks }])
           setReactive(this.messages, i, { ...msg, id: backendMsgId, blocks })
           if (hasPending) {
             this.pendingApproval = { threadId, assistantMsgId: backendMsgId }
@@ -1091,9 +1087,12 @@ export default {
       } finally {
         this.untrackStream(streamController)
         // 如果 resumeStream 期间收到了新的 approval_required（onChunk 重新设置了
-        // 本会话的 pendingApproval），则不清除，保持 isStreaming=true 等待用户审批
+        // 本会话的 pendingApproval），则不清除，保持 isStreaming=true 等待用户审批。
+        // 判「新」只能比 thread_id：恢复流重放同一条中断时会新建对象，按对象引用比较
+        // 会误判成新审批，把下面的回填与徽标重算整段跳过（徽标要等整页刷新才消失）。
         const latestApproval = this.pendingApprovalOf(sessionId)
-        const hasNewApproval = latestApproval && latestApproval !== currentApproval
+        const latestThreadId = latestApproval && latestApproval.threadId
+        const hasNewApproval = !!latestThreadId && latestThreadId !== (currentApproval && currentApproval.threadId)
         if (!this._chatDisposed && !hasNewApproval) {
           // 只清本会话的审批；当前展示的若是另一个会话，它的审批与停止按钮保持不动
           this.clearPendingApprovalOf(sessionId)

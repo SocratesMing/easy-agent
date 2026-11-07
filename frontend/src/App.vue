@@ -148,7 +148,7 @@ import { useAiSidebarBridge } from './features/chat/composables/useAiSidebarBrid
 import WorkspacePanel from './features/workspace/components/WorkspacePanel.vue'
 const SettingsPanel = defineAsyncComponent(() => import('./features/settings/components/SettingsPanel.vue'))
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
-import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from './utils/hitlApproval.js'
+import { applyApprovalRequests, buildResumeDecisions, derivePendingApproval, markApprovalDecision } from './utils/hitlApproval.js'
 import { createStreamChunkHandler, resumeUsageBase } from './features/chat/composables/useStreamChunks.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
@@ -792,9 +792,8 @@ function reconstructPendingApproval() {
         }
         return b
       })
-      // 子代理内部的审批没有对应工具卡片，靠消息级独立面板展示，也算待审批
-      const hasPending = blocks.some(b => b.type === 'tool_call' && b.approval_status === 'pending') ||
-        unmatchedApprovalRequests({ ...msg, blocks }).length > 0
+      // 判据与列表徽标同源：消息级载荷 + 还有可作答对象（卡片或消息级面板）
+      const hasPending = derivePendingApproval([{ ...msg, blocks }])
       messages.value[i] = { ...msg, id: backendMsgId, blocks }
       if (hasPending) {
         pendingApproval.value = { threadId, assistantMsgId: backendMsgId }
