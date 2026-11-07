@@ -5,11 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "node ../scripts/dev/sync-frontend-shared.mjs && node scripts/run-vite.mjs dev",
-    "build": "node ../scripts/dev/sync-frontend-shared.mjs && node scripts/run-vite.mjs build && node scripts/generate-runtime-config.mjs",
+    "build": "node ../scripts/dev/sync-frontend-shared.mjs && node scripts/run-vite.mjs build",
     "sync:shared": "node ../scripts/dev/sync-frontend-shared.mjs",
     "preview": "vite preview",
-    "test:unit": "node --test src/api/*.test.js src/utils/*.test.js src/features/**/*.test.js src/shared/**/*.test.js scripts/*.test.mjs",
-    "serve": "node scripts/generate-runtime-config.mjs && node scripts/print-serve-env.mjs && npx --yes serve -s dist/"
+    "test:unit": "node --test src/api/*.test.js src/utils/*.test.js src/features/**/*.test.js src/shared/**/*.test.js",
+    "serve": "node scripts/print-serve-env.mjs && npx --yes serve -s dist/"
   },
   "dependencies": {
     "@vue-office/docx": "^1.6.3",

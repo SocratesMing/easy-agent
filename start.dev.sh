@@ -9,7 +9,7 @@
 #
 # AGENT_ENV: dev (默认)
 # 后端: uvicorn --reload（热重载），加载 config.dev.yaml
-# 前端: vite dev server（HMR），按平台/AGENT_ENV 加载对应 .env 文件（.env.win / .env.dev / .env.test / .env.prod）
+# 前端: vite dev server（HMR），按平台/AGENT_ENV 选择构建 MODE（不再加载 .env 文件）
 # ============================================================
 set -e
 
