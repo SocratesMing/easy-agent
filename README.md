@@ -219,7 +219,7 @@ model: "deepseek"
 
 models:
   deepseek:
-    provider: "deepseek"     # deepseek | anthropic | openai | ark | minimax
+    provider: "deepseek"     # deepseek | anthropic | openai | minimax
     protocol: "openai"       # openai | anthropic
     model: "deepseek-v4-flash"
     api_key: "sk-xxx"
@@ -466,7 +466,7 @@ npm run dev
 # Vue3 基线（Vite）
 cd frontend
 npm run dev
-# 后端地址通过 VITE_API_BASE_URL 配置（见 .env.dev）
+# 后端地址固定为同源相对路径 /agent/...
 ```
 
 ### 代码风格
