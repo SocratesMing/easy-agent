@@ -4,7 +4,7 @@
 # 校验：python scripts/quality/check_config_schema.py --check
 
 # ===== LLM =====
-model: "${ACTIVE_MODEL:-deepseek}"   # 当前模型：deepseek | qwen | ark
+model: "${ACTIVE_MODEL:-deepseek}"   # 当前模型：deepseek
 
 models:
   deepseek:
@@ -15,22 +15,6 @@ models:
     api_base: "${DEEPSEEK_API_BASE:-https://llm-tyyt06c5mq54ngq7.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}"
     context_length: ${DEEPSEEK_CONTEXT_LENGTH:-131072}
     headers: {}                       # 可选透传请求头，值支持 {session_id} 占位符
-
-  qwen:
-    provider: "qwen"
-    protocol: "openai"                # openai | anthropic
-    model: "${QWEN_MODEL:-qwen-plus}"
-    api_key: "${QWEN_API_KEY}"
-    api_base: "${QWEN_API_BASE:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
-    context_length: ${QWEN_CONTEXT_LENGTH:-131072}
-
-  ark:
-    provider: "ark"
-    protocol: "openai"                # openai | anthropic
-    model: "${ARK_MODEL:-ark-code-latest}"
-    api_key: "${ARK_API_KEY}"
-    api_base: "https://ark.cn-beijing.volces.com/api/coding/v3"
-    context_length: ${ARK_CONTEXT_LENGTH:-200000}
 
 # ===== 重试 =====
 retry:

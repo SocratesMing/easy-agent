@@ -22,7 +22,6 @@ _MODEL_CONTEXT_LIMITS = {
     "gpt-4-turbo": 131072,
     "gpt-3.5": 16385,
     "claude": 200000,
-    "qwen": 131072,
     "glm": 131072,
     "minimax": 131072,
     "moonshot": 131072,
