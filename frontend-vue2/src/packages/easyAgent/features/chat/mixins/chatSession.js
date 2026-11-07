@@ -294,13 +294,14 @@ export default {
         preStreamDuration: this.sessionDuration,
         initialBlockOrder: 0,
         onApprovalRequired: (data) => {
+          // 会话列表立即亮起"待审批"标识：后台挂载（displayed=false）也必须亮，
+          // 否则 HITL 中断停流期间没人点亮徽标，要等用户点进会话才补上
+          this.syncPendingApprovalFlag(sessionId, true)
           if (!displayed) return
           this.pendingApproval = {
             threadId: data.thread_id,
             assistantMsgId: attachId,
           }
-          // 会话列表立即亮起"待审批"标识
-          this.syncPendingApprovalFlag(sessionId, true)
           if (attachId && data.action_requests) {
             const idx = this.messages.findIndex(m => m.id === attachId)
             if (idx !== -1) {
@@ -581,12 +582,27 @@ export default {
       try {
         const data = await listSessions(chatStore.username || null)
         this.sessions = Array.isArray(data) ? data : (data.sessions || [])
+        this.hydratePendingApprovalFromServer()
         if (this.error === '加载会话列表失败') this.error = null
       } catch (e) {
         console.error('加载会话列表失败:', e)
         // 401 由登录失效流程接管（SDK 自动重登后会再次加载），不提示
         if (e && e.response && e.response.status === 401) return
         this.error = '加载会话列表失败'
+      }
+    },
+    // 服务端列表已带 pending_approval（后端按「最后一条消息」判定）：刷新页面后
+    // 一次列表请求就能点亮全部待审批会话的徽标，不必逐个会话拉历史重建。
+    // 流式中的会话以本地实时事件为准（列表可能是旧快照），不覆盖；界面仍显示审批
+    // 面板的会话也不熄灭，避免出现"有按钮、没徽标"的错位。
+    hydratePendingApprovalFromServer() {
+      const list = this.sessions || []
+      for (let i = 0; i < list.length; i++) {
+        const s = list[i]
+        if (!s || !s.session_id) continue
+        if (this.isSessionStreaming(s.session_id)) continue
+        if (s.pending_approval) this.syncPendingApprovalFlag(s.session_id, true)
+        else if (!this.pendingApprovalOf(s.session_id)) this.syncPendingApprovalFlag(s.session_id, false)
       }
     },
     async ensureCurrentSession(initialTitle = '') {

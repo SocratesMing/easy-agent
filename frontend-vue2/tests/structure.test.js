@@ -33,6 +33,7 @@ const MAX_NEW_FILE_LINES = 800
  * 2026-11-05 知识库上传前过滤 PPT/PPTX 后按实测值更新：1911 → 1912。
  * 2026-11-05 权限管理人员搜索后按实测值更新：1912 → 1918。
  * 2026-11-05 合并 audit-improvements（本站不挂载悬浮 AI 侧边栏）后 EasyAgentPage 按实测值更新：2035 → 2036。
+ * 2026-11-07 会话列表按服务端 pending_approval 水合「待审批」徽标后 chatSession.js 按实测值更新：1217 → 1225。
  * 2026-11-05 文件夹操作按钮移至文件夹行尾部后按实测值更新：1918 → 1921。
  * 2026-11-06 联网开关镜像（重试路径带上 enableWebSearch）后按实测值更新：
  *   EasyAgentPage 2036 → 2045、ChatInput 3613 → 3622、Chat 1122 → 1123、
@@ -51,7 +52,7 @@ const LINE_BUDGET = {
   [`${MOD}features/chat/components/ChatMessage.vue`]: 2644,
   [`${MOD}features/chat/components/AiSidebar.vue`]: 1726,
   [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2253,
-  [`${MOD}features/chat/mixins/chatSession.js`]: 1217,
+  [`${MOD}features/chat/mixins/chatSession.js`]: 1226,
   [`${MOD}features/connectors/components/ConnectorListPanel.vue`]: 1504,
   [`${MOD}features/skills/components/SkillListPanel.vue`]: 1260,
   [`${MOD}shared/preview/FilePreview.vue`]: 1164,

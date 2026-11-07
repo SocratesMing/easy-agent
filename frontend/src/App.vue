@@ -497,6 +497,8 @@ async function attachToStreamingSession(sessionId, opts = {}) {
       }
       // 列表"进行中"标记此时移除（显示已完成）：以服务端历史为准回填完整内容
       await syncSessionFromServer(sessionId)
+      // 回填后重算"待审批"徽标：审批已被处理/失效则熄灭，仍 pending 则保持/恢复点亮
+      recomputePendingApprovalFlag(sessionId)
       if (displayed) {
         // 兜底：挂载流结束时确保占位消息不再标记 loading，避免页面残留"执行中"
         let idx = messages.value.findIndex(m => m.id === attachId)
@@ -709,6 +711,17 @@ function clearPendingApprovalOf(sid) {
   else if (sessionStates.value[sid]) sessionStates.value[sid].pendingApproval = null
 }
 
+// 以本地消息缓存（当前界面或会话级缓存）为准重算某会话的"待审批"徽标。
+// 审批决策后、服务端历史回填后调用：审批已被处理/失效则熄灭，仍 pending 则恢复点亮。
+// 判据与 reconstructPendingApproval 同源（derivePendingApproval），不得退回扫块状态口径。
+function recomputePendingApprovalFlag(sessionId) {
+  if (!sessionId) return
+  const msgs = sessionId === loadedSessionId.value
+    ? messages.value
+    : (sessionStates.value[sessionId] || {}).messages
+  syncPendingApprovalFlag(sessionId, derivePendingApproval(msgs || []))
+}
+
 // 以服务端历史为准回填某会话：流式结束（列表"进行中"标记移除）后调用。
 // 本地增量流状态在后台收尾/事件未命中时可能不完整，history 接口返回的是后端
 // 完整落库消息，用它回填可保证"列表已完成"时页面渲染完整内容（无需刷新）。
@@ -770,15 +783,15 @@ function reconstructPendingApproval() {
   if (isStreaming.value) return void (pendingApproval.value = (sessionStates.value[loadedSessionId.value] || {}).pendingApproval || null)
   pendingApproval.value = null
   const sid = currentSessionId.value || ''
-  let found = false
   if (!messages.value || messages.value.length === 0) {
-    if (sid) syncPendingApprovalFlag(sid, false)
+    // 空会话没有可判定的审批状态：不动徽标（清掉会把其他路径点亮的徽标误灭）
     return
   }
   for (let i = messages.value.length - 1; i >= 0; i--) {
     const msg = messages.value[i]
-    // 末尾出现用户消息说明已发起新一轮对话，旧的待审批不再阻塞，不重建
-    if (msg.role === 'user') break
+    // 末尾出现用户消息说明已发起新一轮对话，旧的待审批不再阻塞，不重建；
+    // 此时也不清徽标（审批应答路径已重算过，这里清会误灭后台会话刚点亮的徽标）
+    if (msg.role === 'user') return
     if (msg.role === 'assistant' && msg.pending_approval && msg.pending_approval.thread_id) {
       const threadId = msg.pending_approval.thread_id
       const backendMsgId = sid && threadId.startsWith(sid + '-')
@@ -795,12 +808,12 @@ function reconstructPendingApproval() {
       messages.value[i] = { ...msg, id: backendMsgId, blocks }
       if (hasPending) {
         pendingApproval.value = { threadId, assistantMsgId: backendMsgId }
-        found = true
       }
       break
     }
   }
-  if (sid) syncPendingApprovalFlag(sid, found)
+  // 以重建结果为准刷新会话列表"待审批"标识（无待审批/已被新一轮对话打断时熄灭）
+  if (sid) recomputePendingApprovalFlag(sid)
 }
 watch(() => loadedSessionId.value, reconstructPendingApproval)
 const isSidebarCollapsed = ref(false)
@@ -1142,9 +1155,23 @@ async function loadSessions() {
   try {
     const data = await listSessions(userProfile.value.username || null)
     sessions.value = Array.isArray(data) ? data : (data.sessions || [])
+    hydratePendingApprovalFromServer()
   } catch (e) {
     console.error('加载会话列表失败:', e)
     error.value = '加载会话列表失败'
+  }
+}
+
+// 服务端列表已带 pending_approval（后端按「最后一条消息」判定）：刷新页面后
+// 一次列表请求就能点亮全部待审批会话的徽标，不必逐个会话拉历史重建。
+// 流式中的会话以本地实时事件为准（列表可能是旧快照），不覆盖；界面仍显示审批
+// 面板的会话也不熄灭，避免出现"有按钮、没徽标"的错位。
+function hydratePendingApprovalFromServer() {
+  for (const s of sessions.value) {
+    if (!s || !s.session_id) continue
+    if (isSessionStreaming(s.session_id)) continue
+    if (s.pending_approval) syncPendingApprovalFlag(s.session_id, true)
+    else if (!pendingApprovalOf(s.session_id)) syncPendingApprovalFlag(s.session_id, false)
   }
 }
 
@@ -1611,6 +1638,9 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       unmarkStreaming(sid)
       // 列表"进行中"标记此时移除（显示已完成）：以服务端历史为准回填，保证完整渲染
       await syncSessionFromServer(sid)
+      // 回填后按服务端历史重算"待审批"徽标（仍 pending 则重新点亮，处理过则保持熄灭）：
+      // 上面的无条件熄灭只看本地面板状态，本地状态丢失时会误灭，以历史为准纠正。
+      recomputePendingApprovalFlag(sid)
 
       await loadSessions()
     }
@@ -1646,11 +1676,11 @@ async function handleToolApproval(decision, target) {
       pending_approval: null,
       blocks: [...messages.value[msgIdx].blocks],
     }
-    const stillPending = messages.value[msgIdx].blocks.some(
-      b => b.type === 'tool_call' && b.approval_status === 'pending'
-    )
-    syncPendingApprovalFlag(sessionId, stillPending)
   }
+  // 本次决策已落地，按本地消息重算徽标（口径 derivePendingApproval：只看消息级载荷，
+  // 不扫工具块 approval_status——那是展示态，会留下"有徽标、没按钮"的死状态）；
+  // 若恢复流中再遇嵌套审批会立即重新亮起
+  recomputePendingApprovalFlag(sessionId)
 
   const { onChunk } = createStreamChunkHandler(messages, {
     isResume: true,
@@ -1721,9 +1751,12 @@ async function handleToolApproval(decision, target) {
     })
   } finally {
     // 如果 resumeStream 期间收到了新的 approval_required（onChunk 重新设置了
-    // 本会话的 pendingApproval），则不清除，保持 isStreaming=true 等待用户审批
+    // 本会话的 pendingApproval），则不清除，保持 isStreaming=true 等待用户审批。
+    // 判「新」只能比 thread_id：恢复流重放同一条中断时会新建对象，按对象引用比较
+    // 会误判成新审批，把下面的回填与徽标重算整段跳过（与 vue2 mixin 同步修复）。
     const latestApproval = pendingApprovalOf(sessionId)
-    const hasNewApproval = latestApproval && latestApproval !== currentApproval
+    const latestThreadId = latestApproval && latestApproval.threadId
+    const hasNewApproval = !!latestThreadId && latestThreadId !== (currentApproval && currentApproval.threadId)
     if (!hasNewApproval) {
       // 只清本会话的审批；当前展示的若是另一个会话，它的审批与停止按钮保持不动
       clearPendingApprovalOf(sessionId)
