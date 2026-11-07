@@ -28,9 +28,15 @@ const MAX_NEW_FILE_LINES = 800
  *  2026-11-06 「我的专家」改服务端分页（+ 关键字下推接口）后按实测值更新：
  *    ChatInput 4730 → 4824、ExpertListPanel 2089 → 2188；
  *  2026-11-07 HITL「待审批」徽标同步修复（收尾重算 + 列表水合）后按实测值更新：
- *    App.vue 3167 → 3201 */
+ *    App.vue 3167 → 3201；
+ *  2026-11-07 刷新后兜底补回「刷新过早」丢失的这一轮（resumeInterruptedTurn）后按实测值更新：
+ *    App.vue 3201 → 3251；
+ *  2026-11-07 刷新续接根因修复（候选漏传「当前会话」、会话还没建好时不等待、回填不再
+ *  覆盖本地刚发的提问）后按实测值更新：App.vue 3251 → 3303；
+ *  2026-11-07 「挂上实时流就收手」导致永久空白（attach 成功但事件没渲染）后改为
+ *  历史轮询兜底 + force 回填，按实测值更新：App.vue 3303 → 3349 */
 const LINE_BUDGET = {
-  'App.vue': 3201,
+  'App.vue': 3349,
   'features/chat/components/ChatInput.vue': 4824,
   'features/chat/components/ChatMessage.vue': 2523,
   'features/experts/components/ExpertListPanel.vue': 2188,

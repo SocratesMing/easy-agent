@@ -84,6 +84,24 @@ test('候选会话：没有任何线索时返回空，不再空打接口', () =>
   assert.equal(plan.wait, '')
 })
 
+test('候选会话：在飞记录丢失时，展示中的会话仍要探测并作为等待目标', () => {
+  // 换标签页 / 发送后立刻刷新（记录还没写）/ 记录过期：只剩「界面正在看的会话」这条线索
+  const plan = resumeCandidates({ saved: null, flight: null, sessions: [], current: 'cur-1' })
+  assert.deepEqual(plan.ids, ['cur-1'])
+  assert.equal(plan.wait, 'cur-1')
+})
+
+test('候选会话：展示中的会话排最前且不重复', () => {
+  const plan = resumeCandidates({
+    saved: { streaming: true, streamingIds: ['s-1', 's-2'], lastActive: 's-2' },
+    flight: { sessionId: 's-1', at: Date.now() },
+    sessions: [],
+    current: 's-1',
+  })
+  assert.deepEqual(plan.ids, ['s-1', 's-2'])
+  assert.equal(plan.wait, 's-1')
+})
+
 test('探测活跃：单个会话查询失败不影响其它会话', async () => {
   const active = await probeActive(['bad', 's-1'], async (sid) => {
     if (sid === 'bad') throw new Error('404')
@@ -136,13 +154,18 @@ test('续接决策：最后一轮已答复（assistant）时不等待，直接�
   let polls = 0
   const plan = await resolveResumeTargets({
     saved: { streaming: true, streamingIds: ['s-1'], lastActive: 's-1' },
-    flight: { sessionId: 's-1', at: Date.now() },
+    flight: { sessionId: 's-1', at: Date.now() - 30000 },
     sessions: [],
+    // 回复时间晚于发送时刻：确认是本轮的答复
     getStatus: async () => {
       polls += 1
       return { active: false }
     },
-    getLastMessage: async () => ({ role: 'assistant' }),
+    getLastMessage: async () => ({
+      role: 'assistant',
+      content: '做好了',
+      timestamp: new Date().toISOString(),
+    }),
     intervalMs: 5,
     timeoutMs: 500,
   })
@@ -151,19 +174,95 @@ test('续接决策：最后一轮已答复（assistant）时不等待，直接�
   assert.equal(polls, 1)
 })
 
+test('续接决策：本轮提问还没落库（历史停在上一轮答复）仍在等待，不误判为已完成', async () => {
+  installStorage()
+  let polls = 0
+  const sentAt = Date.now()
+  const plan = await resolveResumeTargets({
+    saved: null,
+    flight: { sessionId: 's-1', at: sentAt },
+    sessions: [],
+    // 发送后 3 个轮询周期后端才占上流锁
+    getStatus: async () => {
+      polls += 1
+      return { active: polls > 3 }
+    },
+    // 上一次轮询得到的最后一条是上一轮的答复（时间早于本次发送）
+    getLastMessage: async () => ({
+      role: 'assistant',
+      content: '上一轮的答复',
+      timestamp: new Date(sentAt - 60000).toISOString(),
+    }),
+    intervalMs: 5,
+    timeoutMs: 1000,
+  })
+  assert.deepEqual(plan.active, ['s-1'])
+  assert.equal(plan.waited, true)
+  assert.ok(polls > 3)
+})
+
+test('续接决策：新会话首轮的会话还没建好 -> 等列表刷新把它找回来再接', async () => {
+  installStorage()
+  markStreamFlight(null)
+  let refreshCalls = 0
+  const plan = await resolveResumeTargets({
+    saved: null,
+    flight: readStreamFlight(),
+    sessions: [],
+    getStatus: async () => ({ active: true }),
+    getLastMessage: async () => null,
+    // 前两次列表里还没有这个会话（后端还在准备），第三次才出现
+    refreshSessions: async () => {
+      refreshCalls += 1
+      return refreshCalls >= 3
+        ? [{ session_id: 'new-1', updated_at: new Date().toISOString() }]
+        : []
+    },
+    sessionIntervalMs: 5,
+    sessionTimeoutMs: 500,
+    intervalMs: 5,
+    timeoutMs: 500,
+  })
+  assert.deepEqual(plan.active, ['new-1'])
+  assert.ok(refreshCalls >= 3)
+})
+
+test('续接决策：展示中的会话（在飞记录缺失）也参与探测', async () => {
+  installStorage()
+  const probed = []
+  const plan = await resolveResumeTargets({
+    saved: null,
+    flight: null,
+    sessions: [],
+    current: 'cur-1',
+    getStatus: async (sid) => {
+      probed.push(sid)
+      return { active: false }
+    },
+    getLastMessage: async () => ({ role: 'assistant', content: '上一轮答复' }),
+    intervalMs: 5,
+    timeoutMs: 50,
+  })
+  assert.deepEqual(probed, ['cur-1'])
+  assert.deepEqual(plan.active, [])
+})
+
 test('续接决策：等待期间这轮答复完成 -> 提前结束等待，标记 waited', async () => {
   installStorage()
+  const sentAt = Date.now()
   let historyCalls = 0
   const start = Date.now()
   const plan = await resolveResumeTargets({
     saved: null,
-    flight: { sessionId: 's-1', at: Date.now() },
+    flight: { sessionId: 's-1', at: sentAt },
     sessions: [],
     getStatus: async () => ({ active: false }),
     // 第 1 次是等待前的判定（还没答复）；之后模拟这一轮跑完、答复落库
     getLastMessage: async () => {
       historyCalls += 1
-      return historyCalls === 1 ? { role: 'user' } : { role: 'assistant' }
+      return historyCalls === 1
+        ? { role: 'user', timestamp: new Date(sentAt).toISOString() }
+        : { role: 'assistant', content: '答复', timestamp: new Date().toISOString() }
     },
     intervalMs: 5,
     timeoutMs: 5000,

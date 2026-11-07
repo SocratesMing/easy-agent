@@ -1,10 +1,11 @@
 import { setReactive } from '../../../utils/reactiveSet.js'
 import { parseMCPResult } from '../../../utils/mcpResult.js'
-import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, attachStream } from '../../../api/chat.js'
+import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, attachStream, getStreamStatus } from '../../../api/chat.js'
 import { deleteFile, getSessionGeneratedFiles } from '../../../api/files.js'
 import { authFetch } from '../../../api/auth.js'
 import { chatBus, chatStore, syncPendingApprovalFlag as setPendingApprovalFlag } from '../store/chatStore.js'
 import { createStreamChunkHandler as createChunkHandler, resumeUsageBase } from '../services/chunkHandler.js'
+import { hasAssistantReply } from '../services/streamResume.js'
 import streamLifecycle from './streamLifecycle.js'
 import { applyApprovalRequests, buildResumeDecisions, derivePendingApproval, markApprovalDecision } from '../../../utils/hitlApproval.js'
 
@@ -97,9 +98,12 @@ export default {
     },
   },
   watch: {
-    // HITL 历史恢复：切换/重载会话后重建待审批状态
+    // HITL 历史恢复：切换/重载会话后重建待审批状态；若这一轮停在「只有提问、
+    // 没有答复」（刷新落在半途），顺便把兜底盯梢也挂上——会话被重新加载时
+    // 只有这条路径一定会执行
     loadedSessionId() {
       this.reconstructPendingApproval()
+      this.resumeInterruptedTurn()
     },
   },
   created() {
@@ -234,7 +238,16 @@ export default {
             }
             return
           }
-          this.messages = history.messages || []
+          // 服务端历史可能还没落本轮提问（刷新落在准备期）：此时整表替换会把刚发的
+          // 提问抹掉，界面只剩回答。本地最后一条是本轮提问、服务端最后一条不是，则
+          // 以本地为准，随后占位照常由回放重建。
+          const serverMsgs = history.messages || []
+          const localMsgs = this.messages || []
+          const localLast = localMsgs[localMsgs.length - 1]
+          const serverLast = serverMsgs[serverMsgs.length - 1]
+          const keepLocalTail = localLast && localLast.role === 'user'
+            && (!serverLast || serverLast.role !== 'user')
+          this.messages = keepLocalTail ? localMsgs : serverMsgs
           this.currentTodos = history.todos || []
           this.syncExpertChipFromMessages()
           if (history.usage) {
@@ -378,6 +391,85 @@ export default {
         }
       }
     },
+    /**
+     * 界面是不是仍停在「只有提问、还没答复」的状态。
+     */
+    awaitingAnswer() {
+      const last = this.messages[this.messages.length - 1]
+      if (!last) return false
+      if (last.role === 'user') return true
+      return last.role === 'assistant'
+        && !last.content && !last.thinking
+        && !last.pending_approval
+        && !(Array.isArray(last.blocks) && last.blocks.length)
+    },
+    /**
+     * 刷新后兜底：这一轮若停在半途（末尾是用户提问、或只剩一个空 assistant 占位），
+     * 就在后台一直盯着，直到界面上真的出现这一轮的答复为止。
+     *
+     * 2026-11-07 加强（第二次）：旧版按 1s→2s→4s→8s→15s→25s 退避 6 轮，并且
+     * 「一挂上实时流就收手」。但挂上 ≠ 有内容：attach 成功而事件没渲染出来（或中间层
+     * 把 SSE 掐了）时，页面就永久停在「只有提问、下面一片空白」，只能再刷新一次——
+     * 实测这一轮 18:55:03 提问、18:55:16 答复就落库了，界面却一直空着。
+     * 现在两条腿并行、谁先到算谁的，且不会因为「已挂载」而停止：
+     *   1) 每轮先问服务端要历史：答复一落库立刻回填，完全不依赖 SSE；
+     *   2) 顺手探一次 /stream/status，还在跑就挂一次实时流接回增量；
+     *   3) 直到 awaitingAnswer() 为假为止，最长盯 5 分钟，单轮异常不影响下一轮。
+     */
+    async resumeInterruptedTurn() {
+      const sid = this.loadedSessionId || this.currentSessionId
+      if (!sid || this._unansweredWatchSid === sid) return
+      if (!this.awaitingAnswer()) return
+      // 页面自己就在跑这一轮（不是刷新回来的）：交给正常的流式收尾
+      if (this.isSessionStreaming(sid) || this.pendingApprovalOf(sid)) return
+      // 只盯「刚发出没多久」的提问：历史里早就中断的旧提问不该触发轮询
+      const asked = this.messages[this.messages.length - 1]
+      const askedAt = Date.parse((asked && (asked.timestamp || asked.created_at)) || '')
+      if (!isNaN(askedAt) && Date.now() - askedAt > 10 * 60 * 1000) return
+      this._unansweredWatchSid = sid
+      const startedAt = Date.now()
+      console.info(`[刷新续接] 会话 ${String(sid).slice(-5)} 停在未答复状态，开始后台兜底（最长 5 分钟）`)
+      let attached = false
+      let round = 0
+      try {
+        while (Date.now() - startedAt < 5 * 60 * 1000) {
+          // 前 18 秒密一点（答复常在这段时间落库），之后放慢到 3s / 8s
+          const wait = round < 12 ? 1500 : (round < 30 ? 3000 : 8000)
+          await new Promise(resolve => setTimeout(resolve, wait))
+          round += 1
+          if (this._chatDisposed) return
+          // 用户切走了会话 / 界面已经有答复了：收手
+          if (this.currentSessionId !== sid || this.loadedSessionId !== sid) return
+          if (!this.awaitingAnswer()) return
+          if (this.pendingApprovalOf(sid)) return
+          try {
+            // 服务端确实产出了本轮答复才回填；没产出就保留本地提问，继续下一轮
+            if (await this.syncIfServerAnswered(sid)) {
+              // 回填不改变 loadedSessionId，审批面板与徽标平时靠 watcher 触发，这里自己补
+              console.info('[刷新续接] 已从历史补回这一轮的答复')
+              this.reconstructPendingApproval()
+              this.recomputePendingApprovalFlag(sid)
+              return
+            }
+          } catch (e) { /* 单轮失败不影响下一轮 */ }
+          if (attached || this.currentSessionId !== sid) continue
+          // 别的路径（tryAttachLiveStream）已经挂上了：不重复挂，避免同一会话两条 SSE
+          if (this.isSessionStreaming(sid)) { attached = true; continue }
+          let active = false
+          try {
+            const status = await getStreamStatus(sid)
+            active = !!(status && status.active)
+          } catch (e) { active = false }
+          if (!active) continue
+          // 这一轮还在跑：挂一次实时流接回增量（挂上不等于有内容，历史兜底继续跑）
+          this.markStreaming(sid)
+          this.attachToStreamingSession(sid, { switchTo: false, displayed: true })
+          attached = true
+        }
+      } finally {
+        if (this._unansweredWatchSid === sid) this._unansweredWatchSid = null
+      }
+    },
     // 保存当前会话状态到缓存（以界面数据实际所属的会话为 key，避免异步加载期间保存错位）
     saveCurrentSessionState() {
       if (!this.loadedSessionId) return
@@ -494,18 +586,22 @@ export default {
     // 以服务端历史为准回填某会话：流式结束（列表"进行中"标记移除）后调用。
     // 本地增量流状态在后台收尾/事件未命中时可能不完整，history 接口返回的是后端
     // 完整落库消息，用它回填可保证"列表已完成"时页面渲染完整内容（无需刷新）。
-    async syncSessionFromServer(sessionId) {
+    async syncSessionFromServer(sessionId, preloaded, opts) {
       if (!sessionId) return
       if (!this.sessions.some(s => s.session_id === sessionId)) return // 会话已删除/切换用户，跳过
-      let history
-      try {
-        history = await getChatHistory(sessionId)
-      } catch (e) {
-        console.warn('回填会话历史失败:', e)
-        return
+      let history = preloaded
+      if (!history) {
+        try {
+          history = await getChatHistory(sessionId)
+        } catch (e) {
+          console.warn('回填会话历史失败:', e)
+          return
+        }
       }
-      // 拉取期间该会话若又开始了新一轮流式，别用旧历史覆盖
-      if (this.isSessionStreaming(sessionId)) return
+      // 拉取期间该会话若又开始了新一轮流式，别用旧历史覆盖。
+      // force：刷新后「已挂载但界面还空着」时由 syncIfServerAnswered 传入——那边已经
+      // 确认服务端有本轮答复、且界面还没有，此时不覆盖就永远补不回来了。
+      if (!(opts && opts.force) && this.isSessionStreaming(sessionId)) return
 
       const usage = history.usage || null
       if (this.currentSessionId === sessionId && this.loadedSessionId === sessionId) {
@@ -540,6 +636,48 @@ export default {
         }
         this.$set(this.sessionStates, sessionId, st)
       }
+    },
+    /**
+     * 只在「服务端确实产出了本轮答复」时才用历史覆盖界面。
+     *
+     * 刷新常常落在「提问已经发出、模型还没回」的窗口：此时服务端历史里要么还没有这一轮
+     * 的提问，要么只有一个空 assistant。直接整表替换会把刚发的提问抹掉，界面看起来像
+     * 「刷新后什么都没有」；覆盖后拿到的最后一条还是上一轮的答复，还会被误判成
+     * 「这一轮已经答完」而放弃等待——刷新太早就不出流的另一半原因。
+     */
+    async syncIfServerAnswered(sessionId) {
+      if (!sessionId) return false
+      if (!this.sessions.some(s => s.session_id === sessionId)) return false
+      let history
+      try {
+        history = await getChatHistory(sessionId)
+      } catch (e) {
+        return false
+      }
+      // 本地这一轮还在流式、且界面已经渲染出内容：不覆盖（落库版本只在结束时才有，
+      // 这时候覆盖只会把正在滚动的正文换成静态版本）。反过来「已挂载但界面还空着」
+      // 必须放过——那正是刷新后 attach 成功却什么都没渲染的场景，只能靠历史回填。
+      if (this.isSessionStreaming(sessionId)
+        && !(sessionId === this.loadedSessionId && this.awaitingAnswer())) return false
+      const serverMsgs = (history && history.messages) || []
+      const last = serverMsgs[serverMsgs.length - 1]
+      if (!hasAssistantReply(last)) return false
+      // 服务端这条答复比本地最后一次提问还早：说明本轮提问尚未落库，别覆盖
+      const localMsgs = this.messages || []
+      let localAskedAt = NaN
+      for (let i = localMsgs.length - 1; i >= 0; i--) {
+        if (localMsgs[i] && localMsgs[i].role === 'user') {
+          localAskedAt = Date.parse(localMsgs[i].created_at || '')
+          break
+        }
+      }
+      const repliedAt = Date.parse(last.timestamp || last.created_at || '')
+      if (!isNaN(localAskedAt) && !isNaN(repliedAt) && repliedAt < localAskedAt) return false
+      // force：上面已确认「服务端有本轮答复、界面还没有」，此时必须落库到界面，
+      // 不能被 syncSessionFromServer 里的「正在流式不覆盖」拦下（那样会静默失败还返回成功）
+      await this.syncSessionFromServer(sessionId, history, { force: true })
+      // 只有界面真的不像「等答复」了才算成功，避免调用方误以为已经补上而提前收手
+      return !(sessionId === this.loadedSessionId && this.awaitingAnswer())
     },
     // HITL 历史恢复：从消息中重建待审批状态，使切换/重载会话后仍能显示审批按钮并继续执行。
     // 历史消息无前端 id，按 thread_id（= `${session_id}-${message_id}`）还原后端 message_id

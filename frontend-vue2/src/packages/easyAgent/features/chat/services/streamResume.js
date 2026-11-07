@@ -91,15 +91,21 @@ export function readStreamFlight(now) {
  * - `flight`：发送时落的在飞记录。sid 为空说明是「新会话首轮」，此时按会话列表里
  *   updated_at 落在发送时刻附近的会话找回（列表按 updated_at 倒序，但置顶会话会
  *   排在前面，所以必须按时间过滤，不能直接取第一条）
+ * - `current`：界面正在展示的会话。用户刷新时看的就是它，哪怕在飞记录丢了
+ *   （换了标签页、记录过期、发送后立刻刷新还没写出记录）也必须把它列进来，
+ *   否则这一轮永远没人探测、内容也就永远补不回来。
  *
  * 返回 `{ ids, wait, lastActive }`：`wait` 是最可能还在准备中的那个会话，只有它会
  * 进入轮询等待。
  */
-export function resumeCandidates({ saved, flight, sessions }) {
+export function resumeCandidates({ saved, flight, sessions, current }) {
   const ids = []
   const add = (sid) => {
     if (sid && !ids.includes(sid)) ids.push(sid)
   }
+  const currentId = current || ''
+  // 展示中的会话排在最前：它是「刷新时用户正在看的那一轮」的首要候选
+  if (currentId) add(currentId)
   if (saved && saved.streaming) {
     const savedIds = Array.isArray(saved.streamingIds) && saved.streamingIds.length
       ? saved.streamingIds
@@ -112,13 +118,17 @@ export function resumeCandidates({ saved, flight, sessions }) {
       add(flight.sessionId)
       wait = flight.sessionId
     } else {
+      // 会话可能还没建好（列表里没有）：先只留空，交给 resolveResumeTargets 等待
       const recent = (sessions || [])
         .filter(s => s && s.session_id && toMs(s.updated_at) >= flight.at - FLIGHT_MATCH_MS)
+        .sort((a, b) => toMs(b.updated_at) - toMs(a.updated_at))
         .slice(0, 3)
       recent.forEach(s => add(s.session_id))
       wait = recent.length ? recent[0].session_id : ''
     }
   }
+  // 在飞记录缺失/过期时，展示中的会话就是最该等待的那一个
+  if (!wait) wait = currentId
   return {
     ids: ids.slice(0, 5),
     wait,
@@ -142,6 +152,80 @@ export async function probeActive(ids, getStatus) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/**
+ * 这一轮的答复是否已经落地：正文 / 思考 / 工具卡片 / 审批载荷任一非空即算。
+ *
+ * 只认 assistant：最后一条是 user 说明模型还没回；最后一条是「空 assistant」
+ * （占位或刚落库还没写入内容）同样不算答复。落库的进行中消息常常只有 blocks
+ * 没有 content，因此不能只看正文。
+ */
+export function hasAssistantReply(message) {
+  if (!message || message.role !== 'assistant') return false
+  return Boolean(
+    message.content
+    || message.thinking
+    || message.pending_approval
+    || (Array.isArray(message.tool_calls) && message.tool_calls.length > 0)
+    || (Array.isArray(message.blocks) && message.blocks.length > 0)
+  )
+}
+
+/** 从会话列表里按「更新时间落在发送时刻附近」挑出这一轮的会话（置顶旧会话不参与）。 */
+function pickRecentSession(sessions, flight) {
+  const recent = (sessions || [])
+    .filter(s => s && s.session_id && toMs(s.updated_at) >= flight.at - FLIGHT_MATCH_MS)
+    .sort((a, b) => toMs(b.updated_at) - toMs(a.updated_at))
+  return recent.length ? recent[0].session_id : ''
+}
+
+/**
+ * 最后一条消息是否属于「本轮」并且是答复。
+ *
+ * 只看 role 会踩坑：多轮会话刷新在「本轮提问还没落库」的窗口时，历史最后一条仍是
+ * 上一轮的 assistant，会被误判成「这一轮已经答完了」从而放弃等待。
+ * 用时间戳把它排除：本轮的消息不可能早于发送时刻。
+ */
+export function turnCompleted(message, flight) {
+  if (!hasAssistantReply(message)) return false
+  if (!flight || !flight.at) return true
+  const ts = toMs(message.timestamp || message.created_at)
+  if (!ts) return true
+  return ts >= flight.at - 5000
+}
+
+/**
+ * 等「新会话首轮」的会话出现在列表里。
+ *
+ * 刷新若落在后端还没建会话的准备期，前端手里只有一个空 sid 的在飞记录，会话列表
+ * 里也还没有它——这时既没有候选会话可探测，也不知道该接哪一个。几秒后会话建好、
+ * start 事件把 sid 补写进在飞记录，才具备续接条件，所以这里短轮询等它出现，
+ * 而不是一次查不到就放弃（那正是「刷新太早就不出流」的成因）。
+ */
+export async function waitForSessionId(opts) {
+  const options = opts || {}
+  const flight = options.flight
+  const refreshSessions = options.refreshSessions
+  if (!flight || flight.sessionId || typeof refreshSessions !== 'function') return ''
+  const intervalMs = options.intervalMs || 1500
+  const timeoutMs = options.timeoutMs || 20000
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await sleep(intervalMs)
+    let list = []
+    try {
+      list = (await refreshSessions()) || []
+    } catch (e) {
+      list = []
+    }
+    const found = pickRecentSession(list, flight)
+    if (found) return found
+    // 会话已建好且 start 事件补写了 sid：直接读在飞记录更快
+    const fresh = readStreamFlight()
+    if (fresh && fresh.sessionId) return fresh.sessionId
+  }
+  return ''
 }
 
 /**
@@ -186,26 +270,44 @@ async function safeLastMessage(getLastMessage, sid) {
  */
 export async function resolveResumeTargets(opts) {
   const options = opts || {}
-  const plan = resumeCandidates({
+  let plan = resumeCandidates({
     saved: options.saved,
     flight: options.flight,
     sessions: options.sessions,
+    // 展示中的会话是「刷新时用户正在看的那一轮」的首要线索，必须传下去；
+    // 之前漏传导致在飞记录为空时 ids 直接为空，连一次 /stream/status 都不打。
+    current: options.current,
   })
+  // 新会话首轮：刷新落在后端还没建会话的准备期，列表里也还没有它——等它出现，
+  // 否则这一轮永远没人接，页面就停在「只有提问、没有回答」。
+  if (!plan.ids.length && options.flight) {
+    const sid = await waitForSessionId({
+      flight: options.flight,
+      refreshSessions: options.refreshSessions,
+      intervalMs: options.sessionIntervalMs,
+      timeoutMs: options.sessionTimeoutMs,
+    })
+    if (sid) {
+      plan = { ids: [sid], wait: sid, lastActive: '' }
+    }
+  }
   if (!plan.ids.length) return { ...plan, active: [], waited: false }
 
   let active = await probeActive(plan.ids, options.getStatus)
   let waited = false
   if (!active.length && plan.wait && options.getLastMessage) {
     const last = await safeLastMessage(options.getLastMessage, plan.wait)
-    if (last && last.role === 'user') {
+    // 判据从「最后一条是不是 user」放宽到「这一轮到底有没有答复」：刷新可能落在
+    // 用户消息还没落库的窗口（历史里仍停着上一轮的 assistant），只看 user 就会
+    // 直接放弃；历史一条消息都没有（新会话首轮）时，只有确实刚发过才值得等。
+    const worthWaiting = last || options.flight
+    if (worthWaiting && !turnCompleted(last, options.flight)) {
       waited = true
       active = await waitForActive([plan.wait], options.getStatus, {
         timeoutMs: options.timeoutMs,
         intervalMs: options.intervalMs,
-        isFinished: async (sid) => {
-          const m = await safeLastMessage(options.getLastMessage, sid)
-          return !!m && m.role !== 'user'
-        },
+        isFinished: async (sid) =>
+          turnCompleted(await safeLastMessage(options.getLastMessage, sid), options.flight),
       })
     }
   }

@@ -130,7 +130,7 @@
           />
         </div>
         <template v-for="(block, idx) in finalContentBlocks">
-          <!-- 用户消息：技能标签与正文同一气泡横排（标签在左）；/技能名 指令已去掉、由标签承载；正文按纯文本展示 -->
+          <!-- 用户消息：技能标签作行内前缀接正文首行（标签在左前方，不分栏）；/技能名 指令已去掉、由标签承载；正文按纯文本展示 -->
           <div
             v-if="block.type === 'content' && message.role === 'user'"
             :key="'cu'+block.origIndex"
@@ -1076,15 +1076,11 @@ export default {
   white-space: nowrap;
 }
 
-/* 用户气泡：技能标签与正文同行（标签在左、正文在右并自行换行）。
-   align-items: center 让标签与正文行盒垂直居中；正文多行时标签也贴行盒中线，
-   不会出现「标签顶着首行、视觉上高一块」的错位感。
-   窄屏放不下时标签独占一行，正文换到下一行。 */
+/* 用户气泡：技能标签作为行内前缀与正文首行同排，正文换行后回到气泡左边缘。
+   不用 flex 分栏：那样长正文会变成标签右侧的一条竖列、标签被垂直居中，
+   视觉上像「标签独占左边一列」，短消息还看不出、长消息就很明显。 */
 .message.user .message-text.user-bubble {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
+  display: block;
 }
 
 /* 用户气泡内的技能标签：与输入框「已选技能」同一套胶囊样式，但整体缩一档，
@@ -1097,8 +1093,11 @@ export default {
   max-width: 100%;
 }
 
+/* 气泡内的标签按行内元素排布，紧贴正文首行、不单独占宽；多个标签仍横排 */
 .user-bubble .message-skill-chips {
-  flex-shrink: 0;
+  display: inline-flex;
+  vertical-align: middle;
+  margin-right: 6px;
 }
 
 .message-skill-chip {
@@ -1139,10 +1138,9 @@ export default {
   font-size: 11px;
 }
 
-/* 气泡内正文：占满标签之后的剩余宽度，长文本正常换行 */
+/* 气泡内正文：行内流式排版——首行紧跟标签之后，换行回到气泡左边缘 */
 .user-bubble-body {
-  flex: 1 1 auto;
-  min-width: 0;
+  display: inline;
 }
 
 /* 文件容器样式 */

@@ -485,6 +485,14 @@ export default {
         saved,
         flight: readStreamFlight(),
         sessions: this.sessions,
+        // 界面正在看的会话是首要候选：在飞记录可能丢了（换标签页/发送后立刻刷新）
+        current: this.currentSessionId || this.loadedSessionId,
+        // 新会话首轮：刷新落在后端还没建会话的准备期，列表里也还没有它——给它一个把
+        // 会话找回来的机会，否则这一轮永远没人探测、内容也就永远补不回来
+        refreshSessions: async () => {
+          await this.loadSessions()
+          return this.sessions
+        },
         getStatus: getStreamStatus,
         getLastMessage: async (sid) => {
           const history = await getChatHistory(sid)
@@ -494,9 +502,10 @@ export default {
       })
       if (!plan.ids.length) return
       if (plan.waited && !plan.active.length) {
-        // 等不到活跃：这轮已结束（答复落库）或彻底丢了，清记录并回填，免得下次白等
+        // 等不到活跃：这轮已结束（答复落库）或彻底丢了，清记录并按需回填，免得下次白等。
+        // 没有答复时不动界面（服务端可能还没落本轮提问）。
         clearStreamFlight()
-        await this.syncSessionFromServer(plan.wait)
+        await this.syncIfServerAnswered(plan.wait)
       }
       for (const sid of plan.active) this.markStreaming(sid)
       const attachTarget = plan.lastActive && plan.active.includes(plan.lastActive) ? plan.lastActive : plan.active[0]
@@ -689,6 +698,9 @@ export default {
       } catch (_) { /* ignore */ }
       this.isBootstrapping = false
 
+      // 刷新落在「后端还没占流锁 / 答复还没落库」的窗口时，先启动退避兜底（不阻塞首屏）；
+      // 它与下面的挂载不抢：一旦开始挂载（markStreaming），兜底下一轮就会让位退出
+      this.resumeInterruptedTurn()
       // 刷新前若正在流式，重新挂载并继续接收事件
       await this.tryAttachLiveStream()
     },
