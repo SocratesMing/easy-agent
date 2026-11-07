@@ -1173,7 +1173,7 @@ export default {
       }
       const applyUsage = (data, sid) => {
         const patch = usagePatchFrom(data)
-        const match = !sid || this.currentSessionId === sid
+        const match = !sid || ctx.stateSwapped || this.loadedSessionId === sid
         rememberMessageUsage(data)
         if (ctx.attachMode) {
           // 重挂载回放：token_usage/done 携带的 elapsed_time 是原始流从头开始的
@@ -1494,7 +1494,7 @@ export default {
               }
               if (data.usage) {
                 const patch = usagePatchFrom(data.usage)
-                const match = !ctx.streamSessionId || this.currentSessionId === ctx.streamSessionId
+                const match = !ctx.streamSessionId || ctx.stateSwapped || this.loadedSessionId === ctx.streamSessionId
                 const finalDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
                 const finalIterations = data.usage && typeof data.usage.step_count === 'number' ? ctx.preStreamIterationCount + data.usage.step_count : null
                 if (match) {

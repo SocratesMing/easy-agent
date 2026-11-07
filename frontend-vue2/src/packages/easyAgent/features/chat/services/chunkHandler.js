@@ -115,7 +115,10 @@ export function createStreamChunkHandler(vm, ctx) {
   }
   const applyUsage = (data, sid) => {
     const patch = usagePatchFrom(data)
-    const match = !sid || vm.currentSessionId === sid
+    // 状态路由按 runInSession 的 loadedSessionId 判定：组件数据要么就是该会话本身
+    // （展示中），要么已被临时换成就该会话的状态（ctx.stateSwapped）。两种情况都应
+    // 直接写组件数据；只有既不是展示中也没换状态时，才退回写 sessionStates 缓存。
+    const match = !sid || ctx.stateSwapped || vm.loadedSessionId === sid
     rememberMessageUsage(data)
     if (ctx.attachMode) {
       // 重挂载回放：token_usage/done 携带的 elapsed_time 是原始流从头开始的
@@ -376,7 +379,7 @@ export function createStreamChunkHandler(vm, ctx) {
           }
           if (data.usage) {
             const patch = usagePatchFrom(data.usage)
-            const match = !ctx.streamSessionId || vm.currentSessionId === ctx.streamSessionId
+            const match = !ctx.streamSessionId || ctx.stateSwapped || vm.loadedSessionId === ctx.streamSessionId
             const finalDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
             const finalIterations = data.usage && typeof data.usage.step_count === 'number' ? ctx.preStreamIterationCount + data.usage.step_count : null
             if (match) {

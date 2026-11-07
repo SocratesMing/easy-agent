@@ -178,6 +178,31 @@ def test_step_increments_each_turn():
     assert p.current_step == 2
 
 
+def test_token_usage_emitted_once_per_step_even_within_throttle_window():
+    """每个 step 边界都必须下发一帧 token_usage。
+
+    曾经的 0.3s 节流对 step 边界也生效：连续 step 间隔小于节流窗口时，中间 step 的
+    token_usage 会被整体丢掉，前端「会话信息」只在 done 时跳一次值。
+    """
+    p = StreamProcessor(sid="s1")
+    frames = []
+    for i in range(3):
+        events = p.handle("updates", {"model": {"messages": [AIMessage(
+            content="",
+            tool_calls=[{"name": "ls", "args": {}, "id": f"tc{i}"}],
+            usage_metadata={
+                "input_tokens": (i + 1) * 100,
+                "output_tokens": 10,
+                "total_tokens": (i + 1) * 100 + 10,
+            },
+        )]}})
+        frames += [e for e in events if e["type"] == "token_usage"]
+        p.handle("updates", {"tools": {"messages": [
+            ToolMessage(content="ok", tool_call_id=f"tc{i}", name="ls")]}})
+    assert [f["step_count"] for f in frames] == [1, 2, 3]
+    assert [f["input_tokens"] for f in frames] == [100, 200, 300]
+
+
 def test_token_usage_enriched_fields():
     p = StreamProcessor(sid="s1", context_length=200000,
                         auto_compress_tokens=170000,

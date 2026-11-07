@@ -142,6 +142,10 @@ class StreamProcessor:
         self._step_advanced_this_turn = False
         self._todo_emitted_for: set[str] = set()
         self._last_token_usage_time = 0.0
+        # 上一次下发 token_usage 所属的 step。step 变化即回合边界，必须强制下发一帧，
+        # 否则两次边界事件间隔 < 0.3s 时会被节流吞掉，前端「会话信息」就会丢掉整个 step
+        # （表现为只在 done 时跳一次值）。
+        self._last_token_usage_step = 0
         # 每步统计：在 step 边界（_reset_step_stats）清零，用于「stepN 结束」汇总行。
         self._step_thinking_len = 0
         self._step_content_len = 0
@@ -642,9 +646,12 @@ class StreamProcessor:
 
     def _emit_token_usage(self) -> list[dict]:
         now = time.time()
-        if now - self._last_token_usage_time < 0.3:
+        step = self.current_step
+        # 节流只用于同一步内的重复下发；step 边界一律下发，保证「会话信息」每个 step 都刷新一次。
+        if step == self._last_token_usage_step and now - self._last_token_usage_time < 0.3:
             return []
         self._last_token_usage_time = now
+        self._last_token_usage_step = step
         # 下发"最近一次模型调用"的用量（不累加）
         return [{"type": SSEEvent.TOKEN_USAGE, **self._usage_payload(now - self.start_time)}]
 

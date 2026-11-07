@@ -21,7 +21,6 @@
     "highlight.js": "^11.11.1",
     "katex": "^0.16.47",
     "marked": "^17.0.5",
-    "marked-emoji": "^2.0.3",
     "marked-katex-extension": "^5.1.10",
     "monaco-editor": "^0.53.0",
     "shiki": "^3.22.0",

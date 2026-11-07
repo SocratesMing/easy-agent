@@ -22,9 +22,13 @@ globalThis.window = dom.window
 setupMarkedExtensions()
 const renderer = createMarkdownRenderer({ highlight: (code) => `<pre class="hljs"><code>${code}</code></pre>` })
 const render = (md) => renderMarkdown(md, renderer).trim()
+// 对话正文默认把模型写的原始 HTML 当文本显示；涉及 DOMPurify 的用例显式放行原始 HTML，
+// 验证「万一放行也能挡住」这层兜底（文件预览走的就是这条路）。
+const renderAllow = (md, options = {}) =>
+  renderMarkdown(md, renderer, { rawHtml: 'allow', ...options }).trim()
 
 test('模型输出里的原始 HTML 不能执行脚本', () => {
-  const html = render(
+  const html = renderAllow(
     '结论 <img src=x onerror="alert(1)"> <script>alert(2)</script> <iframe src="https://evil.example"></iframe> ' +
       '<svg><script>alert(3)</script></svg> <a href="https://e.example" onmouseover="alert(4)">悬停</a>'
   )
@@ -35,20 +39,20 @@ test('模型输出里的原始 HTML 不能执行脚本', () => {
 })
 
 test('javascript: / data: 链接去掉 href，文字保留', () => {
-  assert.equal(render('[点我](javascript:alert(1))'), '<p><a>点我</a></p>')
-  assert.equal(render('<a href="data:text/html,<script>alert(1)</script>">看</a>'), '<p><a>看</a></p>')
-  assert.equal(render('<a href=" JaVaScRiPt:alert(1)">大小写</a>'), '<p><a>大小写</a></p>')
+  assert.equal(renderAllow('[点我](javascript:alert(1))'), '<p><a>点我</a></p>')
+  assert.equal(renderAllow('<a href="data:text/html,<script>alert(1)</script>">看</a>'), '<p><a>看</a></p>')
+  assert.equal(renderAllow('<a href=" JaVaScRiPt:alert(1)">大小写</a>'), '<p><a>大小写</a></p>')
 })
 
 test('<style> 与 <form> 被去掉：不能改整页样式、不能把输入提交出去', () => {
-  const html = render('前<style>body{display:none}</style>后\n\n<form action="https://evil.example"><input name="pwd"></form>')
+  const html = renderAllow('前<style>body{display:none}</style>后\n\n<form action="https://evil.example"><input name="pwd"></form>')
   assert.ok(!html.includes('<style') && !html.includes('display:none'), html)
   assert.ok(!html.includes('<form') && !html.includes('evil.example'), html)
 })
 
 test('任何 target 都改成新标签页并断开 opener', () => {
   assert.equal(
-    render('<a href="https://e.example" target="_top">x</a>'),
+    renderAllow('<a href="https://e.example" target="_top">x</a>'),
     '<p><a href="https://e.example" target="_blank" rel="noopener noreferrer">x</a></p>'
   )
 })
@@ -76,9 +80,9 @@ test('代码块复制按钮只放行渲染器写死的处理函数', () => {
   const html = render('```python\nprint(1)\n```')
   assert.ok(html.includes(`<button class="code-copy-btn" onclick="${CODE_COPY_ONCLICK}">`), html)
   // 伪造的按钮换了处理函数就照常剥掉
-  const forged = render(`<button class="code-copy-btn" onclick="${CODE_COPY_ONCLICK};alert(1)">复制</button>`)
+  const forged = renderAllow(`<button class="code-copy-btn" onclick="${CODE_COPY_ONCLICK};alert(1)">复制</button>`)
   assert.ok(!forged.includes('onclick'), forged)
-  assert.ok(!render('<span class="code-copy-btn" onclick="copyCode(this)">x</span>').includes('onclick'))
+  assert.ok(!renderAllow('<span class="code-copy-btn" onclick="copyCode(this)">x</span>').includes('onclick'))
 })
 
 test('KaTeX 公式保留样式与 MathML 结构，TeX 源码注解不漏进正文', () => {
@@ -145,9 +149,9 @@ test('非网页链接不在本页跳转：相对地址、锚点、脚注只留�
   )
   assert.equal(render('结论[^1]\n\n[^1]: 来源：年报'), '<p>结论<span class="md-link-disabled" title="来源：年报">^1</span></p>')
   // 模型直接写的 HTML 链接同样处理
-  assert.equal(render('<a href="/workspace/x.docx">下载</a>'), '<p><a>下载</a></p>')
+  assert.equal(renderAllow('<a href="/workspace/x.docx">下载</a>'), '<p><a>下载</a></p>')
   assert.equal(
-    render('<a href="//mirror.example/x">镜像</a>'),
+    renderAllow('<a href="//mirror.example/x">镜像</a>'),
     '<p><a href="//mirror.example/x" target="_blank" rel="noopener noreferrer">镜像</a></p>'
   )
   assert.equal(render('[发邮件](mailto:a@b.com)'), '<p><a href="mailto:a@b.com">发邮件</a></p>')
@@ -161,11 +165,11 @@ test('对话里的外站图片不自动加载，改成点开才请求的链接�
     html
   )
   assert.ok(html.includes('>图片：收益曲线（attacker.example）</a>'), html)
-  const raw = render('<img src="https://evil.example/x.png"> <img srcset="https://evil.example/2x.png 2x" src="/static/a.png">')
+  const raw = renderAllow('<img src="https://evil.example/x.png"> <img srcset="https://evil.example/2x.png 2x" src="/static/a.png">')
   assert.ok(!/<img[^>]*evil\.example/.test(raw) && !raw.includes('srcset'), raw)
   assert.ok(raw.includes('<img src="/static/a.png">'), raw)
   assert.ok(render('![点](data:image/png;base64,iVBORw0KGgo=)').includes('<img src="data:image/png;base64,iVBORw0KGgo="'))
-  const media = render(
+  const media = renderAllow(
     '<video src="https://evil.example/v.mp4" poster="https://evil.example/p.png"></video>' +
       '<span style="background:url(https://evil.example/x)">样式</span>'
   )
