@@ -185,6 +185,7 @@ import { chatStore } from './features/chat/store/chatStore.js'
 import { buildPageContext } from './utils/pageContext.js'
 import { applyApprovalRequests } from './utils/hitlApproval.js'
 import { applyStreamError } from './utils/streamErrorFallback.js'
+import { clearStreamFlight, markStreamFlight, readStreamFlight, resolveResumeTargets } from './features/chat/services/streamResume.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin, runSignIn } from './api/auth.js'
 import { getKnowledgeStatus, getModels as fetchModels } from './api/settings.js'
 import { isRestorableUserProfile } from './utils/userProfile.js'
@@ -476,39 +477,35 @@ export default {
     // 最近活跃的会话直接重挂载，其余会话在切换到它时懒挂载。
     async tryAttachLiveStream() {
       let saved = null
-      try {
-        const raw = sessionStorage.getItem(STREAM_STATE_KEY)
-        if (!raw) return
-        saved = JSON.parse(raw)
-      } catch (e) {
-        return
+      try { saved = JSON.parse(sessionStorage.getItem(STREAM_STATE_KEY) || 'null') } catch (e) { saved = null }
+      // 刷新前那一轮可能还没拿到 session_id（新会话首轮，start 事件后才有），只有发送时
+      // 落的「在飞」记录能找回它；后端准备期（建 Agent/MCP）还没占流锁，/stream/status
+      // 仍是 inactive，由模块内部短轮询等待——一次探测就放弃正是「刷新后不吐流」的成因。
+      const plan = await resolveResumeTargets({
+        saved,
+        flight: readStreamFlight(),
+        sessions: this.sessions,
+        getStatus: getStreamStatus,
+        getLastMessage: async (sid) => {
+          const history = await getChatHistory(sid)
+          const msgs = (history && history.messages) || []
+          return msgs[msgs.length - 1] || null
+        },
+      })
+      if (!plan.ids.length) return
+      if (plan.waited && !plan.active.length) {
+        // 等不到活跃：这轮已结束（答复落库）或彻底丢了，清记录并回填，免得下次白等
+        clearStreamFlight()
+        await this.syncSessionFromServer(plan.wait)
       }
-      if (!saved || !saved.streaming) return
-
-      const candidates = Array.isArray(saved.streamingIds) && saved.streamingIds.length
-        ? saved.streamingIds
-        : (saved.sessionId ? [saved.sessionId] : [])
-      const active = []
-      for (const sid of candidates) {
-        try {
-          const status = await getStreamStatus(sid)
-          if (status && status.active && !active.includes(sid)) active.push(sid)
-        } catch (e) {
-          // 会话可能已被删除：忽略
-        }
-      }
-      for (const sid of active) this.markStreaming(sid)
-
-      const attachTarget = saved.lastActive && active.includes(saved.lastActive)
-        ? saved.lastActive
-        : active[0]
-      if (attachTarget) {
-        this.attachToStreamingSession(attachTarget, { switchTo: true, displayed: true })
-      }
+      for (const sid of plan.active) this.markStreaming(sid)
+      const attachTarget = plan.lastActive && plan.active.includes(plan.lastActive) ? plan.lastActive : plan.active[0]
+      // 等待期间用户可能已切到别的会话：不要再把界面抢回去
+      const keepView = !this.currentSessionId || this.currentSessionId === attachTarget
+      if (attachTarget) this.attachToStreamingSession(attachTarget, { switchTo: keepView, displayed: keepView })
       // 其余仍活跃的会话后台挂载：同步 token 用量、流结束时自动移除"进行中"标记
-      for (const sid of active) {
-        if (sid === attachTarget) continue
-        this.attachToStreamingSession(sid, { switchTo: false, displayed: false })
+      for (const sid of plan.active) {
+        if (sid !== attachTarget) this.attachToStreamingSession(sid, { switchTo: false, displayed: false })
       }
       // 清理一次性恢复标记；仍活跃的流会通过 watch 重新写入持久化
       this.saveStreamState()
@@ -738,6 +735,7 @@ export default {
       this.streamingAssistantId = null
       this.currentAbortController = null
       sessionStorage.removeItem(STREAM_STATE_KEY)
+      clearStreamFlight()
       sessionStorage.removeItem('easy_agent_input_draft')
       this.userProfile = {
         username: '',
@@ -1229,6 +1227,9 @@ export default {
               this.$set(this.attachedStreamingSessions, data.session_id, 'displayed')
             }
             this.markStreaming(ctx.streamSessionId || this.currentSessionId)
+            // 拿到 session_id 后补全在飞记录：刷新时若还没收到 start，只能靠发送时刻
+            // 那条记录去会话列表里找回这一轮
+            markStreamFlight(ctx.streamSessionId || this.currentSessionId)
           }
         } else if (eventType === 'knowledge_evidence') {
           ensureMessage()
@@ -1647,6 +1648,10 @@ export default {
 
       try {
         this.markStreaming(this.currentSessionId)
+        // 新会话首轮发送时 currentSessionId 还是 null（要等后端 start 才有），
+        // markStreaming 是空操作。这里先落一条「在飞」记录，否则此时刷新页面会
+        // 什么都接不回来：没有 sid、没有状态、页面永远空白。
+        markStreamFlight(this.currentSessionId)
         const controller = this.trackStream(new AbortController())
         streamController = controller
         this.currentAbortController = controller
@@ -1740,6 +1745,8 @@ export default {
         }
       } finally {
         this.untrackStream(streamController)
+        // 本轮已经结束（正常/取消/失败），在飞记录作废：留着会让下次刷新白等一轮
+        clearStreamFlight()
         // HITL: 若有审批待处理，保持 isStreaming=true（用户需先审批）；卸载后不收尾（见 streamLifecycle）
         if (!this._chatDisposed && !this.pendingApprovalOf(streamSessionId)) {
           const sid = streamSessionId

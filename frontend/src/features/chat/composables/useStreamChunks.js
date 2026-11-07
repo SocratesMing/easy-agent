@@ -12,6 +12,7 @@
  */
 
 import { setExpertLastSession } from '../../../shared/utils/expertSession.js'
+import { markStreamFlight } from '../services/streamResume.js'
 
 /**
  * 审批续跑前的会话用量基数：会话合计扣掉被中断这条消息已计入的耗时 / 步数。
@@ -197,6 +198,8 @@ export function createStreamChunkHandler(messages, ctx) {
           attachedStreamingSessions.value[data.session_id] = 'displayed'
         }
         markStreaming(ctx.streamSessionId || currentSessionId.value)
+        // 拿到 session_id 后补全在飞记录：刷新时若还没收到 start，只能靠发送时刻那条记录找回
+        markStreamFlight(ctx.streamSessionId || currentSessionId.value)
         if (data.session_id && onStreamStarted) onStreamStarted(data.session_id)
       }
     } else if (eventType === 'token_usage') {
