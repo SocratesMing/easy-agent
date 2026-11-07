@@ -260,3 +260,18 @@ def test_web_runner_disables_uvicorn_default_logging(monkeypatch):
     web_runner.run_web()
 
     assert captured_kwargs["log_config"] is None
+
+
+def test_load_environment_defaults_agent_env_to_dev(monkeypatch):
+    """未显式设置 AGENT_ENV 时统一按 dev 处理，并使用回环 CORS 默认值。"""
+    from easy_agent.bootstrap.initialization import load_environment
+    from easy_agent.bootstrap.initialization.environment import LOCAL_CORS_ORIGINS
+
+    monkeypatch.setattr(env_loader, "_loaded", True)
+    monkeypatch.delenv("AGENT_ENV", raising=False)
+    monkeypatch.delenv("EASY_CORS_ALLOW_ORIGINS", raising=False)
+
+    environment = load_environment()
+
+    assert environment.agent_env == "dev"
+    assert environment.cors_allow_origins == LOCAL_CORS_ORIGINS
