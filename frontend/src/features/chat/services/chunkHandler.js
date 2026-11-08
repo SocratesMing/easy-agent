@@ -95,6 +95,14 @@ export function createStreamChunkHandler(vm, ctx) {
   const applyUsage = (data, sid) => {
     const patch = usagePatchFrom(data)
     const match = !sid || vm.currentSessionId === sid
+    const rows = match ? vm.messages : vm.sessionStates[sid]?.messages
+    const messageIndex = rows?.findIndex(m => m.id === ctx.assistantMsgId) ?? -1
+    if (messageIndex !== -1) {
+      setReactive(rows, messageIndex, { ...rows[messageIndex], usage: {
+        input_tokens: data.input_tokens || 0, output_tokens: data.output_tokens || 0,
+        reasoning_tokens: data.reasoning_tokens || 0, context_tokens: data.context_tokens || data.input_tokens || 0,
+      } })
+    }
     if (ctx.attachMode) {
       // 重挂载回放：token_usage/done 携带的 elapsed_time 是原始流从头开始的
       // 累计值，应 SET 而非累加（isResume 分支的累加语义只适用于 HITL 续跑）

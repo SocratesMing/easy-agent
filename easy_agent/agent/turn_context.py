@@ -47,6 +47,7 @@ class TurnContextSummarizationState(SummarizationState):
     """摘要状态 + ``turn_context``（只进输入，不进输出）。"""
 
     turn_context: Annotated[NotRequired[TurnContext | None], OmitFromOutput]
+    context_compactions: Annotated[NotRequired[dict[str, dict]], OmitFromOutput]
 
 
 def turn_input(

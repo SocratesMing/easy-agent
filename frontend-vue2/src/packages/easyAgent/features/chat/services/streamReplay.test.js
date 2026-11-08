@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createStreamChunkHandler as createSidebarHandler } from './chunkHandler.js'
 import { createPageStreamChunkHandler } from './pageChunkHandler.js'
+import { estimatedUsage } from '../../../shared/compaction/state.js'
 
 for (const createStreamChunkHandler of [createSidebarHandler, createPageStreamChunkHandler]) {
 
@@ -14,6 +15,17 @@ function harness(resume = false) {
   const ctx={assistantMsgId:'a1',streamSessionId:'s1',isResume:resume,initialBlockOrder:resume?1:0,preStreamDuration:10,preStreamIterationCount:1}
   return {vm,onChunk:createStreamChunkHandler(vm,ctx).onChunk}
 }
+
+test('压缩后等待期间保持估算，首个 token_usage 在 done 之前恢复实际占用', () => {
+  const { vm, onChunk } = harness()
+  vm.sessionUsage = { input_tokens: 49069, context_tokens: 49069 }
+  const records = [{ status: 'compacted', after_tokens: 11833, context_length: 65536, anchor_message_count: 0 }]
+  assert.equal(estimatedUsage(records, vm.messages, vm.sessionUsage, true).context_estimated, true)
+  onChunk({ type: 'token_usage', input_tokens: 12500, output_tokens: 10, context_tokens: 12500 })
+  assert.equal(vm.messages[0].loading, true)
+  assert.equal(vm.messages[0].usage.context_tokens, 12500)
+  assert.equal(estimatedUsage(records, vm.messages, vm.sessionUsage, true), vm.sessionUsage)
+})
 
 for(const resume of [false,true]) test('从头回放重建内容和用量，不重复累加；resume='+resume,()=>{
   const {vm,onChunk}=harness(resume)

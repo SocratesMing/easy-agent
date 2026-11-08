@@ -70,6 +70,7 @@ export async function getChatHistory(sessionId) {
   return {
     messages: data.messages || [],
     todos: data.todos || [],
+    compactions: data.compactions || [],
     usage: data.usage || null,
     context_length: data.context_length || null,
   }
@@ -197,4 +198,19 @@ function generateMessageId() {
 
 export function createNewChat(sessionId, onChunk) {
   return sendMessage(sessionId, '', onChunk)
+}
+
+
+async function contextRequest(sessionId, suffix, init = {}) {
+  const response = await authFetch(`${API_BASE_URL}/agent/sessions/${encodeURIComponent(sessionId)}/context${suffix}`, {
+    ...init, signal: AbortSignal.timeout(130000),
+  })
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.detail || '压缩请求失败')
+  return data
+}
+export function getContextStatus(sessionId) { return contextRequest(sessionId, '') }
+export function compactContext(sessionId, model, requestId) {
+  return contextRequest(sessionId, '/compact', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, request_id: requestId }) })
 }

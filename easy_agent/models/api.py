@@ -35,7 +35,13 @@ class SessionInfo(BaseModel):
     pinned: int = Field(default=0, description="是否置顶 0/1")
 
 
+class CompactContextRequest(BaseModel):
+    model: str | None = None
+    request_id: str = Field(pattern=r"^[a-zA-Z0-9-]{8,80}$")
+
+
 class SessionDetail(BaseModel):
+    compactions: list[dict[str, Any]] = Field(default_factory=list)
     session_id: str = Field(..., description="会话唯一标识符")
     title: str = Field(..., description="会话标题")
     created_at: str = Field(..., description="创建时间")
@@ -227,6 +233,7 @@ class DeleteSessionResponse(BaseModel):
 
 
 class GetChatHistoryResponse(BaseModel):
+    compactions: list[dict[str, Any]] = Field(default_factory=list)
     session_id: str = Field(..., description="会话ID")
     title: str = Field(..., description="会话标题")
     messages: List[dict[str, Any]] = Field(default_factory=list, description="消息列表")

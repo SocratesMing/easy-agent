@@ -11,6 +11,7 @@
 """
 
 from datetime import datetime
+import hashlib
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -132,10 +133,10 @@ def build_context_messages(
     context_messages: list = []
     provider = (provider or "").lower()
 
-    for message in history_messages:
+    for message in stable_history(history_messages):
         if message.get("role") == "user":
             context_messages.append(
-                HumanMessage(content=str(message.get("content") or ""))
+                HumanMessage(content=str(message.get("content") or ""), id=message["turn_id"])
             )
             continue
         if message.get("role") != "assistant":
@@ -185,6 +186,17 @@ def build_context_messages(
 
     context_messages.append(HumanMessage(content=current_message, id=current_message_id))
     return context_messages
+
+
+def stable_history(rows: list[dict]) -> list[dict]:
+    """旧轮次用内容、时间和顺序生成稳定 ID；追加历史不会改变已有 ID。"""
+    result = []
+    for index, row in enumerate(rows):
+        if row.get("role") == "user" and not row.get("turn_id"):
+            identity = f"{index}:{row.get('timestamp', '')}:{row.get('content', '')}"
+            row = {**row, "turn_id": "legacy-" + hashlib.sha256(identity.encode()).hexdigest()[:24]}
+        result.append(row)
+    return result
 
 
 def build_assistant_message_dict(

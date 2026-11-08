@@ -64,24 +64,24 @@ def test_get_owned_session_404_for_missing(two_user_sessions):
 # ---------------------------------------------------------------------------
 
 
-def test_get_session_denies_cross_user(two_user_sessions):
+async def test_get_session_denies_cross_user(two_user_sessions):
     from easy_agent.api.sessions import get_session
 
     # userA reads own session -> OK
-    detail = get_session("sess-A", db=two_user_sessions, username="userA")
+    detail = await get_session("sess-A", db=two_user_sessions, username="userA")
     assert detail.session_id == "sess-A"
 
     # userB reads userA's session -> 404
     with pytest.raises(NotFoundError) as exc:
-        get_session("sess-A", db=two_user_sessions, username="userB")
+        await get_session("sess-A", db=two_user_sessions, username="userB")
     assert exc.value.message == "会话不存在"
 
 
-def test_get_chat_history_denies_cross_user(two_user_sessions):
+async def test_get_chat_history_denies_cross_user(two_user_sessions):
     from easy_agent.api.sessions import get_chat_history
 
     with pytest.raises(NotFoundError) as exc:
-        get_chat_history("sess-A", db=two_user_sessions, username="userB")
+        await get_chat_history("sess-A", db=two_user_sessions, username="userB")
     assert exc.value.message == "会话不存在"
 
 

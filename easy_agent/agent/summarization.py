@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 _logged_models: set[str] = set()
 
 
-def summarization_settings(config, model_key: str | None = None) -> dict:
+def summarization_settings(config, model_key: str | None = None, *, manual: bool = False) -> dict:
     """把 config 比例折成官方 ``SummarizationMiddleware`` 的 token 参数。
 
     窗口取 ``model_key`` 对应模型的 ``context_length``。``model_key`` 是 ``config.models``
@@ -35,7 +35,7 @@ def summarization_settings(config, model_key: str | None = None) -> dict:
     truncate_max_length = int(
         getattr(config.summarization, "truncate_arg_max_length", 0) or 2000
     )
-    if not bool(getattr(config.summarization, "enabled", True)):
+    if not manual and not bool(getattr(config.summarization, "enabled", True)):
         # 官方 create_deep_agent 的默认栈总会挂摘要中间件，无法靠"不传"关闭；
         # 这里把阈值抬到不可达，等价关闭压缩与参数截断（同名替换默认项仍在）。
         far = 1 << 40

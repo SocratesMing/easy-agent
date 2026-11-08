@@ -20,6 +20,7 @@ from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
 )
 from easy_agent.models.db import SessionModel
 from easy_agent.models.api import (
+    CompactContextRequest,
     SessionPinUpdateResponse,
     SessionTitleUpdateResponse,
     SessionUploadResponse,
@@ -47,6 +48,8 @@ from easy_agent.services.sessions.uploads import (
     save_upload_streaming,
     store_parsed_content,
 )
+
+from easy_agent.services.sessions import compaction as compaction_service
 
 logger = logging.getLogger(__name__)
 
@@ -244,14 +247,14 @@ def count_sessions(
 
 
 @router.get("/{session_id}", summary="获取会话详情", response_model=SessionDetail)
-def get_session(
+async def get_session(
     session_id: str,
     db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
     repo = _as_session_repository(db)
 
-    session = repo.get_owned_session(session_id, username)
+    session = await asyncio.to_thread(repo.get_owned_session, session_id, username)
 
     usage = compute_session_usage(session.messages or [])
     context_length = session_context_length(session.messages or [])
@@ -265,6 +268,7 @@ def get_session(
         todos=session.todos,
         usage=usage,
         context_length=context_length,
+        compactions=await compaction_service.records(session_id),
     )
 
 
@@ -412,14 +416,14 @@ def _delete_session_dirs(username: str, session: SessionModel, session_id: str) 
     summary="获取聊天历史",
     response_model=GetChatHistoryResponse,
 )
-def get_chat_history(
+async def get_chat_history(
     session_id: str,
     db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
 ):
     repo = _as_session_repository(db)
 
-    session = repo.get_owned_session(session_id, username)
+    session = await asyncio.to_thread(repo.get_owned_session, session_id, username)
 
     usage = compute_session_usage(session.messages or [])
     context_length = session_context_length(session.messages or [])
@@ -432,6 +436,7 @@ def get_chat_history(
         updated_at=session.updated_at,
         usage=usage,
         context_length=context_length,
+        compactions=await compaction_service.records(session_id),
     )
 
 
@@ -566,3 +571,24 @@ async def upload_session_file(
         "parsed_path": parsed_entry.get("stored_path") if parsed_entry else None,
         "parse_status": parsed_entry.get("status") if parsed_entry else None,
     }
+
+
+@router.post("/{session_id}/context/compact", summary="手动压缩会话上下文")
+async def compact_context(
+    session_id: str,
+    request: CompactContextRequest,
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
+    username: Annotated[str, Depends(get_current_username)],
+):
+    return await compaction_service.compact(
+        _as_session_repository(db), session_id, username, request.model, request.request_id,
+    )
+
+
+@router.get("/{session_id}/context", summary="查询压缩状态与持久结果")
+async def get_context_status(
+    session_id: str,
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
+    username: Annotated[str, Depends(get_current_username)],
+):
+    return await compaction_service.context_status(_as_session_repository(db), session_id, username)

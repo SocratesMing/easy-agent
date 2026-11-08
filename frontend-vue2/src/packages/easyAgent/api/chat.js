@@ -67,6 +67,7 @@ export async function getChatHistory(sessionId) {
   return {
     messages: data.messages || [],
     todos: data.todos || [],
+    compactions: data.compactions || [],
     usage: data.usage || null,
     context_length: data.context_length || null,
   }
@@ -177,4 +178,13 @@ function generateMessageId() {
 
 export function createNewChat(sessionId, onChunk) {
   return sendMessage(sessionId, '', onChunk)
+}
+
+
+export function getContextStatus(sessionId) {
+  return request({ url: `/agent/sessions/${encodeURIComponent(sessionId)}/context`, method: 'get' }, '查询压缩状态失败')
+}
+export function compactContext(sessionId, model, requestId) {
+  return request({ url: `/agent/sessions/${encodeURIComponent(sessionId)}/context/compact`, method: 'post',
+    timeout: 130000, data: { model, request_id: requestId } }, '压缩请求失败')
 }

@@ -111,6 +111,8 @@ def test_resume_with_a_handle_for_an_older_turn_returns_409(client, db, monkeypa
     calls = []
 
     class _Graph:
+        checkpointer = object()  # 此替身模拟已持久化的会话图
+
         async def aget_state(self, config):
             # 会话 thread 已在下一轮（m2），且没有挂起的中断
             return SimpleNamespace(next=(), tasks=[], values={"turn_context": {"message_id": "m2"}})

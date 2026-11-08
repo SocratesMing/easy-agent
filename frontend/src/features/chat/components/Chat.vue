@@ -58,6 +58,10 @@
           @edit="handleEdit"
           @reject="handleReject"
         />
+        <div v-for="record in compactionsAt(index)" :key="record.id" class="compaction-notice" role="status" :title="record.message">
+          <svg class="compaction-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 5 6 6-6 6M12 19h8" /></svg>
+          <span>{{ compactionNoticeText(record) }}</span>
+        </div>
       </div>
       </div>
       <button v-if="canGoToNextUserMessage" @click="goToNextUserMessage" class="scroll-btn next" title="回到下一个用户问题">
@@ -115,10 +119,13 @@
         :compact="isSidebar"
         :show-manage-entry="showManageEntry"
         @send="onSend"
-        :disabled="isStreaming"
+        :disabled="isStreaming || compactBusy"
         :isStreaming="isStreaming"
         :session-id="currentSessionId"
-        :sessionUsage="sessionUsage"
+        :sessionUsage="compactUsage"
+        :compact-busy="compactBusy"
+        :compact-reason="compactReason"
+        @compact-context="runCompact"
         :sessionDuration="sessionDuration"
         :iterationCount="iterationCount"
         :models="models"
@@ -139,6 +146,11 @@
     </div>
   </div>
 </template>
+
+<script>
+import contextCompactionMixin from '../../../shared/compaction/mixin.js'
+export default { mixins: [contextCompactionMixin], beforeUnmount() { this.disposeCompaction() } }
+</script>
 
 <script setup>
 import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
@@ -984,4 +996,21 @@ html[data-theme="dark"] .preset-deck:hover .preset-card {
     opacity: 0.5;
   }
 }
+</style>
+
+<style scoped>
+.compaction-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 80%;
+  max-width: 900px;
+  box-sizing: border-box;
+  padding-inline: var(--chat-message-content-inset, 16px);
+  margin: 8px auto;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 20px;
+}
+.compaction-icon { width: 14px; height: 14px; flex: none; }
 </style>
