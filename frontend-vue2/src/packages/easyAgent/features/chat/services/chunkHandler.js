@@ -155,7 +155,7 @@ export function createStreamChunkHandler(vm, ctx) {
   }
 
   const onChunk = (data) => {
-    const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success, title } = data
+    const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success } = data
 
     if (eventType === 'start') {
       if (!ctx.isResume) {
@@ -180,6 +180,14 @@ export function createStreamChunkHandler(vm, ctx) {
         vm.markStreaming(ctx.streamSessionId || vm.currentSessionId)
         if (data.session_id) chatBus.$emit('stream-started', { sessionId: data.session_id, origin: vm._uid })
       }
+    } else if (eventType === 'knowledge_evidence') {
+      ensureMessage()
+      const idx = findIdx()
+      if (idx !== -1) setReactive(vm.messages, idx, {
+        ...vm.messages[idx],
+        knowledge_evidence: Array.isArray(data.evidence) ? data.evidence : [],
+        knowledge_warnings: Array.isArray(data.warnings) ? data.warnings : [],
+      })
     } else if (eventType === 'token_usage') {
       applyUsage(data, ctx.streamSessionId)
     } else if (eventType === 'thinking_start') {
@@ -262,12 +270,6 @@ export function createStreamChunkHandler(vm, ctx) {
       }
       currentThinking = ''
       currentBlock = null
-    } else if (eventType === 'content_start') {
-      if (!currentBlock || currentBlock.type !== 'content') {
-        currentContent = ''
-        currentBlock = null
-        addBlock('content', { content: '', step: step || 0 })
-      }
     } else if (eventType === 'content') {
       const targetStep = step || 0
       // 正文块必须带 step，否则按 step 排序时会落到顶部（step=0）。同一 step 的
@@ -298,18 +300,23 @@ export function createStreamChunkHandler(vm, ctx) {
       currentBlock = null
     } else if (eventType === 'todo_list') {
       if (data.todos && Array.isArray(data.todos)) vm.currentTodos = data.todos
-    } else if (eventType === 'assistant_start') {
-      if (!ctx.isResume) {
-        ensureMessage()
-        currentContent = ''
-        currentThinking = ''
-        currentToolCalls = []
-        currentBlock = null
-      }
-    } else if (eventType === 'user_input_required') {
-      if (!ctx.isResume) {
-        const idx = findIdx()
-        if (idx !== -1) { vm.messages[idx].loading = false; setReactive(vm.messages, idx, { ...vm.messages[idx] }) }
+    } else if (eventType === 'tool_call_delta') {
+      // 大参数工具（write_file/edit_file）的 arguments 分片快照：先把当前快照合入
+      // 工具卡片，完整参数随后由 tool_call 事件权威覆盖（同一 tool_call_id）。
+      if (!ctx.isResume) ensureMessage()
+      const idx = findIdx()
+      if (idx !== -1) {
+        const callId = toolCallId || `tool-${toolName}`
+        const blockIdx = vm.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
+        if (blockIdx !== -1) {
+          const prev = vm.messages[idx].blocks[blockIdx]
+          setReactive(vm.messages[idx].blocks, blockIdx, { ...prev, arguments: args || prev.arguments || {}, streaming: true })
+        } else {
+          // 必须先清空 currentBlock：否则 addBlock 会把本次调用并进上一个 tool_call 块。
+          currentBlock = null
+          addBlock('tool_call', { id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true, streaming: true, step: step || 0 })
+        }
+        touchBlocks()
       }
     } else if (eventType === 'tool_call') {
       if (!ctx.isResume) ensureMessage()
@@ -318,7 +325,9 @@ export function createStreamChunkHandler(vm, ctx) {
         const callId = toolCallId || `tool-${toolName}`
         const existingBlockIdx = vm.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
         if (existingBlockIdx !== -1) {
-          vm.messages[idx].blocks[existingBlockIdx].arguments = args || {}
+          // tool_call 是权威参数：覆盖 delta 快照并清掉「写入中」标记。
+          const prev = vm.messages[idx].blocks[existingBlockIdx]
+          setReactive(vm.messages[idx].blocks, existingBlockIdx, { ...prev, arguments: args || {}, streaming: false })
           currentBlock = vm.messages[idx].blocks[existingBlockIdx]
           touchBlocks()
         } else {
@@ -364,8 +373,12 @@ export function createStreamChunkHandler(vm, ctx) {
           for (const b of vm.messages[idx].blocks) { if (b.type === 'thinking' && b.duration == null) b.duration = 0 }
           if (data.usage) applyUsage(data.usage, ctx.streamSessionId)
         } else {
-          const finalContent = data.content || currentContent
-          vm.messages[idx].content = finalContent
+          // done 事件不下发 content 字段：从正文块拼回完整正文，供复制/引用等
+          // 仍读 message.content 的路径使用（气泡渲染本身以 blocks 为准）。
+          vm.messages[idx].content = (vm.messages[idx].blocks || [])
+            .filter(b => b.type === 'content')
+            .map(b => b.content || '')
+            .join('\n')
           // SET 语义下 currentThinking 只剩最后一个 step 的内容；此处从所有思考块
           // 拼接出完整 thinking，保证 message.thinking 字段（旧数据回退/兼容）正确。
           vm.messages[idx].thinking = (vm.messages[idx].blocks || [])
@@ -395,17 +408,15 @@ export function createStreamChunkHandler(vm, ctx) {
             }
           }
         }
+        // 兜底：未收到完整参数的 streaming 占位块在流结束时清除标记，
+        // 避免工具卡片一直停留在「写入中…」。
+        for (const blk of vm.messages[idx].blocks || []) {
+          if (blk.streaming) blk.streaming = false
+        }
         setReactive(vm.messages, idx, { ...vm.messages[idx] })
       }
-      if (!ctx.isResume && title) {
-        const existingIdx = vm.sessions.findIndex(s => s.session_id === vm.currentSessionId)
-        if (existingIdx === -1) {
-          vm.sessions = [{ session_id: vm.currentSessionId, title, created_at: new Date().toISOString(), message_count: vm.messages.length }, ...vm.sessions]
-        } else {
-          setReactive(vm.sessions, existingIdx, { ...vm.sessions[existingIdx], title })
-          vm.sessions = [...vm.sessions]
-        }
-      }
+      // 后端 done 不带 title：会话标题由服务端生成，流结束后刷新列表回填。
+      if (!ctx.isResume && typeof vm.loadSessions === 'function') vm.loadSessions()
     } else if (eventType === 'error') {
       const idx = findIdx()
       // code === 'timeout'：模型流式静默超时（一次模型调用 120 秒没收到新 chunk）。

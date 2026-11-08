@@ -1210,7 +1210,7 @@ export default {
       }
 
       const onChunk = (data) => {
-        const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success, title } = data
+        const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success } = data
 
         if (eventType === 'start') {
           if (!ctx.isResume) {
@@ -1319,12 +1319,6 @@ export default {
           }
           currentThinking = ''
           currentBlock = null
-        } else if (eventType === 'content_start') {
-          if (!currentBlock || currentBlock.type !== 'content') {
-            currentContent = ''
-            currentBlock = null
-            addBlock('content', { content: '', step: step || 0 })
-          }
         } else if (eventType === 'content') {
           const targetStep = step || 0
           // 正文块必须带 step，否则按 step 排序时会落到顶部（step=0）。同一 step 的
@@ -1355,19 +1349,6 @@ export default {
           currentBlock = null
         } else if (eventType === 'todo_list') {
           if (data.todos && Array.isArray(data.todos)) this.currentTodos = data.todos
-        } else if (eventType === 'assistant_start') {
-          if (!ctx.isResume) {
-            ensureMessage()
-            currentContent = ''
-            currentThinking = ''
-            currentToolCalls = []
-            currentBlock = null
-          }
-        } else if (eventType === 'user_input_required') {
-          if (!ctx.isResume) {
-            const idx = findIdx()
-            if (idx !== -1) { this.messages[idx].loading = false; setReactive(this.messages, idx, { ...this.messages[idx] }) }
-          }
         } else if (eventType === 'tool_call_delta') {
           // 大参数工具（write_file/edit_file）的 arguments 分片快照：模型还在生成
           // 文件内容时就先把当前快照合入对应工具卡片，diff 实时增长；完整参数随后由
@@ -1479,8 +1460,12 @@ export default {
               for (const b of this.messages[idx].blocks) { if (b.type === 'thinking' && b.duration == null) b.duration = 0 }
               if (data.usage) applyUsage(data.usage, ctx.streamSessionId)
             } else {
-              const finalContent = data.content || currentContent
-              this.messages[idx].content = finalContent
+              // done 事件不下发 content 字段：从正文块拼回完整正文，供复制/引用等
+              // 仍读 message.content 的路径使用（气泡渲染本身以 blocks 为准）。
+              this.messages[idx].content = (this.messages[idx].blocks || [])
+                .filter(b => b.type === 'content')
+                .map(b => b.content || '')
+                .join('\n')
               // SET 语义下 currentThinking 只剩最后一个 step 的内容；此处从所有思考块
               // 拼接出完整 thinking，保证 message.thinking 字段（旧数据回退/兼容）正确。
               this.messages[idx].thinking = (this.messages[idx].blocks || [])
@@ -1512,15 +1497,8 @@ export default {
             }
             setReactive(this.messages, idx, { ...this.messages[idx] })
           }
-          if (!ctx.isResume && title) {
-            const existingIdx = this.sessions.findIndex(s => s.session_id === this.currentSessionId)
-            if (existingIdx === -1) {
-              this.sessions = [{ session_id: this.currentSessionId, title, created_at: new Date().toISOString(), message_count: this.messages.length }, ...this.sessions]
-            } else {
-              setReactive(this.sessions, existingIdx, { ...this.sessions[existingIdx], title })
-              this.sessions = [...this.sessions]
-            }
-          }
+          // 后端 done 不带 title：会话标题由服务端生成，流结束后的 finally 里
+          // 已有 loadSessions() 回填，这里无需再做本地即时更新。
         } else if (eventType === 'error') {
           const idx = findIdx()
           if (idx !== -1) {
