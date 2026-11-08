@@ -228,4 +228,4 @@ liveness 返回 `agent_initialized=false` 而 readiness 全 true（启动完成�
 
 **复测中发现并修正**：本轮实测发现 `done.blocks` **仅在审批续跑（resume）时下发**（`orchestrator.py:547-550` 的 `is_resume` 分支），普通对话的 `done` 只有 `session_id/elapsed_time/usage`。上一轮文档把它写成通用字段，已改为「`blocks` 仅 resume 下发」，并补普通对话（累积 content 块）与 resume（权威 blocks）的正文来源说明；前端实现本身正确（非 resume 用本地块拼装、resume 用 `data.blocks` 替换），无需改代码。
 
-**观察项（非阻断）**：dev server 编译时有一条既有 warning：`MessageError.vue` 的 scoped style `export 'default' ... was not found`；编译成功、页面渲染与样式未见异常，与本次改动无关。
+**观察项（非阻断）**：dev server 编译共报 43 条同类 warning，分布在 `EasyAgentPage.vue`、`Chat.vue`、`ChatMessage.vue`、`MessageError.vue` 等 11 个 SFC，内容均为 scoped style 的 `export 'default' (imported as 'style0'/'style1') was not found`（vue-loader/webpack 开发态样式注入告警）；编译成功、`BUILD` 无 error、页面渲染与样式未见异常，与本次改动无关。生产构建（`vue-cli-service build`）不报该告警。
