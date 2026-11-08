@@ -262,6 +262,155 @@ def test_web_runner_disables_uvicorn_default_logging(monkeypatch):
     assert captured_kwargs["log_config"] is None
 
 
+# ── 运行期日志级别（EASY_LOG_LEVEL / easy-web --log-level）────────────────
+
+
+def _snapshot_loggers(names):
+    loggers = [logging.getLogger(), *(logging.getLogger(n) for n in names)]
+    return [(lg, lg.level, lg.handlers[:], lg.propagate) for lg in loggers]
+
+
+def _restore_loggers(saved):
+    for logger, level, handlers, propagate in saved:
+        logger.setLevel(level)
+        logger.handlers[:] = handlers
+        logger.propagate = propagate
+
+
+def test_parse_log_level_accepts_names_case_insensitively():
+    from easy_agent.bootstrap.initialization.log import parse_log_level
+
+    assert parse_log_level("debug") == logging.DEBUG
+    assert parse_log_level(" INFO ") == logging.INFO
+    assert parse_log_level("Warn") == logging.WARNING
+    assert parse_log_level("error") == logging.ERROR
+    assert parse_log_level("verbose") is None
+    assert parse_log_level("") is None
+    assert parse_log_level(None) is None
+
+
+def test_set_log_level_debug_moves_handlers_but_keeps_err_and_quiet_loggers(tmp_path, monkeypatch):
+    from easy_agent.bootstrap.initialization import log as logging_config
+
+    names = ("uvicorn", "uvicorn.error", "uvicorn.access", "uvicorn.asgi", "fastapi",
+             *logging_config.LOG_QUIET_WHEN_DEBUG)
+    saved = _snapshot_loggers(names)
+    saved_quiet = [(n, logging.getLogger(n).level) for n in logging_config.LOG_QUIET_WHEN_DEBUG]
+    try:
+        monkeypatch.setattr(logging_config, "LOG_DIR", str(tmp_path))
+        monkeypatch.setattr(logging_config, "LOG_LEVEL", "info")
+        logging_config.setup_logging()
+        root = logging.getLogger()
+
+        logging_config.set_log_level(logging.DEBUG)
+
+        assert root.level == logging.DEBUG
+        file_levels = {
+            Path(h.baseFilename).name.split("-")[0]: h.level
+            for h in root.handlers
+            if isinstance(h, TimedRotatingFileHandler)
+        }
+        assert file_levels == {"proc": logging.DEBUG, "comm": logging.DEBUG, "err": logging.ERROR}
+        console = [h for h in root.handlers if not isinstance(h, TimedRotatingFileHandler)]
+        assert [h.level for h in console] == [logging.DEBUG]
+        assert logging.getLogger("uvicorn.error").level == logging.DEBUG
+        # 第三方噪声（aiosqlite 每次读写、openai SDK 打完整请求体）在 DEBUG 下仍停在 INFO
+        assert logging.getLogger("aiosqlite").getEffectiveLevel() == logging.INFO
+        assert logging.getLogger("openai._base_client").getEffectiveLevel() == logging.INFO
+        assert logging.getLogger("httpcore.http11").getEffectiveLevel() == logging.INFO
+        # deepagents 每次建图重复报的 prompt caching 不可用 / HarnessProfile 解析
+        assert logging.getLogger("deepagents.middleware._prompt_caching").getEffectiveLevel() == logging.INFO
+        assert logging.getLogger("deepagents.profiles.harness.harness_profiles").getEffectiveLevel() == logging.INFO
+        # 大模型报文 logger 跟随 root：DEBUG 时开启
+        assert logging.getLogger("easy_agent.llm_wire").isEnabledFor(logging.DEBUG)
+
+        logging_config.set_log_level(logging.INFO)
+
+        assert root.level == logging.INFO
+        assert logging.getLogger("aiosqlite").level == logging.NOTSET
+        assert not logging.getLogger("easy_agent.llm_wire").isEnabledFor(logging.DEBUG)
+    finally:
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, TimedRotatingFileHandler):
+                handler.close()
+        _restore_loggers(saved)
+        for name, level in saved_quiet:
+            logging.getLogger(name).setLevel(level)
+        monkeypatch.setattr(logging_config, "_quieted", False)
+
+
+def _fake_runtime(monkeypatch, tmp_path, calls, *, env=None):
+    from types import SimpleNamespace
+
+    from easy_agent.bootstrap.initialization import runtime as runtime_module
+
+    def fake_load_environment():
+        calls.append("environment")
+        for key, value in (env or {}).items():  # 模拟 .env 文件注入
+            monkeypatch.setenv(key, value)
+        return SimpleNamespace(env_file=None, loaded_keys=[], agent_env="test", cors_allow_origins=["*"])
+
+    monkeypatch.setattr(runtime_module, "_initialization", None)
+    monkeypatch.setattr(runtime_module, "setup_logging", lambda: calls.append("logging") or {
+        "proc": str(tmp_path / "p.log"), "err": str(tmp_path / "e.log"), "comm": str(tmp_path / "c.log")})
+    monkeypatch.setattr(runtime_module, "load_environment", fake_load_environment)
+    monkeypatch.setattr(runtime_module, "set_log_level", lambda level: calls.append(("level", level)))
+    monkeypatch.setattr(runtime_module.Config, "resolve_config_path", lambda: tmp_path / "config.yaml")
+    monkeypatch.setattr(runtime_module.Config, "from_yaml", lambda path: calls.append("config") or SimpleNamespace())
+    return runtime_module
+
+
+def test_initialize_runtime_applies_log_level_from_env_file(monkeypatch, tmp_path):
+    """EASY_LOG_LEVEL 可以写在 .env 里：环境加载之后、读配置之前生效。"""
+    monkeypatch.delenv("EASY_LOG_LEVEL", raising=False)
+    calls: list = []
+    runtime_module = _fake_runtime(monkeypatch, tmp_path, calls, env={"EASY_LOG_LEVEL": "debug"})
+
+    runtime_module.initialize_runtime(force=True)
+
+    assert calls == ["logging", "environment", ("level", logging.DEBUG), "config"]
+
+
+def test_initialize_runtime_ignores_invalid_log_level(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("EASY_LOG_LEVEL", "verbose")
+    calls: list = []
+    runtime_module = _fake_runtime(monkeypatch, tmp_path, calls)
+
+    with caplog.at_level(logging.WARNING, logger=runtime_module.__name__):
+        runtime_module.initialize_runtime(force=True)
+
+    assert calls == ["logging", "environment", "config"]
+    assert "EASY_LOG_LEVEL='verbose' 无效" in caplog.text
+
+
+def test_initialize_runtime_warns_that_llm_request_log_switch_is_retired(monkeypatch, tmp_path, caplog):
+    monkeypatch.delenv("EASY_LOG_LEVEL", raising=False)
+    monkeypatch.setenv("EASY_LLM_REQUEST_LOG", "1")
+    runtime_module = _fake_runtime(monkeypatch, tmp_path, [])
+
+    with caplog.at_level(logging.WARNING, logger=runtime_module.__name__):
+        runtime_module.initialize_runtime(force=True)
+
+    assert "EASY_LLM_REQUEST_LOG 已不再生效" in caplog.text
+
+
+def test_web_runner_log_level_flag_sets_env(monkeypatch):
+    import os
+
+    import easy_agent.bootstrap.initialization as initialization
+    import easy_agent.bootstrap.web_runner as web_runner
+
+    # 先登记「原本没有」，测试结束时 monkeypatch 会把 run_web 写入的值删掉
+    monkeypatch.delenv("EASY_LOG_LEVEL", raising=False)
+    monkeypatch.setattr(initialization, "initialize_runtime", lambda: None)
+    monkeypatch.setattr(web_runner.uvicorn, "run", lambda *a, **k: None)
+    monkeypatch.setattr("sys.argv", ["easy-web", "--log-level", "debug"])
+
+    web_runner.run_web()
+
+    assert os.environ["EASY_LOG_LEVEL"] == "debug"
+
+
 def test_load_environment_defaults_agent_env_to_dev(monkeypatch):
     """未显式设置 AGENT_ENV 时统一按 dev 处理，并使用回环 CORS 默认值。"""
     from easy_agent.bootstrap.initialization import load_environment

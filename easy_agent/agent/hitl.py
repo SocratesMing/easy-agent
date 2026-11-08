@@ -101,7 +101,7 @@ EXECUTE_TOOL_NAME = "execute"
 
 #: 配置里的 ``protocol`` → 模型实例的 LangChain ``ls_provider``。
 #: 拼 profile 查找键时用的是后者，不是配置里的网关名（如 deepseek/minimax）。
-_PROTOCOL_TO_LS_PROVIDER = {"openai": "openai", "anthropic": "anthropic"}
+_PROTOCOL_TO_LS_PROVIDER = {"openai": "openai"}
 
 #: 已成功注册 execute 描述的 profile 键（进程级：用于自检与幂等判断）。
 _EXECUTE_DESC_PROFILE_KEYS: set[str] = set()
@@ -179,8 +179,8 @@ def _model_profile_key(llm_config) -> str | None:
 
     模型实例存在两种 provider 口径：配置里的 ``provider`` 是网关名
     （deepseek / minimax / ...），而 deepagents 查找 profile 用的是 LangChain
-    的 ``ls_provider``（ChatOpenAI 固定 ``openai``、ChatAnthropic 固定
-    ``anthropic``）。因此这里按 ``protocol`` 推导后半段的 provider。
+    的 ``ls_provider``（ChatOpenAI 固定 ``openai``）。因此这里按 ``protocol``
+    推导后半段的 provider。
     """
     # 与 model.resolve_llm_config 对齐：protocol 为空时按 openai 建模型。
     protocol = (
@@ -199,13 +199,11 @@ def _model_profile_key(llm_config) -> str | None:
 def _configured_model_profile_keys(config) -> tuple[str, ...]:
     """列出配置中每个模型对应的 profile 键（去重，保持配置顺序）。
 
-    ``config is None`` 时退化为两个受支持协议的 provider 级键，仅用于兼容
+    ``config is None`` 时退化为受支持协议的 provider 级键，仅用于兼容
     旧的无参调用；正常路径总是传入 ``Config``（``models`` + active ``llm``）。
     """
     if config is None:
-        return tuple(
-            _PROTOCOL_TO_LS_PROVIDER[protocol] for protocol in ("openai", "anthropic")
-        )
+        return tuple(_PROTOCOL_TO_LS_PROVIDER.values())
 
     keys: dict[str, None] = {}
     models = getattr(config, "models", None)
@@ -229,7 +227,7 @@ def register_execute_description_profiles(config=None) -> tuple[str, ...]:
 
     Args:
         config: ``Config``（读取 ``models`` 与 active ``llm``）。``None`` 仅用于
-            旧的无参调用，退化为 provider 级（openai/anthropic）注册。
+            旧的无参调用，退化为 provider 级（openai）注册。
 
     Returns:
         当前进程内已注册的 profile 键（排序后）；失败项不在结果内。

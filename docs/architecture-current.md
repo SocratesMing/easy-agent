@@ -29,7 +29,7 @@
 | `db/` | `database.py`（连接/迁移/核心表）、`session_messages.py`、`expert_store.py`、`schema_registry.py`、`login_state.py`（登录态校验与活跃时间，主鉴权与知识库鉴权共用） |
 | `middleware/` | JWT 鉴权依赖（`auth.py`，判定在 `db/login_state.py`）、进程内限流（`rate_limit.py`） |
 | `knowledges/` | 知识库 v2：service / api / ragflow client / runtime worker、catalog sync、observability；`runtime/source_sync.py` 负责研报 SQL 增量同步（可选 `staging_dir`：先批量拷贝、READY 后删暂存副本）；`personnel/` 子包负责知识库域的人员管理、Excel 导入、用户扩展字段 |
-| `bootstrap/initialization/` | 环境/日志/运行期初始化（config/log/environment/runtime） |
+| `bootstrap/initialization/` | 环境/日志/运行期初始化（config/log/environment/runtime）。日志级别默认 INFO，`EASY_LOG_LEVEL` / `easy-web --log-level` 覆盖；DEBUG 时 proc 日志记录大模型请求 / 返回报文（`easy_agent.llm_wire`），第三方噪声 logger 仍停在 INFO |
 | `tools/` | web_search、scheduled_task、expert_writer、session_file_reader |
 | `models/` | API / DB Pydantic 模型 |
 
@@ -45,6 +45,10 @@
 事件契约：`docs/sse-events.md`（15 个事件，契约测试 `tests/services/test_sse_contract.py`）。
 
 图输入（DA-03）：默认每条消息一个 thread（`{session_id}-{message_id}`），历史每轮从 DB 重建；`agent.session_thread: true` 时在官方 saver 上一个会话一个 thread（`thread_id = session_id`），每轮只输入本轮消息，thread 为空时从 DB 水合、DB 多出的轮次补进输入（`services/sessions/thread.py`），审批句柄仍是 `{session_id}-{message_id}`。本轮 `HumanMessage` 只存用户原话（`id` = message_id，DB 用户行同时记 `turn_id`），工作区前缀、知识库 / 页面上下文、上传预览等本轮注入随 `turn_context` 传入，由主代理摘要中间件在计 token 前渲染进本次请求，不写回历史（`agent/turn_context.py`）；记忆每次运行都重新加载（`agent/memory.py`）。会话级 thread 方案见 `docs/archive/design/2026-10-19-da03-session-thread.md`。
+
+模型协议：只支持 OpenAI 兼容协议（`protocol: openai`，`agent/model.py` 的 `ReasoningChatOpenAI`），Anthropic 协议已移除，配成其他协议时 `create_model` 直接报错。
+
+思考回传：每条 assistant 消息的思考都随请求回传给模型，本轮和历史轮次、带不带工具调用一视同仁（DeepSeek 文档要求请求带 tools 时回传历史各轮的 `reasoning_content`）。`ReasoningChatOpenAI` 把 `additional_kwargs` 里的思考写成请求里的 `reasoning_content` 字段（`agent/model.py` 的 `inject_reasoning_content`）；会话 thread 的历史原样发出，`agent/turn_context.py` 只渲染本轮用户消息。从 DB 重建历史时按 step 把思考块放回对应的 AIMessage（`services/streaming/messages.py`）。`/agent/completion/chat` 的 assistant 消息可带 `thinking` 回传。摘要的 token 计数包含 `additional_kwargs` 里的思考（`agent/summarization.py` 的 `count_tokens_with_reasoning`）。
 
 ### Agent 工具与沙箱
 - 文件工具走 CompositeBackend 路由（`/workspace/`、`/user-skills/`、`/skills/builtin/`（只读）、`/memories/`、外部目录）；没命中路由的路径与框架产物（`/.agent/...`：大工具结果、对话历史）落在工作区之外的会话隐藏目录 `workspace/{user}/.agent/{session_id}/`，删除会话时一并删除（DA-04）。共享编译图用两层真实 `CompositeBackend`（`backends/context.py`）按运行期 `SessionContext` 路由（DA-05）。

@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Run web server (serves frontend from frontend-vue2/dist/)
-easy-web [--port 8000] [--reload]
+easy-web [--port 8000] [--reload] [--log-level debug|info|warning|error]
 
 # Alternative: run via main.py
 python main.py
@@ -48,6 +48,7 @@ Environment variables:
 - `EASY_CONFIG` — override config file path (set by `web_runner.py` automatically)
 - `EASY_CONFIG_STRICT` — `1` makes unknown config keys fail startup (default: warn)
 - `EASY_JWT_SECRET` — JWT signing secret. Optional in dev/test (persisted in `data/.jwt_secret`); required when `AGENT_ENV=prod`
+- `EASY_LOG_LEVEL` — `debug` / `info` (default) / `warning` / `error`; `easy-web --log-level` sets it, and it is also read from `.env.{AGENT_ENV}` (applied right after the env file loads, `bootstrap/initialization/runtime.py`). At `debug` the proc log records every LLM request body and raw response (`[LLM_REQUEST]` / `[LLM_RESPONSE]`, logger `easy_agent.llm_wire`, file only); noisy third-party loggers (aiosqlite, httpcore, openai SDK …) stay at INFO (`LOG_QUIET_WHEN_DEBUG` in `bootstrap/initialization/log.py`). The old `EASY_LLM_REQUEST_LOG` switch is retired
 
 ## Code Architecture
 
@@ -57,7 +58,7 @@ Environment variables:
 
 **Config** (`bootstrap/config.py`) — `Config` 门面；Pydantic 模型在 `bootstrap/config_models.py`，校验/env 展开在 `bootstrap/config_validation.py`。
 
-**LLM factory** (`agent/model.py`) — Supports `anthropic` (ChatAnthropic), `openai` (ChatOpenAI), `deepseek` (langchain-deepseek), `minimax` (OpenAI-compatible with 120s timeout). All use LangChain wrappers.
+**LLM factory** (`agent/model.py`) — Protocol-driven, and `openai` is the only protocol: every provider (DeepSeek / Qwen / Ark / OpenCode gateway …) goes through `ReasoningChatOpenAI` (a `ChatOpenAI` subclass that sanitizes media blocks, extracts `reasoning_content`, and passes it back). The `anthropic` protocol was removed; any other protocol raises `ValueError` in `create_model`.
 
 **Skills** (`agent/skills.py`) — Discovers skills by scanning for directories containing `SKILL.md` or `README.md`. Canonical runtime skills live in the repo-root `skills/` (7: docx/pptx/xlsx/pdf/mcp-builder/skill-creator/expert-creator); `easy_agent/skills/` is the packaged fallback copy. Skill sources are fixed to `["/skills/builtin/", "/user-skills/"]` (a user skill overrides a public one with the same name); the per-user list of added public skills is `workspace/{username}/builtin-skills.json` (`agent/builtin_skills.py`), the read-only view is `backends/builtin_skills.py`.
 
@@ -130,6 +131,7 @@ Vue 2 paths below are relative to `frontend-vue2/src/packages/easyAgent/`:
 - **Agent cache is in-memory only** — server restarts lose all cached agents
 - **Session threads are on by default** — `session_thread: true` (default) runs one LangGraph thread per session (`thread_id = session_id`, only the new message is input; empty threads hydrate from the DB) on official savers only; `false` is the compatibility mode that rebuilds history per message. The legacy in-process fallback (`PersistentMemorySaver`, used only with `EASY_CHECKPOINT_BACKEND=legacy` or when a single pod cannot open its SQLite checkpoint file; it persists nothing, so pending approvals are lost on restart) keeps per-message threads either way. The approval handle sent to the frontend stays `{session_id}-{message_id}` (`services/sessions/thread.py`)
 - **`save_expert` is skill-gated** — it is not in the agent's tool list; `agent/core.py` hands it to a `SkillsMiddleware(tools=...)` that replaces the default one, so it is bound only after the model reads or pins `expert-creator` (whose frontmatter declares `metadata.include_tools: save_expert`). Expert sessions never get it. `extras={"defer_loading": True}` would not hide it on OpenAI-compatible models (see `docs/design/2026-10-20-da13-skills-sources.md`)
+- **Reasoning is passed back on every assistant message** — current turn and history, with or without tool calls (DeepSeek requires the `reasoning_content` of all earlier turns once a request carries tools). Requests carry it as the `reasoning_content` field (`agent/model.py:inject_reasoning_content`); thread history is sent as-is (`agent/turn_context.py` only renders the current turn); DB hydration puts each step's thinking back on its AIMessage (`services/streaming/messages.py`); summarization counts it (`agent/summarization.py:count_tokens_with_reasoning`). Don't reintroduce stripping of historical reasoning
 - **Per-turn context goes through `turn_context`** — the workspace prefix, knowledge/page context and upload preview are rendered into the model request only (skills selected in the input box are loaded via `pinned_skills`, not text directives); the turn's `HumanMessage` holds the raw user text (id = message_id, also stored as `turn_id` on the DB row). Don't concatenate per-turn context into message content (see `docs/archive/design/2026-10-19-da03-session-thread.md`)
 - **`web_runner.py` does `os.chdir(project_root)`** — important for relative path resolution
 - **`frontend-vue2/dist/` not committed** — must `npm run build` (in `frontend-vue2/`) before `easy-web` can serve the UI

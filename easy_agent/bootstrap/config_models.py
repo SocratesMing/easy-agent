@@ -55,7 +55,7 @@ class ProviderConfig(BaseModel):
     api_base: str = ""
     # 未显式配置时的默认上下文窗口（1M）；实际值以各 provider 段配置为准。
     context_length: int = 1_000_000
-    protocol: str = "openai"  # "openai" or "anthropic"
+    protocol: str = "openai"  # 目前只支持 "openai"（OpenAI 兼容接口）
     # 额外的请求头（透传给 LLM 客户端）。值里可用 ``{session_id}`` 占位符，
     # 调用时会替换为当前会话标识——部分网关（如 OpenCode Go）强制要求稳定的
     # 会话标识（x-opencode-session）与自定义 User-Agent，缺失会直接 400。
@@ -75,7 +75,7 @@ class LLMConfig(BaseModel):
     model: str = "claude-sonnet-4-6"
     provider: str = "minimax"
     context_length: int = 1_000_000  # Model context window size
-    protocol: str = "openai"  # "openai" or "anthropic"
+    protocol: str = "openai"  # 目前只支持 "openai"（OpenAI 兼容接口）
     headers: dict[str, str] = Field(default_factory=dict)
     retry: RetryConfig = Field(default_factory=RetryConfig)
 

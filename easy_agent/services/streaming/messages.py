@@ -78,23 +78,31 @@ def _tool_call_tuples(blocks: list, *, with_approval: bool = False) -> list[tupl
     return tuples
 
 
-def _assistant_content_message(message: dict, provider: str) -> AIMessage:
-    """重建历史 assistant 消息：**只恢复正文，不回灌思考内容**。
+def _reasoning_kwargs(reasoning: str) -> dict:
+    return {"reasoning_content": reasoning} if reasoning else {}
 
-    历史思考故意不注入上下文，原因有二：
-    1. 上游只在「工具调用 → 工具结果」续跑时校验 ``reasoning_content``（缺了报
-       400），跨轮历史以用户消息或 assistant 正文收尾，不校验；回灌只会白占
-       token。当前轮工具循环里的思考由 :class:`ReasoningChatOpenAI` 在出站请求
-       时按消息回传（见 ``inject_reasoning_content``）；
-    2. 若改用 ``<think>…</think>`` 文本回灌，历史思考会被当成正文重复占用
-       token，还可能干扰模型对自身输出的理解，且思考里出现 ``</think>``
-       字面量时会破坏标签配对。
 
-    Anthropic 协议在跨轮历史中允许省略 thinking block，故此处对所有 provider
-    统一丢弃。``provider`` 参数保留以兼容既有调用方（后续如需按 provider
-    差异化可在此基础上分支）。
+def _thinking_by_step(message: dict) -> dict:
+    """DB 按 step 存的思考块：``{step: 思考原文}``，同一 step 的多段按块顺序拼接。"""
+    by_step: dict = {}
+    for block in message.get("blocks") or []:
+        if isinstance(block, dict) and block.get("type") == "thinking" and block.get("content"):
+            step = block.get("step") or 0
+            by_step[step] = by_step.get(step, "") + str(block["content"])
+    return by_step
+
+
+def _assistant_content_message(message: dict, reasoning: str = "") -> AIMessage:
+    """重建历史 assistant 正文消息，思考放在 ``additional_kwargs["reasoning_content"]``。
+
+    思考不拼进正文（``<think>…</think>``）：那样会被当成正文，思考里出现 ``</think>``
+    字面量时还会破坏标签配对。出站时由 :class:`ReasoningChatOpenAI` 写成请求里的
+    ``reasoning_content`` 字段（见 ``inject_reasoning_content``）。
     """
-    return AIMessage(content=str(message.get("content") or ""))
+    return AIMessage(
+        content=str(message.get("content") or ""),
+        additional_kwargs=_reasoning_kwargs(reasoning),
+    )
 
 
 def turn_message_text(message: str, files: list | None = None, skills: list | None = None) -> str:
@@ -123,14 +131,14 @@ def build_context_messages(
     这里按 step 恢复 AIMessage(tool_calls=...) 与对应 ToolMessage；无工具记录的
     旧会话回退为正文消息。
 
-    注意：历史 **thinking 不回灌上下文**（详见 ``_assistant_content_message``），
-    思考仅用于前端展示与持久化。
+    历史思考也随消息回传：每个 step 的思考块放到该 step 的 AIMessage 上，其余 step
+    （作答那一步）的思考跟着正文消息；没有分步思考块的旧消息，整段 ``thinking`` 跟着正文。
+    ``provider`` 参数不再影响结果，保留以兼容既有调用方。
 
     ``current_message_id`` 作为本轮 ``HumanMessage`` 的 id，供 ``turn_context`` 定位本轮消息
     （见 ``agent/turn_context.py``）。
     """
     context_messages: list = []
-    provider = (provider or "").lower()
 
     for message in history_messages:
         if message.get("role") == "user":
@@ -160,6 +168,8 @@ def build_context_messages(
                 }
             )
 
+        thinking_by_step = _thinking_by_step(message)
+        has_step_thinking = bool(thinking_by_step)
         for step in step_order:
             tool_calls = grouped_records[step]
             context_messages.append(
@@ -169,6 +179,7 @@ def build_context_messages(
                         {"name": item["name"], "args": item["args"], "id": item["id"]}
                         for item in tool_calls
                     ],
+                    additional_kwargs=_reasoning_kwargs(thinking_by_step.pop(step, "")),
                 )
             )
             for item in tool_calls:
@@ -180,8 +191,13 @@ def build_context_messages(
                     )
                 )
 
-        if str(message.get("content") or "").strip() or message.get("thinking"):
-            context_messages.append(_assistant_content_message(message, provider))
+        final_reasoning = (
+            "".join(thinking_by_step.values())
+            if has_step_thinking
+            else str(message.get("thinking") or "")
+        )
+        if str(message.get("content") or "").strip() or message.get("thinking") or final_reasoning:
+            context_messages.append(_assistant_content_message(message, final_reasoning))
 
     context_messages.append(HumanMessage(content=current_message, id=current_message_id))
     return context_messages

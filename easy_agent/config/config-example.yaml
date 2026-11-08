@@ -9,7 +9,7 @@ model: "${ACTIVE_MODEL:-deepseek}"   # 当前模型：deepseek
 models:
   deepseek:
     provider: "deepseek"
-    protocol: "openai"                # openai | anthropic
+    protocol: "openai"                # 目前只支持 openai（OpenAI 兼容接口）
     model: "${DEEPSEEK_MODEL:-deepseek-v4-pro-0813}"
     api_key: "${DEEPSEEK_API_KEY}"
     api_base: "${DEEPSEEK_API_BASE:-https://llm-tyyt06c5mq54ngq7.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}"

@@ -35,8 +35,10 @@ class _FakeLLM:
     def __init__(self, content="mock-response", thinking=""):
         self._content = content
         self._thinking = thinking
+        self.received = []
 
     async def ainvoke(self, messages, *args, **kwargs):
+        self.received = list(messages)
         return _FakeMsg(self._content, self._thinking)
 
 
@@ -78,6 +80,39 @@ async def test_includes_thinking_when_present(monkeypatch):
     assert ctx[-1]["role"] == "assistant"
     assert ctx[-1]["content"] == "ok"
     assert ctx[-1]["thinking"] == "深思"
+
+
+async def test_assistant_thinking_is_passed_back_to_the_model(fake_llm):
+    """上次返回的 thinking 原样带回：进模型的 AIMessage 带 reasoning_content，返回上下文也保留。"""
+    req = ChatCompletionRequest(
+        messages=[
+            ChatCompletionMessage(role="user", content="q1"),
+            ChatCompletionMessage(role="assistant", content="a1", thinking="上一轮思考"),
+            ChatCompletionMessage(role="user", content="q2", thinking="用户消息不带思考"),
+        ]
+    )
+
+    ctx = await chat_completion(req, username=_USERNAME)
+
+    assistant = fake_llm.received[1]
+    assert assistant.content == "a1"
+    assert assistant.additional_kwargs == {"reasoning_content": "上一轮思考"}
+    assert not getattr(fake_llm.received[2], "additional_kwargs", {})
+    assert ctx[1] == {"role": "assistant", "content": "a1", "thinking": "上一轮思考"}
+    assert ctx[2] == {"role": "user", "content": "q2"}
+
+
+async def test_thinking_counts_toward_the_total_limit(fake_llm):
+    req = ChatCompletionRequest(
+        messages=[
+            ChatCompletionMessage(role="assistant", content="a", thinking="t" * 60_000),
+            ChatCompletionMessage(role="user", content="u" * 60_000),
+        ]
+    )
+    with pytest.raises(HTTPException) as exc:
+        await chat_completion(req, username=_USERNAME)
+    assert exc.value.status_code == 400
+    assert fake_llm.received == []
 
 
 async def test_empty_messages_raises(fake_llm):

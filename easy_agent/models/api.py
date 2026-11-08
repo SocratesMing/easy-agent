@@ -161,6 +161,11 @@ class ChatCompletionMessage(BaseModel):
         ..., max_length=32, description="消息角色: system / user / assistant"
     )
     content: str = Field(..., max_length=100_000, description="消息内容")
+    thinking: Optional[str] = Field(
+        default=None,
+        max_length=100_000,
+        description="assistant 消息的思考内容：把上次返回的 thinking 原样带回，即回传给模型",
+    )
 
 
 class ChatCompletionRequest(BaseModel):

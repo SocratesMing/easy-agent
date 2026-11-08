@@ -1,8 +1,9 @@
 """Model factory for creating LLM instances.
 
-Model selection is protocol-driven (see ``ProviderConfig.protocol``):
-- "openai":     ChatOpenAI subclass (ReasoningChatOpenAI), OpenAI-compatible API.
-- "anthropic":  ChatAnthropic, Anthropic-compatible API (e.g. MiniMax / Bedrock / Anthropic).
+Model selection is protocol-driven (see ``ProviderConfig.protocol``). The only
+supported protocol is "openai": ``ReasoningChatOpenAI`` (a ChatOpenAI subclass) on
+an OpenAI-compatible API. The Anthropic protocol has been removed; Claude-family
+models can still be used through an OpenAI-compatible gateway.
 
 Use ``create_model(config, model_name)`` to build an instance; config resolution
 is handled by the public ``resolve_llm_config``.
@@ -12,16 +13,16 @@ import json
 import logging
 import os
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_openai import ChatOpenAI
 
 from easy_agent.bootstrap.config import Config, LLMConfig, RetryConfig
-from easy_agent.bootstrap.env import env_bool
 
 logger = logging.getLogger(__name__)
-#: 模型入口参数 / 请求 / 原始返回报文日志：只写 proc 文件，不进控制台
-#: （见 ``bootstrap/initialization/log.py`` 的 ``LOG_CONSOLE_EXCLUDED_LOGGERS``）。
+#: 模型入口参数 / 发给模型的完整上下文（请求）/ 模型原始返回报文，都是 DEBUG 级别：
+#: 日志级别为 debug（``EASY_LOG_LEVEL=debug`` 或 ``easy-web --log-level debug``）时才记录。
+#: 只写 proc 文件，不进控制台（见 ``bootstrap/initialization/log.py`` 的
+#: ``LOG_CONSOLE_EXCLUDED_LOGGERS``）。报文含完整对话内容，体量大且可能含敏感信息，仅排障时开启。
 wire_logger = logging.getLogger("easy_agent.llm_wire")
 
 # Candidate field names used by various providers for model reasoning / thinking.
@@ -30,18 +31,10 @@ wire_logger = logging.getLogger("easy_agent.llm_wire")
 # so the value round-trips correctly back to the same provider.
 _REASONING_KEYS = ("reasoning_content", "reasoning", "reason_content")
 
-# Anthropic-compatible models: extended-thinking budget and output cap.
-# Values identical to the previous hardcoded literals (Phase 1 behavior-preserving).
-ANTHROPIC_THINKING_BUDGET_TOKENS = 10000
-ANTHROPIC_MAX_TOKENS = 16000
 
-#: 开关：为 1/true/yes/on 时打印模型入口参数、每次发往 api_base 的完整请求与原始返回报文。
-#: 报文含完整对话内容，体量大且可能含敏感信息，仅排障时开启。
-LLM_REQUEST_LOG_ENV = "EASY_LLM_REQUEST_LOG"
-
-
-def llm_request_log_enabled() -> bool:
-    return env_bool(LLM_REQUEST_LOG_ENV)
+def llm_wire_log_enabled() -> bool:
+    """当前日志级别是否记录大模型请求 / 响应报文（DEBUG）。每次请求都会检查，级别调整立即生效。"""
+    return wire_logger.isEnabledFor(logging.DEBUG)
 
 
 def _mask_secret(value) -> str:
@@ -66,7 +59,7 @@ def _log_http_request(request) -> None:
             body = json.dumps(json.loads(raw), ensure_ascii=False)
         except ValueError:
             body = raw.decode("utf-8", errors="replace")
-        wire_logger.info(
+        wire_logger.debug(
             f"[LLM_REQUEST] {request.method} {request.url} | "
             f"headers={json.dumps(headers, ensure_ascii=False)} | body={body}"
         )
@@ -81,7 +74,7 @@ def _log_http_response(response, chunks: list[bytes]) -> None:
     """
     try:
         body = b"".join(chunks).decode(response.encoding or "utf-8", errors="replace")
-        wire_logger.info(
+        wire_logger.debug(
             f"[LLM_RESPONSE] {response.status_code} {response.request.method} {response.request.url} | "
             f"headers={json.dumps(dict(response.headers.items()), ensure_ascii=False)} | "
             f"body={body}"
@@ -120,22 +113,22 @@ def _tee_response_body(response) -> None:
 
 
 def _sync_request_hook(request) -> None:
-    if llm_request_log_enabled():
+    if llm_wire_log_enabled():
         _log_http_request(request)
 
 
 async def _async_request_hook(request) -> None:
-    if llm_request_log_enabled():
+    if llm_wire_log_enabled():
         _log_http_request(request)
 
 
 def _sync_response_hook(response) -> None:
-    if llm_request_log_enabled():
+    if llm_wire_log_enabled():
         _tee_response_body(response)
 
 
 async def _async_response_hook(response) -> None:
-    if llm_request_log_enabled():
+    if llm_wire_log_enabled():
         _tee_response_body(response)
 
 
@@ -155,20 +148,14 @@ def install_request_logging(model) -> None:
     """在模型底层 SDK 的 httpx 客户端上挂请求 / 响应钩子。
 
     deepagents 中间件（system prompt / bind_tools / 摘要等）改写后的请求，最终都经
-    langchain → openai/anthropic SDK → httpx 发出；在 httpx 层拿到的才是真正发往
+    langchain → openai SDK → httpx 发出；在 httpx 层拿到的才是真正发往
     endpoint 的 URL、请求头和请求体（含 SDK 追加的 headers、extra_body 等），以及
     endpoint 返回的原始报文。
     """
-    if isinstance(model, ChatAnthropic):
-        sdk_clients = [
-            (model._client, _sync_request_hook, _sync_response_hook),
-            (model._async_client, _async_request_hook, _async_response_hook),
-        ]
-    else:
-        sdk_clients = [
-            (getattr(model, "root_client", None), _sync_request_hook, _sync_response_hook),
-            (getattr(model, "root_async_client", None), _async_request_hook, _async_response_hook),
-        ]
+    sdk_clients = [
+        (getattr(model, "root_client", None), _sync_request_hook, _sync_response_hook),
+        (getattr(model, "root_async_client", None), _async_request_hook, _async_response_hook),
+    ]
     for sdk_client, request_hook, response_hook in sdk_clients:
         _attach_hooks(getattr(sdk_client, "_client", None), request_hook, response_hook)
 
@@ -199,17 +186,16 @@ def extract_reasoning(additional_kwargs) -> str:
 
 
 def inject_reasoning_content(payload: dict, messages: list) -> None:
-    """把 assistant 工具调用消息的思考内容写回出站请求（thinking 模式要求回传）。
+    """把每条 assistant 消息的思考写回出站请求的 ``reasoning_content`` 字段。
 
     ``langchain_openai._convert_message_to_dict`` 只序列化
     content/role/name/tool_calls，``additional_kwargs`` 里的 reasoning 会被丢弃。
-    而思考模式的上游（如 opencode 网关转发的 deepseek / glm）在「工具调用 →
-    工具结果」的续跑请求里会校验：带 ``tool_calls`` 的 assistant 消息必须带回
-    ``reasoning_content``，缺了直接 400
+    思考模式的上游要求回传：DeepSeek 文档写明请求带 ``tools`` 时，历史各轮的
+    ``reasoning_content`` 都应回传并拼进上下文，不带工具调用的回答也一样；缺了会 400
     ``The reasoning_content in the thinking mode must be passed back to the API``。
 
-    只在消息确实带思考文本时注入：非思考模型不会多出未知字段，跨轮历史
-    （``build_context_messages`` 刻意不回灌思考）也不受影响。
+    因此所有 assistant 消息都回传：本轮和历史轮次、带不带 ``tool_calls`` 一视同仁。
+    只在消息确实带思考文本时写这个字段，非思考模型产生的消息不会多出字段。
     """
     payload_messages = payload.get("messages")
     if not isinstance(payload_messages, list) or not payload_messages:
@@ -226,9 +212,7 @@ def inject_reasoning_content(payload: dict, messages: list) -> None:
         else zip(messages[-count:], payload_messages)
     )
     for message, item in pairs:
-        if not isinstance(message, AIMessage):
-            continue
-        if not (message.tool_calls or message.invalid_tool_calls):
+        if not isinstance(message, AIMessage) or item.get("role") != "assistant":
             continue
         reasoning = extract_reasoning(message.additional_kwargs)
         if reasoning:
@@ -453,9 +437,8 @@ def create_model(
 ):
     """Create LLM model instance based on protocol.
 
-    The protocol field in config determines which API client to use:
-    - "openai": Use ChatOpenAI (OpenAI-compatible API)
-    - "anthropic": Use ChatAnthropic (Anthropic-compatible API)
+    The only supported protocol is "openai" (``ReasoningChatOpenAI`` on an
+    OpenAI-compatible API); any other value raises ``ValueError``.
 
     Args:
         config: Application configuration.
@@ -484,34 +467,20 @@ def create_model(
     logger.info(
         f"Creating LLM instance | model_name={model_name or config.active_model} | "
         f"provider={llm_config.provider} | model={llm_config.model} | "
-        f"protocol={protocol}"
+        f"protocol={protocol} | api_base={llm_config.api_base} | "
+        f"context_length={llm_config.context_length}"
     )
-    if llm_request_log_enabled():
-        wire_logger.info(
-            f"[LLM_INIT] model_name={model_name or config.active_model} | "
-            f"provider={llm_config.provider} | model={llm_config.model} | "
-            f"protocol={protocol} | api_base={llm_config.api_base} | "
-            f"api_key={_mask_secret(llm_config.api_key)} | "
-            f"context_length={llm_config.context_length} | "
-            f"retry={llm_config.retry.model_dump() if llm_config.retry else None} | "
-            f"headers={build_request_headers(llm_config, session_id)} | "
-            f"session_id={session_id}"
-        )
 
-    if protocol == "openai":
-        model = _create_openai_compatible(
-            llm_config, default_headers=build_request_headers(llm_config, session_id)
-        )
-    elif protocol == "anthropic":
-        model = _create_anthropic_compatible(
-            llm_config, default_headers=build_request_headers(llm_config, session_id)
-        )
-    else:
+    if protocol != "openai":
         raise ValueError(
-            f"Unsupported protocol: {protocol}. Use 'openai' or 'anthropic'."
+            f"Unsupported protocol: {protocol}. Only 'openai' (OpenAI-compatible API) is "
+            "supported; the Anthropic protocol has been removed."
         )
-    if llm_request_log_enabled():
-        install_request_logging(model)
+    model = _create_openai_compatible(
+        llm_config, default_headers=build_request_headers(llm_config, session_id)
+    )
+    # 钩子总是挂上，每次请求再按日志级别决定是否记录（非 DEBUG 时只多一次级别判断）
+    install_request_logging(model)
     return apply_context_profile(model, llm_config.context_length)
 
 
@@ -549,9 +518,8 @@ class ReasoningChatOpenAI(ChatOpenAI):
     职责 B - reasoning 提取：把 OpenAI 兼容接口返回的思考内容
         (reasoning_content / reasoning / reason_content) 写入 additional_kwargs，
         供前端展示与出站回传。
-    职责 C - reasoning 回传：出站请求里给带 tool_calls 的 assistant 消息补回
-        ``reasoning_content``（langchain 自己不序列化它），否则思考模式的
-        上游在工具续跑时 400。
+    职责 C - reasoning 回传：出站请求里给每条带思考的 assistant 消息（本轮和历史
+        轮次、带不带 tool_calls）补回 ``reasoning_content``（langchain 自己不序列化它）。
     """
 
     # ── 职责 A：多模态清理 ───────────────────────────────────────────
@@ -666,29 +634,3 @@ def _create_openai_compatible(
         stream_usage=True,
         **extra,
     )
-
-
-def _create_anthropic_compatible(
-    llm_config, default_headers: dict[str, str] | None = None
-) -> ChatAnthropic:
-    """Create model using Anthropic-compatible API.
-
-    Works with any provider that exposes an Anthropic-compatible endpoint,
-    such as MiniMax, AWS Bedrock, or direct Anthropic API.
-
-    Configure api_base in config.yaml, e.g.:
-    - MiniMax China: https://api.minimaxi.com/anthropic
-    - MiniMax Global: https://api.minimax.io/anthropic
-    - Anthropic direct: https://api.anthropic.com
-    """
-    kwargs = {
-        "model": llm_config.model,
-        "api_key": llm_config.api_key,
-        "base_url": llm_config.api_base,
-        "max_retries": llm_config.retry.max_retries if llm_config.retry.enabled else 0,
-        "thinking": {"type": "enabled", "budget_tokens": ANTHROPIC_THINKING_BUDGET_TOKENS},
-        "max_tokens": ANTHROPIC_MAX_TOKENS,
-    }
-    if default_headers:
-        kwargs["default_headers"] = default_headers
-    return ChatAnthropic(**kwargs)

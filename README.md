@@ -38,7 +38,7 @@ Easy Agent 是一个开箱即用的 AI Agent 平台，让大模型能够：
 
 | 模块 | 能力 |
 |------|------|
-| 多模型支持 | DeepSeek、Anthropic、OpenAI、火山方舟等，可热切换 |
+| 多模型支持 | DeepSeek、通义千问、火山方舟、OpenAI 等 OpenAI 兼容接口，可热切换 |
 | 多会话管理 | 会话隔离、上下文压缩、会话耗时/迭代统计 |
 | 文件工具 | 上传/下载/预览/生成（docx、pdf、pptx、xlsx、图片、代码） |
 | 网页终端 | 基于 xterm.js 的宿主机 Shell：默认关闭，`EASY_WEB_TERMINAL_ENABLED=1` 开启，仅 admin 可用 |
@@ -219,8 +219,8 @@ model: "deepseek"
 
 models:
   deepseek:
-    provider: "deepseek"     # deepseek | anthropic | openai | minimax
-    protocol: "openai"       # openai | anthropic
+    provider: "deepseek"     # 网关名：deepseek | opencode | openai | minimax 等
+    protocol: "openai"       # 目前只支持 openai（OpenAI 兼容接口）
     model: "deepseek-v4-flash"
     api_key: "sk-xxx"
     api_base: "https://api.deepseek.com"
@@ -455,6 +455,22 @@ Agent 会自动解析调度意图并调用 `create_scheduled_task` 工具，参�
 ```bash
 uv run uvicorn easy_agent.app:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+### 调试日志（DEBUG）
+
+日志默认 INFO。排障时切到 DEBUG，proc 日志（`logs/proc-v01-easy-agent.log`）会多出大模型的请求和返回报文（logger `easy_agent.llm_wire`，DEBUG 级别，只写文件、不进控制台）：
+
+- `[LLM_REQUEST]`：每次发给模型的完整请求体，包括系统提示词、历史消息（含 `reasoning_content`）和 tools
+- `[LLM_RESPONSE]`：模型的原始返回，流式时是 SSE 原文
+
+建模型时的参数（模型、协议、接口地址、上下文窗口）在 INFO 日志「Creating LLM instance」里，任何级别都有。
+
+```bash
+uv run easy-web --log-level debug            # 命令行；python main.py --log-level debug 同理
+EASY_LOG_LEVEL=debug uv run easy-web         # 环境变量；直接跑 uvicorn easy_agent.app:app 时也生效
+```
+
+`EASY_LOG_LEVEL=debug` 也可以写进 `.env.dev`。报文含完整对话内容、体量大，只在排障时开启。aiosqlite、httpcore、openai SDK 等第三方库在 DEBUG 下仍停在 INFO（`bootstrap/initialization/log.py` 的 `LOG_QUIET_WHEN_DEBUG`），openai SDK 不会再把请求体打到控制台。旧开关 `EASY_LLM_REQUEST_LOG` 已不再生效。
 
 ### 前端开发模式（热更新）
 ```bash

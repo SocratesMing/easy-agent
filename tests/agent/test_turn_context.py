@@ -96,19 +96,15 @@ CFG = {"configurable": {"thread_id": "s"}}
 # ── 纯函数 ────────────────────────────────────────────────────────────
 
 
-def test_render_replaces_only_the_turn_message_and_strips_earlier_reasoning():
-    earlier = AIMessage(
-        content=[{"type": "thinking", "thinking": "old", "signature": "sig"}, {"type": "text", "text": "a0"}],
-        additional_kwargs={"reasoning_content": "old", "keep": 1},
-    )
-    current_step = AIMessage(content=[{"type": "thinking", "thinking": "now", "signature": "s2"}])
+def test_render_replaces_only_the_turn_message_and_keeps_earlier_reasoning():
+    earlier = AIMessage(content="a0", additional_kwargs={"reasoning_content": "old", "keep": 1})
+    current_step = AIMessage(content="", additional_kwargs={"reasoning_content": "now"})
     messages = [HumanMessage("q0", id="t0"), earlier, HumanMessage("q1", id="t1"), current_step]
 
     rendered = render_turn_messages(messages, {"message_id": "t1", "content": RENDERED})
 
     assert rendered[0] is messages[0]
-    assert rendered[1].content == [{"type": "text", "text": "a0"}]
-    assert rendered[1].additional_kwargs == {"keep": 1}
+    assert rendered[1] is earlier  # 历史轮次的思考原样回传
     assert (rendered[2].content, rendered[2].id) == (RENDERED, "t1")
     assert rendered[3] is current_step  # 本轮工具循环里的推理保持原样
     assert messages[2].content == "q1"  # 不改原消息
