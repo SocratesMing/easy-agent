@@ -506,6 +506,23 @@ def apply_context_profile(model, context_length: int | None):
     return model
 
 
+def _fill_cache_read_from_deepseek_usage(msg, usage) -> None:
+    """DeepSeek 原生 usage 的 ``prompt_cache_hit_tokens`` 补进 ``input_token_details.cache_read``。
+
+    LangChain 只认 OpenAI 的 ``prompt_tokens_details.cached_tokens``；DeepSeek 官方接口另用
+    ``prompt_cache_hit_tokens`` 报命中数。两者都有时以 LangChain 已解析的为准。
+    """
+    hit = (usage or {}).get("prompt_cache_hit_tokens") if isinstance(usage, dict) else None
+    metadata = getattr(msg, "usage_metadata", None)
+    if not isinstance(hit, int) or hit <= 0 or not metadata:
+        return
+    details = dict(metadata.get("input_token_details") or {})
+    if details.get("cache_read"):
+        return
+    details["cache_read"] = hit
+    msg.usage_metadata = {**metadata, "input_token_details": details}
+
+
 class ReasoningChatOpenAI(ChatOpenAI):
     """ChatOpenAI 子类，承载三个独立职责：
 
@@ -569,6 +586,7 @@ class ReasoningChatOpenAI(ChatOpenAI):
         msg = gen.message
         if not isinstance(msg, AIMessageChunk):
             return gen
+        _fill_cache_read_from_deepseek_usage(msg, chunk.get("usage"))
 
         choices = chunk.get("choices") or chunk.get("chunk", {}).get("choices", [])
         if not choices or choices[0].get("delta") is None:

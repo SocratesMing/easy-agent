@@ -175,6 +175,11 @@ class AgentConfig(BaseModel):
     ``tool_progress_empty_limit``，小了会被自动抬到该值。"""
     workspace_dir: str = "./workspace"
     memories_dir: str = "./memories"
+    memory_model: str = ""
+    """整理记忆（会话记忆、长期记忆）用的模型：填 ``models`` 段里的键；留空 = 用会话当前的对话模型。
+
+    记忆整理在后台跑、输出很短，用不上推理能力：单独配一个便宜、快的模型能省成本，也不跟
+    主对话抢同一个模型的限流额度。键不在 ``models`` 里或建模型失败时告警并回落到对话模型。"""
     sessions_dir: str = "./sessions"
     prompt_path: str = "prompts"
     """提示词目录（相对配置目录），内含 system.md、fragments/ 与 memory_*.md。

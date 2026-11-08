@@ -3,9 +3,9 @@
 职责：
 1. ``wrap_expert_prompt``：把专家配置 / 会话补充内容包成「从属上下文」，
    在文本前后加明确声明，确保其不能冒充系统指令、不能覆盖安全边界；
-2. ``assemble_system_prompt``：按固定顺序装配最终系统提示词，保证
+2. ``assemble_system_prompt``：按固定顺序装配项目这部分系统提示词，保证
    「基础规则 > 用户上下文 > 联网附加 > 从属补充内容 > HITL 说明」，
-   HITL 说明始终位于最后。
+   HITL 说明位于这部分的最后（deepagents 中间件在请求时还会往后追加段落）。
 
 本模块只做字符串处理，便于单元测试，不依赖模型、网络或配置文件。
 """
@@ -78,8 +78,10 @@ def assemble_system_prompt(
     """按安全顺序装配最终 system prompt。
 
     顺序固定为：基础系统提示词 → 当前用户/运行时上下文 → 联网搜索附加 →
-    从属补充内容（专家/会话）→ HITL 说明。HITL 说明永远最后，确保审批
-    约束在上下文中拥有最高 recency。
+    从属补充内容（专家/会话）→ HITL 说明。HITL 说明是本函数产出的最后一段，
+    但不是模型看到的最后一段：deepagents 的 write_todos、技能、记忆中间件会在
+    请求时把各自的段落接在后面（技能段、记忆段的模板见 ``agent/skills_middleware.py``、
+    ``agent/memory.py``）。
     """
     parts = [
         (base_prompt or "").strip(),

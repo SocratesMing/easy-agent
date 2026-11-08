@@ -98,6 +98,25 @@ def _is_reemitted_reasoning(rc: str, accumulated: str) -> bool:
     return False
 
 
+def describe_cache_usage(cache_usage) -> str:
+    """把本轮各次模型调用的 (输入 token, 命中缓存 token) 写成一句日志；没有数据时返回空串。
+
+    看「首次调用」：每轮第一次调用的系统提示词里刚换上新记忆，若记忆变化让前缀缓存失效，
+    这一次只能命中系统提示词靠前的部分，整段历史都按未命中计费。同一轮后面的调用（工具
+    循环）系统提示词不变，命中率应接近 100%。服务端不返回缓存字段时全程为 0。
+    """
+    calls = [(int(inp), int(hit)) for inp, hit in (cache_usage or ()) if inp]
+    if not calls:
+        return ""
+    first_in, first_hit = calls[0]
+    total_in = sum(inp for inp, _ in calls)
+    total_hit = sum(hit for _, hit in calls)
+    return (
+        f"首次调用缓存命中 {first_hit}/{first_in} ({first_hit / first_in * 100:.0f}%) | "
+        f"全轮 {total_hit}/{total_in} ({total_hit / total_in * 100:.0f}%) | 调用 {len(calls)} 次"
+    )
+
+
 class StreamProcessor:
     def __init__(self, *, sid: str = "", current_step: int = 0,
                  blocks: list | None = None, db=None, session_id: str | None = None,
@@ -151,8 +170,11 @@ class StreamProcessor:
         self._step_content_len = 0
         self._step_tool_count = 0
         self._step_usage = {
-            "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0}
+            "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0, "cached_tokens": 0}
         self._step_end_logged: set = set()
+        # 本轮每次模型调用的 (输入 token, 其中命中前缀缓存的 token)，只用于日志
+        # （describe_cache_usage）：核对「记忆每轮改写会不会让历史前缀缓存失效」。
+        self.cache_usage: list[tuple[int, int]] = []
 
         # 累计思考耗时：同一 turn 内思考被分段（如 思考->工具调用->继续思考）时，
         # 保存上一段已结束的 duration，使该 turn 最终"用时"为各段之和。
@@ -624,6 +646,13 @@ class StreamProcessor:
         # 单独累计用于展示（不重复计数）。
         reasoning = (um.get("output_token_details") or {}).get("reasoning", 0) or 0
         self._step_usage["reasoning_tokens"] += reasoning
+        # 命中前缀缓存的输入 token：LangChain 把 prompt_tokens_details.cached_tokens 映射到
+        # input_token_details.cache_read（DeepSeek 原生字段见 agent/model.py）。只记日志，
+        # 不进 token_usage 事件与落库字段。
+        cached = (um.get("input_token_details") or {}).get("cache_read", 0) or 0
+        self._step_usage["cached_tokens"] += cached
+        if um.get("input_tokens", 0) > 0:
+            self.cache_usage.append((um["input_tokens"], cached))
         # 覆盖式记录"最近一次调用"，前端与持久化按类型展示用的就是它
         self.last_usage = {
             "input_tokens": um.get("input_tokens", 0),
@@ -639,7 +668,7 @@ class StreamProcessor:
         self._step_content_len = 0
         self._step_tool_count = 0
         self._step_usage = {
-            "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0}
+            "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0, "cached_tokens": 0}
 
     def _log_step_end(self, step: int) -> None:
         """打印某一步的汇总日志（思考/正文/工具/token），每行以 step 开头。
@@ -674,11 +703,13 @@ class StreamProcessor:
             _ctx_str = f"{ctx}/{self.context_length:,} ({_ctx_pct:.1f}%)"
         else:
             _ctx_str = f"{ctx}"
+        cached = self._step_usage.get("cached_tokens", 0)
         logger.info(
             "[%s] step%d 结束 | 思考:%d字符 | 正文:%d字符 | 工具:%d | "
-            "Token(in/out/total):%d/%d/%d | 思考Token:%d | 上下文:%s",
+            "Token(in/out/total):%d/%d/%d | 缓存命中:%d(%.0f%%) | 思考Token:%d | 上下文:%s",
             self.sid, step, self._step_thinking_len, self._step_content_len,
-            self._step_tool_count, inp, out, tot, rea, _ctx_str,
+            self._step_tool_count, inp, out, tot, cached,
+            (cached / inp * 100) if inp else 0.0, rea, _ctx_str,
         )
 
     def _sse_blocks(self) -> list[dict]:

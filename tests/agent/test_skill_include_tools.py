@@ -103,6 +103,26 @@ def test_no_skills_paths_keeps_tools_untouched():
     assert result[0]["tools"] == [gated_tool]
 
 
+def test_subagents_with_skills_get_the_project_skills_middleware():
+    """带 skills 的子代理即使没用门控工具，也换成项目技能中间件（技能源沿用 spec 自己的 skills）。"""
+    from easy_agent.agent.skills_middleware import EasySkillsMiddleware
+
+    specs = [
+        {"name": "writer", "tools": [plain_tool], "skills": ["/user-skills/"]},
+        {"name": "inherit", "skills": ["/skills/builtin/", "/user-skills/"]},
+    ]
+    writer, inherit = apply_skill_gated_tools(
+        specs, [gated_tool], ["/skills/builtin/", "/user-skills/"], _FakeBackend()
+    )
+
+    assert writer["tools"] == [plain_tool]
+    assert isinstance(writer["middleware"][0], EasySkillsMiddleware)
+    assert writer["middleware"][0].sources == ["/user-skills/"]
+    assert "tools" not in inherit
+    assert isinstance(inherit["middleware"][0], EasySkillsMiddleware)
+    assert inherit["middleware"][0].sources == ["/skills/builtin/", "/user-skills/"]
+
+
 # ── D2：没配公共技能目录 ──────────────────────────────────────────────
 
 
@@ -146,7 +166,7 @@ def test_skill_tool_resolver_does_not_guess_ambiguous_names():
 
 def test_subagent_skills_middleware_resolves_original_names(monkeypatch):
     """子代理各挂一份 SkillsMiddleware，同样要能用原名带出带前缀的工具。"""
-    import deepagents.middleware.skills as skills_mod
+    import easy_agent.agent.skills_middleware as skills_mod
 
     recorded: list[dict] = []
 
@@ -156,7 +176,7 @@ def test_subagent_skills_middleware_resolves_original_names(monkeypatch):
         def __init__(self, **kwargs):
             recorded.append(kwargs)
 
-    monkeypatch.setattr(skills_mod, "SkillsMiddleware", _Recorder)
+    monkeypatch.setattr(skills_mod, "EasySkillsMiddleware", _Recorder)
     apply_skill_gated_tools(
         [{"name": "fetcher", "tools": [prefixed_tool, plain_tool]}],
         [prefixed_tool],

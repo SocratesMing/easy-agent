@@ -65,11 +65,15 @@ _DELETE_TOOL_RE = re.compile(
     re.I,
 )
 
+#: 开启 HITL 时由 ``prompt_guard.assemble_system_prompt`` 接在系统提示词末尾，告诉模型哪些操作
+#: 要等用户批准。沙箱实现（bwrap / Landlock、fail-closed）模型用不上，写在 execute 的工具描述里。
 HITL_SYSTEM_NOTE = (
-    "敏感工具会触发人工审批后再执行：沙箱内的文件删除类 execute、"
-    "save_expert、create_scheduled_task、access_knowledge_original 的 materialize，"
-    "以及服务端声明为写操作、或名称含 write/delete/update/insert 等写操作的 MCP 工具。"
-    "execute 走 bwrap/Landlock，二者都不可用时 fail-closed，不会落到宿主机。"
+    "## 人工审批\n\n"
+    "以下操作会先暂停，等用户在界面上批准后才执行：文件删除类 execute 命令、"
+    "删除文件或目录的 delete、save_expert、create_scheduled_task、"
+    "access_knowledge_original 的 materialize，以及服务端声明为写操作、"
+    "或名称含 write/delete/update/insert 等写操作的 MCP 工具。"
+    "收到审批结果前不要假设操作已完成；用户拒绝后按其意见调整方案，不要原样重试。"
 )
 
 EXECUTE_HITL_TOOL_DESCRIPTION: str = (
@@ -80,17 +84,31 @@ EXECUTE_HITL_TOOL_DESCRIPTION: str = (
     "  • 调用会立即暂停，等待用户在对话界面上「批准 / 拒绝」；\n"
     "  • 在你收到用户的审批结果之前，命令【尚未真正执行】，不要假设它已成功；\n"
     "  • 若用户「拒绝」，请根据拒绝原因调整方案，不要原样重复发起被拒绝的删除命令；\n"
-    "  • 目录删除（rm -r / rmdir 等）会被直接拒绝，不会进入审批流程。\n"
+    "  • 目录删除（rm -r / rmdir 等）会被直接拒绝，不会进入审批流程；需要删除目录时改用 delete 工具（会请用户审批）。\n"
     "普通命令（查看文件、列出目录、编译、运行测试、安装依赖等）通常无需审批即可直接执行。\n\n"
     "—— 以下为工具的常规使用说明 ——\n\n"
     + EXECUTE_TOOL_DESCRIPTION
 )
 
+#: ``delete`` 的工具描述。目录删除只走这个工具，由用户审批把关（2026-11-07 确认）；
+#: ``execute`` 里的 ``rm -r`` / ``rmdir`` 仍由 ``backends/shell.py`` 直接拒绝。框架默认描述
+#: 没提审批，也没说 execute 删不了目录，这里补上（与 execute 的审批说明一致）。
+DELETE_HITL_TOOL_DESCRIPTION: str = (
+    "删除文件或目录，删除后无法恢复；删除目录会连同其中的全部内容一起删除。\n\n"
+    "用法：\n"
+    "- 传入要删除的绝对路径，只删除确定不再需要的文件或目录。\n"
+    "- 开启人工审批时，调用会先暂停，等待用户在对话界面上「批准 / 拒绝」；"
+    "收到结果之前尚未删除，不要假设已经成功。\n"
+    "- 用户拒绝后根据原因调整方案，不要原样重复发起。\n"
+    "- 删除目录时一次删掉整个目录，不要逐个删除其中的文件（每次调用都要审批一次）。\n"
+    "- 删除目录只能用本工具：execute 里的 rm -r、rmdir 等目录删除命令会被系统直接拒绝。"
+)
 
-# ── FW-04：execute 描述通过官方 HarnessProfile 注入 ──────────────────────
+
+# ── FW-04：execute / delete 描述通过官方 HarnessProfile 注入 ──────────────
 #
 # DeepAgents 0.7 的公开 beta API（0.6.8 起已有）：
-#   HarnessProfile(tool_description_overrides={"execute": ...})
+#   HarnessProfile(tool_description_overrides={"execute": ..., "delete": ...})
 #   register_harness_profile("provider:model", profile)
 # ``create_deep_agent`` 在模型已构建（本项目总是传模型实例）时，按
 # ``_get_ls_params()["ls_provider"]`` + 模型 identifier 解析 profile，并把
@@ -98,6 +116,7 @@ EXECUTE_HITL_TOOL_DESCRIPTION: str = (
 
 #: profile 中被替换描述的工具名（``tool_description_overrides`` 的键）。
 EXECUTE_TOOL_NAME = "execute"
+DELETE_TOOL_NAME = "delete"
 
 #: 配置里的 ``protocol`` → 模型实例的 LangChain ``ls_provider``。
 #: 拼 profile 查找键时用的是后者，不是配置里的网关名（如 deepseek/minimax）。
@@ -219,7 +238,7 @@ def _configured_model_profile_keys(config) -> tuple[str, ...]:
 
 
 def register_execute_description_profiles(config=None) -> tuple[str, ...]:
-    """为配置中的每个模型注册 execute 描述的 ``HarnessProfile``（幂等）。
+    """为配置中的每个模型注册 execute / delete 描述的 ``HarnessProfile``（幂等）。
 
     这是 FW-04 的主入口：用官方 beta API 替代对
     ``FilesystemMiddleware.__init__`` 的 monkeypatch。注册是加性的：
@@ -253,21 +272,24 @@ def register_execute_description_profiles(config=None) -> tuple[str, ...]:
         return tuple(sorted(_EXECUTE_DESC_PROFILE_KEYS))
 
     profile = HarnessProfile(
-        tool_description_overrides={EXECUTE_TOOL_NAME: EXECUTE_HITL_TOOL_DESCRIPTION}
+        tool_description_overrides={
+            EXECUTE_TOOL_NAME: EXECUTE_HITL_TOOL_DESCRIPTION,
+            DELETE_TOOL_NAME: DELETE_HITL_TOOL_DESCRIPTION,
+        }
     )
     for key in pending:
         try:
             register_harness_profile(key, profile)
         except Exception as exc:  # noqa: BLE001
             logger.error(
-                "注册 execute 描述 HarnessProfile 失败 | key=%s | %s", key, exc
+                "注册 execute / delete 描述 HarnessProfile 失败 | key=%s | %s", key, exc
             )
             continue
         _EXECUTE_DESC_PROFILE_KEYS.add(key)
 
     registered = tuple(sorted(_EXECUTE_DESC_PROFILE_KEYS))
     logger.info(
-        "execute 描述 HarnessProfile 已注册 | keys=%s | deepagents beta API",
+        "execute / delete 描述 HarnessProfile 已注册 | keys=%s | deepagents beta API",
         list(registered),
     )
     return registered

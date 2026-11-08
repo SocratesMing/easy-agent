@@ -51,7 +51,7 @@ from easy_agent.agent.workspace import (
 from easy_agent.agent.subagents import DEFAULT_SUBAGENTS, apply_skill_gated_tools, resolve_subagent_tools
 from easy_agent.agent.summarization import build_summarization_middleware
 from easy_agent.agent.memory import SessionMemoryMiddleware
-from deepagents.middleware.skills import SkillsMiddleware
+from easy_agent.agent.skills_middleware import EasySkillsMiddleware
 from easy_agent.tools.registry import (
     WEB_SEARCH_OFF_PROMPT_NOTE,
     require_tool_spec,
@@ -718,13 +718,14 @@ class EasyAgent(AgentWorkspaceMixin):
             gated_actual = set(gated_resolved.values())
             gated_tools = [t for t in graph_tools if getattr(t, "name", "") in gated_actual]
             graph_tools = [t for t in graph_tools if getattr(t, "name", "") not in gated_actual]
-            if gated_tools and skills_paths:
+            if skills_paths:
                 main_middleware.append(
-                    # 传 resolver 而不是列表：开启 MCP 前缀后技能里写的是原名（D4）
-                    SkillsMiddleware(
+                    # 有技能源就替换框架默认项：技能段换成项目模板（agent/skills_middleware.py）。
+                    # 门控工具传 resolver 而不是列表：开启 MCP 前缀后技能里写的是原名（D4）
+                    EasySkillsMiddleware(
                         backend=backend,
                         sources=skills_paths,
-                        tools=skill_tool_resolver(gated_tools),
+                        tools=skill_tool_resolver(gated_tools) if gated_tools else None,
                     )
                 )
             if memory_list:
@@ -748,7 +749,7 @@ class EasyAgent(AgentWorkspaceMixin):
                 interrupt_on=interrupt_on_config,
                 store=store,
                 # DA-11：子代理工具按名字解析成本图的工具实例（缺工具的子代理不声明）
-                # DA-13：子代理用到 include_tools 工具时，摘出来挂到它自己的 SkillsMiddleware
+                # DA-13：每个带技能源的子代理各挂一份项目技能中间件；用到 include_tools 工具时摘出来交给它
                 subagents=[
                     {**spec, "middleware": [*spec.get("middleware", []), summarization()]}
                     for spec in apply_skill_gated_tools(

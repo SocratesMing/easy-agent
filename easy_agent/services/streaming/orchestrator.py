@@ -47,7 +47,7 @@ from easy_agent.services.streaming.messages import (
     tool_call_records_to_dicts,
     turn_message_text,
 )
-from easy_agent.services.streaming.processor import StreamProcessor
+from easy_agent.services.streaming.processor import StreamProcessor, describe_cache_usage
 from easy_agent.services.sessions.thread import (
     StaleApprovalError,
     approval_handle,
@@ -431,6 +431,9 @@ def _log_token_usage(sid: str, proc, stats: _FinalizeStats) -> None:
         f"[{sid}] 📊 Token | 当前 step: ↑{stats.inp_tokens} ↓{stats.out_tokens}"
         f"(思考{stats.rea_tokens}) Σ{stats.sum_tokens}"
     )
+    cache_line = describe_cache_usage(getattr(proc, "cache_usage", None))
+    if cache_line:
+        logger.info(f"[{sid}] 🧮 前缀缓存 | {cache_line}")
     if proc.accumulated_thinking:
         logger.info(f"[{sid}] 🤔 思考内容(前200字):\n{proc.accumulated_thinking[:200]}")
     if proc.accumulated_response:
@@ -506,7 +509,8 @@ async def _run_post_stream_side_effects(
     await maybe_rename_workspace(agent, db, session_id, tool_call_records, sid)
     await register_session_skills(agent, db, session_id, sid)
     submit_memory_updates(
-        agent, session_id, db, raw_user_msg, accumulated_response, sid
+        agent, session_id, db, raw_user_msg, accumulated_response, sid,
+        tool_call_records=tool_call_records,
     )
 
     if not is_resume and session_logger:
