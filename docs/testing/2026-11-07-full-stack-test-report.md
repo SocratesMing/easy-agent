@@ -208,3 +208,24 @@ liveness 返回 `agent_initialized=false` 而 readiness 全 true（启动完成�
 | pytest 子集 | `test_env_parity` / `test_sse_contract` / `test_architecture_gate` / `test_scripts_layout` / `test_docs_facts` → **78 passed** |
 | 质量门禁 | `check_config_schema.py --check`、`check_env_usage.py --check` 通过 |
 | 浏览器冒烟 | 新用户 `qa-20261108-fix`，发送「请只回复两个字：通过」→ done 后正文「通过」渲染、服务端会话标题回填（`请只回复两个字：通过`）、console error 0、失败请求 0；截图 `/tmp/qa/shots/30-fix-smoke.png` |
+
+## 14. 改动后功能复测（2026-11-08，双服务）
+
+用户要求「启动前后端服务」后针对 5 个修复提交再做一轮功能测试。
+
+**服务**：杀掉旧后端并以最新代码重启（`.venv/bin/python main.py --log-level debug`，8080，`/tmp/qa/backend-fix2.log`）；另起 `frontend-vue2` dev server（`PORT=5173 AGENT_ENV=dev npm run dev`，`/tmp/qa/vue2-dev-1108.log`），`/agent` 代理到 8080。两套入口均保留运行。
+
+| 验证项 | 结果 |
+| --- | --- |
+| 全量 pytest | **2602 passed / 2 skipped / 0 failed**（431s；用例数较上次 2555 增加，因并行编辑新增测试） |
+| 前端 | `lint:vue2` 通过；`test:unit` **236 passed**；`release_preflight.py frontend-vue2/dist` 通过；质量门禁两项通过 |
+| dev server 编译产物 | `/js/app.js` 5.5MB 含 `tool_call_delta`(2)、`knowledge_evidence`(6)、`knowledge_warnings`(3)；`auth/unregister`、`user_input_required`、`assistant_start`、`files/content` 命中均为 **0**；`/agent/health`、`/agent/ready` 经 5173 代理均 200 |
+| 接口功能（`/tmp/qa/fix_api_test.py`） | **16/16 通过**：SSE 事件序列、`done` 无 `title`/`content`、普通对话 `done` 不含 `blocks`、`tool_call_delta` 实发 `arguments` 快照（无 `delta` 字段）、审批 `reject` 续跑的 `done` 带 `blocks`(3)、模型/设置/技能/连接器接口 200 |
+| 浏览器 8080（生产 dist） | 短对话正文与服务端标题回填正常、技能中心三 Tab 均切换成功、28 个 `/agent/**` 请求全部 2xx、命中已删路径 0、console error 0、pageerror 0；截图 `40-8080-dist-chat.png`、`41-8080-dist-skillcenter.png` |
+| 浏览器 5173（dev server） | 同上全通过（28 个请求全部 2xx、无已删路径、0 错误）；截图 `40-5173-dev-chat.png`、`41-5173-dev-skillcenter.png` |
+| SSE 分片到达 | 8080 直连：49 帧 content 跨 1.5s（总 6.16s）；5173 代理：53 帧跨 1.75s（总 6.47s），均「逐步到达」而非流末一次性 flush，验证 devServer `compress:false` 生效 |
+| 日志 | 本轮 access 日志 94 条 200、**0 个 5xx**；12:02–12:05 的 ERROR 全部来自 pytest 故意构造的异常路径（9.1 未修项再次复现），非服务异常 |
+
+**复测中发现并修正**：本轮实测发现 `done.blocks` **仅在审批续跑（resume）时下发**（`orchestrator.py:547-550` 的 `is_resume` 分支），普通对话的 `done` 只有 `session_id/elapsed_time/usage`。上一轮文档把它写成通用字段，已改为「`blocks` 仅 resume 下发」，并补普通对话（累积 content 块）与 resume（权威 blocks）的正文来源说明；前端实现本身正确（非 resume 用本地块拼装、resume 用 `data.blocks` 替换），无需改代码。
+
+**观察项（非阻断）**：dev server 编译时有一条既有 warning：`MessageError.vue` 的 scoped style `export 'default' ... was not found`；编译成功、页面渲染与样式未见异常，与本次改动无关。
