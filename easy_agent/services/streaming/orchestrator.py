@@ -440,6 +440,68 @@ def _log_token_usage(sid: str, proc, stats: _FinalizeStats) -> None:
         logger.info(f"[{sid}] 💬 回复内容(前200字):\n{proc.accumulated_response[:200]}")
 
 
+def _log_stream_diagnostics(sid: str, proc) -> None:
+    """把「这一轮模型是怎么结束的」记成三行日志（纯观测，不改变任何行为）。
+
+    起因：新建专家时偶发「正文/思考输出一半就没了」——工具没执行、界面也没报错。
+    最常见成因是模型写到一半就停了（正文写到一半，或工具调用的 arguments 只写了
+    半截）：token 已经真实消耗，但没有任何一处内容完整。此前日志只有 token 汇总，
+    只能靠「↓1697(思考243) 但可见内容才 200 字」反推；这三行把结论直接写进日志。
+
+    三行分别是：
+    1. 结束原因 + 合法/非法工具调用计数与最后一轮参数长度（``finish_reason=length``
+       即被长度上限截断）；
+    2. output token 与「思考 + 正文 + 工具参数」的偏离（超出 2.5 倍即有内容没到达）；
+    3. 非法工具调用的样本原文 + 参数流未闭合的残留工具。
+
+    注意：不能只依赖 ``invalid_tool_calls``。LangChain 会用 ``parse_partial_json``
+    容错解析，被砍断的参数大多被补成「合法但缺字段」的 ``tool_call``——那种截断没有
+    任何异常、也进不了 invalid 列表，只有第 2 条能发现。
+    """
+    last = getattr(proc, "last_usage", None) or {}
+    out_tokens = int(last.get("output_tokens") or 0)
+    rea_tokens = int(last.get("reasoning_tokens") or 0)
+    # 用 getattr 取诊断字段：单元测试里的处理器替身只有事件相关属性，
+    # 日志不应因为「观测字段不存在」而抛错（纯观测，不得改变行为）。
+    finish_reason = getattr(proc, "last_finish_reason", None)
+    valid_total = getattr(proc, "tool_call_count", 0)
+    valid_last = getattr(proc, "last_turn_tool_call_count", 0)
+    invalid_total = getattr(proc, "invalid_tool_call_count", 0)
+    args_len = getattr(proc, "last_turn_tool_args_len", 0)
+    logger.info(
+        f"[{sid}] 🧰 工具调用 | valid={valid_total} "
+        f"(最后一轮 {valid_last}, 参数 {args_len} 字符) | "
+        f"invalid={invalid_total} | finish_reason={finish_reason or '未返回'}"
+    )
+    if finish_reason in ("length", "max_tokens"):
+        logger.warning(
+            f"[{sid}] ⚠️ 输出被长度上限截断 | finish_reason={finish_reason} | "
+            f"out={out_tokens} 可见={len(proc.accumulated_response)} 字"
+        )
+    # output token 只能花在三处：思考、正文、工具参数。三者加起来仍远小于 token 数，
+    # 说明有内容没到达客户端（被截断）。中文约 1 字 ≈ 1.2 token，取 2.5 倍留余量。
+    # 注意不能只看 invalid_tool_calls：LangChain 会用 parse_partial_json 把被砍断的
+    # 参数补成「合法但缺字段」的 tool_call，那种截断只有这条判据能发现。
+    visible = len(proc.accumulated_thinking) + len(proc.accumulated_response)
+    if out_tokens - rea_tokens > (visible + args_len) * 2.5:
+        logger.warning(
+            f"[{sid}] ⚠️ 输出与内容不匹配 | out={out_tokens} 思考={rea_tokens} "
+            f"可见={visible} 字 参数={args_len} 字 "
+            f"→ 疑似正文或工具参数被截断"
+        )
+    if invalid_total:
+        sample = getattr(proc, "invalid_tool_call_sample", "")
+        logger.warning(f"[{sid}] ⚠️ 非法工具调用（参数未闭合）| {sample}")
+    pending_of = getattr(proc, "pending_arg_stream_names", None)
+    pending = pending_of() if callable(pending_of) else None
+    # isinstance 收窄：getattr 拿到的是 object，替身若返回非列表（或压根没有该方法）
+    # 一律当「无残留」，日志不因为替身形态不同而报错或 TypeError。
+    if isinstance(pending, list) and pending:
+        logger.warning(
+            f"[{sid}] ⚠️ 参数流未闭合 | {', '.join(str(item) for item in pending)}"
+        )
+
+
 def _build_final_message(
     proc, stats: _FinalizeStats, tool_call_records: list, context_length
 ) -> dict:
@@ -701,6 +763,9 @@ async def _stream_cancelled_frames(run: StreamRun) -> AsyncGenerator[str, None]:
     的部分回复」不会和在途写入交叉覆盖（见 ``utils/blocking.py``）。
     """
     proc = run.proc
+    # 断流（前端刷新 / 切会话会走到这里）时的诊断快照：判断被打断的这一刻 token
+    # 是否已经落在正文/参数里，还是模型其实早就停住了。
+    _log_stream_diagnostics(run.sid, proc)
     if run.mode == "resume":
         logger.info(f"[{run.sid}] HITL 恢复被取消")
         await _save_partial(run, with_approval=True, raise_on_error=True)
@@ -753,6 +818,9 @@ async def _stream_error_frames(
             f"chunks_received={getattr(exc, 'chunks_received', None)} | "
             f"detail={exc}"
         )
+    # 异常前的诊断快照：超时/断开时最需要知道「是不是参数没闭合」——超时日志只有
+    # chunks_received，回答不了「token 都花在哪了」。
+    _log_stream_diagnostics(run.sid, proc)
     if run.mode == "resume":
         logger.error(f"[{run.sid}] HITL 恢复异常: {str(exc)}", exc_info=True)
         # 持久化已生成的部分回复（与取消路径一致），避免流式过程中已完成的
@@ -835,6 +903,9 @@ async def _run_stream(run: StreamRun, stream_input) -> AsyncGenerator[str, None]
             )
         else:
             logger.info(f"[{run.sid}] 📢 流式输出结束")
+
+        # 「本轮模型怎么结束的」诊断（chat / resume 共用，含 HITL 中断前的快照）。
+        _log_stream_diagnostics(run.sid, proc)
 
         # ── HITL: chat 检测新中断 / resume 检测嵌套中断 ────────────────
         try:

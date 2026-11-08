@@ -9,6 +9,7 @@
  */
 import { chatBus } from '../store/chatStore.js'
 import { setReactive } from '../../../utils/reactiveSet.js'
+import { applyStreamError } from '../../../utils/streamErrorFallback.js'
 import { parseMCPResult } from '../../../utils/mcpResult.js'
 import { setExpertLastSession } from '../../../shared/utils/expertSession.js'
 
@@ -418,32 +419,16 @@ export function createStreamChunkHandler(vm, ctx) {
       // 后端 done 不带 title：会话标题由服务端生成，流结束后刷新列表回填。
       if (!ctx.isResume && typeof vm.loadSessions === 'function') vm.loadSessions()
     } else if (eventType === 'error') {
-      const idx = findIdx()
-      // code === 'timeout'：模型流式静默超时（一次模型调用 120 秒没收到新 chunk）。
-      // 半成品和兜底文案后端已经落库，这里的差别只有「怎么展示」：
-      //   - 不写 message.error，也不设 vm.error —— 那是红色报错且 5 秒后自动消失；
-      //   - 改写 message.fallback_note，由 ChatMessage 在正文后渲染常驻灰条。
-      // 其他异常（步数用尽等）code 为 undefined，走原来的红字路径，行为不变。
-      const timedOut = data.code === 'timeout'
-      if (idx !== -1) {
-        vm.messages[idx].loading = false
-        if (!timedOut) vm.messages[idx].error = data.content || '处理失败'
-        if (!ctx.isResume) {
-          for (const blk of vm.messages[idx].blocks) {
-            if (blk.type === 'thinking' && blk.duration == null) blk.duration = 0
-            if (blk.type === 'tool_call' && blk.duration == null) {
-              blk.duration = 0
-              blk.success = false
-              if (!blk.result) blk.result = timedOut ? '执行中断: 访问超时' : (data.content || '执行中断')
-            }
-          }
-        }
-        const patch = { ...vm.messages[idx], blocks: [...vm.messages[idx].blocks] }
-        // 新增键必须放进被替换的对象里：Vue2 直接给原对象添属性不会触发视图更新
-        if (timedOut && data.content) patch.fallback_note = data.content
-        setReactive(vm.messages, idx, patch)
-      }
-      if (!timedOut) vm.error = data.content || '处理失败'
+      // 超时兜底与普通报错的分流逻辑在 utils/streamErrorFallback.js，
+      // 与 EasyAgentPage 内的同名方法共用同一份实现。
+      // 返回非空才写全局 error：超时在页内显示常驻灰条，不弹框。
+      const globalError = applyStreamError({
+        messages: vm.messages,
+        index: findIdx(),
+        data,
+        isResume: ctx.isResume
+      })
+      if (globalError) vm.error = globalError
     }
   }
 

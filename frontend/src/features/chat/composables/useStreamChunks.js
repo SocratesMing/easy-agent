@@ -12,6 +12,7 @@
  */
 
 import { setExpertLastSession } from '../../../shared/utils/expertSession.js'
+import { markStreamFlight } from '../services/streamResume.js'
 
 /**
  * 审批续跑前的会话用量基数：会话合计扣掉被中断这条消息已计入的耗时 / 步数。
@@ -197,6 +198,8 @@ export function createStreamChunkHandler(messages, ctx) {
           attachedStreamingSessions.value[data.session_id] = 'displayed'
         }
         markStreaming(ctx.streamSessionId || currentSessionId.value)
+        // 拿到 session_id 后补全在飞记录：刷新时若还没收到 start，只能靠发送时刻那条记录找回
+        markStreamFlight(ctx.streamSessionId || currentSessionId.value)
         if (data.session_id && onStreamStarted) onStreamStarted(data.session_id)
       }
     } else if (eventType === 'token_usage') {
@@ -467,19 +470,32 @@ export function createStreamChunkHandler(messages, ctx) {
         }
       }
     } else if (eventType === 'error') {
+      // code === 'timeout'：模型流式静默超时。半成品和兜底文案后端已经落库，
+      // 这里只决定「怎么展示」：
+      //   - 不写 message.error、也不设全局 error —— 那是粉底红字条 + 页面底部弹窗；
+      //   - 改写 message.fallback_note，由 ChatMessage 在正文后渲染常驻灰条。
+      // 其他异常（步数用尽等）code 为 undefined，走原来的报错路径，行为不变。
+      const timedOut = data.code === 'timeout'
       const idx = findIdx()
       if (idx !== -1) {
         messages.value[idx].loading = false
-        messages.value[idx].error = data.content || '处理失败'
+        if (!timedOut) messages.value[idx].error = data.content || '处理失败'
         if (!ctx.isResume) {
           for (const blk of messages.value[idx].blocks) {
             if (blk.type === 'thinking' && blk.duration == null) blk.duration = 0
-            if (blk.type === 'tool_call' && blk.duration == null) { blk.duration = 0; blk.success = false; if (!blk.result) blk.result = data.content || '执行中断' }
+            if (blk.type === 'tool_call' && blk.duration == null) {
+              blk.duration = 0
+              blk.success = false
+              if (!blk.result) blk.result = timedOut ? '执行中断: 访问超时' : (data.content || '执行中断')
+            }
           }
         }
-        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+        // Vue3 里整体替换才可靠触发渲染，fallback_note 要放进替换对象
+        const patch = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+        if (timedOut && data.content) patch.fallback_note = data.content
+        messages.value[idx] = patch
       }
-      error.value = data.content || '处理失败'
+      if (!timedOut) error.value = data.content || '处理失败'
     }
   }
 

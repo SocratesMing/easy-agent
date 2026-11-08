@@ -197,6 +197,21 @@ class StreamProcessor:
         # 仅在 messages 模式解析大参数工具（见 STREAM_ARG_TOOLS）时使用，
         # 每个 model turn 结束（updates 的完整 AIMessage 到达）时清空。
         self._arg_stream: dict = {}
+
+        # ── 诊断采集（只读，供收尾日志判定「模型是否静默截断」）──────────────
+        # 这些字段不参与事件产出与状态机，仅用于回答「这一轮模型到底怎么结束的」。
+        # 见 orchestrator._log_stream_diagnostics。
+        self.last_finish_reason: str | None = None
+        self.tool_call_count = 0
+        self.invalid_tool_call_count = 0
+        self.last_turn_tool_call_count = 0
+        self.last_turn_invalid_tool_call_count = 0
+        # 最后一轮 tool_calls 参数的序列化长度：判断「output token 到底落到了哪里」。
+        # 注意 LangChain 用 parse_partial_json 容错解析，**被砍断的参数多会被补成
+        # 合法但缺字段的 tool_call**（不进 invalid_tool_calls），因此只靠
+        # invalid 计数抓不到这类截断，必须同时看参数长度。
+        self.last_turn_tool_args_len = 0
+        self.invalid_tool_call_sample = ""
         # 已跳过的中间件内部模型调用来源（如 summarization），每种只记一次日志。
         self._internal_sources_skipped: set[str] = set()
 
@@ -270,6 +285,7 @@ class StreamProcessor:
 
     def _on_ai_message(self, m: AIMessage) -> list[dict]:
         events = []
+        self._collect_turn_diagnostics(m)
         # Each model turn = one step (unless thinking already advanced it).
         # NOTE: do NOT reset _step_advanced_this_turn here -- the turn boundary
         # is marked by the subsequent ToolMessage (see _on_tool_message). Resetting
@@ -312,6 +328,59 @@ class StreamProcessor:
         self.consume_usage_metadata(m)
         events.extend(self._emit_token_usage())
         return events
+
+    def _collect_turn_diagnostics(self, m: AIMessage) -> None:
+        """采集「这一轮模型是怎么结束的」（纯读，不影响事件与状态机）。
+
+        用户侧的典型故障是「思考/正文吐了一半就没有了，工具也没执行、界面也没报错」。
+        成因分两类，都要能看到：
+
+        * 参数**根本不是 JSON**（如以裸文本开头）→ 进 ``invalid_tool_calls``，
+          既不下发 tool_call 事件、也不进 tools 节点、更不抛异常；
+        * 参数是 JSON 但被砍断 → LangChain 用 ``parse_partial_json`` 补成「合法但
+          缺字段」的 ``tool_calls``，工具会带着残缺参数执行（或缺参数直接报错）。
+          这类截断只能靠「output token 与参数长度的偏离」发现，故一并记下
+          ``last_turn_tool_args_len``。
+
+        这里只记计数与样本，由收尾日志统一打印（见
+        ``orchestrator._log_stream_diagnostics``）。
+        """
+        metadata = getattr(m, "response_metadata", None) or {}
+        # OpenAI 兼容网关用 finish_reason，Anthropic 风格用 stop_reason，二者取其一。
+        reason = metadata.get("finish_reason") or metadata.get("stop_reason")
+        if reason:
+            self.last_finish_reason = str(reason)
+        valid = getattr(m, "tool_calls", None) or []
+        invalid = getattr(m, "invalid_tool_calls", None) or []
+        self.tool_call_count += len(valid)
+        self.invalid_tool_call_count += len(invalid)
+        self.last_turn_tool_call_count = len(valid)
+        self.last_turn_invalid_tool_call_count = len(invalid)
+        self.last_turn_tool_args_len = sum(
+            len(_fmt_tool_args(tc.get("args"))) for tc in valid
+        )
+        if invalid:
+            last = invalid[-1]
+            name = str(last.get("name") or "")
+            args = last.get("args")
+            detail = args if isinstance(args, str) else _fmt_tool_args(args)
+            error = str(last.get("error") or "")
+            self.invalid_tool_call_sample = _truncate(
+                f"name={name or '<未命名>'} | error={error} | args={detail}", 200
+            )
+
+    def pending_arg_stream_names(self) -> list[str]:
+        """参数分片仍在累积、却始终没等到完整 AIMessage 的工具（诊断用，纯读）。
+
+        ``_arg_stream`` 每次完整 AIMessage 到达都会清空；流结束时仍有残留，说明
+        这些工具的参数分片被切断（模型停在中途 / 连接断开），是「静默截断」的
+        直接证据。
+        """
+        return [
+            f"{state.get('name') or '?'}:{len(state.get('raw') or '')}字符"
+            for state in self._arg_stream.values()
+            if state.get("raw")
+        ]
 
     def _on_tool_message(self, m: ToolMessage) -> list[dict]:
         # A tool result marks the end of a model turn: close any thinking phase

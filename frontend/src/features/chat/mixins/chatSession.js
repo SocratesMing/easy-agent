@@ -2,7 +2,7 @@ import { setReactive } from '../../../utils/reactiveSet.js'
 import { createSession, listSessions, getChatHistory, deleteSession, renameSession, togglePinSession, attachStream } from '../../../api/chat.js'
 import { getSessionGeneratedFiles } from '../../../api/files.js'
 import { chatBus, chatStore, syncPendingApprovalFlag as setPendingApprovalFlag } from '../store/chatStore.js'
-import { applyApprovalRequests, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
+import { applyApprovalRequests, derivePendingApproval } from '../../../utils/hitlApproval.js'
 import { createAutoDismiss } from '../../../utils/autoDismiss.js'
 
 // 后端 / 系统报错提示（侧边栏 ais-error、主页面 error-toast）显示 5 秒后自动消失
@@ -184,13 +184,10 @@ export default {
       return !!sid && this.streamingSessions.includes(sid)
     },
     // ---- 会话列表"待审批"标识 ----
-    // 判定口径与 ChatMessage 的 hasPendingApproval 一致：tool_call 块 pending，
-    // 或消息级 pending_approval（thread_id）仍存在。历史接口可能给数组形态，一并兼容。
+    // 口径收敛到 derivePendingApproval：只看最后一条 assistant 消息的消息级载荷，
+    // 不再用工具块的 approval_status 判（那是展示态，会留下"有徽标、没按钮"的死状态）。
     hasPendingApprovalInMessages(msgs) {
-      return (msgs || []).some(m =>
-        (m.pending_approval && (m.pending_approval.thread_id || (Array.isArray(m.pending_approval) && m.pending_approval.length))) ||
-        (Array.isArray(m.blocks) && m.blocks.some(b => b.type === 'tool_call' && b.approval_status === 'pending'))
-      )
+      return derivePendingApproval(msgs)
     },
     // 待审批产生/消失时增删列表徽标标记（store 共享，主面板与侧边栏同时可见）
     syncPendingApprovalFlag(sessionId, hasPending) {
@@ -580,9 +577,8 @@ export default {
             }
             return b
           })
-          // 子代理内部的审批没有对应工具卡片，靠消息级独立面板展示，也算待审批
-          const hasPending = blocks.some(b => b.type === 'tool_call' && b.approval_status === 'pending') ||
-            unmatchedApprovalRequests({ ...msg, blocks }).length > 0
+          // 判据与列表徽标同源：消息级载荷 + 还有可作答对象（卡片或消息级面板）
+          const hasPending = derivePendingApproval([{ ...msg, blocks }])
           setReactive(this.messages, i, { ...msg, id: backendMsgId, blocks })
           if (hasPending) {
             this.pendingApproval = { threadId, assistantMsgId: backendMsgId }

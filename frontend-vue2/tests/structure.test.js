@@ -33,21 +33,34 @@ const MAX_NEW_FILE_LINES = 800
  * 2026-11-05 知识库上传前过滤 PPT/PPTX 后按实测值更新：1911 → 1912。
  * 2026-11-05 权限管理人员搜索后按实测值更新：1912 → 1918。
  * 2026-11-05 合并 audit-improvements（本站不挂载悬浮 AI 侧边栏）后 EasyAgentPage 按实测值更新：2035 → 2036。
+ * 2026-11-07 会话列表按服务端 pending_approval 水合「待审批」徽标后 chatSession.js 按实测值更新：1217 → 1225。
+ * 2026-11-07 刷新后兜底补回「刷新过早」丢失的这一轮（resumeInterruptedTurn）后按实测值更新：
+ *   EasyAgentPage 2045 → 2050、chatSession 1226 → 1277。
  * 2026-11-05 文件夹操作按钮移至文件夹行尾部后按实测值更新：1918 → 1921。
  * 2026-11-06 联网开关镜像（重试路径带上 enableWebSearch）后按实测值更新：
  *   EasyAgentPage 2036 → 2045、ChatInput 3613 → 3622、Chat 1122 → 1123、
  *   AiSidebar 1725 → 1726；chatSession 原 1205 已被既有改动突破，一并按实测校正为 1217。
+ * 2026-11-06 「我的专家」改服务端分页（+ 关键字下推接口）后按实测值更新：
+ *   ChatInput 3622 → 3688（新增 loadMyExpertsPage / loadMoreMyExperts / 防抖 watcher，
+ *   同时删掉了走不到的 expert 分支与本地 slice 逻辑）、ExpertListPanel 2152 → 2253
+ *   （新增 loadMinePage / loadMoreMine / onContentScroll，删掉了 refreshSilently）。
  * 拆分这些文件时同步删掉条目，避免预算变成"合法上限"。
+ *
+ * 2026-11-07 刷新续接根因修复（候选漏传「当前会话」、会话还没建好时不等待、
+ * 回填不再覆盖本地刚发的提问）后按实测值更新：EasyAgentPage 2050 → 2057、
+ * chatSession 1277 → 1321。
+ * 2026-11-07 「挂上实时流就收手」导致永久空白（attach 成功但事件没渲染）后改为
+ * 历史轮询兜底 + force 回填，按实测值更新：chatSession 1321 → 1364。
  */
 const LINE_BUDGET = {
   // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
   // 2026-11-05 合并 audit-improvements（注释停用 AiSidebar）后按实测值更新：2035 → 2036
-  [`${MOD}EasyAgentPage.vue`]: 2045,
-  [`${MOD}features/chat/components/ChatInput.vue`]: 3622,
+  [`${MOD}EasyAgentPage.vue`]: 2057,
+  [`${MOD}features/chat/components/ChatInput.vue`]: 3688,
   [`${MOD}features/chat/components/ChatMessage.vue`]: 2644,
   [`${MOD}features/chat/components/AiSidebar.vue`]: 1726,
-  [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2152,
-  [`${MOD}features/chat/mixins/chatSession.js`]: 1217,
+  [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2253,
+  [`${MOD}features/chat/mixins/chatSession.js`]: 1364,
   [`${MOD}features/connectors/components/ConnectorListPanel.vue`]: 1504,
   [`${MOD}features/skills/components/SkillListPanel.vue`]: 1260,
   [`${MOD}shared/preview/FilePreview.vue`]: 1164,
