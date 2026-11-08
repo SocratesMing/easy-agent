@@ -12,6 +12,7 @@
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +24,7 @@ import easy_agent.services.experts.runtime as expert_runtime
 from easy_agent.models.db import SessionModel
 from easy_agent.db.repositories import agent_runs as agent_runs_repo
 from easy_agent.services.streaming.runs import new_run_id, start_run
+from easy_agent.services.streaming.persistence import persist_partial
 
 
 async def _async_noop(*args, **kwargs):
@@ -117,7 +119,41 @@ def test_chat_stream_exception_marks_failed_and_emits_error(client, db, monkeypa
     assert run["lease_until"] == ""
 
 
-async def test_cancelled_stream_marks_run_cancelled(db, monkeypatch):
+def test_chat_error_frame_marks_failed_and_releases_lock(client, db, monkeypatch):
+    """编排器捕获异常并返回 error 帧时，正常耗尽不代表执行成功。"""
+    sid = "sess-run-error-frame"
+    _seed_session(db, sid)
+    _patch_agent(monkeypatch)
+
+    async def fake_stream(**kwargs):
+        yield 'data: {"type": "start"}\n\n'
+        proc = SimpleNamespace(
+            accumulated_response="已完成部分分析", accumulated_thinking="",
+            blocks=[{"type": "content", "content": "已完成部分分析", "order": 0}],
+            last_usage={"input_tokens": 100, "output_tokens": 10},
+            last_context_tokens=100, current_step=1,
+        )
+        persist_partial(proc, db=db, session_id=sid, sid=sid,
+                        start_time=time.time(), error="模型连接中断")
+        yield 'data: {"type": "error", "content": "模型连接中断"}\n\n'
+
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
+    resp = client.post("/agent/chat/stream", json={
+        "message": "hi", "session_id": sid, "message_id": "msg-error-frame",
+    })
+    assert resp.status_code == 200
+    run = agent_runs_repo.get_run(db, new_run_id(sid, "msg-error-frame"))
+    assert run["status"] == "failed"
+    assert run["error"] == "模型连接中断"
+    assert run["lease_until"] == ""
+    assert client.get("/agent/chat/stream/status", params={"session_id": sid}).json()["active"] is False
+    messages = client.get(f"/agent/sessions/{sid}/history").json()["messages"]
+    assert messages[-1]["content"] == "已完成部分分析"
+    assert messages[-1]["error"] == "模型连接中断"
+
+
+@pytest.mark.parametrize("swallow_cancel", [False, True])
+async def test_cancelled_stream_marks_run_cancelled(db, monkeypatch, swallow_cancel):
     sid = "sess-run-cancel"
     run_id = "run-cancel-1"
     assert start_run(db, run_id, sid, message_id="msg-cancel") is True
@@ -134,7 +170,13 @@ async def test_cancelled_stream_marks_run_cancelled(db, monkeypatch):
 
     async def fake_gen():
         started.set()
-        await asyncio.sleep(3600)
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            if not swallow_cancel:
+                raise
+            yield 'data: {"type":"error","content":"请求被取消"}\n\n'
+            return
         yield 'data: {"type": "done"}\n\n'  # pragma: no cover - 取消后不可达
 
     agen = chat_api._detached_event_stream(
@@ -144,8 +186,13 @@ async def test_cancelled_stream_marks_run_cancelled(db, monkeypatch):
     await asyncio.wait_for(started.wait(), timeout=5)
 
     bg_tasks[sid].cancel()
-    with pytest.raises(StopAsyncIteration):
-        await asyncio.wait_for(consumer, timeout=5)
+    if swallow_cancel:
+        assert "请求被取消" in await asyncio.wait_for(consumer, timeout=5)
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(agen.__anext__(), timeout=5)
+    else:
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(consumer, timeout=5)
 
     run = agent_runs_repo.get_run(db, run_id)
     assert run["status"] == "cancelled"

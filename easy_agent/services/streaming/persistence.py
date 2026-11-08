@@ -141,6 +141,7 @@ def persist_partial(
     start_time: float,
     with_approval: bool = False,
     raise_on_error: bool = False,
+    error: str = "",
 ) -> None:
     """保存「进行中」的 assistant 消息（取消 / 异常 / HITL 中断共用）。
 
@@ -150,6 +151,8 @@ def persist_partial(
         partial_msg = _partial_message_dict(
             proc, time.time() - start_time, with_approval=with_approval
         )
+        if error:
+            partial_msg["error"] = error
         _message_port(db).update_last_assistant_message(session_id, partial_msg)
     except Exception as e:
         if raise_on_error:

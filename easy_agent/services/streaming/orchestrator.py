@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass
 from typing import AsyncGenerator
 
+import httpx
 from langgraph.types import Command
 
 from easy_agent.agent import EasyAgent
@@ -101,12 +102,14 @@ except ImportError:  # pragma: no cover - 依赖版本兜底
 
 
 def friendly_error_message(exc: BaseException) -> str:
-    """超限异常换成可读文案，其余异常原样返回（保留类型与细节，便于排查）。"""
+    """超限和连接异常给出可读提示，空异常至少保留类型；原始堆栈仍记日志。"""
     if _ModelCallLimitExceededError is not None and isinstance(
         exc, _ModelCallLimitExceededError
     ):
         return LIMIT_EXCEEDED_MESSAGE
-    return str(exc)
+    if isinstance(exc, httpx.TransportError):
+        return "模型连接中断或超时，请稍后重试"
+    return str(exc).strip() or type(exc).__name__
 
 
 @dataclass
@@ -609,7 +612,8 @@ class StreamRun:
 
 
 async def _save_partial(
-    run: StreamRun, *, with_approval: bool = False, raise_on_error: bool = False
+    run: StreamRun, *, with_approval: bool = False, raise_on_error: bool = False,
+    error: str = "",
 ) -> None:
     """在线程里保存「进行中」的 assistant 消息（取消 / 异常兜底共用）。"""
     await run_blocking(
@@ -621,6 +625,7 @@ async def _save_partial(
         start_time=run.start_time,
         with_approval=with_approval,
         raise_on_error=raise_on_error,
+        error=error,
     )
 
 
@@ -655,13 +660,14 @@ async def _stream_cancelled_frames(run: StreamRun) -> AsyncGenerator[str, None]:
 async def _stream_error_frames(
     run: StreamRun, exc: BaseException
 ) -> AsyncGenerator[str, None]:
-    """异常兜底：chat 修正思考 / 工具状态，resume 保存部分回复，最后统一 error 帧。"""
+    """异常兜底：保存已生成内容和错误提示，最后统一下发 error 帧。"""
     proc = run.proc
+    error = f"处理失败: {friendly_error_message(exc)}"
     if run.mode == "resume":
         logger.error(f"[{run.sid}] HITL 恢复异常: {str(exc)}", exc_info=True)
         # 持久化已生成的部分回复（与取消路径一致），避免流式过程中已完成的
         # 思考/工具/正文在异常后丢失，导致历史会话中 HITL 之后的记录整体消失。
-        await _save_partial(run, with_approval=True)
+        await _save_partial(run, with_approval=True, error=error)
     else:
         logger.error(f"[{run.sid}] ❌ 聊天异常: {str(exc)}", exc_info=True)
         blocks = proc.blocks
@@ -681,7 +687,8 @@ async def _stream_error_frames(
                 )
                 blk["duration"] = 0
                 break
-    yield run.emitter.error(f"处理失败: {friendly_error_message(exc)}")
+        await _save_partial(run, error=error)
+    yield run.emitter.error(error)
 
 
 async def _run_stream(run: StreamRun, stream_input) -> AsyncGenerator[str, None]:

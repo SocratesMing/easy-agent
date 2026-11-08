@@ -30,6 +30,8 @@ def _sanitize_message_for_storage(db, message: dict) -> dict:
         sanitized["thinking_duration"] = message["thinking_duration"]
     if message.get("usage"):
         sanitized["usage"] = message["usage"]
+    if message.get("error"):
+        sanitized["error"] = str(message["error"])
     for key in ("knowledge_evidence", "knowledge_warnings"):
         if isinstance(message.get(key), list):
             sanitized[key] = message[key]

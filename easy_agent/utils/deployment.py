@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import socket
+from functools import lru_cache
 
 from easy_agent.bootstrap.env import env_int, env_str
 
@@ -48,8 +49,13 @@ def instance_name() -> str:
 
 
 def instance_owner() -> str:
-    """本进程持有跨副本锁（会话流锁等）时的身份：``主机名:进程号``。"""
-    return f"{socket.gethostname()}:{os.getpid()}"
+    """进程内稳定的锁身份；网络切换不能改变身份，fork 后按新 PID 生成。"""
+    return _owner_for_pid(os.getpid())
+
+
+@lru_cache(maxsize=16)
+def _owner_for_pid(pid: int) -> str:
+    return f"{socket.gethostname()}:{pid}"
 
 
 def is_valid_instance_name(name: str) -> bool:

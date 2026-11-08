@@ -2,6 +2,7 @@
 
 from easy_agent.db.database import Database
 from easy_agent.services.sessions import runtime as runtime
+from easy_agent.utils import deployment
 
 
 def _runtime(db):
@@ -34,3 +35,21 @@ def test_connectors_roundtrip(tmp_path):
     assert runtime.load_connectors(_runtime(db), "s1") is None
     runtime.save_connectors(_runtime(db), "s1", ["mysql", "web"])
     assert runtime.load_connectors(_runtime(db), "s1") == ("mysql", "web")
+
+
+def test_hostname_change_does_not_strand_stream_lock(tmp_path, monkeypatch):
+    db = Database({"type": "sqlite", "sqlite": {"path": str(tmp_path / "rt.db")}})
+    db.init_tables()
+    repo = _runtime(db)
+    deployment._owner_for_pid.cache_clear()
+    try:
+        monkeypatch.setattr(deployment.socket, "gethostname", lambda: "bogon")
+        owner = runtime.acquire_stream(repo, "s1")
+        monkeypatch.setattr(deployment.socket, "gethostname", lambda: "mac.local")
+        assert runtime.renew_stream(db, "s1") is True
+        assert repo.get_session_runtime("s1")["stream_owner"] == owner
+        runtime.release_stream(repo, "s1")
+        assert runtime.is_stream_active(repo, "s1") is False
+        runtime.acquire_stream(repo, "s1")
+    finally:
+        deployment._owner_for_pid.cache_clear()

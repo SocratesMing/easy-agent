@@ -15,6 +15,7 @@ import inspect
 import json
 import time
 
+import httpx
 import pytest
 
 from easy_agent.models.api import ChatRequest
@@ -187,8 +188,7 @@ async def test_chat_stream_error_uses_shared_fallback(monkeypatch):
     # FakeProc 默认 current_step=3；异常兜底沿用 proc 的当前步数（与合并前一致）
     assert events[-2]["step"] == 3
     assert events[-1]["content"] == "处理失败: boom"
-    # chat 的异常兜底不落库（与合并前一致），只修正内存状态
-    assert db.persisted == []
+    assert db.persisted[-1]["error"] == "处理失败: boom"
     proc = FakeProc.instances[0]
     assert proc.is_in_thinking is False
     tool_block = proc.blocks[-1]
@@ -196,6 +196,23 @@ async def test_chat_stream_error_uses_shared_fallback(monkeypatch):
     assert tool_block["success"] is False
     assert tool_block["result"] == "执行中断: boom"
     assert tool_block["duration"] == 0
+    assert db.persisted[-1]["blocks"] == proc.blocks
+
+
+async def test_chat_read_error_preserves_generated_content():
+    class ReadErrorGraph(FakeGraph):
+        async def astream(self, *args, **kwargs):
+            yield ("messages", [{"type": "content", "content": "已完成部分分析"}])
+            raise httpx.ReadError("")
+
+    db = FakeDB()
+    events = _events(await _frames(orchestrator.chat_stream_generator(
+        ChatRequest(message="hi"), db, _agent(ReadErrorGraph([])), "s1", "m1", "tester"
+    )))
+    partial = db.persisted[-1]
+    assert partial["content"] == "已完成部分分析"
+    assert partial["error"] == events[-1]["content"]
+    assert "模型连接中断" in partial["error"]
 
 
 async def test_resume_cancel_saves_partial_reply_with_approval():

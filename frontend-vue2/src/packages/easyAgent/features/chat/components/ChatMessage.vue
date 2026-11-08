@@ -191,9 +191,6 @@
 
         <MarkdownBody v-if="displayContent" class="message-text" :content="displayContent" :cite-map="citeNumberMap" />
 
-        <!-- 错误提示：显示 5 秒后自动消失 -->
-        <MessageError :error="message.error" />
-
         <!-- 生成的文件按钮 -->
         <div v-if="message.role === 'assistant' && message.generated_files && message.generated_files.length > 0" class="generated-files-btn-container">
           <button class="generated-files-btn" @click="$emit('view-generated-files')" title="查看生成的文件">
@@ -208,6 +205,8 @@
           </button>
         </div>
       </template>
+
+      <MessageError :error="message.error" />
       
       <KnowledgeEvidence v-if="message.role === 'assistant'" ref="knowledgeEvidence" :evidence="message.knowledge_evidence || []" :warnings="message.knowledge_warnings || []" :content="citationSourceText" />
 
@@ -1948,7 +1947,7 @@ export default {
 
 .message-text {
   background: transparent;
-  padding: 12px 16px;
+  padding: 12px var(--chat-message-content-inset, 16px);
   border-radius: 16px;
   font-size: 16px;
   line-height: 1.7;
