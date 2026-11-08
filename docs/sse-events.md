@@ -12,14 +12,16 @@
 | `content` | 正文增量 | `content`、`step` | chat / expert / knowledge |
 | `content_end` | 正文结束 | `content`（通常空） | chat |
 | `tool_call` | 完整工具调用 | `tool_name`、`tool_call_id`、`arguments`、`step` | chat / expert |
-| `tool_call_delta` | 工具参数流 | `tool_call_id`、`delta`、`step` | chat |
+| `tool_call_delta` | 工具参数流 | `tool_name`、`tool_call_id`、`arguments`（可解析的分片快照，非 `delta` 字符串）、`step` | chat / SDK 侧边栏 |
 | `tool_result` | 工具结果 | `tool_name`、`tool_call_id`、`result`、`success`、`duration`、`step` | chat / expert |
 | `todo_list` | 待办更新 | `todos`、`step` | chat |
 | `token_usage` | 用量更新 | `input_tokens` / `output_tokens` / `reasoning_tokens` / `context_tokens` | chat |
-| `knowledge_evidence` | 知识库引用 | `items` / `session_id` | knowledge |
+| `knowledge_evidence` | 知识库引用 | `evidence`、`warnings`（旧文档写的 `items` 仅为向后兼容的兼容字段） | knowledge / chat |
 | `approval_required` | HITL 中断 | `thread_id`、`action_requests`（全部待审批中断的操作，见下文）；恢复流另带 `blocks` | chat |
-| `done` | 正常结束 | `session_id`、`message_id`、`finish_reason` | 全部 |
+| `done` | 正常结束 | `session_id`、`elapsed_time`、`usage`、`blocks`；可选 `message_id` / `finish_reason` / `already_completed` | 全部 |
 | `error` | 失败/取消 | `content` | 全部 |
+
+`done` **不携带** `title` / `content`：正文从 `blocks`（或流内 `content` 增量）拼装，会话标题由服务端生成后在流结束时通过 `GET /agent/sessions` 回填；前端不应依赖 `done.title` 做本地即时更新。
 
 `token_usage` 与 `done.usage` 里的 `elapsed_time` / `step_count` 是**这条 assistant 消息**的累计值：
 审批续跑接着中断前的值往下算（等待审批的时间不计），与落库的 `usage` 一致。前端的会话合计 =
