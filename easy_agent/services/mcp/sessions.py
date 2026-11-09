@@ -68,7 +68,9 @@ _TRANSPORT_ALIASES = {
     "websocket": "websocket",
 }
 
-# stdio 子进程占用更明显，TTL 更短；HTTP 会话保留更久。
+# 会话空闲回收按传输类型取值：stdio 子进程占用更明显，TTL 更短；HTTP 会话保留更久。
+# 不提供环境变量覆盖；构造 MCPSessionManager 时显式传 idle_seconds 则对所有传输类型
+# 统一生效（测试/调用方使用）。
 _DEFAULT_IDLE_SECONDS = {
     "stdio": 300.0,
     "streamable_http": 600.0,
@@ -81,9 +83,6 @@ DEFAULT_CONNECT_TIMEOUT_SECONDS = 60.0
 DEFAULT_CLOSE_TIMEOUT_SECONDS = 10.0
 # 0 = disabled: keep the previous "transport controls its own timeout" semantics.
 DEFAULT_CALL_TIMEOUT_SECONDS = 0.0
-# 会话空闲回收固定为 300 秒（与原模板默认一致），不再提供环境变量覆盖；
-# 显式传 idle_seconds 仍可覆盖（测试/调用方使用）。
-DEFAULT_IDLE_OVERRIDE_SECONDS = 300.0
 
 _SESSION_ERROR_MARKERS = (
     "connection closed",
@@ -414,9 +413,8 @@ class MCPSessionManager:
         close_timeout: float | None = None,
         call_timeout: float | None = None,
     ) -> None:
-        self._idle_override = (
-            idle_seconds if idle_seconds is not None else DEFAULT_IDLE_OVERRIDE_SECONDS
-        )
+        # None = 按传输类型取 _DEFAULT_IDLE_SECONDS（stdio 300 秒，HTTP 类 600 秒）
+        self._idle_override = idle_seconds
         self.connect_timeout = (
             connect_timeout
             if connect_timeout is not None
