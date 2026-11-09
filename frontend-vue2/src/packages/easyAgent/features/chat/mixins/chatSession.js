@@ -478,7 +478,7 @@ export default {
     saveCurrentSessionState() {
       if (!this.loadedSessionId) return
       this.sessionStates[this.loadedSessionId] = {
-        messages: JSON.parse(JSON.stringify(this.messages)),
+        messages: this.messages.slice(), // 不深拷贝：chunk handler 持有正文块引用，深拷贝后切回正文冻结
         isStreaming: this.isStreaming,
         sessionUsage: { ...this.sessionUsage },
         sessionDuration: this.sessionDuration,
