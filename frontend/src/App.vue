@@ -760,7 +760,6 @@ function buildStreamState() {
     currentTodos,
     loadedSessionId,
     attachedStreamingSessions,
-    sessions,
     pendingApproval,
     error,
     markStreaming,
