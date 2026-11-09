@@ -69,7 +69,8 @@ npm run build   # 产物输出到 dist/
 ```
 
 开发时前端所有请求走相对路径 `/agent/...`，由 `vue.config.js` 的 `devServer.proxy`
-转发到对应环境后端（地址见 `PROXY_TARGETS` 固定表）。
+转发到对应环境后端（地址见 `PROXY_TARGETS` 固定表；连本机后端用
+`AGENT_PROXY_TARGET=http://localhost:8080 npm run dev` 覆盖，不必改表）。
 生产环境需与后端**同源**部署（后端托管 `dist/`，或 Nginx 反代 `/agent`），
 详见 `docs/配置说明.md`。
 

@@ -6,6 +6,8 @@ const { defineConfig } = require("@vue/cli-service");
 //   · 生产：后端同源托管 dist/（或由 Nginx 反代 /agent），相对路径直接命中后端。
 //
 // 代码内固定的代理目标表：按 AGENT_ENV / 平台选择，不再读取 VUE_APP_* 变量。
+// 临时连别的后端（如本机 http://localhost:8080）时设 AGENT_PROXY_TARGET 覆盖，不必改这张表；
+// 它只在 dev server 进程里读取，不会进入构建产物。
 const PROXY_TARGETS = {
   dev: "http://183.196.130.56:22333",
   test: "http://192.168.1.100:8007",
@@ -16,7 +18,10 @@ const PROXY_TARGETS = {
 const AGENT_ENV =
   process.env.AGENT_ENV ||
   (process.platform === "win32" ? "win" : "dev");
-const PROXY_TARGET = PROXY_TARGETS[AGENT_ENV] || PROXY_TARGETS.dev;
+const PROXY_TARGET =
+  (process.env.AGENT_PROXY_TARGET || "").trim() ||
+  PROXY_TARGETS[AGENT_ENV] ||
+  PROXY_TARGETS.dev;
 
 // AI 侧边栏 SDK 构建（scripts/build-sdk.mjs 设置）：lib 模式。
 const IS_SDK_BUILD = process.env.EASY_SDK_BUILD === "1";

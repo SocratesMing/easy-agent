@@ -30,11 +30,12 @@ pytest tests/test_basic.py::TestConfig -v
 uv pip install -e . --group dev
 
 # Vue2 baseline (currently served by easy-web)
-cd frontend-vue2 && npm run dev      # dev server :5173, /agent proxies to :8080
+cd frontend-vue2 && npm run dev      # dev server :5173, /agent → PROXY_TARGETS[AGENT_ENV] in vue.config.js
+AGENT_PROXY_TARGET=http://localhost:8080 npm run dev   # (in frontend-vue2/) proxy to a local backend instead
 cd frontend-vue2 && npm run build    # output frontend-vue2/dist/
 
 # Vue3 baseline (Vite, maintained in parallel)
-cd frontend && npm run dev
+cd frontend && npm run dev     # Vite dev server, /agent → PROXY_TARGETS[mode] in vite.config.js (dev: localhost:8080); AGENT_PROXY_TARGET overrides
 cd frontend && npm run build
 ```
 
