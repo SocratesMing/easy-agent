@@ -3,12 +3,11 @@
 from importlib.metadata import version
 
 from deepagents.middleware.summarization import SummarizationMiddleware
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, get_buffer_string, trim_messages
+from langchain_core.messages import HumanMessage, SystemMessage, get_buffer_string, trim_messages
 
 from easy_agent.agent.model import resolve_context_length
 from easy_agent.agent.summarization import summarization_settings
 from easy_agent.agent.token_counting import count_context_tokens
-from easy_agent.agent.turn_context import _strip_reasoning
 
 
 def _bounded_tool_history(messages: list, budget: int) -> list:
@@ -34,8 +33,7 @@ def _context_view(agent, messages: list, values: dict, *, backend=None):
         **settings,
     )
     # 不渲染旧 turn_context；历史思考与下一轮请求保持相同口径。
-    history = [_strip_reasoning(m) if isinstance(m, AIMessage) else m for m in messages]
-    effective = middleware._apply_event_to_messages(history, values.get("_summarization_event"))
+    effective = middleware._apply_event_to_messages(messages, values.get("_summarization_event"))
     return settings, middleware, effective
 
 

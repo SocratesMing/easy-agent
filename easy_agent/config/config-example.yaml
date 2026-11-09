@@ -4,33 +4,17 @@
 # 校验：python scripts/quality/check_config_schema.py --check
 
 # ===== LLM =====
-model: "${ACTIVE_MODEL:-deepseek}"   # 当前模型：deepseek | qwen | ark
+model: "${ACTIVE_MODEL:-deepseek}"   # 当前模型：deepseek
 
 models:
   deepseek:
     provider: "deepseek"
-    protocol: "openai"                # openai | anthropic
+    protocol: "openai"                # 目前只支持 openai（OpenAI 兼容接口）
     model: "${DEEPSEEK_MODEL:-deepseek-v4-pro-0813}"
     api_key: "${DEEPSEEK_API_KEY}"
     api_base: "${DEEPSEEK_API_BASE:-https://llm-tyyt06c5mq54ngq7.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}"
     context_length: ${DEEPSEEK_CONTEXT_LENGTH:-131072}
     headers: {}                       # 可选透传请求头，值支持 {session_id} 占位符
-
-  qwen:
-    provider: "qwen"
-    protocol: "openai"                # openai | anthropic
-    model: "${QWEN_MODEL:-qwen-plus}"
-    api_key: "${QWEN_API_KEY}"
-    api_base: "${QWEN_API_BASE:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
-    context_length: ${QWEN_CONTEXT_LENGTH:-131072}
-
-  ark:
-    provider: "ark"
-    protocol: "openai"                # openai | anthropic
-    model: "${ARK_MODEL:-ark-code-latest}"
-    api_key: "${ARK_API_KEY}"
-    api_base: "https://ark.cn-beijing.volces.com/api/coding/v3"
-    context_length: ${ARK_CONTEXT_LENGTH:-200000}
 
 # ===== 重试 =====
 retry:
@@ -54,6 +38,7 @@ tool_progress_stop_limit: ${TOOL_PROGRESS_STOP_LIMIT:-12}        # MCP 同工具
 tool_progress_empty_hard_limit: ${TOOL_PROGRESS_EMPTY_HARD_LIMIT:-9}  # MCP 同工具连续空结果到几次无条件止损（兜「先查到 A 又反复查 B」的场景）
 workspace_dir: "${WORKSPACE_DIR:-/qts/workspace}" # 工作区根目录，实际按用户/会话隔离
 memories_dir: "${MEMORIES_DIR:-/qts/memories}"    # 长期记忆根目录，实际 {memories_dir}/{username}/AGENTS.md
+memory_model: ""                                  # 整理记忆用的模型（models 里的键），留空 = 用会话的对话模型；建议配一个便宜、快的
 sessions_dir: "${SESSIONS_DIR:-/qts/sessions}"    # 会话数据目录，实际 {sessions_dir}/{username}/{session_id}.json
 prompt_path: "prompts"                            # 提示词目录（相对配置目录）
 idle_logout_minutes: ${IDLE_LOGOUT_MINUTES:-0}    # 前端空闲登出分钟数，0 = 不登出
@@ -172,7 +157,7 @@ hitl:
   # 执行这些工具前要人工审批；不写 tools 时就是下面这份默认名单
   tools:
     - execute                    # 只拦删除类命令（rm / unlink / shred 等），删目录直接拒绝
-    - delete                     # 删除文件
+    - delete                     # 删除文件或目录（删目录只走这里，用户批准后执行）
     - save_expert                # 新建 / 修改专家
     - create_scheduled_task      # 创建定时任务
     - access_knowledge_original  # 只拦 action=materialize（把知识库原文取到工作区）
@@ -247,7 +232,9 @@ knowledge:
       - xls
       - xlsx
       - csv
-    max_documents_per_query: 500
+    max_documents_per_query: 0
+    # 单个知识库可存储的文档总数上限（上传前拦截）。0 = 不限制。
+    max_documents_per_base: 0
     # 解析绝对超时（秒）：0 = 不限制；计时从真正开始解析算起，不含上游排队
     parse_timeout_seconds: ${KNOWLEDGE_PARSE_TIMEOUT_SECONDS:-0}
   # 研报接入：文档 SQL 增量同步（enabled=true 即启用；mysql 连接/表名按需填写）

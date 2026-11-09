@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 import easy_agent.app as app_mod
+from easy_agent.bootstrap.env import PLACEHOLDER_PREFIX
 from easy_agent.utils.auth import (
     _load_or_create_secret,
     validate_production_jwt_secret,
@@ -65,6 +66,28 @@ def test_dev_secret_loader_still_uses_file(monkeypatch, tmp_path):
 
     assert secret_file.exists()
     assert first == second
+
+
+def test_prod_placeholder_secret_raises():
+    """模板哨兵值不能冒充真实 JWT 密钥。"""
+    with pytest.raises(RuntimeError, match="EASY_JWT_SECRET"):
+        validate_production_jwt_secret(
+            env="prod", secret=PLACEHOLDER_PREFIX + "EASY_JWT_SECRET"
+        )
+
+
+def test_dev_placeholder_secret_falls_back_to_file(monkeypatch, tmp_path):
+    """dev/test 的哨兵值走随机文件密钥，而不是把哨兵当密钥。"""
+    secret_file = tmp_path / ".jwt_secret"
+    monkeypatch.setenv("AGENT_ENV", "dev")
+    monkeypatch.setenv("EASY_JWT_SECRET", PLACEHOLDER_PREFIX + "EASY_JWT_SECRET")
+
+    first = _load_or_create_secret(secret_file)
+    second = _load_or_create_secret(secret_file)
+
+    assert secret_file.exists()
+    assert first == second
+    assert not first.startswith(PLACEHOLDER_PREFIX)
 
 
 async def test_lifespan_prod_fails_before_serving(monkeypatch):

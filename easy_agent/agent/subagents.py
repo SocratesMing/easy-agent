@@ -119,35 +119,37 @@ def resolve_subagent_tools(specs, available_tools) -> list[dict]:
 
 
 def apply_skill_gated_tools(specs, gated_tools, skills_paths, backend) -> list[dict]:
-    """把子代理用到、但属于「技能门控」的工具摘出来，交给子代理自己的 SkillsMiddleware。
+    """给子代理挂项目的技能中间件，并把它用到的「技能门控」工具摘出来交给这份中间件。
 
-    官方语义：``metadata.include_tools`` 里的工具在模型读到（或 pin 了）声明它的技能之前
-    不可见；而自定义子代理**不继承**主代理的 ``middleware``，所以每个子代理要各挂一份。
-    未声明这些工具的子代理不受影响（不会因为门控而多出工具）。
+    - 带 ``skills`` 的子代理都挂一份 ``EasySkillsMiddleware``（同名替换框架默认项），技能段
+      与主代理同一份项目模板：框架默认段会引导往只读的 ``/skills/builtin/`` 里建技能。
+      技能源沿用 spec 自己的 ``skills``，与框架默认项看到的技能一致。
+    - 官方语义：``metadata.include_tools`` 里的工具在模型读到（或 pin 了）声明它的技能之前
+      不可见；而自定义子代理**不继承**主代理的 ``middleware``，所以每个子代理要各挂一份。
+      未声明这些工具的子代理不受影响（不会因为门控而多出工具）；没有技能源时不做门控。
     """
-    from deepagents.middleware.skills import SkillsMiddleware
-
+    # 函数内导入：测试按模块属性替换 EasySkillsMiddleware 记录调用参数
+    from easy_agent.agent import skills_middleware
 
     gated = {getattr(tool, "name", ""): tool for tool in gated_tools or ()}
     result: list[dict] = []
     for spec in specs or ():
         item = dict(spec)
-        if "tools" not in item:
-            result.append(item)
-            continue
-        picked = [tool for tool in item["tools"] if getattr(tool, "name", "") in gated]
-        if not picked or not skills_paths:
-            result.append(item)
-            continue
-        item["tools"] = [tool for tool in item["tools"] if getattr(tool, "name", "") not in gated]
-        item["middleware"] = [
-            *item.get("middleware", []),
-            SkillsMiddleware(
-                backend=backend,
-                sources=list(skills_paths),
-                # 技能里写的可能是 MCP 原名（D4），按「精确 → 后缀唯一」解析
-                tools=skill_tool_resolver(picked),
-            ),
-        ]
+        picked = []
+        if "tools" in item and skills_paths:
+            picked = [tool for tool in item["tools"] if getattr(tool, "name", "") in gated]
+        if picked:
+            item["tools"] = [tool for tool in item["tools"] if getattr(tool, "name", "") not in gated]
+        sources = list(skills_paths) if picked else list(item.get("skills") or ())
+        if sources:
+            item["middleware"] = [
+                *item.get("middleware", []),
+                skills_middleware.EasySkillsMiddleware(
+                    backend=backend,
+                    sources=sources,
+                    # 技能里写的可能是 MCP 原名（D4），按「精确 → 后缀唯一」解析
+                    tools=skill_tool_resolver(picked) if picked else None,
+                ),
+            ]
         result.append(item)
     return result

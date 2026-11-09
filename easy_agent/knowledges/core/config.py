@@ -27,7 +27,7 @@ import yaml
 from pydantic import BaseModel, Field, SecretStr, ValidationError, model_validator
 
 from easy_agent.bootstrap.config import Config
-from easy_agent.bootstrap.env import env_str
+from easy_agent.bootstrap.env import env_str, is_unset_placeholder
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,8 @@ class LimitsConfig(BaseModel):
         default_factory=lambda: ["pdf", "doc", "docx", "txt", "md", "xls", "xlsx", "csv"]
     )
     max_documents_per_query: int = Field(default=500, gt=0)
+    # 单个知识库可存储的文档总数上限（上传前拦截）。0 = 不限制。
+    max_documents_per_base: int = Field(default=0, ge=0)
     # 解析绝对超时秒数；0 = 不限制（批量同步场景推荐）。
     # 计时起点为 parse_started_at（首次观察到上游 RUNNING），不含排队时间；
     # 超时即失败终态，暂停/恢复/重试会清空旧计时重新开始。
@@ -224,18 +226,16 @@ class KnowledgeConfig(BaseModel):
             limits_section["parse_timeout_seconds"] = timeout_env
         payload = {
             "enabled": section.get("enabled", _env_bool("KNOWLEDGE_ENABLED", False)),
-            "base_url": section.get("base_url") or os.environ.get("RAGFLOW_BASE_URL") or "",
-            "api_key": section.get("api_key") or os.environ.get("RAGFLOW_API_KEY") or "",
+            "base_url": section.get("base_url") or _env_fallback("RAGFLOW_BASE_URL"),
+            "api_key": section.get("api_key") or _env_fallback("RAGFLOW_API_KEY"),
             "shared_dataset_id": str(
                 section.get("shared_dataset_id")
-                or os.environ.get("RAGFLOW_SHARED_DATASET_ID")
-                or ""
+                or _env_fallback("RAGFLOW_SHARED_DATASET_ID")
             ),
             "embedding": {
                 "model": str(
                     _as_mapping(section.get("embedding")).get("model")
-                    or os.environ.get("RAGFLOW_EMBEDDING_MODEL")
-                    or ""
+                    or _env_fallback("RAGFLOW_EMBEDDING_MODEL")
                 )
             },
             "audit": _as_mapping(section.get("audit")),
@@ -277,6 +277,12 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw is None or raw.strip() == "":
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_fallback(name: str) -> str:
+    """YAML 段之外的环境变量兜底：哨兵值视作未配置，避免占位值成为真实凭据。"""
+    raw = env_str(name, strip=False)
+    return "" if is_unset_placeholder(raw) else raw
 
 
 def _parse_env_scalar(value: str) -> object:

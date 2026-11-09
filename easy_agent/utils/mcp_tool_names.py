@@ -3,8 +3,8 @@
 背景：多个 MCP server 暴露同名工具时，原名会让模型/审计无法区分来源，冲突只能
 静默丢弃（见 ``docs/design/2026-10-20-d4-mcp-tool-naming.md``）。
 
-灰度开关：``EASY_MCP_TOOL_PREFIX``，默认 **off**，此模块的命名函数只有在开关打开时
-才会被 ``services/mcp/tools.py`` 使用；关闭时行为与旧版完全一致。
+命名开关固定在代码内（默认 **off**），此模块的命名函数只有在开启时才会被
+``services/mcp/tools.py`` 使用；关闭时行为与旧版完全一致。
 
 命名规则（稳定、可回退）：
 
@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -29,14 +28,13 @@ _HASH_CHARS = 6
 _ILLEGAL = re.compile(r"[^A-Za-z0-9_-]")
 _SEPARATOR = "__"
 
-_PREFIX_ENV = "EASY_MCP_TOOL_PREFIX"
-_TRUTHY = {"1", "true", "yes", "on"}
+# 固定的命名开关：默认关闭；需要开启时由调用方/测试显式设置该常量。
+PREFIX_ENABLED = False
 
 
-def prefix_enabled(environ: Mapping[str, str] | None = None) -> bool:
-    """开关是否打开（默认关闭，灰度期显式开启）。"""
-    env = os.environ if environ is None else environ
-    return str(env.get(_PREFIX_ENV, "")).strip().lower() in _TRUTHY
+def prefix_enabled() -> bool:
+    """命名开关是否打开（默认关闭，行为与旧版一致）。"""
+    return PREFIX_ENABLED
 
 
 def _hash_suffix(value: str) -> str:

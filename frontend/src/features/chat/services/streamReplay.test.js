@@ -6,7 +6,7 @@ function harness(resume = false) {
   const vm={
     $:{uid:1},
     messages:[{id:'a1',role:'assistant',content:resume?'审批前内容':'',blocks:resume?[{type:'content',content:'审批前内容',step:1,order:1}]:[],loading:true}],
-    currentSessionId:'s1',sessionUsage:{input_tokens:10},sessionDuration:10,iterationCount:1,currentTodos:[],sessionStates:{},sessions:[],attachedStreamingSessions:{},
+    currentSessionId:'s1',loadedSessionId:'s1',sessionUsage:{input_tokens:10},sessionDuration:10,iterationCount:1,currentTodos:[],sessionStates:{},sessions:[],attachedStreamingSessions:{},
     $set:(obj,k,v)=>{obj[k]=v}, markStreaming:()=>{},loadSessions:()=>{},runInSession:(_sid,_ctx,fn)=>fn(),error:null,
   }
   const ctx={assistantMsgId:'a1',streamSessionId:'s1',isResume:resume,initialBlockOrder:resume?1:0,preStreamDuration:10,preStreamIterationCount:1}
@@ -19,6 +19,8 @@ for(const resume of [false,true]) test('从头回放重建内容和用量，不�
   for(const e of events)onChunk(e)
   const expected=JSON.stringify(vm.messages)
   const duration=vm.sessionDuration, steps=vm.iterationCount
+  assert.equal(duration,12)
+  assert.equal(steps,3)
   for(let n=0;n<2;n++){
     onChunk({type:'stream_replay'})
     for(const e of events)onChunk(e)

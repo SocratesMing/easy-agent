@@ -1,4 +1,4 @@
-import request, { requestBlob, requestText } from '../utils/request.js'
+import request, { requestBlob } from '../utils/request.js'
 
 export async function uploadFile(sessionId, file, onProgress, signal) {
   const formData = new FormData()
@@ -35,20 +35,6 @@ export async function uploadFile(sessionId, file, onProgress, signal) {
   }
 }
 
-export async function getSessionFiles(sessionId) {
-  return request(
-    { url: `/agent/sessions/${sessionId}/files`, method: 'get' },
-    '获取文件列表失败'
-  )
-}
-
-export async function getAllFiles() {
-  return request(
-    { url: '/agent/sessions/files/all', method: 'get' },
-    '获取所有文件失败'
-  )
-}
-
 export async function deleteFile(sessionId, file) {
   // 只有后端 session_files 的数字主键才可删；字符串 id 会被 FastAPI int 校验拒绝（422）。
   const fileId = Number(file && file.id)
@@ -83,22 +69,6 @@ export async function getWorkspaceTree(path = '', sessionId = null) {
     { url: '/agent/files/workspace/tree', method: 'get', params },
     '获取工作区文件树失败'
   )
-}
-
-export async function getFileContent(filePath) {
-  const text = await requestText(
-    {
-      url: '/agent/files/content',
-      method: 'get',
-      params: { file_path: filePath },
-    },
-    '获取文件内容失败'
-  )
-  try {
-    return JSON.parse(text)
-  } catch (error) {
-    return text
-  }
 }
 
 export async function downloadFile(filePath, fileName) {

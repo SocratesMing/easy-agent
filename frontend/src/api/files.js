@@ -67,26 +67,6 @@ export async function uploadFile(sessionId, file, onProgress, xhrHolder) {
   })
 }
 
-export async function getSessionFiles(sessionId) {
-  const response = await authFetch(`${API_BASE_URL}/agent/sessions/${sessionId}/files`)
-
-  if (!response.ok) {
-    throw new Error('获取文件列表失败')
-  }
-
-  return await response.json()
-}
-
-export async function getAllFiles() {
-  const response = await authFetch(`${API_BASE_URL}/agent/sessions/files/all`)
-
-  if (!response.ok) {
-    throw new Error('获取所有文件失败')
-  }
-
-  return await response.json()
-}
-
 export async function deleteFile(sessionId, file) {
   // 后端只提供按文件记录 id 删除的接口（DELETE /agent/files/{id}）；
   // 没有 id 的历史消息/未落库文件只做本地移除，避免请求落到 SPA catch-all 得到 405。
@@ -139,21 +119,6 @@ export async function getWorkspaceTree(path = '', sessionId = null) {
   }
 
   return await response.json()
-}
-
-export async function getFileContent(filePath) {
-  const response = await authFetch(`${API_BASE_URL}/agent/files/content?file_path=${encodeURIComponent(filePath)}`)
-
-  if (!response.ok) {
-    throw new Error('获取文件内容失败')
-  }
-
-  const text = await response.text()
-  try {
-    return JSON.parse(text)
-  } catch {
-    return text
-  }
 }
 
 export async function downloadFile(filePath, fileName) {

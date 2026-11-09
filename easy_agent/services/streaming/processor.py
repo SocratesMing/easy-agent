@@ -98,6 +98,25 @@ def _is_reemitted_reasoning(rc: str, accumulated: str) -> bool:
     return False
 
 
+def describe_cache_usage(cache_usage) -> str:
+    """把本轮各次模型调用的 (输入 token, 命中缓存 token) 写成一句日志；没有数据时返回空串。
+
+    看「首次调用」：每轮第一次调用的系统提示词里刚换上新记忆，若记忆变化让前缀缓存失效，
+    这一次只能命中系统提示词靠前的部分，整段历史都按未命中计费。同一轮后面的调用（工具
+    循环）系统提示词不变，命中率应接近 100%。服务端不返回缓存字段时全程为 0。
+    """
+    calls = [(int(inp), int(hit)) for inp, hit in (cache_usage or ()) if inp]
+    if not calls:
+        return ""
+    first_in, first_hit = calls[0]
+    total_in = sum(inp for inp, _ in calls)
+    total_hit = sum(hit for _, hit in calls)
+    return (
+        f"首次调用缓存命中 {first_hit}/{first_in} ({first_hit / first_in * 100:.0f}%) | "
+        f"全轮 {total_hit}/{total_in} ({total_hit / total_in * 100:.0f}%) | 调用 {len(calls)} 次"
+    )
+
+
 class StreamProcessor:
     def __init__(self, *, sid: str = "", current_step: int = 0,
                  blocks: list | None = None, db=None, session_id: str | None = None,
@@ -142,13 +161,20 @@ class StreamProcessor:
         self._step_advanced_this_turn = False
         self._todo_emitted_for: set[str] = set()
         self._last_token_usage_time = 0.0
+        # 上一次下发 token_usage 所属的 step。step 变化即回合边界，必须强制下发一帧，
+        # 否则两次边界事件间隔 < 0.3s 时会被节流吞掉，前端「会话信息」就会丢掉整个 step
+        # （表现为只在 done 时跳一次值）。
+        self._last_token_usage_step = 0
         # 每步统计：在 step 边界（_reset_step_stats）清零，用于「stepN 结束」汇总行。
         self._step_thinking_len = 0
         self._step_content_len = 0
         self._step_tool_count = 0
         self._step_usage = {
-            "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0}
+            "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0, "cached_tokens": 0}
         self._step_end_logged: set = set()
+        # 本轮每次模型调用的 (输入 token, 其中命中前缀缓存的 token)，只用于日志
+        # （describe_cache_usage）：核对「记忆每轮改写会不会让历史前缀缓存失效」。
+        self.cache_usage: list[tuple[int, int]] = []
 
         # 累计思考耗时：同一 turn 内思考被分段（如 思考->工具调用->继续思考）时，
         # 保存上一段已结束的 duration，使该 turn 最终"用时"为各段之和。
@@ -171,6 +197,21 @@ class StreamProcessor:
         # 仅在 messages 模式解析大参数工具（见 STREAM_ARG_TOOLS）时使用，
         # 每个 model turn 结束（updates 的完整 AIMessage 到达）时清空。
         self._arg_stream: dict = {}
+
+        # ── 诊断采集（只读，供收尾日志判定「模型是否静默截断」）──────────────
+        # 这些字段不参与事件产出与状态机，仅用于回答「这一轮模型到底怎么结束的」。
+        # 见 orchestrator._log_stream_diagnostics。
+        self.last_finish_reason: str | None = None
+        self.tool_call_count = 0
+        self.invalid_tool_call_count = 0
+        self.last_turn_tool_call_count = 0
+        self.last_turn_invalid_tool_call_count = 0
+        # 最后一轮 tool_calls 参数的序列化长度：判断「output token 到底落到了哪里」。
+        # 注意 LangChain 用 parse_partial_json 容错解析，**被砍断的参数多会被补成
+        # 合法但缺字段的 tool_call**（不进 invalid_tool_calls），因此只靠
+        # invalid 计数抓不到这类截断，必须同时看参数长度。
+        self.last_turn_tool_args_len = 0
+        self.invalid_tool_call_sample = ""
         # 已跳过的中间件内部模型调用来源（如 summarization），每种只记一次日志。
         self._internal_sources_skipped: set[str] = set()
 
@@ -244,6 +285,7 @@ class StreamProcessor:
 
     def _on_ai_message(self, m: AIMessage) -> list[dict]:
         events = []
+        self._collect_turn_diagnostics(m)
         # Each model turn = one step (unless thinking already advanced it).
         # NOTE: do NOT reset _step_advanced_this_turn here -- the turn boundary
         # is marked by the subsequent ToolMessage (see _on_tool_message). Resetting
@@ -286,6 +328,59 @@ class StreamProcessor:
         self.consume_usage_metadata(m)
         events.extend(self._emit_token_usage())
         return events
+
+    def _collect_turn_diagnostics(self, m: AIMessage) -> None:
+        """采集「这一轮模型是怎么结束的」（纯读，不影响事件与状态机）。
+
+        用户侧的典型故障是「思考/正文吐了一半就没有了，工具也没执行、界面也没报错」。
+        成因分两类，都要能看到：
+
+        * 参数**根本不是 JSON**（如以裸文本开头）→ 进 ``invalid_tool_calls``，
+          既不下发 tool_call 事件、也不进 tools 节点、更不抛异常；
+        * 参数是 JSON 但被砍断 → LangChain 用 ``parse_partial_json`` 补成「合法但
+          缺字段」的 ``tool_calls``，工具会带着残缺参数执行（或缺参数直接报错）。
+          这类截断只能靠「output token 与参数长度的偏离」发现，故一并记下
+          ``last_turn_tool_args_len``。
+
+        这里只记计数与样本，由收尾日志统一打印（见
+        ``orchestrator._log_stream_diagnostics``）。
+        """
+        metadata = getattr(m, "response_metadata", None) or {}
+        # OpenAI 兼容网关用 finish_reason，Anthropic 风格用 stop_reason，二者取其一。
+        reason = metadata.get("finish_reason") or metadata.get("stop_reason")
+        if reason:
+            self.last_finish_reason = str(reason)
+        valid = getattr(m, "tool_calls", None) or []
+        invalid = getattr(m, "invalid_tool_calls", None) or []
+        self.tool_call_count += len(valid)
+        self.invalid_tool_call_count += len(invalid)
+        self.last_turn_tool_call_count = len(valid)
+        self.last_turn_invalid_tool_call_count = len(invalid)
+        self.last_turn_tool_args_len = sum(
+            len(_fmt_tool_args(tc.get("args"))) for tc in valid
+        )
+        if invalid:
+            last = invalid[-1]
+            name = str(last.get("name") or "")
+            args = last.get("args")
+            detail = args if isinstance(args, str) else _fmt_tool_args(args)
+            error = str(last.get("error") or "")
+            self.invalid_tool_call_sample = _truncate(
+                f"name={name or '<未命名>'} | error={error} | args={detail}", 200
+            )
+
+    def pending_arg_stream_names(self) -> list[str]:
+        """参数分片仍在累积、却始终没等到完整 AIMessage 的工具（诊断用，纯读）。
+
+        ``_arg_stream`` 每次完整 AIMessage 到达都会清空；流结束时仍有残留，说明
+        这些工具的参数分片被切断（模型停在中途 / 连接断开），是「静默截断」的
+        直接证据。
+        """
+        return [
+            f"{state.get('name') or '?'}:{len(state.get('raw') or '')}字符"
+            for state in self._arg_stream.values()
+            if state.get("raw")
+        ]
 
     def _on_tool_message(self, m: ToolMessage) -> list[dict]:
         # A tool result marks the end of a model turn: close any thinking phase
@@ -573,9 +668,12 @@ class StreamProcessor:
 
     def _emit_token_usage(self) -> list[dict]:
         now = time.time()
-        if now - self._last_token_usage_time < 0.3:
+        step = self.current_step
+        # 节流只用于同一步内的重复下发；step 边界一律下发，保证「会话信息」每个 step 都刷新一次。
+        if step == self._last_token_usage_step and now - self._last_token_usage_time < 0.3:
             return []
         self._last_token_usage_time = now
+        self._last_token_usage_step = step
         # 下发"最近一次模型调用"的用量（不累加）
         return [{"type": SSEEvent.TOKEN_USAGE, **self._usage_payload(now - self.start_time)}]
 
@@ -617,6 +715,13 @@ class StreamProcessor:
         # 单独累计用于展示（不重复计数）。
         reasoning = (um.get("output_token_details") or {}).get("reasoning", 0) or 0
         self._step_usage["reasoning_tokens"] += reasoning
+        # 命中前缀缓存的输入 token：LangChain 把 prompt_tokens_details.cached_tokens 映射到
+        # input_token_details.cache_read（DeepSeek 原生字段见 agent/model.py）。只记日志，
+        # 不进 token_usage 事件与落库字段。
+        cached = (um.get("input_token_details") or {}).get("cache_read", 0) or 0
+        self._step_usage["cached_tokens"] += cached
+        if um.get("input_tokens", 0) > 0:
+            self.cache_usage.append((um["input_tokens"], cached))
         # 覆盖式记录"最近一次调用"，前端与持久化按类型展示用的就是它
         self.last_usage = {
             "input_tokens": um.get("input_tokens", 0),
@@ -632,7 +737,7 @@ class StreamProcessor:
         self._step_content_len = 0
         self._step_tool_count = 0
         self._step_usage = {
-            "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0}
+            "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0, "cached_tokens": 0}
 
     def _log_step_end(self, step: int) -> None:
         """打印某一步的汇总日志（思考/正文/工具/token），每行以 step 开头。
@@ -667,11 +772,13 @@ class StreamProcessor:
             _ctx_str = f"{ctx}/{self.context_length:,} ({_ctx_pct:.1f}%)"
         else:
             _ctx_str = f"{ctx}"
+        cached = self._step_usage.get("cached_tokens", 0)
         logger.info(
             "[%s] step%d 结束 | 思考:%d字符 | 正文:%d字符 | 工具:%d | "
-            "Token(in/out/total):%d/%d/%d | 思考Token:%d | 上下文:%s",
+            "Token(in/out/total):%d/%d/%d | 缓存命中:%d(%.0f%%) | 思考Token:%d | 上下文:%s",
             self.sid, step, self._step_thinking_len, self._step_content_len,
-            self._step_tool_count, inp, out, tot, rea, _ctx_str,
+            self._step_tool_count, inp, out, tot, cached,
+            (cached / inp * 100) if inp else 0.0, rea, _ctx_str,
         )
 
     def _sse_blocks(self) -> list[dict]:

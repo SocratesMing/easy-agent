@@ -21,7 +21,15 @@ def run_web():
     parser.add_argument("--port", type=int, default=8080, help="监听端口")
     parser.add_argument("--reload", action="store_true", help="启用热重载（开发模式）")
     parser.add_argument("--workers", type=int, default=1, help="工作进程数")
+    parser.add_argument(
+        "--log-level",
+        choices=("debug", "info", "warning", "error"),
+        help="日志级别（默认 info，等同环境变量 EASY_LOG_LEVEL）；debug 时大模型请求上下文与返回报文写进 proc 日志",
+    )
     args = parser.parse_args()
+    if args.log_level:
+        # 先于 .env 加载写入：命令行优先于 .env 文件；--reload / 多 worker 的子进程也会继承
+        os.environ["EASY_LOG_LEVEL"] = args.log_level
 
     os.chdir(PROJECT_ROOT)
 

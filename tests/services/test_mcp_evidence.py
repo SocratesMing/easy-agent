@@ -256,7 +256,6 @@ def test_wrap_tools_by_server_keeps_names_and_attribution():
 
 
 def test_truncation_caps_content_and_marks_evidence(monkeypatch):
-    monkeypatch.delenv("EASY_MCP_MAX_CONTENT_CHARS", raising=False)
     monkeypatch.setattr(mcp_evidence, "DEFAULT_MAX_CONTENT_CHARS", 20)
     wrapped = wrap_mcp_tool(SyncEchoTool(), server="demo")
 

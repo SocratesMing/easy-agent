@@ -123,6 +123,7 @@
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @send-message="handleSendMessage"
+        @web-search-change="handleWebSearchChange"
         @create-session="ensureCurrentSession"
         @remove-file="handleRemoveFile"
         @stop="handleStop"
@@ -165,7 +166,7 @@
 
 <script>
 import Vue from 'vue'
-import { loadDailySessions, sessionGuard, isStaleSessionError, initialSessionId as resolveInitialSessionId } from './shared/sessionManagement/state.js'
+import { loadDailySessions, sessionGuard, isSessionDeleted, isStaleSessionError, initialSessionId as resolveInitialSessionId } from './shared/sessionManagement/state.js'
 import SessionList from './features/chat/components/SessionList.vue'
 import Chat from './features/chat/components/Chat.vue'
 // 面板级懒加载：首屏不解析这些重型面板，首次打开时再拉对应 chunk
@@ -185,6 +186,7 @@ import { createPageStreamChunkHandler } from './features/chat/services/pageChunk
 import { chatStore } from './features/chat/store/chatStore.js'
 import { buildPageContext } from './utils/pageContext.js'
 import { applyApprovalRequests } from './utils/hitlApproval.js'
+import { clearStreamFlight, markStreamFlight, readStreamFlight, resolveResumeTargets } from './features/chat/services/streamResume.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin, runSignIn } from './api/auth.js'
 import { getKnowledgeStatus, getModels as fetchModels } from './api/settings.js'
 import { isRestorableUserProfile } from './utils/userProfile.js'
@@ -250,6 +252,9 @@ export default {
       // 模型选择：从配置加载可选列表，默认选 active model
       availableModels: [],
       selectedModel: null,
+      // 联网开关的镜像（真身在 ChatInput）：发送只有「输入框」一条路走 $emit('send')，
+      // 重试/续发不经过输入框，必须从这里取当前状态，否则会落回默认值 false。
+      webSearchEnabled: false,
       welcomeTitle: getRuntime().app.welcomeTitle,
       // 「未授权」提示态（登录页关闭且免密登录未成功时显示）
       authBlocked: false,
@@ -469,43 +474,48 @@ export default {
         sessionStorage.removeItem(STREAM_STATE_KEY)
       }
     },
-    // 刷新后恢复全部进行中的流式任务：逐个查询后端状态，活跃的恢复"进行中"标记；
-    // 最近活跃的会话直接重挂载，其余会话在切换到它时懒挂载。
+    // 刷新后恢复活跃任务：当前会话展示挂载，其余后台挂载，保持用户选择。
     async tryAttachLiveStream() {
       const valid = sessionGuard()
       let saved = null
-      try {
-        const raw = sessionStorage.getItem(STREAM_STATE_KEY)
-        if (!raw) return
-        saved = JSON.parse(raw)
-      } catch (e) {
-        return
-      }
-      if (!saved || !saved.streaming) return
-
-      const candidates = Array.isArray(saved.streamingIds) && saved.streamingIds.length
-        ? saved.streamingIds
-        : (saved.sessionId ? [saved.sessionId] : [])
-      const active = []
-      for (const sid of candidates) {
-        try {
-          const status = await getStreamStatus(sid)
-          if (status && status.active && !active.includes(sid)) active.push(sid)
-        } catch (e) {
-          // 会话可能已被删除：忽略
-        }
+      try { saved = JSON.parse(sessionStorage.getItem(STREAM_STATE_KEY) || 'null') } catch (e) { saved = null }
+      // 刷新前那一轮可能还没拿到 session_id（新会话首轮，start 事件后才有），只有发送时
+      // 落的「在飞」记录能找回它；后端准备期（建 Agent/MCP）还没占流锁，/stream/status
+      // 仍是 inactive，由模块内部短轮询等待——一次探测就放弃正是「刷新后不吐流」的成因。
+      const plan = await resolveResumeTargets({
+        saved,
+        flight: readStreamFlight(),
+        sessions: this.sessions,
+        // 界面正在看的会话是首要候选：在飞记录可能丢了（换标签页/发送后立刻刷新）
+        current: this.currentSessionId || this.loadedSessionId,
+        // 新会话首轮：刷新落在后端还没建会话的准备期，列表里也还没有它——给它一个把
+        // 会话找回来的机会，否则这一轮永远没人探测、内容也就永远补不回来
+        refreshSessions: async () => {
+          await this.loadSessions()
+          return this.sessions
+        },
+        getStatus: getStreamStatus,
+        getLastMessage: async (sid) => {
+          const history = await getChatHistory(sid)
+          const msgs = (history && history.messages) || []
+          return msgs[msgs.length - 1] || null
+        },
+      })
+      if (!valid() || !plan.ids.length) return
+      if (plan.waited && !plan.active.length) {
+        // 等不到活跃：这轮已结束（答复落库）或彻底丢了，清记录并按需回填，免得下次白等。
+        // 没有答复时不动界面（服务端可能还没落本轮提问）。
+        clearStreamFlight()
+        await this.syncIfServerAnswered(plan.wait)
       }
       if (!valid()) return
-      for (const sid of active) this.markStreaming(sid)
-
-      const attachTarget = active.includes(this.currentSessionId) ? this.currentSessionId : null
-      if (attachTarget) {
-        this.attachToStreamingSession(attachTarget, { switchTo: true, displayed: true })
-      }
+      plan.active = plan.active.filter(sid => !isSessionDeleted(sid))
+      for (const sid of plan.active) this.markStreaming(sid)
+      const attachTarget = plan.active.includes(this.currentSessionId) ? this.currentSessionId : null
+      if (attachTarget) this.attachToStreamingSession(attachTarget, { switchTo: false, displayed: true })
       // 其余仍活跃的会话后台挂载：同步 token 用量、流结束时自动移除"进行中"标记
-      for (const sid of active) {
-        if (sid === attachTarget) continue
-        this.attachToStreamingSession(sid, { switchTo: false, displayed: false })
+      for (const sid of plan.active) {
+        if (sid !== attachTarget) this.attachToStreamingSession(sid, { switchTo: false, displayed: false })
       }
       // 清理一次性恢复标记；仍活跃的流会通过 watch 重新写入持久化
       this.saveStreamState()
@@ -680,6 +690,8 @@ export default {
       } catch (_) { /* ignore */ }
       this.isBootstrapping = false
 
+      // 先启动不阻塞首屏的历史兜底；即使实时流挂载成功，界面仍为空时也继续补回答复。
+      this.resumeInterruptedTurn()
       // 刷新前若正在流式，重新挂载并继续接收事件
       await this.tryAttachLiveStream()
     },
@@ -726,6 +738,7 @@ export default {
       this.streamingAssistantId = null
       this.currentAbortController = null
       sessionStorage.removeItem(STREAM_STATE_KEY)
+      clearStreamFlight()
       sessionStorage.removeItem('easy_agent_input_draft')
       this.userProfile = {
         username: '',
@@ -840,7 +853,14 @@ export default {
     },
     async loadSessions() {
       try {
-        await loadDailySessions(() => listSessions(this.userProfile.username || null, { archived: false }), rows => { this.sessions = rows })
+        await loadDailySessions(
+          () => listSessions(this.userProfile.username || null, { archived: false }),
+          rows => {
+            this.sessions = rows
+            this.hydratePendingApprovalFromServer()
+            if (this.error === '加载会话列表失败') this.error = null
+          },
+        )
       } catch (e) { if (!isStaleSessionError(e)) this.error = '加载会话列表失败' }
     },
     async ensureCurrentSession(initialTitle = '') {
@@ -1081,7 +1101,7 @@ export default {
       // 用于用户中途切换会话时，把用量更新写入所属会话的缓存而非当前显示
       let streamSessionId = this.currentSessionId
 
-      const contentWithFiles = message.trim().replace(/\s+/g, ' ')
+      const contentWithFiles = message.trim() // 只去首尾空白：换行与缩进是用户原话，气泡按纯文本原样展示
 
       const userMessage = {
         id: userMsgId,
@@ -1179,6 +1199,10 @@ export default {
 
       try {
         this.markStreaming(this.currentSessionId)
+        // 新会话首轮发送时 currentSessionId 还是 null（要等后端 start 才有），
+        // markStreaming 是空操作。这里先落一条「在飞」记录，否则此时刷新页面会
+        // 什么都接不回来：没有 sid、没有状态、页面永远空白。
+        markStreamFlight(this.currentSessionId)
         const controller = this.trackStream(new AbortController())
         streamController = controller
         this.currentAbortController = controller
@@ -1272,6 +1296,8 @@ export default {
         }
       } finally {
         this.untrackStream(streamController)
+        // 本轮已经结束（正常/取消/失败），在飞记录作废：留着会让下次刷新白等一轮
+        clearStreamFlight()
         // HITL: 若有审批待处理，保持 isStreaming=true（用户需先审批）；卸载后不收尾（见 streamLifecycle）
         if (!this._chatDisposed && !this.pendingApprovalOf(streamSessionId)) {
           const sid = streamSessionId
@@ -1310,6 +1336,10 @@ export default {
         }
       }
     },
+    // ChatInput 的联网开关变化上报：存一份镜像，供不经过输入框的发送路径（重试）复用
+    handleWebSearchChange(enabled) {
+      this.webSearchEnabled = Boolean(enabled)
+    },
     handleRetry(content) {
       // 直接重新发送消息内容，不经过输入框
       console.log('[handleRetry] content type:', typeof content, 'value:', content)
@@ -1327,8 +1357,9 @@ export default {
           return
         }
 
-        // 直接调用发送
-        this.handleSendMessage(content.trim())
+        // 重试不经过输入框，联网开关必须从镜像取：漏传会落回 enableWebSearch 默认值 false，
+        // 表现为「小地球亮着、后端收到 web_search: False」，模型据关闭态纪律回答未联网。
+        this.handleSendMessage(content.trim(), [], null, true, this.webSearchEnabled)
       }
     },
     handleStop() {

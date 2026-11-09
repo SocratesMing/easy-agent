@@ -300,7 +300,7 @@ class ExpertStore:
 
         Args:
             user_id: 归属用户（``users.user_id``）。
-            keyword: 对 ``export_name_cn`` / ``export_name_en`` 做 LIKE 模糊匹配。
+            keyword: LIKE 模糊匹配，范围为中英文名 / 功能描述。列表行只渲染名称与描述，按技能命中时用户看不到关键词，反而觉得结果「跟搜索词无关」
             status: 指定 ``agent_status``；为空时默认排除 ``disabled``。
             include_disabled: 为 True 时不过滤 ``disabled``（前端「回收站」用）。
             page / page_size: 从 1 开始的页码。
@@ -321,9 +321,12 @@ class ExpertStore:
             where.append("agent_status<>?")
             params.append(STATUS_DISABLED)
         if keyword:
-            where.append("(export_name_cn LIKE ? OR export_name_en LIKE ?)")
+            where.append(
+                "(export_name_cn LIKE ? OR export_name_en LIKE ?"
+                " OR export_description LIKE ?)"
+            )
             like = f"%{keyword}%"
-            params.extend([like, like])
+            params.extend([like] * 3)
 
         where_sql = " AND ".join(where)
         with self.db.get_connection() as conn:

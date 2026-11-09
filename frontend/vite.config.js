@@ -1,27 +1,31 @@
-import { defineConfig, loadEnv } from 'vite'
+import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import Icons from 'unplugin-icons/vite'
 import monacoEditorPlugin from 'vite-plugin-monaco-editor'
 import { resolveEnvMode } from './scripts/env-mode.mjs'
 
 /**
- * 平台 / AGENT_ENV -> 加载的 .env.<mode> 文件：
- *   Windows（或 AGENT_WIN=true 模拟） -> win   -> .env.win
- *   Linux + AGENT_ENV=dev   -> dev  -> .env.dev
- *   Linux + AGENT_ENV=test  -> test -> .env.test
- *   Linux + AGENT_ENV=prod  -> prod -> .env.prod
+ * 平台 / AGENT_ENV -> 构建 MODE（scripts/run-vite.mjs 通过 --mode 传入）。
+ * 不再加载 .env.<mode>：后端地址与标题固定在同一份代码里。
  *
- * 具体 mode 由 scripts/run-vite.mjs 通过 --mode 传入，Vite 据此自动把
- * .env.<mode> 注入到 import.meta.env（只有 mode 与文件名一致才会注入）。
- * 容器化部署时只需设置 AGENT_ENV（Windows 上自动识别平台），无需手动 --mode。
+ * 开发代理：前端请求一律走同源相对路径 /agent/...（src/config.js 的 API_BASE_URL 为空），
+ * dev server 把 /agent 转发到按 mode 从下表选出的后端（地址沿用原 .env.<mode> 的
+ * VITE_API_BASE_URL）。临时连别的后端时设 AGENT_PROXY_TARGET 覆盖，不必改表；
+ * 它只在 dev server 进程里读取，不会进入构建产物。
  */
+const PROXY_TARGETS = {
+  dev: 'http://localhost:8080',
+  test: 'http://192.168.1.100:8007',
+  prod: 'http://192.168.1.200:8000',
+  win: 'http://127.0.0.1:8080',
+}
 
 export default defineConfig(() => {
-  // 命令类型由启动脚本传入的 argv 决定（build / dev）
-  const command = process.argv.includes('build') ? 'build' : 'dev'
-  const effectiveMode = resolveEnvMode(command)
-  const env = loadEnv(effectiveMode, process.cwd(), '')
-  const envFile = `.env.${effectiveMode}`
+  const effectiveMode = resolveEnvMode(process.argv.includes('build') ? 'build' : 'dev')
+  const proxyTarget =
+    (process.env.AGENT_PROXY_TARGET || '').trim() ||
+    PROXY_TARGETS[effectiveMode] ||
+    PROXY_TARGETS.dev
 
   // 根据操作系统选择默认监听地址：
   //   Linux / macOS -> 0.0.0.0（允许局域网访问，适合服务器/容器）
@@ -37,10 +41,9 @@ export default defineConfig(() => {
 ║  AGENT_ENV:        ${process.env.AGENT_ENV || '(未设置, 使用默认)'}
 ║  平台:             ${isWindows ? 'Windows' : 'Linux/macOS'}
 ║  环境模式 (mode):  ${effectiveMode}
-║  配置文件:         ${envFile}
-║  后端地址 (API):   ${env.VITE_API_BASE_URL || 'http://localhost:8000 (默认)'}
-║  应用名称 (title): ${env.VITE_APP_TITLE || 'Easy Agent'}
-║  首页欢迎语:      ${env.VITE_APP_WELCOME_TITLE || 'Easy Agent，让工作更简单'}
+║  后端地址 (API):   同源相对路径 /agent/...
+║  开发代理目标:     ${proxyTarget}  (仅 npm run dev 生效)
+║  应用名称 (title): Easy Agent
 ║  监听地址 (host):  ${defaultHost}  (${isWindows ? 'Windows' : 'Linux/macOS'})
 ╚══════════════════════════════════════════════════╝
 `
@@ -56,6 +59,19 @@ export default defineConfig(() => {
     ],
     server: {
       host: defaultHost,
+      // 开发代理：/agent 前缀的接口（REST + SSE 流式）全部转发到后端
+      proxy: {
+        '/agent': {
+          target: proxyTarget,
+          changeOrigin: true,
+          // SSE 长连接：禁止中间层缓存/攒包，保证流式输出逐步到达
+          configure(proxy) {
+            proxy.on('proxyRes', (proxyRes) => {
+              proxyRes.headers['cache-control'] = 'no-cache'
+            })
+          },
+        },
+      },
     },
   }
 })

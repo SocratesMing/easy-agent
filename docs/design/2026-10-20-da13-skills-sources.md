@@ -204,7 +204,7 @@ S2 提交（`c24d5ba`）之后，另一路开发按规范一致性审计（`docs
 | --- | --- | --- |
 | `0cfa312`（审计 D9） | 即本方案 S3：docx 的 `SKILL.md` 从 590 行减到 175 行，版式细节移到 `references/docx-js-layout.md`，OOXML 移到 `references/ooxml-xml.md`；skill-creator 从 485 行减到 208 行，评测移到 `references/evaluating-skills.md`，盲测与描述优化移到 `references/advanced-evaluation.md`；包内副本已同步 | ✅ 引用文件齐全，`sync_skills --check` 一致 |
 | `e27dae0`（审计 D2） | 门控集合从「注册表 `skill_gated`」扩展为「注册表 ∪ 所有技能 frontmatter 声明的 `include_tools`」；子代理用到的门控工具各挂一份 `SkillsMiddleware(tools=...)`；门控集合进编译图指纹 | ❌ 两个问题：没配公共技能目录时建图 `TypeError`（`builtin_skills_dir` 为 `None` 未过滤，所有对话失败）；扫描范围包含用户没添加的公共技能，它们声明的工具会被藏起来且读不到 |
-| `e16f9e1`（审计 D4） | MCP 工具名 `{server}__{tool}`（开关 `EASY_MCP_TOOL_PREFIX`，默认关）；门控按「后缀唯一」解析技能里写的原名 | ❌ 开关打开后，交给 `SkillsMiddleware` 的工具按真实名精确匹配，技能里写的原名匹配不到：工具被摘掉、读了技能也带不出 |
+| `e16f9e1`（审计 D4） | MCP 工具名 `{server}__{tool}`（代码内固定开关 `PREFIX_ENABLED`，默认关）；门控按「后缀唯一」解析技能里写的原名 | ❌ 开关打开后，交给 `SkillsMiddleware` 的工具按真实名精确匹配，技能里写的原名匹配不到：工具被摘掉、读了技能也带不出 |
 
 三处问题现有测试都没覆盖到：`tests/agent/test_builtin_skills_agent.py` 只建了带公共技能目录的场景，门控也只测了注册表里的 `save_expert`。
 

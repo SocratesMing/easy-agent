@@ -8,8 +8,8 @@
 - 渲染后的完整内容及服务端本轮说明随运行输入写进 ``turn_context`` 状态通道。它是 LastValue 通道，HITL
   中断后仍在 checkpoint 里，恢复的那次运行照样可用；下一轮输入会覆盖它；
 - 主代理的摘要中间件在计 token 之前调用 :func:`render_turn_request`：把本轮消息换成渲染
-  内容，并剥离之前各轮 ``AIMessage`` 里的推理内容（与 ``build_context_messages`` 不回灌
-  历史思考一致）。只改本次模型请求，不写回 state。
+  内容。之前各轮 ``AIMessage`` 里的推理原样保留、随请求回传（与 ``build_context_messages``
+  从 DB 还原思考一致）。只改本次模型请求，不写回 state。
 
 渲染放在摘要中间件里，而不是单独的中间件：deepagents 把新增的自定义中间件排在摘要之后
 （更内层），单独的中间件改写请求时，摘要已经按原话计完 token。注入大段内容（回退模式的
@@ -28,9 +28,6 @@ from langchain.agents.middleware.types import OmitFromOutput
 from langchain_core.messages import AIMessage, SystemMessage
 
 TURN_CONTEXT_KEY = "turn_context"
-
-#: 历史 AIMessage 里要剥离的推理内容块（Anthropic thinking、LangChain 标准 reasoning）。
-_REASONING_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking", "reasoning"})
 
 
 class TurnContext(TypedDict):
@@ -81,33 +78,10 @@ def turn_input(
     return payload
 
 
-def _is_reasoning_block(block: Any) -> bool:
-    return isinstance(block, dict) and block.get("type") in _REASONING_BLOCK_TYPES
-
-
-def _strip_reasoning(message: AIMessage) -> AIMessage:
-    """剥离历史 AIMessage 的推理内容（只针对本轮之前的轮次）。
-
-    上游只在「工具调用 → 工具结果」续跑时要求 ``reasoning_content``，本轮工具
-    循环里的消息不在剥离范围内，故历史轮次剥掉不影响请求合法性。
-    """
-    update: dict[str, Any] = {}
-    if isinstance(message.content, list):
-        kept = [block for block in message.content if not _is_reasoning_block(block)]
-        if len(kept) != len(message.content):
-            update["content"] = kept or ""
-    if "reasoning_content" in message.additional_kwargs:
-        update["additional_kwargs"] = {
-            k: v for k, v in message.additional_kwargs.items() if k != "reasoning_content"
-        }
-    return message.model_copy(update=update) if update else message
-
-
 def render_turn_messages(messages: list, turn: TurnContext | None) -> list:
-    """把本轮用户消息换成渲染内容，并剥离之前各轮 AIMessage 的推理内容。
+    """只把本轮用户消息换成渲染内容，其余消息（含各轮的推理）原样随请求回传给模型。
 
     没有 ``turn``、或本轮消息已不在列表里（例如被摘要截掉）时原样返回同一个列表。
-    本轮之后的消息（本轮工具循环）保持原样：Anthropic 在工具循环里需要本轮的 thinking。
     """
     target = (turn or {}).get("message_id")
     content = (turn or {}).get("content")
@@ -125,9 +99,6 @@ def render_turn_messages(messages: list, turn: TurnContext | None) -> list:
         return messages
     rendered = list(messages)
     rendered[index] = messages[index].model_copy(update={"content": content})
-    for i in range(index):
-        if isinstance(rendered[i], AIMessage):
-            rendered[i] = _strip_reasoning(rendered[i])
     return rendered
 
 
@@ -137,12 +108,12 @@ def render_turn_request(request):
     rendered = render_turn_messages(request.messages, turn)
     if rendered is not request.messages:
         request = request.override(messages=rendered)
-    # 先计入摘要预算；记忆中间件随后加载记忆时会把同一说明移到记忆之后。
+    # 先计入摘要预算；记忆中间件随后会把同一说明移到固定记忆使用说明之后。
     return render_turn_system_context(request)
 
 
 def render_turn_system_context(request):
-    """本轮服务端说明放在记忆之后；重复渲染只保留一份，保留其它内容块。"""
+    """本轮服务端说明放在系统提示词末尾；重复渲染只保留一份，保留其它内容块。"""
     turn = request.state.get(TURN_CONTEXT_KEY)
     system_context = (turn or {}).get("system_context")
     if not system_context:

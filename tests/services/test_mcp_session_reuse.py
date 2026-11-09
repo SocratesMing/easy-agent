@@ -260,6 +260,26 @@ async def test_tool_exception_is_not_retried(manager):
     assert manager.snapshot()["stdio"]["retried"] == 0
 
 
+def test_idle_ttl_defaults_follow_transport():
+    """未显式指定时按传输类型回收：stdio 子进程 300 秒，HTTP 类会话 600 秒。
+
+    83ab46d 去掉环境变量时曾把默认值误写成「所有传输统一 300 秒」，HTTP 会话
+    的回收快了一倍；这里锁住按类型取值。
+    """
+    mgr = MCPSessionManager()
+
+    assert mgr.idle_seconds_for("stdio") == 300.0
+    for transport in ("streamable_http", "sse", "websocket"):
+        assert mgr.idle_seconds_for(transport) == 600.0, transport
+    assert mgr.idle_seconds_for("某种新传输") == 300.0
+
+
+def test_explicit_idle_seconds_overrides_every_transport():
+    mgr = MCPSessionManager(idle_seconds=42)
+
+    assert {mgr.idle_seconds_for(t) for t in ("stdio", "streamable_http", "sse")} == {42}
+
+
 async def test_idle_expiry_rebuilds_on_next_call(monkeypatch):
     mgr = MCPSessionManager(
         idle_seconds=0.05,

@@ -38,13 +38,22 @@ function fallbackPre(code) {
  *
  * @param {string} code 代码正文
  * @param {string} [lang] 语言标识（支持 js/py/sh 等别名）
+ * @param {{partial?: boolean}} [state] 渲染状态；流式中间帧为 true
  * @returns {string} HTML
  */
-export function highlightCode(code, lang) {
+export function highlightCode(code, lang, state) {
   const normalizedLang = lang ? String(lang).toLowerCase() : ''
   const mappedLang = langAliases[normalizedLang] || normalizedLang
   // 未识别/未注册的语言交给 highlightAuto 自动识别，避免对未知语言抛错
   const validLang = mappedLang && hljs.getLanguage(mappedLang) ? mappedLang : ''
+
+  // 流式中间帧：未闭合代码块每次都要重渲，highlightAuto 是最贵的一步，
+  // 而且识别结果随内容增长反复变化。这里只输出转义纯文本，且不写缓存；
+  // 流结束后按原文完整渲染，最终 HTML 与改动前一致。
+  if (state && state.partial) {
+    const cls = validLang ? ` class="language-${escapeHtml(validLang)}"` : ''
+    return `<pre class="hljs"><code${cls}>${escapeHtml(code)}</code></pre>`
+  }
 
   const cacheKey = validLang + '\u0000' + code
   const cacheable = code.length <= HIGHLIGHT_CACHE_CODE_MAX

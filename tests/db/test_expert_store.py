@@ -302,22 +302,71 @@ def test_list_by_user_only_own(db):
 def test_list_keyword_and_status_filter(db):
     store = ExpertStore(db)
     _make(store, expert_id="e1", user_id="u1", export_name_cn="量化策略专家")
-    _make(store, expert_id="e2", user_id="u1", export_name_cn="财报分析师")
+    # 关键字范围含功能描述（2026-11-06 扩口径），所以这里必须给不同的描述，
+    # 否则默认描述里的「量化」会让另外两条也命中，测不到「只按名字命中 1 条」。
+    _make(
+        store,
+        expert_id="e2",
+        user_id="u1",
+        export_name_cn="财报分析师",
+        export_description="读财报、算估值。",
+    )
     _make(
         store,
         expert_id="e3",
         user_id="u1",
         export_name_cn="失败专家",
+        export_description="生成失败的占位记录。",
         agent_status="failed",
     )
 
-    total, items = store.list_by_user("u1", keyword="量化")
+    total, items = store.list_by_user("u1", keyword="量化策略")
     assert total == 1
     assert items[0]["export_agent_id"] == "e1"
 
     total, items = store.list_by_user("u1", status="failed")
     assert total == 1
     assert items[0]["export_agent_id"] == "e3"
+
+
+def test_list_keyword_searches_name_and_description_only(db):
+    """关键字范围：中英文名 + 功能描述。「+」面板的专家行只显示名称与描述，按技能命中时用户
+    看不到关键词，反而觉得搜索结果跟搜索词无关，因此把技能两列从口径里去掉。
+    """
+    store = ExpertStore(db)
+    _make(
+        store,
+        expert_id="e1",
+        user_id="u1",
+        export_name_cn="甲",
+        export_description="专注城投债信用利差跟踪。",
+    )
+    _make(
+        store,
+        expert_id="e2",
+        user_id="u1",
+        export_name_cn="乙",
+        export_description="与债无关的描述。",
+        export_skills_names=["precious-metals-analysis"],
+        export_required_skills=["precious-metals-analysis"],
+    )
+    _make(store, expert_id="e3", user_id="u1", export_name_cn="丙", export_description="无关")
+
+    # 命中功能描述
+    total, items = store.list_by_user("u1", keyword="信用利差")
+    assert total == 1 and items[0]["export_agent_id"] == "e1"
+
+    # 技能名不再命中（export_skills_names / export_required_skills 都不参与匹配）
+    total, items = store.list_by_user("u1", keyword="precious-metals")
+    assert total == 0 and items == []
+
+    # 命中英文名
+    total, _ = store.list_by_user("u1", keyword="lianghua")
+    assert total == 3
+
+    # 全不命中
+    total, items = store.list_by_user("u1", keyword="不存在的关键词")
+    assert total == 0 and items == []
 
 
 def test_list_pagination(db):

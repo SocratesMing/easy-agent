@@ -2,6 +2,8 @@
 
 Copy this module into another service and adjust the constants below. It only
 depends on the Python standard library and does not read application config.
+The runtime level override (``EASY_LOG_LEVEL``) is read by the caller and applied
+with :func:`set_log_level`.
 """
 
 from datetime import datetime
@@ -13,7 +15,9 @@ import re
 import socket
 import time
 
-# 服务日志硬编码配置。修改此处即可，不依赖 config.yaml 或环境变量。
+# 服务日志硬编码配置。修改此处即可，不依赖 config.yaml。
+# 级别默认 LOG_LEVEL；运行期可用环境变量 EASY_LOG_LEVEL 或 easy-web --log-level 覆盖
+# （由 initialization/runtime.py 读取后调用 set_log_level）。
 LOG_DIR = "./logs"
 LOG_SERVICE_NAME = "easy-agent"
 LOG_VERSION = "v01"
@@ -29,6 +33,41 @@ LOG_MAX_BYTES = 50 * 1024 * 1024
 LOG_ROTATION_WHEN = "midnight"
 LOG_ROTATION_INTERVAL = 1
 LOG_BACKUP_COUNT = 30
+
+# 与 root 一起跟随日志级别的服务端 logger（它们的 handler 会被清空、改为向 root 传播）。
+_SERVICE_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access", "uvicorn.asgi", "fastapi")
+_LEVEL_NAMES = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "WARN": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+# DEBUG 时仍压在 INFO 的第三方 logger：它们的 DEBUG 量大且没有排障价值
+# （aiosqlite 每次读写、httpcore 每个请求阶段），openai SDK 的 DEBUG 还会把完整请求体
+# 打到控制台。deepagents 每次建图都会带堆栈报一遍「Fireworks / Bedrock prompt caching
+# 不可用」、重复解析同一个 HarnessProfile。大模型报文看 easy_agent.llm_wire（只写 proc 文件）。
+LOG_QUIET_WHEN_DEBUG = (
+    "aiosqlite",
+    "asyncio",
+    "charset_normalizer",
+    "deepagents.middleware._prompt_caching",
+    "deepagents.profiles",
+    "hpack",
+    "httpcore",
+    "httpx",
+    "multipart",
+    "openai",
+    "PIL",
+    "python_multipart",
+    "urllib3",
+    "watchfiles",
+)
+# 跟随日志级别的 handler：控制台、proc、comm（err 文件固定 ERROR）。
+_level_handlers: list[logging.Handler] = []
+# LOG_QUIET_WHEN_DEBUG 当前是否被压在 INFO（离开 DEBUG 时据此还原）。
+_quieted = False
 
 # 轮转文件后缀匹配：按天（2026-09-09）、大小触发带时刻（2026-09-09_11-22-33）、
 # 同秒序号（2026-09-09.1）；不匹配无关文件（2026-09-09.extra），避免误删。
@@ -215,18 +254,45 @@ def setup_logging() -> dict[str, str]:
     root_logger.addHandler(process_handler)
     root_logger.addHandler(error_handler)
     root_logger.addHandler(communication_handler)
+    _level_handlers[:] = [console_handler, process_handler, communication_handler]
 
-    for logger_name in (
-        "uvicorn",
-        "uvicorn.error",
-        "uvicorn.access",
-        "uvicorn.asgi",
-        "fastapi",
-    ):
+    for logger_name in _SERVICE_LOGGERS:
         logger = logging.getLogger(logger_name)
         _reset_handlers(logger)
         logger.setLevel(level)
         logger.propagate = True
+    _apply_quiet_loggers(level)
 
     logging.getLogger("deepagents.middleware.skills").setLevel(logging.ERROR)
     return {name: str(path) for name, path in log_files.items()}
+
+
+def _apply_quiet_loggers(level: int) -> None:
+    """DEBUG 时把 LOG_QUIET_WHEN_DEBUG 压在 INFO；离开 DEBUG 时只还原自己压过的，不动库自己设的级别。"""
+    global _quieted
+    if level < logging.INFO:
+        for logger_name in LOG_QUIET_WHEN_DEBUG:
+            logging.getLogger(logger_name).setLevel(logging.INFO)
+        _quieted = True
+    elif _quieted:
+        for logger_name in LOG_QUIET_WHEN_DEBUG:
+            logging.getLogger(logger_name).setLevel(logging.NOTSET)
+        _quieted = False
+
+
+def parse_log_level(name: str | None) -> int | None:
+    """``debug`` / ``info`` / ``warning`` / ``error`` / ``critical``（不区分大小写）→ 级别；无效返回 None。"""
+    return _LEVEL_NAMES.get(str(name or "").strip().upper())
+
+
+def set_log_level(level: int) -> None:
+    """``setup_logging`` 之后调整日志级别：root、控制台 / proc / comm、uvicorn 系 logger。
+
+    err 文件固定只收 ERROR，不受影响；DEBUG 时 LOG_QUIET_WHEN_DEBUG 里的第三方 logger 仍停在 INFO。
+    """
+    logging.getLogger().setLevel(level)
+    for handler in _level_handlers:
+        handler.setLevel(level)
+    for logger_name in _SERVICE_LOGGERS:
+        logging.getLogger(logger_name).setLevel(level)
+    _apply_quiet_loggers(level)

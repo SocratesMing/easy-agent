@@ -1,21 +1,63 @@
 """Preserve administrator bootstrap policy across host database upgrades."""
 
+from typing import Any
+
+import logging
 import os
-from easy_agent.bootstrap.env import env_str
+import secrets
 import uuid
 from datetime import datetime
+from pathlib import Path
 
+from easy_agent.bootstrap.env import env_str, is_unset_placeholder
 from easy_agent.db.repositories.user_repository import UserRepository
 from easy_agent.knowledges.personnel.models import ADMIN_DEPARTMENT_ID
 from easy_agent.models.db import UserModel
 from easy_agent.utils.auth import hash_password, verify_password
 
+logger = logging.getLogger(__name__)
+
+_WEAK_PASSWORDS = frozenset({"admin", "123456", "password", "changeme", "easyagent"})
+_ADMIN_PASSWORD_FILE = Path("./data/.admin_bootstrap_password")
+
+
+def _is_strong_password(password: str) -> bool:
+    """长度 >= 12、非弱口令、至少 4 种不同字符。"""
+    return (
+        len(password) >= 12
+        and password.casefold() not in _WEAK_PASSWORDS
+        and len(set(password)) >= 4
+    )
+
+
+def _generated_admin_password() -> str:
+    """dev/test 首次建库时生成强随机 admin 密码，0600 持久化（日志不打印密码）。"""
+    try:
+        if _ADMIN_PASSWORD_FILE.exists():
+            stored = _ADMIN_PASSWORD_FILE.read_text(encoding="utf-8").strip()
+            if _is_strong_password(stored):
+                return stored
+        password = secrets.token_urlsafe(24)
+        _ADMIN_PASSWORD_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _ADMIN_PASSWORD_FILE.write_text(password, encoding="utf-8")
+        try:
+            os.chmod(_ADMIN_PASSWORD_FILE, 0o600)
+        except OSError:
+            pass
+        logger.info("dev/test 已生成 admin 初始密码 | 文件: %s", _ADMIN_PASSWORD_FILE)
+        return password
+    except OSError as exc:
+        logger.warning("无法持久化 admin 初始密码，改用进程内随机值 | 原因: %s", exc)
+        return secrets.token_urlsafe(24)
+
 
 def bootstrap_password():
     password = os.environ.get("EASYAGENT_BOOTSTRAP_ADMIN_PASSWORD", "")
-    if len(password) < 12 or password.casefold() in {"admin", "123456", "password", "changeme", "easyagent"} or len(set(password)) < 4:
-        raise RuntimeError("首次初始化需要通过 EASYAGENT_BOOTSTRAP_ADMIN_PASSWORD 注入长度不少于 12 位的强随机管理员密码")
-    return password
+    if _is_strong_password(password) and not is_unset_placeholder(password):
+        return password
+    if env_str("AGENT_ENV", "dev").strip().lower() in {"prod", "production"}:
+        raise RuntimeError("生产环境需要通过 EASYAGENT_BOOTSTRAP_ADMIN_PASSWORD 注入长度不少于 12 位的强随机管理员密码")
+    return _generated_admin_password()
 
 
 def _sync_admin_department(db, user):
@@ -34,7 +76,7 @@ def _sync_admin_department(db, user):
     return db.get_user_by_username("admin") or user
 
 
-def ensure_default_admin(db):
+def ensure_default_admin(db) -> Any:
     user = db.get_user_by_username("admin")
     if user:
         production = env_str("AGENT_ENV").casefold() in {"prod", "production"}

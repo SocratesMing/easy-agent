@@ -664,8 +664,12 @@ class SourceSyncEngine:
         reason: str,
         attempts: int,
         document_id: str | None = None,
+        suppress_log: bool = False,
     ) -> None:
-        """把台账置为 failed，统一记录原因/次数，避免各处重复拼字段。"""
+        """把台账置为 failed，统一记录原因/次数，避免各处重复拼字段。
+
+        suppress_log=True 时不打单条 warning，由调用方在批量场景下统一汇总。
+        """
         fields: dict[str, object] = {
             "status": "failed",
             "attempts": attempts + 1,
@@ -674,7 +678,8 @@ class SourceSyncEngine:
         if document_id is not None:
             fields["document_id"] = document_id
         await self._update_item(item_id, **fields)
-        logger.warning("文档同步失败 | id=%s reason=%s", record_id, reason)
+        if not suppress_log:
+            logger.warning("文档同步失败 | id=%s reason=%s", record_id, reason)
 
     # ---------------- 知识库与目录 ----------------
 
@@ -815,10 +820,7 @@ class SourceSyncEngine:
 
         只有去重通过的新记录才会走到这里，不会重复拷贝已入库文件。
         """
-        stage_stats = {"copied": 0, "copy_failed": 0}
-        if self._staging_dir is None:
-            return {}, {}, stage_stats
-
+        stage_stats = {"copied": 0, "copy_failed": 0, "missing_source": 0}
         staged: dict[str, Path] = {}
         errors: dict[str, str] = {}
         for row in rows:
@@ -830,9 +832,14 @@ class SourceSyncEngine:
             )
             if source_file is None:
                 # 没找到源文件时不拷贝，但仍把原因带回去，让台账记失败。
+                # 计数加一，run() 里统一汇总打印，避免每条都打一条 warning。
+                stage_stats["missing_source"] += 1
                 errors[row.record_id] = describe_missing_source(
                     self.sync_config, row.batch_id
                 )
+                continue
+            # 未配置暂存目录时跳过拷贝，直接返回空 staged 供直读路径使用。
+            if self._staging_dir is None:
                 continue
             staged_file = self._staging_dir / build_staged_name(
                 row.title, row.record_id, source_file
@@ -973,11 +980,13 @@ class SourceSyncEngine:
             return None
         # ---- 第 5 步：暂存失败直接记台账，不再扫描/上传 ----
         if stage_error:
+            # suppress_log=True：批量场景下由 run() 统一汇总，不逐条打 warning
             await self._fail_item(
                 item_id,
                 record_id=record_id,
                 reason=stage_error,
                 attempts=attempts,
+                suppress_log=True,
             )
             return None
         # ---- 第 6 步：定位本次要上传的文件 ----
@@ -999,11 +1008,13 @@ class SourceSyncEngine:
                 resolve_batchid_file, self.sync_config, batch_id
             )
             if source_file is None:
+                # suppress_log=True：批量场景下由 run() 统一汇总，不逐条打 warning
                 await self._fail_item(
                     item_id,
                     record_id=record_id,
                     reason=describe_missing_source(self.sync_config, batch_id),
                     attempts=attempts,
+                    suppress_log=True,
                 )
                 return None
             if self._staging_dir is not None:
@@ -1297,6 +1308,7 @@ class SourceSyncEngine:
         #   truncated: 是否因为 limit 提前停止（1=是，0=否）
         #   copied   : 本批实际写入暂存目录的文件数（同名覆盖）
         #   copy_failed: 暂存拷贝失败条数
+        #   missing_source: batchid 未匹配到磁盘文件的条数（批量汇总打一条日志）
         #   staged_deleted: READY/DELETED 后删除的暂存文件数
         #   staged_cleanup_failed: 暂存文件删除失败数
         #   stale_cleaned: 本轮开始时清理的超期暂存残留数
@@ -1311,6 +1323,7 @@ class SourceSyncEngine:
             "truncated": 0,
             "copied": 0,
             "copy_failed": 0,
+            "missing_source": 0,
             "staged_deleted": 0,
             "staged_cleanup_failed": 0,
             "stale_cleaned": 0,
@@ -1504,15 +1517,23 @@ class SourceSyncEngine:
                 )
                 for key, value in stage_stats.items():
                     stats[key] += value
+                # 单独汇总打一条，missing_source 不再逐条打 warning
                 logger.info(
                     "研报 SQL 批量暂存完成 | start=%s end=%s rows=%s "
-                    "copied=%s failed=%s",
+                    "copied=%s failed=%s missing_source=%s",
                     window_start_at,
                     window_end_at,
                     len(pending_rows),
                     stage_stats["copied"],
                     stage_stats["copy_failed"],
+                    stage_stats["missing_source"],
                 )
+                if stage_stats["missing_source"]:
+                    logger.warning(
+                        "本窗口 %d 条研报未在磁盘上找到对应源文件，已跳过（检查 "
+                        "source_sync.file_root 与 batchid 是否匹配）",
+                        stage_stats["missing_source"],
+                    )
 
             # ---- 从暂存文件逐条上传（滑动窗口限流在这里生效）----
             if not dry_run:

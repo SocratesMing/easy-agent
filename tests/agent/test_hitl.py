@@ -39,6 +39,37 @@ def test_destructive_rm_detected():
     assert _is_destructive_command(request) is True
 
 
+def test_hitl_note_and_delete_description_match_the_approval_policy():
+    """目录删除只走 delete、由用户审批（审批说明要写到它）；execute 里的目录删除命令仍直接拒绝。"""
+    from easy_agent.agent.hitl import (
+        DELETE_HITL_TOOL_DESCRIPTION,
+        EXECUTE_HITL_TOOL_DESCRIPTION,
+        HITL_SYSTEM_NOTE,
+    )
+
+    assert HITL_SYSTEM_NOTE.startswith("## 人工审批")
+    assert "删除文件或目录的 delete" in HITL_SYSTEM_NOTE
+    assert "不要原样重试" in HITL_SYSTEM_NOTE
+    assert "bwrap" not in HITL_SYSTEM_NOTE  # 沙箱实现写在 execute 描述里
+    assert "删除文件或目录" in DELETE_HITL_TOOL_DESCRIPTION
+    assert "「批准 / 拒绝」" in DELETE_HITL_TOOL_DESCRIPTION
+    assert "需要删除目录时改用 delete 工具" in EXECUTE_HITL_TOOL_DESCRIPTION
+
+
+def test_execute_directory_deletion_is_rejected_and_points_to_delete(tmp_path):
+    """execute 删目录仍直接拒绝（不进审批），但要告诉模型改用 delete，而不是「目录受保护、删不了」。"""
+    from easy_agent.backends.shell import PathTranslatingShell
+
+    (tmp_path / "sub").mkdir()
+    shell = PathTranslatingShell({"/workspace": str(tmp_path)}, root_dir=tmp_path, sandbox_enabled=False)
+
+    result = shell.execute("rm -r /workspace/sub")
+
+    assert result.exit_code == 1
+    assert "delete 工具" in result.output
+    assert (tmp_path / "sub").is_dir()
+
+
 def test_register_execute_description_profiles_is_idempotent():
     from easy_agent.agent.hitl import (
         execute_description_installed,

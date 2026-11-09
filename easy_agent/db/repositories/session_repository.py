@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from easy_agent.models.db import SessionModel
+from easy_agent.db import session_messages as session_messages_repo
 from easy_agent.db.repositories import agent_runs as agent_runs_repo
 from easy_agent.db.repositories import files as files_repo
 from easy_agent.db.repositories import sessions as sessions_repo
@@ -144,6 +145,15 @@ class SessionRepository:
     def get_messages(self, session_id: str) -> list[dict]:
         """会话 UI 投影消息列表（行表优先 + legacy JSON 只读回退）。"""
         return sessions_repo.get_messages(self._db, session_id)
+
+    def list_pending_approval_session_ids(self, session_ids: list[str]) -> set[str]:
+        """批量判断哪些会话仍有待审批（会话列表「待审批」徽标，刷新后一次请求拿全）。
+
+        判据与前端 ``derivePendingApproval`` 同源：只看每个会话最后一条消息。
+        """
+        return session_messages_repo.pending_approval_session_ids(
+            self._db, session_ids
+        )
 
     def add_message(self, session_id: str, message: dict) -> None:
         """追加一条消息（A2：只写 ``session_messages`` 行表）。"""

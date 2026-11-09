@@ -31,8 +31,8 @@ configureEasyAgent({
   mode: 'embedded',
   api: {
     // Agent 后端地址前缀。同源（宿主 Nginx 把 /agent 反代到 Agent 后端）时留空；
-    // 跨域直连时填 Agent 后端地址（后端需允许该来源的 CORS）。需要按前缀分别改写时改用 resolveUrl(path)。
-    baseURL: process.env.VUE_APP_EASY_AGENT_BASE_URL || '',
+    // 如需跨域直连，在宿主代码里改成实际后端地址（后端需允许该来源的 CORS）。
+    baseURL: '',
     // 公司网关要求的附加请求头（不要在这里放宿主自己的登录 token）
     // headers: () => ({ 'X-Request-Source': 'portal' }),
   },

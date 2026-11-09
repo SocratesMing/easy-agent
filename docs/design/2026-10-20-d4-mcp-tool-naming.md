@@ -1,6 +1,6 @@
 # D4 方案：MCP 工具按 server 命名 + 兼容层
 
-> 状态：S1/S2 已实现，开关 `EASY_MCP_TOOL_PREFIX` 默认 **off**（行为与旧版一致），待灰度开启。
+> 状态：S1/S2 已实现，开关固定在代码内（`PREFIX_ENABLED = False`，行为与旧版一致）。
 > 背景与证据见 [DeepAgents 规范一致性审计 §5 D4](2026-10-20-deepagents-conformance-audit.md)。
 > 目标：多 server 场景下工具名可区分、冲突不再静默丢弃，同时不破坏既有会话、技能与审批。
 
@@ -56,7 +56,7 @@
 
 | 阶段 | 内容 | 默认值 |
 | --- | --- | --- |
-| S1 | 引入命名函数 + `EASY_MCP_TOOL_PREFIX` 开关（默认 **off**），只做重命名与日志，行为不变 | off |
+| S1 | 引入命名函数 + 代码内固定开关（默认 **off**），只做重命名与日志，行为不变 | off |
 | S2 | 技能/子代理后缀匹配 + HITL 改用 `original_name`（与开关无关，独立可用） | — |
 | S3 | 灰度打开开关（dev 环境），观察工具调用成功率、HITL 触发率、审计证据里的 server/original 字段 | dev on |
 | S4 | 默认 on，保留一个版本的回退开关；补齐迁移说明 | on |

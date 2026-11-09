@@ -10,13 +10,15 @@
  * 模板/计算属性里直接用 `renderMarkdown(content)`。
  */
 
-import { shallowRef } from 'vue'
+import { ref, shallowRef } from 'vue'
 import { createHighlighter } from 'shiki'
 import {
   setupMarkedExtensions,
   createMarkdownRenderer,
+  clearMarkdownBlockCache,
   escapeHtml,
   renderMarkdown as renderMarkdownHtml,
+  renderMarkdownBlocks as renderMarkdownBlocksHtml,
 } from '../../../markdownSetup.js'
 
 setupMarkedExtensions()
@@ -45,12 +47,21 @@ const LANGS = [
 const highlighter = shallowRef(null)
 let initPromise = null
 
+/**
+ * 高亮器就绪的次数（0 → 1）。MarkdownBody 监听它在 shiki 加载完成后重渲：
+ * 分块渲染是命令式调用，不会像 computed 那样自动追踪 highlighter。
+ */
+export const highlighterVersion = ref(0)
+
 /** 初始化 shiki（首次加载完成后全局复用；失败只告警，不影响纯文本渲染） */
 export function ensureHighlighter() {
   if (highlighter.value || initPromise) return initPromise
   initPromise = createHighlighter({ themes: ['github-light'], langs: LANGS })
     .then((instance) => {
       highlighter.value = instance
+      // 分块缓存里是就绪前渲染的未高亮代码块：清掉再通知重渲，否则会一直命中旧结果
+      clearMarkdownBlockCache(markdownRenderer)
+      highlighterVersion.value++
       return instance
     })
     .catch((e) => {
@@ -76,7 +87,10 @@ function fallbackBlock(code) {
  * @param {string} [lang] 语言标识（可为短名，如 py/js）
  * @returns {string} HTML
  */
-export function highlightCode(code, lang) {
+export function highlightCode(code, lang, state) {
+  // 流式中间帧：代码块多半还没写完，不做 shiki 高亮，只输出转义纯文本；
+  // 流结束后按原文完整渲染，最终 HTML 不变。
+  if (state && state.partial) return fallbackBlock(code)
   if (!highlighter.value) return fallbackBlock(code)
 
   const normalized = lang ? lang.toLowerCase() : 'text'
@@ -101,6 +115,11 @@ export const markdownRenderer = createMarkdownRenderer({ highlight: highlightCod
  * @param {string} content markdown 文本
  * @returns {string} HTML
  */
-export function renderMarkdown(content) {
-  return renderMarkdownHtml(content, markdownRenderer)
+export function renderMarkdown(content, options = {}) {
+  return renderMarkdownHtml(content, markdownRenderer, options)
+}
+
+/** 分块渲染（流式对话用）：已完成块命中缓存，只重渲最后一块 */
+export function renderMarkdownBlocks(content, options = {}) {
+  return renderMarkdownBlocksHtml(content, markdownRenderer, options)
 }

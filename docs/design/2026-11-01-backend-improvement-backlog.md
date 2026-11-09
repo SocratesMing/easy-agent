@@ -376,17 +376,9 @@ ruff 统计：C901 64 个、PLR0912 30 个、PLR0915 24 个。
 
 **前置**：近 10 天有 5 个远端分支在改 `services/agent_manager.py`、`expert_*`、`mcp`、`memory_manager` 等文件。先确认这些分支的合并计划，否则纯移动会造成大量冲突。
 
-### T16 前端运行期配置的值没有 JS 转义（P3）
+### T16 前端运行期配置的值没有 JS 转义（P3，已废弃）
 
-**问题**：`frontend/scripts/generate-runtime-config.sh` 把 `API_BASE_URL`、`APP_TITLE`、`APP_WELCOME_TITLE`、`AGENT_ENV` 原样拼进 JS 字符串字面量。值里有 `"`、`\` 或换行时，生成的文件不是合法 JS。现在脚本末尾的 `node --check` 会让构建失败，而不是静默产出坏文件。
-
-**改法**：
-
-1. 改用 node 生成，值从环境变量传入：`node -e 'process.stdout.write("window.__RUNTIME_CONFIG__ = " + JSON.stringify(cfg, null, 2) + ";\n")'`。
-2. 同步修改 `frontend/scripts/print-serve-env.mjs`：它用正则 `KEY:\s*"([^"]*)"` 解析这个文件，换成 JSON 写法后键会带引号，要同步改解析（去掉前后缀后 `JSON.parse` 即可）。
-3. 脚本本身是 LF、`.env.*` 是 CRLF，保持不变。
-
-**验收**：`APP_TITLE='A "B" \ C' npm run build` 成功，`node --check dist/runtime-config.js` 通过；`npm run serve` 打印的启动信息正确。
+**结论**：该链路已整体移除。两套前端现在都固定使用同源相对路径 `/agent/...`，不再读取 `.env.<mode>`、`VITE_*` / `VUE_APP_*` 变量，也不再生成或加载运行期 `runtime-config.js`；相关生成脚本、占位文件与单测一并删除。本条不再需要处理，历史问题描述保留在本节标题的「已废弃」标记中。
 
 ### P\* 既有规划（需要单独做设计决策，本清单不展开）
 

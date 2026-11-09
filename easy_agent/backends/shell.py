@@ -105,8 +105,9 @@ class PathTranslatingShell(LocalShellBackend):
         if is_directory_deletion(translated):
             logger.warning(f"[execute] 拒绝目录删除命令: {translated[:120]}")
             return ExecuteResponse(
-                output="Error: 不允许删除目录/文件夹。项目根目录和 workspace 下的文件夹受保护，"
-                "无法通过 rmdir、rm -r 等命令删除。如需删除文件，请使用 rm（不带 -r/-R/-d 参数）。",
+                output="Error: execute 不能删除目录/文件夹，rmdir、rm -r 等命令会被直接拒绝。"
+                "需要删除目录时请改用 delete 工具（会请用户审批）；"
+                "删除单个文件可用 delete 工具，或不带 -r/-R/-d 参数的 rm。",
                 exit_code=1,
                 truncated=False,
             )

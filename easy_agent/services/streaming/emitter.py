@@ -65,8 +65,19 @@ class SSEEmitter:
     def content_end(self, content: str = "") -> str:
         return self.emit(SSEEvent.CONTENT_END, content=content)
 
-    def error(self, content: str) -> str:
-        return self.emit(SSEEvent.ERROR, content=content)
+    def error(self, content: str, *, code: str | None = None) -> str:
+        """错误帧：``content`` 是给用户看的文案，``code`` 是可选的机器可读标识。
+
+        ``code`` 只在有值时写入，保证既有调用方（取消 / 步数用尽 / 准备阶段异常）
+        产出的帧与改动前**逐字节一致**（键序仍是 ``type → content``）。目前唯一的
+        取值是 :data:`orchestrator.ERROR_CODE_TIMEOUT`，前端据此走「常驻灰条」而不是
+        红色报错。``code`` 是 ``sse.EVENT_SPECS[ERROR]`` 里登记在册的可选字段，
+        ``validate_event`` 不会因它报错。
+        """
+        fields: dict[str, Any] = {"content": content}
+        if code is not None:
+            fields["code"] = code
+        return self.emit(SSEEvent.ERROR, **fields)
 
     def done(self, *, session_id: str | None = None, **fields: Any) -> str:
         return self.emit(

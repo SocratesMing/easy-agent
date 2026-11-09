@@ -97,19 +97,15 @@ CFG = {"configurable": {"thread_id": "s"}}
 # ── 纯函数 ────────────────────────────────────────────────────────────
 
 
-def test_render_replaces_only_the_turn_message_and_strips_earlier_reasoning():
-    earlier = AIMessage(
-        content=[{"type": "thinking", "thinking": "old", "signature": "sig"}, {"type": "text", "text": "a0"}],
-        additional_kwargs={"reasoning_content": "old", "keep": 1},
-    )
-    current_step = AIMessage(content=[{"type": "thinking", "thinking": "now", "signature": "s2"}])
+def test_render_replaces_only_the_turn_message_and_keeps_earlier_reasoning():
+    earlier = AIMessage(content="a0", additional_kwargs={"reasoning_content": "old", "keep": 1})
+    current_step = AIMessage(content="", additional_kwargs={"reasoning_content": "now"})
     messages = [HumanMessage("q0", id="t0"), earlier, HumanMessage("q1", id="t1"), current_step]
 
     rendered = render_turn_messages(messages, {"message_id": "t1", "content": RENDERED})
 
     assert rendered[0] is messages[0]
-    assert rendered[1].content == [{"type": "text", "text": "a0"}]
-    assert rendered[1].additional_kwargs == {"keep": 1}
+    assert rendered[1] is earlier  # 历史轮次的思考原样回传
     assert (rendered[2].content, rendered[2].id) == (RENDERED, "t1")
     assert rendered[3] is current_step  # 本轮工具循环里的推理保持原样
     assert messages[2].content == "q1"  # 不改原消息
@@ -147,7 +143,7 @@ async def test_model_sees_rendered_turn_but_thread_stores_the_raw_message(tmp_pa
     assert [m.content for m in model.of("agent")[1] if m.type == "human"] == ["question", "next"]
 
 
-async def test_turn_system_context_follows_memory_and_does_not_leak_to_next_turn(tmp_path):
+async def test_turn_system_context_stays_in_system_and_does_not_leak_to_next_turn(tmp_path):
     """旧拒答记忆不再覆盖本轮准入；复用 thread 时不得把放行结论带入下一轮。"""
     stale = "服务范围限于金融；生成 PPT 一律拒答。"
     approval = "本轮请求已通过服务端意图检查，允许使用已启用技能生成 PPT。"
@@ -163,7 +159,9 @@ async def test_turn_system_context_follows_memory_and_does_not_leak_to_next_turn
         system_context=approval,
     ), CFG)
     first = str(model.of("agent")[0][0].content)
-    assert first.index(stale) < first.index(approval)
+    assert stale not in first
+    assert stale in str(next(m for m in model.of("agent")[0] if m.type == "human").content)
+    assert first.index("<memory_guidelines>") < first.index(approval)
     assert first.count(approval) == 1
     stored = (await agent.aget_state(CFG)).values["messages"]
     assert all(approval not in str(m.content) for m in stored)
