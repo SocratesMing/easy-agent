@@ -1,6 +1,6 @@
 """D4：MCP 工具命名与「原始名 → 实际名」解析。
 
-开关 ``EASY_MCP_TOOL_PREFIX`` 默认关闭，关闭时 ``services/mcp/tools.py`` 不会调用这里的
+命名开关固定在代码内且默认关闭，关闭时 ``services/mcp/tools.py`` 不会调用这里的
 命名函数，行为与旧版一致；本文件只验证命名函数与兼容匹配本身的正确性。
 """
 
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from langchain_core.tools import tool
 
+import easy_agent.utils.mcp_tool_names as mcp_tool_names
 from easy_agent.utils.mcp_tool_names import (
     MAX_TOOL_NAME_CHARS,
     original_name,
@@ -19,13 +20,11 @@ from easy_agent.utils.mcp_tool_names import (
 
 
 def test_prefix_flag_defaults_off(monkeypatch):
-    monkeypatch.delenv("EASY_MCP_TOOL_PREFIX", raising=False)
+    """固定默认关闭；需要开启时由代码内常量显式切换，功能路径仍然可用。"""
+    assert mcp_tool_names.PREFIX_ENABLED is False
     assert prefix_enabled() is False
-    for value in ("1", "true", "YES", "on"):
-        monkeypatch.setenv("EASY_MCP_TOOL_PREFIX", value)
-        assert prefix_enabled() is True
-    monkeypatch.setenv("EASY_MCP_TOOL_PREFIX", "0")
-    assert prefix_enabled() is False
+    monkeypatch.setattr(mcp_tool_names, "PREFIX_ENABLED", True)
+    assert prefix_enabled() is True
 
 
 def test_prefixed_name_basic():

@@ -119,6 +119,7 @@
         :compact="isSidebar"
         :show-manage-entry="showManageEntry"
         @send="onSend"
+        @webSearchChange="emit('webSearchChange', $event)"
         :disabled="isStreaming || compactBusy"
         :isStreaming="isStreaming"
         :session-id="currentSessionId"
@@ -238,7 +239,7 @@ const topbarFloating = computed(
   () => !showSessionTime.value && props.todos.length === 0 && showWorkspaceBtn.value
 )
 
-const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'edit', 'update:selectedModel', 'toggleWorkspace', 'clearExpert', 'selectExpert', 'expertPromptApplied', 'openPanel', 'openKnowledge'])
+const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'edit', 'update:selectedModel', 'toggleWorkspace', 'clearExpert', 'selectExpert', 'expertPromptApplied', 'openPanel', 'openKnowledge', 'webSearchChange'])
 const messagesRef = ref(null)
 
 function formatSessionTime(isoStr) {

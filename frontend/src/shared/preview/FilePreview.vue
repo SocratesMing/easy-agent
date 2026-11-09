@@ -348,7 +348,7 @@ function handleDownload() {
   document.body.removeChild(link)
 }
 
-const renderedMarkdown = computed(() => renderMarkdown(textContent.value, markdownRenderer, { sourceCards: false }))
+const renderedMarkdown = computed(() => renderMarkdown(textContent.value, markdownRenderer, { sourceCards: false, remoteImages: 'inline', rawHtml: 'allow' }))
 
 const isText = computed(() => {
   const ext = getExt(props.filename)

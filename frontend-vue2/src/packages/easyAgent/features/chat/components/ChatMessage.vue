@@ -130,8 +130,7 @@
           />
         </div>
         <template v-for="(block, idx) in finalContentBlocks">
-          <!-- 用户消息：技能标签与正文放在同一个气泡内横向排列（标签在左、正文在右），
-               避免标签独占一行；正文里的 /技能名 指令已去掉，由标签承载 -->
+          <!-- 用户消息：技能标签作行内前缀接正文首行（标签在左前方，不分栏）；/技能名 指令已去掉、由标签承载；正文按纯文本展示 -->
           <div
             v-if="block.type === 'content' && message.role === 'user'"
             :key="'cu'+block.origIndex"
@@ -148,7 +147,7 @@
                 <span class="message-skill-chip-name">{{ skill.name || skill.dir_name }}</span>
               </span>
             </span>
-            <MarkdownBody v-if="block.content" class="user-bubble-body" :content="block.content" :cite-map="citeNumberMap" />
+            <UserMessageText v-if="block.content" class="user-bubble-body" :content="block.content" />
           </div>
           <MarkdownBody v-else-if="block.type === 'content'" :key="'c'+block.origIndex" class="message-text" :content="block.content" :cite-map="citeNumberMap" />
         </template>
@@ -208,6 +207,21 @@
 
       <MessageError :error="message.error" />
       
+      <!-- 超时兜底说明：这一轮没跑完（数据不全），常驻在正文之后，不弹框、不自动消失。
+           fallback_note 由后端异常兜底写进消息并落库，刷新/切会话后仍在；
+           历史消息没有该字段时 v-if 不成立，什么都不渲染。 -->
+      <div
+        v-if="message.role === 'assistant' && message.fallback_note"
+        class="message-fallback-note"
+      >
+        <svg class="fallback-note-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <circle cx="12" cy="12" r="9"></circle>
+          <line x1="12" y1="7.5" x2="12" y2="13"></line>
+          <line x1="12" y1="16.5" x2="12.01" y2="16.5"></line>
+        </svg>
+        <span>{{ message.fallback_note }}</span>
+      </div>
+
       <KnowledgeEvidence v-if="message.role === 'assistant'" ref="knowledgeEvidence" :evidence="message.knowledge_evidence || []" :warnings="message.knowledge_warnings || []" :content="citationSourceText" />
 
       <!-- 用户消息显示复制和重试按钮 -->
@@ -238,6 +252,7 @@ import {
   copyTextToClipboard,
 } from '../../../markdownSetup.js'
 import MarkdownBody from './MarkdownBody.vue'
+import UserMessageText from './UserMessageText.vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
 import KnowledgeEvidence from '../../knowledge/KnowledgeEvidence.vue'
 import SkillIcon from '../../../shared/components/SkillIcon.vue'
@@ -279,7 +294,7 @@ function isProcessType(b) {
 installCodeCopyHandler()
 
 export default {
-  components: { FileIcon, ToolCallCard, KnowledgeEvidence, SkillIcon, MarkdownBody, MessageError },
+  components: { FileIcon, ToolCallCard, KnowledgeEvidence, SkillIcon, MarkdownBody, UserMessageText, MessageError },
   props: {
     message: {
       type: Object,
@@ -1060,15 +1075,11 @@ export default {
   white-space: nowrap;
 }
 
-/* 用户气泡：技能标签与正文同行（标签在左、正文在右并自行换行）。
-   align-items: center 让标签与正文行盒垂直居中；正文多行时标签也贴行盒中线，
-   不会出现「标签顶着首行、视觉上高一块」的错位感。
-   窄屏放不下时标签独占一行，正文换到下一行。 */
+/* 用户气泡：技能标签作为行内前缀与正文首行同排，正文换行后回到气泡左边缘。
+   不用 flex 分栏：那样长正文会变成标签右侧的一条竖列、标签被垂直居中，
+   视觉上像「标签独占左边一列」，短消息还看不出、长消息就很明显。 */
 .message.user .message-text.user-bubble {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
+  display: block;
 }
 
 /* 用户气泡内的技能标签：与输入框「已选技能」同一套胶囊样式，但整体缩一档，
@@ -1081,8 +1092,11 @@ export default {
   max-width: 100%;
 }
 
+/* 气泡内的标签按行内元素排布，紧贴正文首行、不单独占宽；多个标签仍横排 */
 .user-bubble .message-skill-chips {
-  flex-shrink: 0;
+  display: inline-flex;
+  vertical-align: middle;
+  margin-right: 6px;
 }
 
 .message-skill-chip {
@@ -1123,10 +1137,9 @@ export default {
   font-size: 11px;
 }
 
-/* 气泡内正文：占满标签之后的剩余宽度，长文本正常换行 */
+/* 气泡内正文：行内流式排版——首行紧跟标签之后，换行回到气泡左边缘 */
 .user-bubble-body {
-  flex: 1 1 auto;
-  min-width: 0;
+  display: inline;
 }
 
 /* 文件容器样式 */
@@ -2189,6 +2202,36 @@ export default {
 
 .message.user .message-text ::v-deep tr:hover {
   background: rgba(30, 41, 59, 0.06);
+}
+
+/* 超时兜底说明：比正文轻一档的中性提示条，常驻不消失。
+   只用主题变量 + Flex + 圆角，不用 color-mix（Edge 92 不支持），
+   也不依赖 flex gap，旧内核同样正常。 */
+.message-fallback-note {
+  display: flex;
+  align-items: flex-start;
+  margin-top: 12px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+
+.message-fallback-note .fallback-note-icon {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin-top: 3px;
+  margin-right: 8px;
+  color: #BA7517;
+}
+
+.message-fallback-note span {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .message-actions {

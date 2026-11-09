@@ -316,3 +316,70 @@ def test_api_routes_use_overridden_session_repository(client, db):
     assert "create_session" in spy.calls
     assert "get_owned_session" in spy.calls
     assert "list_sessions" in spy.calls
+
+
+# ── 会话列表「待审批」徽标（刷新页面后不依赖逐会话历史重建）────────────────
+
+
+def _add_pending_assistant(db, sid, *, pending_approval, blocks=None):
+    MessageRepository(db).add_message(
+        sid,
+        {
+            "role": "assistant",
+            "content": "",
+            "pending_approval": pending_approval,
+            "blocks": blocks if blocks is not None else [],
+        },
+    )
+
+
+def _pending_flag(client, sid):
+    sessions = client.get("/agent/sessions").json()
+    row = next(s for s in sessions if s["session_id"] == sid)
+    return row["pending_approval"]
+
+
+def test_list_marks_pending_approval_session(client, db):
+    """停在审批的会话：列表直接下发 pending_approval=True（刷新后徽标不再全灭）。"""
+    sid = _create_session(client)
+    _add_pending_assistant(
+        db,
+        sid,
+        pending_approval={
+            "thread_id": f"{sid}-m1",
+            "action_requests": [{"tool_call_id": "tc1", "action_name": "save_expert"}],
+        },
+        blocks=[{"type": "tool_call", "tool_call_id": "tc1", "approval_status": "pending"}],
+    )
+    assert _pending_flag(client, sid) is True
+
+
+def test_list_clears_flag_after_approval_answered(client, db):
+    """审批已作答：块状态 approved 且无待答操作 -> 不再显示待审批。"""
+    sid = _create_session(client)
+    _add_pending_assistant(
+        db,
+        sid,
+        pending_approval={
+            "thread_id": f"{sid}-m1",
+            "action_requests": [{"tool_call_id": "tc1", "action_name": "save_expert"}],
+        },
+        blocks=[{"type": "tool_call", "tool_call_id": "tc1", "approval_status": "approved"}],
+    )
+    assert _pending_flag(client, sid) is False
+
+
+def test_list_ignores_stale_pending_when_new_user_turn(client, db):
+    """末尾是新 user 消息：上一轮残留的待审批不再阻塞会话。"""
+    sid = _create_session(client)
+    _add_pending_assistant(
+        db,
+        sid,
+        pending_approval={
+            "thread_id": f"{sid}-m1",
+            "action_requests": [{"tool_call_id": "tc1", "action_name": "save_expert"}],
+        },
+        blocks=[{"type": "tool_call", "tool_call_id": "tc1", "approval_status": "pending"}],
+    )
+    MessageRepository(db).add_message(sid, {"role": "user", "content": "继续"})
+    assert _pending_flag(client, sid) is False

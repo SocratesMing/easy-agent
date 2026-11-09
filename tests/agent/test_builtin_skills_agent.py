@@ -253,7 +253,7 @@ async def test_save_expert_still_waits_for_approval(build):
 
 
 async def test_sessions_without_save_expert_need_no_skill_tool_wiring(build):
-    """专家会话不注入 save_expert：不替换框架默认的 SkillsMiddleware，技能照常可读。"""
+    """专家会话不注入 save_expert：技能中间件不带门控工具，技能照常可读。"""
     agent, model = build(
         [_call("read_file", {"file_path": EXPERT_CREATOR_PATH}, "r1"), AIMessage(content="ok")],
         tools=(),

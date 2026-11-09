@@ -25,6 +25,8 @@ from easy_agent.models.api import (
 from easy_agent.agent.skills import discover_skills
 from easy_agent.services.agents.manager import get_agent_config
 from easy_agent.services.agents.prompts import load_system_prompt
+from easy_agent.services.memory.manager import MAX_LONG_TERM_MEMORY_CHARS, write_memory
+from easy_agent.utils.blocking import run_blocking
 from easy_agent.tools.web_search import TIME_RANGE_VALUES, is_web_search_available, resolve_provider
 
 logger = logging.getLogger(__name__)
@@ -56,7 +58,8 @@ class UpdateMemoryRequest(BaseModel):
     content: str
 
 
-MEMORY_MAX_CHARS = 2000
+#: 与后台长期记忆更新的上限一致：这里放得更宽，下一轮更新就会把用户刚写的内容压缩掉
+MEMORY_MAX_CHARS = MAX_LONG_TERM_MEMORY_CHARS
 
 
 @router.put("/memory", summary="更新当前用户的记忆文件内容", response_model=MemoryUpdateResponse)
@@ -80,7 +83,9 @@ async def update_memory(
             f"记忆文件超出限制已截断 | 用户: {username} | 原始: {len(request.content)} | 截断后: {len(content)}"
         )
 
-    memory_file.write_text(content, encoding="utf-8")
+    # 与后台记忆更新走同一条写入路径：同一把锁 + 原子写 + 同步结构化 sidecar。
+    # 后台更新若正在进行，写回前会发现文件已变，基于这份内容重做，不会把它覆盖掉。
+    await run_blocking(write_memory, memory_file, content, raise_on_error=True)
     logger.info(f"记忆文件已更新 | 用户: {username} | 字符数: {len(content)}")
     return {"status": "ok", "chars": len(content)}
 

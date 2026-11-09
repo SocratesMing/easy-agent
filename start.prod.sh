@@ -98,7 +98,7 @@ if [[ "$SKIP_BUILD" == "true" ]]; then
 else
     cd "$PROJECT_ROOT/frontend-vue2"
     npm install --registry=https://registry.npmmirror.com
-    # AGENT_ENV 已在环境中，vue.config.js 会据此选择 .env.prod
+    # AGENT_ENV 已在环境中，vue.config.js 据此选择代码内代理目标
     npm run build
     cd "$PROJECT_ROOT"
     echo "  ✅ 前端构建完成 -> frontend-vue2/dist/"

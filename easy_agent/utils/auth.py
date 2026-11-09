@@ -11,6 +11,8 @@ from typing import Optional
 import bcrypt
 from jose import JWTError, jwt
 
+from easy_agent.bootstrap.env import is_unset_placeholder
+
 logger = logging.getLogger(__name__)
 
 ALGORITHM = "HS256"
@@ -44,7 +46,7 @@ def validate_production_jwt_secret(
     if current != "prod":
         return
     value = secret if secret is not None else os.environ.get("EASY_JWT_SECRET")
-    if not (value or "").strip():
+    if not (value or "").strip() or is_unset_placeholder(value):
         raise RuntimeError(
             "生产环境 (AGENT_ENV=prod) 必须显式设置 EASY_JWT_SECRET；"
             "禁止回退到 data/.jwt_secret：多副本/多 worker 各自本地文件会导致 "
@@ -63,7 +65,7 @@ def _load_or_create_secret(secret_file: Path = _DEFAULT_SECRET_FILE) -> str:
        **仅 dev/test**：prod 未设置环境变量时不会读写该文件（启动期 fail-fast）。
     """
     env_secret = os.environ.get("EASY_JWT_SECRET")
-    if env_secret and env_secret.strip():
+    if env_secret and env_secret.strip() and not is_unset_placeholder(env_secret):
         return env_secret
     if _current_agent_env() == "prod":
         # 生产禁止把密钥落到本地 data/.jwt_secret：多副本各自本地文件无法互验，

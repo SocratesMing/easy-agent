@@ -255,7 +255,7 @@ node smoke.mjs --chrome <chrome 路径> --base http://localhost:18091   # Node �
 | `dev` / `build` 依赖仓库级 `sync-frontend-shared.mjs` | 同步目标改为模块内 `shared/`；模块自带完整副本，宿主不需要 `frontend-shared/`；`check` 校验来源一致，来源缺失时报错（可显式 `--allow-missing-shared-source`） | 已解决 |
 | `utils/request.js` 与 `api/request.js` 两套 | 合并为一套（`personnel/api.js` 改用统一层，语义逐项核对）；新增合同测试 | 已解决 |
 | `/api/personnel`、`/api/knowledge/v1` 前缀 | 后端已统一到 `/agent/personnel`、`/agent/knowledge/v1`（`/api` 由 `LegacyHostRoutes` 兼容旧前端）；模块改为只请求 `/agent`（2026-11-02）；所有通道统一经 `resolveUrl`；导出前缀清单供宿主放行 | 已解决 |
-| `src/config.js` 仍存在 | 引用图确认无引用后删除；`docker/entrypoint.sh` 仍写 `runtime-config.js`（Vue 2 页面从未加载）未改 | 已解决；部署脚本待确认 |
+| `src/config.js` 仍存在 | 引用图确认无引用后删除；`runtime-config.js` 生成链路与 `docker/entrypoint.sh` 注入已一并移除 | 已解决 |
 | 全局 reset / `:root` / `html,body,#app` / 滚动条 / `theme.js` 写 html / 标题 / history / `100vw` | 模块样式限域、主题写模块根、标题与地址经适配器、页面跟随宿主容器 | 已解决并在浏览器验证 |
 | `main.js` 全局注册 Element 组件与 `tip` 指令 | 改为组件局部注册；Element 主题由宿主提供；独立应用 `main.js` 只引主题 CSS | 已解决 |
 | `tip.js` 往 body / head 注入 | 保留单例浮层；卸载 / 缓存时收起；样式不依赖宿主盒模型与字体 | 保留设计 |
@@ -265,7 +265,7 @@ node smoke.mjs --chrome <chrome 路径> --base http://localhost:18091   # Node �
 | 模块级 `chatStore` / 事件总线 / `configureRequest` | 页面与页面内侧边栏共享（保留）；SDK 独立副本不覆盖页面配置；单页单实例并有守卫 | 已验证 |
 | Node 14 / `node --test` / 锁文件 v3 / `marked` engines | 构建与工具支持 Node 14（已验证）；单元测试需 Node ≥ 20.11（Node 14 下明确拒绝）；锁文件 v3 只用于外网安装 | 已验证 |
 | 额外发现：`SessionList` 与原 `App.vue` 的 document / window 监听从不移除 | 改为成对移除 / 模块内事件 | 已解决 |
-| 额外发现：门户身份缺失时自动用 `demo/demoid` 登录 | 默认不回落；外网演示需显式 `VUE_APP_PASSWORDLESS_DEMO_FALLBACK=true` | 已解决（独立应用行为变化） |
+| 额外发现：门户身份缺失时自动用 `demo/demoid` 登录 | 默认不回落；回落开关已固定在代码内关闭 | 已解决（独立应用行为变化） |
 | 额外发现：401 续期遇到「被顶下线」会重新登录、两端互踢 | 被顶下线不续期（SDK 同样适用） | 已解决（SDK 行为变化） |
 | 额外发现：`KnowledgeWorkbench` 用了 Vue 3 的 `:global()`，Vue 2 scoped 不认，整条 hover 规则被丢弃 | 未改（与本次改造无关，单独修） | 未处理 |
 

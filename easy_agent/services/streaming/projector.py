@@ -22,7 +22,6 @@ _MODEL_CONTEXT_LIMITS = {
     "gpt-4-turbo": 131072,
     "gpt-3.5": 16385,
     "claude": 200000,
-    "qwen": 131072,
     "glm": 131072,
     "minimax": 131072,
     "moonshot": 131072,
@@ -250,6 +249,8 @@ class ResumeSnapshot:
     blocks: list = field(default_factory=list)
     tool_call_records: list = field(default_factory=list)
     current_step: int = 0
+    #: 中断前这条消息已用的耗时（秒，不含等待审批的时间），续跑从这里接着计时
+    elapsed_time: float = 0.0
     pending_tool_call_ids: list[str] = field(default_factory=list)
     #: 持久化的 approval_required 载荷（含 interrupt_id / action_index / tool_call_id）
     pending_action_requests: list[dict] = field(default_factory=list)
@@ -279,6 +280,7 @@ def load_resume_snapshot(messages: list[dict] | None) -> ResumeSnapshot:
             )
         usage = msg.get("usage") or {}
         snapshot.current_step = usage.get("step_count", 0)
+        snapshot.elapsed_time = float(usage.get("elapsed_time") or 0)
         # 收集历史中已被标记为「待审批」的工具调用（HITL 中断），供后续写回最终决策。
         # 关键：HITL 中断发生在工具「决定调用但尚未执行」时，此时 tool_call_records
         # 尚未生成（要等 ToolMessage 即工具执行后才 append），因此 message.tool_calls

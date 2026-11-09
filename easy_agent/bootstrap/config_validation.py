@@ -31,7 +31,7 @@ from easy_agent.bootstrap.config_models import (
     UploadLimitsConfig,
     WebSearchConfig,
 )
-from easy_agent.bootstrap.env import env_bool, env_str
+from easy_agent.bootstrap.env import env_bool, env_str, is_unset_placeholder
 
 # 日志分类沿用 "easy_agent.bootstrap.config"：启动日志与 caplog 过滤按该名称订阅，
 # 拆分模块不改变告警归属（见 tests/test_config_validation.py）。
@@ -137,6 +137,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "max_filename_utf8_bytes",
             "allowed_extensions",
             "max_documents_per_query",
+            "max_documents_per_base",
             "parse_timeout_seconds",
         }
     ),
@@ -326,7 +327,7 @@ def _expand_env(value: str, missing: set[str]) -> str:
         name = match.group(1)
         default = match.group(2)
         env_value = env_str(name, strip=False)  # 密钥等值原样替换，不 strip
-        if env_value:
+        if env_value and not is_unset_placeholder(env_value):
             return env_value
         if default is not None:
             return default

@@ -103,15 +103,6 @@ export async function notifyLogout() {
   }
 }
 
-export async function unregister() {
-  const data = await request(
-    { url: '/agent/auth/unregister', method: 'delete' },
-    '注销失败'
-  )
-  clearAuth()
-  return data
-}
-
 export async function listUsers() {
   return request(
     { url: '/agent/auth/admin/users', method: 'get' },
@@ -133,25 +124,6 @@ export async function getAuthConfig() {
   return request({ url: '/agent/auth/config', method: 'get' })
 }
 
-export async function getCurrentUser() {
-  const username = getStoredUsername()
-  if (!username) return null
-
-  try {
-    return await request({
-      url: '/agent/auth/me',
-      method: 'get',
-      params: { username },
-    })
-  } catch (error) {
-    if (error.response && error.response.status === 404) {
-      clearAuth()
-      return null
-    }
-    error.message = '获取用户信息失败'
-    throw error
-  }
-}
 
 let signingIn = null
 

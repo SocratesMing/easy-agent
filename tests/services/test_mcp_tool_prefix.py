@@ -1,6 +1,6 @@
-"""D4：``EASY_MCP_TOOL_PREFIX`` 打开后的端到端行为（``get_mcp_tools``）。
+"""D4：命名开关打开后的端到端行为（``get_mcp_tools``）。
 
-关闭时保持旧行为：跨 server 同名工具保留第一个、与内建工具同名直接丢弃。
+默认关闭时保持旧行为：跨 server 同名工具保留第一个、与内建工具同名直接丢弃。
 打开时按 ``{server}__{tool}`` 改名，两个 server 的同名工具同时可用，且原名记进
 ``metadata["mcp_original_name"]`` 供 HITL 启发式与审计展示使用。
 """
@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import easy_agent.utils.mcp_tool_names as mcp_tool_names
 from easy_agent.services.mcp import tools as mcp
 
 
@@ -47,14 +48,14 @@ def _patched(monkeypatch, tmp_path):
 
 
 async def test_prefix_off_keeps_legacy_dedupe(monkeypatch, _patched):
-    monkeypatch.delenv("EASY_MCP_TOOL_PREFIX", raising=False)
+    monkeypatch.setattr(mcp_tool_names, "PREFIX_ENABLED", False)
     tools = await mcp.get_mcp_tools()
     # 跨 server 同名保留第一个；与内建 delete 同名的被丢弃
     assert [tool.name for tool in tools] == ["search"]
 
 
 async def test_prefix_on_keeps_both_servers(monkeypatch, _patched):
-    monkeypatch.setenv("EASY_MCP_TOOL_PREFIX", "1")
+    monkeypatch.setattr(mcp_tool_names, "PREFIX_ENABLED", True)
     tools = await mcp.get_mcp_tools()
     assert sorted(tool.name for tool in tools) == [
         "alpha__delete",
@@ -65,7 +66,7 @@ async def test_prefix_on_keeps_both_servers(monkeypatch, _patched):
 
 
 async def test_prefix_on_records_original_name(monkeypatch, _patched):
-    monkeypatch.setenv("EASY_MCP_TOOL_PREFIX", "1")
+    monkeypatch.setattr(mcp_tool_names, "PREFIX_ENABLED", True)
     tools = await mcp.get_mcp_tools()
     by_name = {tool.name: tool for tool in tools}
     assert by_name["alpha__search"].metadata["mcp_original_name"] == "search"

@@ -221,6 +221,11 @@ def list_sessions(
     repo = _as_session_repository(db)
 
     sessions = repo.list_sessions(limit=limit, offset=offset, username=username)
+    # 批量判定待审批：前端刷新后靠列表字段点亮全部「待审批」徽标，
+    # 不必逐个会话拉历史重建（那样只有点进去的那个会话才会亮）
+    pending_ids = repo.list_pending_approval_session_ids(
+        [s.session_id for s in sessions]
+    )
 
     return [
         SessionInfo(
@@ -230,6 +235,7 @@ def list_sessions(
             updated_at=s.updated_at,
             message_count=len(s.messages),
             pinned=s.pinned,
+            pending_approval=s.session_id in pending_ids,
         )
         for s in sessions
     ]

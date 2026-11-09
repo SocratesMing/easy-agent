@@ -218,6 +218,7 @@
               @update:selectedModel="selectedModel = $event"
               :activeExpert="selectedExpert" @select-expert="handleUseExpert" @clear-expert="selectedExpert = null"
               @send-message="handleSendMessage"
+              @web-search-change="handleWebSearchChange"
               @create-session="ensureCurrentSession"
               @remove-file="handleRemoveFile"
               @stop="handleStop"

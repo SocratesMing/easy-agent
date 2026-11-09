@@ -6,9 +6,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -18,7 +19,15 @@ from easy_agent.db.database import Database
 from easy_agent.db.repositories.file_repository import FileRepository
 from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.utils.blocking import run_blocking
+from easy_agent.services.memory.digest import clip_middle, describe_turn_actions
 from easy_agent.services.memory.manager import update_long_term_memory_after_session
+from easy_agent.services.memory.triggers import (
+    LONG_TERM_BATCHER,
+    SESSION_BATCHER,
+    has_long_term_signal,
+    has_session_signal,
+)
+from easy_agent.services.streaming.messages import tool_call_records_to_dicts
 from easy_agent.services.agents import manager as agent_manager
 from easy_agent.services.skills import (
     categories as skill_categories,
@@ -55,6 +64,52 @@ def _session_port(db):
 _MEMORY_UPDATE_EXECUTOR = ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="memory-update"
 )
+
+#: 每份记忆最后一个已提交的更新任务（键见 ``submit_memory_updates``）。
+_MEMORY_JOB_TAILS: dict[str, Future] = {}
+_MEMORY_JOB_TAILS_LOCK = threading.Lock()
+
+
+def _submit_memory_job(key: str, job: Callable[[], None]) -> Future:
+    """提交一次记忆更新；同一份记忆的更新按提交顺序一个接一个执行。
+
+    记忆更新是「读 → 调模型（几秒，慢时几十秒）→ 写」。同一份记忆的两次更新并行时，
+    后写的会覆盖先写的：同一会话连续两轮、同一用户的两个会话前后脚结束都会撞上；
+    而且后一轮的内容可能被前一轮的旧结论盖回去。这里把同一份记忆的任务串成链：上一个
+    结束后才把下一个交给线程池，等待期间不占线程池的线程。跨进程的覆盖由写回前的
+    内容核对兜底（``services/memory/manager.py``）。
+    """
+    done: Future = Future()
+
+    def _run() -> None:
+        try:
+            job()
+        except Exception as exc:  # noqa: BLE001 - 任务自己会记日志，这里只保证链不断
+            logger.warning(f"记忆更新任务异常: {exc}")
+        finally:
+            with _MEMORY_JOB_TAILS_LOCK:
+                if _MEMORY_JOB_TAILS.get(key) is done:
+                    del _MEMORY_JOB_TAILS[key]
+            done.set_result(None)
+
+    def _start(_previous: Future | None = None) -> None:
+        try:
+            _MEMORY_UPDATE_EXECUTOR.submit(_run)
+        except RuntimeError as exc:  # 进程退出时线程池已关闭：放弃本次更新，链照常结束
+            logger.warning(f"记忆更新未提交（线程池已关闭）: {exc}")
+            with _MEMORY_JOB_TAILS_LOCK:
+                if _MEMORY_JOB_TAILS.get(key) is done:
+                    del _MEMORY_JOB_TAILS[key]
+            done.set_result(None)
+
+    with _MEMORY_JOB_TAILS_LOCK:
+        previous = _MEMORY_JOB_TAILS.get(key)
+        _MEMORY_JOB_TAILS[key] = done
+    if previous is None:
+        _start()
+    else:
+        previous.add_done_callback(_start)
+    return done
 
 
 async def maybe_rename_workspace(agent, db, session_id, tool_call_records, sid):
@@ -267,8 +322,50 @@ def auto_assign_skill_category(
         logger.warning(f"[{sid}] 技能自动归类失败 | {skill_dir} | {e}")
 
 
+#: ``memory_model`` 配置对应的模型实例（按键缓存，进程内复用）与已告警过的无效键
+_MEMORY_MODELS: dict[str, object] = {}
+_MEMORY_MODEL_WARNED: set[str] = set()
+_MEMORY_MODELS_LOCK = threading.Lock()
+
+
+def _memory_llm(agent):
+    """记忆整理用的模型：配置了 ``memory_model`` 就用它，否则用会话当前的对话模型。
+
+    记忆整理输出很短、用不上推理，配一个便宜、快的模型能省成本，也不跟主对话抢同一个
+    模型的限流额度。键不在 ``models`` 里或建模型失败时告警一次，回落到对话模型。
+    """
+    fallback = getattr(agent, "model", None)
+    if fallback is None:
+        from easy_agent.services.agents.manager import _llm_instance  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
+
+        fallback = _llm_instance
+    config = getattr(agent, "config", None)
+    key = str(getattr(getattr(config, "agent", None), "memory_model", "") or "").strip()
+    if not key:
+        return fallback
+    with _MEMORY_MODELS_LOCK:
+        if key in _MEMORY_MODELS:
+            return _MEMORY_MODELS[key]
+        if key in _MEMORY_MODEL_WARNED:
+            return fallback
+        if key not in (getattr(config, "models", None) or {}):
+            _MEMORY_MODEL_WARNED.add(key)
+            logger.warning(f"memory_model={key} 不在 models 配置里，记忆整理改用对话模型")
+            return fallback
+        try:
+            from easy_agent.agent.model import create_model  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
+
+            _MEMORY_MODELS[key] = create_model(config, model_name=key)
+        except Exception as exc:  # noqa: BLE001 - 建不出来就回落，不影响对话
+            _MEMORY_MODEL_WARNED.add(key)
+            logger.warning(f"记忆整理模型 {key} 创建失败，改用对话模型: {exc}")
+            return fallback
+        logger.info(f"🧠 记忆整理使用独立模型 | memory_model={key}")
+        return _MEMORY_MODELS[key]
+
+
 def submit_memory_updates(
-    agent, session_id, db, raw_user_msg, accumulated_response, sid
+    agent, session_id, db, raw_user_msg, accumulated_response, sid, tool_call_records=None
 ):
     """将「会话级 memory.md」与「用户级 AGENTS.md」的记忆更新提交到后台线程执行。
 
@@ -282,69 +379,123 @@ def submit_memory_updates(
       （``agent/memory.py``），下一轮自然读到。改造前这里会调用 ``remove_session_agent``，
       既让下一轮重新加载 MCP 工具、重建 Agent，又顺带清掉会话的「待修改专家」绑定，
       导致「点编辑 → 模型先追问 → 下一轮再保存」时 save_expert 找不到修改目标。
+    - 同一份记忆的更新按提交顺序串行（``_submit_memory_job``）：会话记忆按会话排队
+      （工作区改名会换路径，按会话 id 才排得住），长期记忆按文件排队（同一用户的所有会话共用）。
     """
     # 1) 会话级记忆：workspace/{username}/{workspace_name}/memory.md
+    #    不是每轮都整理：有决策 / 约束 / 纠正信号当轮整理，否则攒够几轮再整理（services/memory/triggers.py）
     if agent and agent.memory_file:
         try:
-            from easy_agent.services.memory.manager import update_memory_after_session  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
-
-            session_llm = getattr(agent, "model", None)
-            if session_llm is None:
-                from easy_agent.services.agents.manager import _llm_instance  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
-
-                session_llm = _llm_instance
-
-            def _session_memory_job():
-                try:
-                    updated = update_memory_after_session(
-                        agent.memory_file,
-                        user_message=raw_user_msg,
-                        assistant_response=accumulated_response,
-                        llm=session_llm,
-                    )
-                    if updated:
-                        logger.info(
-                            f"[{sid}] 🧠 会话记忆已更新 | 文件: {agent.memory_file} | "
-                            f"上限 2000 字符"
-                        )
-                except Exception as e:
-                    logger.warning(f"[{sid}] 会话记忆更新失败: {e}")
-
-            loop = asyncio.get_running_loop()
-            loop.run_in_executor(_MEMORY_UPDATE_EXECUTOR, _session_memory_job)
-            logger.info(f"[{sid}] 🧠 会话记忆更新已提交至后台线程执行")
+            # 本轮操作摘要（工具调用 / 改动的文件 / 审批结果），让整理模型看得到决策依据
+            turn_actions = describe_turn_actions(
+                tool_call_records_to_dicts(tool_call_records or [], result_limit=200)
+            )
+            session_key = f"session:{session_id}" if session_id else f"file:{Path(agent.memory_file).resolve()}"
+            decision = SESSION_BATCHER.add(
+                session_key,
+                _session_note(raw_user_msg, accumulated_response, turn_actions),
+                signal=has_session_signal(raw_user_msg, turn_actions),
+            )
+            if decision.due:
+                _submit_session_update(
+                    agent, session_key, decision, raw_user_msg, accumulated_response, turn_actions, sid
+                )
+            else:
+                logger.info(
+                    f"[{sid}] 🧠 会话记忆本轮不整理 | 无决策/约束信号，已攒 "
+                    f"{decision.pending}/{SESSION_BATCHER.every_n_turns} 轮"
+                )
         except Exception as e:
             logger.warning(f"[{sid}] 会话记忆更新提交失败: {e}")
 
     # 2) 用户级长期记忆：memories/{username}/AGENTS.md
+    #    不是每轮都整理：有画像信号当轮整理，否则攒够几轮再整理（services/memory/triggers.py）
     if agent and getattr(agent, "long_term_memory_file", None):
         try:
-
-            session_llm = getattr(agent, "model", None)
-            if session_llm is None:
-                from easy_agent.services.agents.manager import _llm_instance  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
-
-                session_llm = _llm_instance
-
-            def _long_term_memory_job():
-                try:
-                    update_long_term_memory_after_session(
-                        agent.long_term_memory_file,
-                        user_message=raw_user_msg,
-                        assistant_response=accumulated_response,
-                        llm=session_llm,
-                    )
-                    logger.info(
-                        f"[{sid}] 🧠 用户长期记忆已更新 | 文件: {agent.long_term_memory_file}"
-                    )
-                except Exception as e:
-                    logger.warning(f"[{sid}] 用户长期记忆更新失败: {e}")
-
-            loop = asyncio.get_running_loop()
-            loop.run_in_executor(_MEMORY_UPDATE_EXECUTOR, _long_term_memory_job)
-            logger.info(f"[{sid}] 🧠 用户长期记忆更新已提交至后台线程执行")
+            long_term_key = f"file:{Path(agent.long_term_memory_file).resolve()}"
+            decision = LONG_TERM_BATCHER.add(
+                long_term_key, raw_user_msg, signal=has_long_term_signal(raw_user_msg)
+            )
+            if decision.due:
+                _submit_long_term_update(
+                    agent, long_term_key, decision, raw_user_msg, accumulated_response, sid
+                )
+            else:
+                logger.info(
+                    f"[{sid}] 🧠 长期记忆本轮不整理 | 无画像信号，已攒 "
+                    f"{decision.pending}/{LONG_TERM_BATCHER.every_n_turns} 轮"
+                )
         except Exception as e:
             logger.warning(f"[{sid}] 用户长期记忆更新提交失败: {e}")
+
+
+def _session_note(user_message, reply, turn_actions) -> str:
+    """攒批时登记的一轮摘要：用户输入、回复节选（开头和结尾）、操作。"""
+    parts = [f"用户：{' '.join((user_message or '').split())[:200]}"]
+    reply = " ".join((reply or "").split())
+    if reply:
+        parts.append(f"助手：{clip_middle(reply, 300, tail=100)}")
+    if turn_actions:
+        parts.append("操作：" + "；".join(line.lstrip("- ") for line in turn_actions.splitlines())[:300])
+    return "\n".join(parts)
+
+
+def _submit_session_update(
+    agent, session_key, decision, raw_user_msg, accumulated_response, turn_actions, sid
+):
+    """提交一次会话记忆整理：本轮 + 之前攒下的轮次一起交给模型。"""
+    from easy_agent.services.memory.manager import update_memory_after_session  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
+
+    session_llm = _memory_llm(agent)
+    earlier = decision.earlier
+
+    def _session_memory_job():
+        try:
+            updated = update_memory_after_session(
+                agent.memory_file,
+                user_message=raw_user_msg,
+                assistant_response=accumulated_response,
+                llm=session_llm,
+                turn_actions=turn_actions,
+                earlier_turns=earlier,
+            )
+            if updated:
+                logger.info(f"[{sid}] 🧠 会话记忆已更新 | 文件: {agent.memory_file}")
+        except Exception as e:
+            logger.warning(f"[{sid}] 会话记忆更新失败: {e}")
+
+    _submit_memory_job(session_key, _session_memory_job)
+    reason = "决策/约束信号" if decision.reason == "signal" else "攒够轮数"
+    logger.info(
+        f"[{sid}] 🧠 会话记忆更新已提交至后台线程执行 | 原因: {reason} | 合并 {len(earlier) + 1} 轮"
+    )
+
+
+def _submit_long_term_update(agent, long_term_key, decision, raw_user_msg, accumulated_response, sid):
+    """提交一次长期记忆整理：本轮 + 之前攒下的轮次一起交给模型。"""
+    session_llm = _memory_llm(agent)
+    earlier = decision.earlier
+
+    def _long_term_memory_job():
+        try:
+            updated = update_long_term_memory_after_session(
+                agent.long_term_memory_file,
+                user_message=raw_user_msg,
+                assistant_response=accumulated_response,
+                llm=session_llm,
+                earlier_user_messages=earlier,
+            )
+            if updated:
+                logger.info(f"[{sid}] 🧠 用户长期记忆已更新 | 文件: {agent.long_term_memory_file}")
+        except Exception as e:
+            logger.warning(f"[{sid}] 用户长期记忆更新失败: {e}")
+
+    _submit_memory_job(long_term_key, _long_term_memory_job)
+    reason = "画像信号" if decision.reason == "signal" else "攒够轮数"
+    logger.info(
+        f"[{sid}] 🧠 用户长期记忆更新已提交至后台线程执行 | 原因: {reason} | "
+        f"合并 {len(earlier) + 1} 轮"
+    )
 
 
 __all__ = [

@@ -2045,13 +2045,15 @@ class KnowledgeService:
             folder_id = await self._ensure_folder_chain(
                 base_id, folder_id, relative_path
             )
+        max_per_base = self.config.limits.max_documents_per_base
         if (
-            await self._repo(self.repository.count_documents, base_id)
-            >= self.config.limits.max_documents_per_query
+            max_per_base > 0
+            and await self._repo(self.repository.count_documents, base_id)
+            >= max_per_base
         ):
             raise KnowledgeServiceError(
                 "KNOWLEDGE_DOCUMENT_LIMIT",
-                "知识库文档数量已达到第一期上限",
+                f"知识库文档数量已达上限（{max_per_base}）",
                 status_code=409,
             )
         if size_bytes > self.config.limits.max_file_size_mb * 1024 * 1024:
@@ -2541,31 +2543,10 @@ class KnowledgeService:
                     document_id=str(remote_id),
                 )
                 source = io.BytesIO(downloaded.content)
-            if remote_id:
-                try:
-                    await self.ragflow.delete_documents(
-                        dataset_id=dataset_id,
-                        document_ids=[str(remote_id)],
-                    )
-                except RagflowNotFoundError:
-                    # 旧副本属于另一个数据集/已被删除：不影响用本地原文重传
-                    logger.warning(
-                        "上游旧副本不属于当前数据集，跳过删除 | doc=%s "
-                        "dataset=%s remote=%s",
-                        document_id,
-                        dataset_id,
-                        remote_id,
-                    )
-            await self._repo(
-                self.repository.update_document,
-                document_id,
-                remote_document_id=None,
-                status=DocumentStatus.PENDING.value,
-                progress=None,
-                parse_started_at=None,
-                error_code=None,
-                error_message=None,
-            )
+            # 注意：不在这里删上游旧副本，也不清 remote_document_id。
+            # 必须等 _submit_to_ragflow 成功后再做，否则一旦中途抛异常，
+            # 旧副本已被删除、remote_id 也丢了，下次重试既没有本地原文
+            # 又无法从 RAGFlow 下载，只能报"文档原文件不可用" (bug 根因)。
         except (RagflowError, KeyError, OriginalStorageError) as exc:
             await self._fail_submit(
                 document_id=document_id,
@@ -2588,6 +2569,26 @@ class KnowledgeService:
             if source is not None:
                 source.close()
         assert document is not None and operation is not None
+        # 新文档已提交成功，再尽力清理旧副本。删除失败不影响新文档，
+        # 只记 warning；后台 purge_deleted_documents 兜底。
+        if remote_id and str(document.get("remote_document_id") or "") != str(remote_id):
+            try:
+                await self.ragflow.delete_documents(
+                    dataset_id=dataset_id,
+                    document_ids=[str(remote_id)],
+                )
+            except RagflowNotFoundError:
+                # 旧副本已不存在：正常，忽略
+                pass
+            except RagflowError as exc:
+                logger.warning(
+                    "重试后清理 RAGFlow 旧副本失败（不影响新文档） | doc=%s "
+                    "dataset=%s old_remote=%s code=%s",
+                    document_id,
+                    dataset_id,
+                    remote_id,
+                    getattr(exc, "code", type(exc).__name__),
+                )
         return DocumentUploadAccepted(
             document=self._document_summary(document, role, request_id),
             operation=self._operation_summary(operation, request_id),

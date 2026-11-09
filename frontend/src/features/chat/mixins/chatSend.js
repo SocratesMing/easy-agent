@@ -26,7 +26,7 @@ export default {
       // 用于用户中途切换会话时，把用量更新写入所属会话的缓存而非当前显示
       let streamSessionId = this.currentSessionId
 
-      const contentWithFiles = message.trim().replace(/\s+/g, ' ')
+      const contentWithFiles = message.trim() // 只去首尾空白：换行与缩进是用户原话，气泡按纯文本原样展示
       const pageContext = this.getPageContextForSend() || null
 
       const userMessage = {
@@ -342,8 +342,12 @@ export default {
         }
       } finally {
         // 如果 resumeStream 期间收到了新的 approval_required（onChunk 重新设置了
-        // pendingApproval），则不清除，保持 isStreaming=true 等待用户审批
-        const hasNewApproval = this.pendingApproval && this.pendingApproval !== currentApproval
+        // pendingApproval），则不清除，保持 isStreaming=true 等待用户审批。
+        // 判「新」只能比 thread_id：恢复流重放同一条中断时会新建对象，按对象引用比较
+        // 会误判成新审批，把下面的回填与徽标重算整段跳过（徽标要等整页刷新才消失）。
+        const latestApproval = this.pendingApproval
+        const latestThreadId = latestApproval && latestApproval.threadId
+        const hasNewApproval = !!latestThreadId && latestThreadId !== (currentApproval && currentApproval.threadId)
         if (!hasNewApproval) {
           this.pendingApproval = null
           this.currentAbortController = null
@@ -362,6 +366,11 @@ export default {
         }
       }
     },
+    // ChatInput 的联网开关变化上报：存一份镜像，供不经过输入框的发送路径（重试）复用。
+    // 与 App.vue 的同名实现保持一致（主窗口用 script setup，侧边栏用本 mixin，两处都要改）。
+    handleWebSearchChange(enabled) {
+      this.webSearchEnabled = Boolean(enabled)
+    },
     handleRetry(content) {
       // 直接重新发送消息内容，不经过输入框
       console.log('[handleRetry] content type:', typeof content, 'value:', content)
@@ -379,8 +388,8 @@ export default {
           return
         }
 
-        // 直接调用发送
-        this.handleSendMessage(content.trim())
+        // 重试不经过输入框，联网开关必须从镜像取：漏传会落回 enableWebSearch 默认值 false
+        this.handleSendMessage(content.trim(), [], null, true, this.webSearchEnabled)
       }
     },
     handleStop() {

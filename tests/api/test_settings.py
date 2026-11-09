@@ -11,6 +11,32 @@ import easy_agent.api.settings as settings_api
 from easy_agent.services.mcp import tools as mcp_mod
 
 
+def test_memory_put_uses_the_shared_write_path_and_long_term_budget(client):
+    """设置页保存与后台更新同一套写入（锁 + 原子写 + sidecar），上限与后台一致。"""
+    from easy_agent.services.memory.locks import store_path_for
+    from easy_agent.services.memory.manager import MAX_LONG_TERM_MEMORY_CHARS
+    from easy_agent.services.memory.store import structured_memory_enabled
+
+    long_text = "# 用户长期记忆\n\n## 工作背景\n" + "".join(
+        f"- 第 {i} 条：{'很长的背景说明' * 10}\n" for i in range(40)
+    )
+    assert len(long_text) > MAX_LONG_TERM_MEMORY_CHARS
+
+    resp = client.put("/agent/settings/memory", json={"content": long_text})
+    saved = client.get("/agent/settings/memory").json()
+    path = Path(saved["path"])
+    try:
+        assert resp.status_code == 200
+        assert resp.json()["chars"] <= MAX_LONG_TERM_MEMORY_CHARS
+        assert saved["content"].startswith("# 用户长期记忆")
+        assert len(saved["content"]) <= MAX_LONG_TERM_MEMORY_CHARS
+        if structured_memory_enabled():
+            assert store_path_for(path).exists()
+    finally:
+        for leftover in (path, store_path_for(path)):
+            leftover.unlink(missing_ok=True)
+
+
 def test_models(client):
     resp = client.get("/agent/settings/models")
     assert resp.status_code == 200

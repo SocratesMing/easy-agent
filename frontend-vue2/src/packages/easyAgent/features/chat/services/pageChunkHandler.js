@@ -1,5 +1,7 @@
 import { setReactive } from '../../../utils/reactiveSet.js'
 import { parseMCPResult } from '../../../utils/mcpResult.js'
+import { applyStreamError } from '../../../utils/streamErrorFallback.js'
+import { markStreamFlight } from './streamResume.js'
 import { createStreamCheckpoint, STREAM_RECONNECTING_MESSAGE } from '../../../shared/utils/chatStreamRecovery.js'
 
 // 主页面状态机保留知识证据及工具参数增量行为，与侧栏分别维护。
@@ -83,17 +85,30 @@ export function createPageStreamChunkHandler(vm, ctx) {
     if (data.auto_compress_tokens) patch.auto_compress_tokens = data.auto_compress_tokens
     return patch
   }
+  // 记下这条消息自己的累计耗时 / 步数：审批续跑时据此从会话合计里扣掉中断前已计入的部分
+  const rememberMessageUsage = (data, rows) => {
+    const idx = rows?.findIndex(m => m.id === ctx.assistantMsgId) ?? -1
+    if (idx === -1) return
+    const msg = rows[idx]
+    const usage = {
+      ...msg.usage,
+      input_tokens: data.input_tokens || 0,
+      output_tokens: data.output_tokens || 0,
+      reasoning_tokens: data.reasoning_tokens || 0,
+      context_tokens: data.context_tokens || data.input_tokens || 0,
+    }
+    if (typeof data.step_count === 'number') usage.step_count = data.step_count
+    if (typeof data.elapsed_time === 'number') usage.elapsed_time = data.elapsed_time
+    setReactive(rows, idx, { ...msg, usage })
+  }
   const applyUsage = (data, sid) => {
     const patch = usagePatchFrom(data)
-    const match = !sid || vm.currentSessionId === sid
+    // 状态路由按 runInSession 的 loadedSessionId 判定：组件数据要么就是该会话本身
+    // （展示中），要么已被临时换成该会话的状态（ctx.stateSwapped）。两种情况都应
+    // 直接写组件数据；只有既不是展示中也没换状态时，才退回写 sessionStates 缓存。
+    const match = !sid || ctx.stateSwapped || vm.loadedSessionId === sid
     const rows = match ? vm.messages : vm.sessionStates[sid]?.messages
-    const messageIndex = rows?.findIndex(m => m.id === ctx.assistantMsgId) ?? -1
-    if (messageIndex !== -1) {
-      setReactive(rows, messageIndex, { ...rows[messageIndex], usage: {
-        input_tokens: data.input_tokens || 0, output_tokens: data.output_tokens || 0,
-        reasoning_tokens: data.reasoning_tokens || 0, context_tokens: data.context_tokens || data.input_tokens || 0,
-      } })
-    }
+    rememberMessageUsage(data, rows)
     if (ctx.attachMode) {
       // 重挂载回放：token_usage/done 携带的 elapsed_time 是原始流从头开始的
       // 累计值，应 SET 而非累加（isResume 分支的累加语义只适用于 HITL 续跑）
@@ -111,33 +126,20 @@ export function createPageStreamChunkHandler(vm, ctx) {
       }
       return
     }
-    if (ctx.isResume) {
-      if (match) {
-        Object.assign(vm.sessionUsage, patch)
-        if (typeof data.elapsed_time === 'number') vm.sessionDuration = Math.round((vm.sessionDuration + data.elapsed_time) * 10) / 10
-        if (typeof data.step_count === 'number') vm.iterationCount = data.step_count
-      } else {
-        const cached = vm.sessionStates[sid]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-          if (typeof data.elapsed_time === 'number') cached.sessionDuration = Math.round(((cached.sessionDuration || 0) + data.elapsed_time) * 10) / 10
-          if (typeof data.step_count === 'number') cached.iterationCount = data.step_count
-        }
-      }
+    // elapsed_time / step_count 是这条消息的累计值（审批续跑也接着中断前往下算），
+    // 会话合计 = 流开始前其余消息的合计 + 本条累计值
+    const newDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
+    const newIterations = typeof data.step_count === 'number' ? ctx.preStreamIterationCount + data.step_count : null
+    if (match) {
+      Object.assign(vm.sessionUsage, patch)
+      if (newDuration !== null) vm.sessionDuration = newDuration
+      if (newIterations !== null) vm.iterationCount = newIterations
     } else {
-      const newDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
-      const newIterations = typeof data.step_count === 'number' ? ctx.preStreamIterationCount + data.step_count : null
-      if (match) {
-        Object.assign(vm.sessionUsage, patch)
-        if (newDuration !== null) vm.sessionDuration = newDuration
-        if (newIterations !== null) vm.iterationCount = newIterations
-      } else {
-        const cached = vm.sessionStates[sid]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-          if (newDuration !== null) cached.sessionDuration = newDuration
-          if (newIterations !== null) cached.iterationCount = newIterations
-        }
+      const cached = vm.sessionStates[sid]
+      if (cached) {
+        cached.sessionUsage = { ...cached.sessionUsage, ...patch }
+        if (newDuration !== null) cached.sessionDuration = newDuration
+        if (newIterations !== null) cached.iterationCount = newIterations
       }
     }
   }
@@ -176,7 +178,7 @@ export function createPageStreamChunkHandler(vm, ctx) {
       return
     }
     checkpoint.capture()
-    const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success, title } = data
+    const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success } = data
 
     if (eventType === 'start') {
       if (!ctx.isResume) {
@@ -194,6 +196,8 @@ export function createPageStreamChunkHandler(vm, ctx) {
           vm.$set(vm.attachedStreamingSessions, data.session_id, 'displayed')
         }
         vm.markStreaming(ctx.streamSessionId || vm.currentSessionId)
+        // 回放不重新登记发送时间，避免覆盖其它新流的记录。
+        if (!replaying) markStreamFlight(ctx.streamSessionId || vm.currentSessionId)
       }
     } else if (eventType === 'knowledge_evidence') {
       ensureMessage()
@@ -435,18 +439,15 @@ export function createPageStreamChunkHandler(vm, ctx) {
         vm.messages[idx].pending_approval = null
         vm.pendingApproval = null
         vm.messages[idx].created_at = new Date().toISOString()
-        // 兜底：任何未收到完整参数的 streaming 占位块在流结束时清掉标记，
-        // 避免工具卡片一直停留在「写入中…」。（map 生成新数组，Vue2 下才可响应）
-        if ((vm.messages[idx].blocks || []).some(b => b.streaming)) {
-          setReactive(vm.messages, idx, { ...vm.messages[idx], blocks: vm.messages[idx].blocks.map(b => (b.streaming ? { ...b, streaming: false } : b)) })
-        }
         if (ctx.isResume) {
           if (Array.isArray(data.blocks) && data.blocks.length > 0) vm.messages[idx].blocks = data.blocks.map(b => ({ ...b }))
           for (const b of vm.messages[idx].blocks) { if (b.type === 'thinking' && b.duration == null) b.duration = 0 }
-          if (data.usage) applyUsage(data.usage, ctx.streamSessionId)
         } else {
-          const finalContent = data.content || currentContent
-          vm.messages[idx].content = finalContent
+          // done 不带正文：所有分段都从流内正文块拼回。
+          vm.messages[idx].content = (vm.messages[idx].blocks || [])
+            .filter(b => b.type === 'content')
+            .map(b => b.content || '')
+            .join('\n')
           // SET 语义下 currentThinking 只剩最后一个 step 的内容；此处从所有思考块
           // 拼接出完整 thinking，保证 message.thinking 字段（旧数据回退/兼容）正确。
           vm.messages[idx].thinking = (vm.messages[idx].blocks || [])
@@ -454,53 +455,27 @@ export function createPageStreamChunkHandler(vm, ctx) {
             .map(b => b.content || '')
             .join('')
           vm.messages[idx].tool_calls = currentToolCalls
-          if (data.usage) {
-            vm.messages[idx].usage = { input_tokens: data.usage.input_tokens || 0, output_tokens: data.usage.output_tokens || 0, reasoning_tokens: data.usage.reasoning_tokens || 0 }
-          }
-          if (data.usage) {
-            const patch = usagePatchFrom(data.usage)
-            const match = !ctx.streamSessionId || vm.currentSessionId === ctx.streamSessionId
-            const finalDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
-            const finalIterations = data.usage && typeof data.usage.step_count === 'number' ? ctx.preStreamIterationCount + data.usage.step_count : null
-            if (match) {
-              Object.assign(vm.sessionUsage, patch)
-              if (finalDuration !== null) vm.sessionDuration = finalDuration
-              if (finalIterations !== null) vm.iterationCount = finalIterations
-            } else {
-              const cached = vm.sessionStates[ctx.streamSessionId]
-              if (cached) {
-                cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-                if (finalDuration !== null) cached.sessionDuration = finalDuration
-                if (finalIterations !== null) cached.iterationCount = finalIterations
-              }
-            }
-          }
+        }
+        if (data.usage) applyUsage({
+          ...data.usage,
+          elapsed_time: typeof data.elapsed_time === 'number' ? data.elapsed_time : data.usage.elapsed_time,
+        }, ctx.streamSessionId)
+        // 兜底：任何未收到完整参数的 streaming 占位块在流结束时清掉标记，
+        // 避免工具卡片一直停留在「写入中…」。（map 生成新数组，Vue2 下才可响应）
+        if ((vm.messages[idx].blocks || []).some(b => b.streaming)) {
+          setReactive(vm.messages, idx, { ...vm.messages[idx], blocks: vm.messages[idx].blocks.map(b => (b.streaming ? { ...b, streaming: false } : b)) })
         }
         setReactive(vm.messages, idx, { ...vm.messages[idx] })
       }
-      if (!ctx.isResume && title) {
-        const existingIdx = vm.sessions.findIndex(s => s.session_id === vm.currentSessionId)
-        if (existingIdx === -1) {
-          vm.sessions = [{ session_id: vm.currentSessionId, title, created_at: new Date().toISOString(), message_count: vm.messages.length }, ...vm.sessions]
-        } else {
-          setReactive(vm.sessions, existingIdx, { ...vm.sessions[existingIdx], title })
-          vm.sessions = [...vm.sessions]
-        }
-      }
+      // 标题由页面流收尾时的 loadSessions() 回填。
     } else if (eventType === 'error') {
-      const idx = findIdx()
-      if (idx !== -1) {
-        vm.messages[idx].loading = false
-        vm.messages[idx].error = data.content || '处理失败'
-        if (!ctx.isResume) {
-          for (const blk of vm.messages[idx].blocks) {
-            if (blk.type === 'thinking' && blk.duration == null) blk.duration = 0
-            if (blk.type === 'tool_call' && blk.duration == null) { blk.duration = 0; blk.success = false; if (!blk.result) blk.result = data.content || '执行中断' }
-          }
-        }
-        setReactive(vm.messages, idx, { ...vm.messages[idx], blocks: [...vm.messages[idx].blocks] })
-      }
-      vm.error = data.content || '处理失败'
+      const globalError = applyStreamError({
+        messages: vm.messages,
+        index: findIdx(),
+        data,
+        isResume: ctx.isResume,
+      })
+      if (globalError) vm.error = globalError
     }
   }
 

@@ -160,7 +160,7 @@ let sidebar = null
 
 onMounted(() => {
   sidebar = init({
-    baseURL: import.meta.env.VITE_EASY_AGENT_URL,
+    baseURL: '', // 同源：宿主 Nginx 把 /agent 反代到 Agent 后端
     auth: { getToken: fetchEasyAgentToken },
     pageContext: () => ({
       key: route.name,
@@ -198,7 +198,7 @@ import { init } from '@easy-agent/ai-sidebar'
 new Vue({ router, render: h => h(App) }).$mount('#app')
 
 const sidebar = init({
-  baseURL: process.env.VUE_APP_EASY_AGENT_URL,
+  baseURL: '', // 同源：宿主 Nginx 把 /agent 反代到 Agent 后端
   auth: { getToken: () => store.dispatch('easyAgent/fetchToken') },
   pageContext: () => ({
     key: router.currentRoute.name,

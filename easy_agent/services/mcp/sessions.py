@@ -26,7 +26,6 @@ from __future__ import annotations
 import asyncio
 import atexit
 import logging
-import os
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -69,7 +68,9 @@ _TRANSPORT_ALIASES = {
     "websocket": "websocket",
 }
 
-# stdio 子进程占用更明显，TTL 更短；HTTP 会话保留更久。
+# 会话空闲回收按传输类型取值：stdio 子进程占用更明显，TTL 更短；HTTP 会话保留更久。
+# 不提供环境变量覆盖；构造 MCPSessionManager 时显式传 idle_seconds 则对所有传输类型
+# 统一生效（测试/调用方使用）。
 _DEFAULT_IDLE_SECONDS = {
     "stdio": 300.0,
     "streamable_http": 600.0,
@@ -102,26 +103,6 @@ _SESSION_ERROR_MARKERS = (
 
 class SessionAPIUnavailable(RuntimeError):
     """Raised when the installed adapter cannot provide persistent sessions."""
-
-
-def _env_optional_float(name: str) -> float | None:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return None
-    try:
-        value = float(raw)
-    except ValueError:
-        logger.warning("%s=%r 不是数字，使用默认值", name, raw)
-        return None
-    if value < 0:
-        logger.warning("%s=%s 不能为负数，使用默认值", name, value)
-        return None
-    return value
-
-
-def _env_float(name: str, default: float) -> float:
-    value = _env_optional_float(name)
-    return default if value is None else value
 
 
 def _transport_of(connection: Any) -> str:
@@ -432,31 +413,18 @@ class MCPSessionManager:
         close_timeout: float | None = None,
         call_timeout: float | None = None,
     ) -> None:
-        env_idle = _env_optional_float("EASY_MCP_SESSION_IDLE_SECONDS")
-        self._idle_override = idle_seconds if idle_seconds is not None else env_idle
+        # None = 按传输类型取 _DEFAULT_IDLE_SECONDS（stdio 300 秒，HTTP 类 600 秒）
+        self._idle_override = idle_seconds
         self.connect_timeout = (
             connect_timeout
             if connect_timeout is not None
-            else _env_float(
-                "EASY_MCP_SESSION_CONNECT_TIMEOUT_SECONDS",
-                DEFAULT_CONNECT_TIMEOUT_SECONDS,
-            )
+            else DEFAULT_CONNECT_TIMEOUT_SECONDS
         )
         self.close_timeout = (
-            close_timeout
-            if close_timeout is not None
-            else _env_float(
-                "EASY_MCP_SESSION_CLOSE_TIMEOUT_SECONDS",
-                DEFAULT_CLOSE_TIMEOUT_SECONDS,
-            )
+            close_timeout if close_timeout is not None else DEFAULT_CLOSE_TIMEOUT_SECONDS
         )
         self.call_timeout = (
-            call_timeout
-            if call_timeout is not None
-            else _env_float(
-                "EASY_MCP_SESSION_CALL_TIMEOUT_SECONDS",
-                DEFAULT_CALL_TIMEOUT_SECONDS,
-            )
+            call_timeout if call_timeout is not None else DEFAULT_CALL_TIMEOUT_SECONDS
         )
         self._entries: dict[tuple[str, str, str], _SessionEntry] = {}
         self._locks: dict[tuple[str, str, str], asyncio.Lock] = {}

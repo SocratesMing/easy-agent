@@ -165,20 +165,6 @@ export async function notifyLogout() {
   }
 }
 
-export async function unregister() {
-  const response = await authFetch(`${API_BASE_URL}/agent/auth/unregister`, {
-    method: 'DELETE'
-  })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '注销失败')
-  }
-
-  clearAuth()
-  return await response.json()
-}
-
 export async function listUsers() {
   const response = await authFetch(`${API_BASE_URL}/agent/auth/admin/users`)
 
@@ -199,29 +185,6 @@ export async function resetUserPassword(username) {
   if (!response.ok) {
     const error = await response.json()
     throw new Error(error.detail || '密码重置失败')
-  }
-
-  return await response.json()
-}
-
-export async function getCurrentUser() {
-  const username = getStoredUsername()
-  if (!username) {
-    return null
-  }
-
-  const response = await fetch(`${API_BASE_URL}/agent/auth/me?username=${encodeURIComponent(username)}`, {
-    headers: {
-      ...getAuthHeaders()
-    }
-  })
-
-  if (!response.ok) {
-    if (response.status === 404) {
-      clearAuth()
-      return null
-    }
-    throw new Error('获取用户信息失败')
   }
 
   return await response.json()

@@ -401,12 +401,18 @@ class RagflowClient:
         )
         return True if data is None else bool(data)
 
-    async def list_models(self) -> dict[str, Any]:
-        """获取已添加的模型列表（文档 0.3：GET /api/v1/models）。"""
+    async def list_models(self) -> list[dict[str, Any]]:
+        """获取已添加的模型列表（文档 0.3：GET /api/v1/models）。
+
+        RAGFlow 不同版本返回格式有差异：社区版/定制版可能直接返回 list，
+        也可能把 list 包在 ``{"models": [...]}`` dict 里。这里统一归一为 list。
+        """
         data = await self._request("GET", "/api/v1/models")
-        if not isinstance(data, dict):
-            raise RagflowContractError("RAGFlow 模型列表格式不符")
-        return data
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict) and isinstance(data.get("models"), list):
+            return list(data["models"])
+        raise RagflowContractError("RAGFlow 模型列表格式不符")
 
     async def get_global_models(self) -> dict[str, Any]:
         """查看系统全局模型配置（文档 0.4：GET /api/v1/global_models）。"""

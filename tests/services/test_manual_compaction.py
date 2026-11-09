@@ -61,6 +61,22 @@ def history():
         {"role": "assistant", "content": "answer " * 50})]
 
 
+def test_manual_context_preserves_and_counts_history_reasoning(tmp_path):
+    from easy_agent.agent.manual_compaction import _context_view, estimate_context
+    from easy_agent.agent.token_counting import count_context_tokens
+
+    a = agent(None, tmp_path)
+    answer = AIMessage("answer", additional_kwargs={"reasoning_content": "想" * 4000})
+    messages = [HumanMessage("question"), answer]
+    _, middleware, effective = _context_view(a, messages, {})
+
+    assert effective[-1] is answer
+    assert middleware.token_counter(effective) == count_context_tokens(messages)
+    plain = [messages[0], AIMessage("answer")]
+    assert estimate_context(a, messages, {})["before_tokens"] - estimate_context(a, plain, {})["before_tokens"] == 4000
+    assert messages[-1].additional_kwargs["reasoning_content"] == "想" * 4000
+
+
 def runtime(tmp_path):
     db = Database({"type": "sqlite", "sqlite": {"path": str(tmp_path / "business.db")}})
     db.init_tables()

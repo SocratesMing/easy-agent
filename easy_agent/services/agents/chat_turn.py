@@ -175,6 +175,9 @@ def generate_session_title(
     if message and message.strip():
         body, text_fallback_name = split_leading_directives(message, username)
         title = body or text_fallback_name or fallback_name or message.strip()
+        # 标题只占一行：前端发送时保留换行与缩进（Shift+Enter 分的行、贴进来的代码 / 日志），
+        # 这里把连续空白压成一个空格再截断
+        title = " ".join(title.split())
     elif files and len(files) > 0:
         title = files[0].get("filename", "文件")
     elif fallback_name:

@@ -281,7 +281,7 @@ async def test_stage_rows_batch_copies_and_reports_missing(tmp_path):
     assert not errors
     assert staged["101"].name == "报告_101.pdf"
     assert staged["101"].is_file()
-    assert stage_stats == {"copied": 1, "copy_failed": 0}
+    assert stage_stats == {"copied": 1, "copy_failed": 0, "missing_source": 0}
 
     staged_again, _, stage_stats_again = await engine.stage_rows(rows)
     assert staged_again["101"].is_file()

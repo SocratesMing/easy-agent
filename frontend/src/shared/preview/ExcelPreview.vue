@@ -11,10 +11,10 @@
         {{ sheet.name }}
       </button>
     </div>
-    <div class="sheet-content" v-if="sheets.length > 0">
+    <div class="sheet-content" v-if="currentRows.length">
       <table class="excel-table">
         <tbody>
-          <tr v-for="(row, rowIndex) in sheets[activeSheet]?.data" :key="rowIndex">
+          <tr v-for="(row, rowIndex) in currentRows" :key="rowIndex">
             <td 
               v-for="(cell, colIndex) in row" 
               :key="colIndex"
@@ -25,14 +25,18 @@
           </tr>
         </tbody>
       </table>
+      <div v-if="truncated" class="excel-hint">表格较大，仅显示前 {{ MAX_ROWS }} 行</div>
     </div>
-    <div v-else class="preview-loading">加载中...</div>
+    <div v-else-if="loading" class="preview-loading">加载中...</div>
+    <div v-else class="preview-error">{{ error || '该表格没有可显示的内容' }}</div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
-import ExcelJS from 'exceljs'
+import { ref, computed, onMounted, watch } from 'vue'
+import * as XLSX from 'xlsx'
+
+const MAX_ROWS = 5000
 
 const props = defineProps({
   fileUrl: {
@@ -43,33 +47,50 @@ const props = defineProps({
 
 const sheets = ref([])
 const activeSheet = ref(0)
+const loading = ref(false)
+const error = ref('')
+
+const currentRows = computed(() => {
+  const sheet = sheets.value[activeSheet.value]
+  return sheet ? sheet.data : []
+})
+const truncated = computed(() => currentRows.value.length >= MAX_ROWS)
+
+function parseWorkbook(buffer) {
+  // 用 SheetJS 而不是 ExcelJS：ExcelJS 3.x 解析带 drawing/批注（anchor 缺失）的 xlsx 会抛
+  // "Cannot read properties of undefined (reading 'anchors')"，表现为预览永久空白；
+  // SheetJS 容错更好，且顺带支持老版 .xls。raw:false 让日期/数字按单元格格式输出。
+  const workbook = XLSX.read(new Uint8Array(buffer), { type: 'array' })
+  return workbook.SheetNames.map((name) => ({
+    name,
+    data: XLSX.utils
+      .sheet_to_json(workbook.Sheets[name], { header: 1, raw: false, defval: '', blankrows: false })
+      .slice(0, MAX_ROWS)
+      .map((row) => row.map((cell) => (cell == null ? '' : String(cell))))
+  }))
+}
 
 async function loadExcel() {
   if (!props.fileUrl) return
-  
+
+  loading.value = true
+  error.value = ''
   try {
     const response = await fetch(props.fileUrl)
-    const arrayBuffer = await response.arrayBuffer()
-    
-    const workbook = new ExcelJS.Workbook()
-    await workbook.xlsx.load(arrayBuffer)
-    
-    sheets.value = workbook.worksheets.map(ws => {
-      const data = []
-      ws.eachRow((row, rowNumber) => {
-        const rowData = []
-        row.eachCell({ includeEmpty: true }, cell => {
-          rowData[cell.column - 1] = cell.value ?? ''
-        })
-        data.push(rowData)
-      })
-      return { name: ws.name, data }
-    })
-    
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const buffer = await response.arrayBuffer()
+
+    const parsed = parseWorkbook(buffer)
+    if (!parsed.length || !parsed[0].data.length) throw new Error('工作簿没有可显示的工作表')
+
+    sheets.value = parsed
     activeSheet.value = 0
   } catch (e) {
-    console.error('Excel preview error:', e)
+    console.error('[ExcelPreview] 解析失败:', e)
     sheets.value = []
+    error.value = 'Excel 解析失败，请下载后查看'
+  } finally {
+    loading.value = false
   }
 }
 
@@ -147,7 +168,22 @@ watch(() => props.fileUrl, () => {
   font-weight: 500;
 }
 
+.excel-hint {
+  padding: 8px;
+  color: #9ca3af;
+  font-size: 12px;
+}
+
 .preview-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #9ca3af;
+  font-size: 14px;
+}
+
+.preview-error {
   display: flex;
   align-items: center;
   justify-content: center;

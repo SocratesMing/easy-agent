@@ -3,18 +3,14 @@
  * 收拢到这里，经 configureEasyAgent() 交给业务模块。内网宿主不使用本文件
  * （宿主有自己的 src/integrations/easyAgent.js，模板见 integration/host-template/）。
  *
- * 构建期环境变量（.env.<mode> 或命令行）：
- *   VUE_APP_LOGIN_PAGE_ENABLED=false     关闭登录 / 注册页，改走门户免密登录（system:share:*）
- *   VUE_APP_PASSWORDLESS_DEMO_FALLBACK=true
- *                                        门户共享存储缺失时用 demo / demoid 免密登录
- *                                        （仅本地演示；默认关闭，身份缺失时显示「未授权访问」）
+ * 登录页与 demo 回落固定在代码内：默认显示登录 / 注册页，门户共享存储缺失时
+ * 显示「未授权访问」提示，不再由构建期环境变量切换。
  */
 import { configureEasyAgent, readStoredThemeColors } from '../packages/easyAgent/index.js'
 
-// 登录页开关：true 显示登录 / 注册页（另支持 URL 免密直登 ?username=&user_id=）；
-// false 不显示，改走门户免密登录，失败 → 「未授权访问」提示。未配置默认开启。
-const LOGIN_PAGE_ENABLED = process.env.VUE_APP_LOGIN_PAGE_ENABLED !== 'false'
-const DEMO_FALLBACK = process.env.VUE_APP_PASSWORDLESS_DEMO_FALLBACK === 'true'
+// 登录页开关：true 显示登录 / 注册页（另支持 URL 免密直登 ?username=&user_id=）。
+const LOGIN_PAGE_ENABLED = true
+const DEMO_FALLBACK = false
 
 // ── 门户共享存储键（由外部系统写入 localStorage）──────────────────────────
 // system:share:loginId        登录账号     → 免密登录接口的 username

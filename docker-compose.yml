@@ -40,7 +40,6 @@ services:
       - .env.dev
     environment:
       AGENT_ENV: dev
-      API_BASE_URL: "/"
     volumes:
       - ./.env.dev:/app/.env.dev:ro
       # 宿主机改提示词后重启 backend 即生效

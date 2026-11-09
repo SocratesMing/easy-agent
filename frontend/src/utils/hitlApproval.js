@@ -17,6 +17,50 @@ function pendingActions (message) {
   return pending && Array.isArray(pending.action_requests) ? pending.action_requests.filter(Boolean) : []
 }
 
+/** 单条消息是否仍待审批：还有待审批卡片，或还有挂不上卡片的操作等着在消息级面板作答。 */
+function messageHasPendingApproval (message) {
+  const pending = message && message.pending_approval
+  // 历史接口可能给数组形态（改造前的落库记录）
+  if (Array.isArray(pending)) return pending.length > 0
+  const blocks = (message && message.blocks) || []
+  const hasPendingBlock = blocks.some(b => !!b && b.type === 'tool_call' && b.approval_status === 'pending')
+  // 显式 null = 前端已作答（handleToolApproval 清空载荷），此时块上残留的 pending 不算数，
+  // 否则就会出现「徽标一直亮、卡片却没有按钮」的死状态。
+  if (pending === null) return false
+  // 旧数据没有消息级载荷：只在这条消息自己身上按块状态兜底（不跨消息扫）
+  if (!pending || !pending.thread_id) return hasPendingBlock
+  if (hasPendingBlock) return true
+  // 卡片都作答完了：主消息里没有对应卡片的操作（子代理内部审批）仍需作答
+  return pendingActions(message).some(ar => {
+    if (!ar || !ar.tool_call_id) return true
+    const blk = blocks.find(b => !!b && b.type === 'tool_call' &&
+      (b.tool_call_id === ar.tool_call_id || b.id === ar.tool_call_id))
+    return !blk || blk.approval_status === 'pending'
+  })
+}
+
+/**
+ * 会话是否仍待审批 —— 会话列表「待审批」徽标的唯一判据（2026-11-07 DA-24）。
+ *
+ * 只认**最后一条 assistant 消息的消息级 pending_approval**，原因有两个：
+ * 1. 块上的 approval_status 是展示态：答完一个中断后其余中断的块可能停在 pending，
+ *    而按钮（看 pending_approval）已经收起 → 用块状态判徽标会出现「有徽标、没按钮」，
+ *    且只有整页刷新重建历史才能消掉；
+ * 2. 逐条扫全库历史时，任何一条旧消息的残留都会让徽标永久亮着。
+ * 末尾出现用户消息说明已发起新一轮对话，上一条的审批不再阻塞会话。
+ */
+export function derivePendingApproval (messages) {
+  const list = messages || []
+  for (let i = list.length - 1; i >= 0; i--) {
+    const msg = list[i]
+    if (!msg) continue
+    if (msg.role === 'user') return false
+    if (msg.role !== 'assistant') continue
+    return messageHasPendingApproval(msg)
+  }
+  return false
+}
+
 export function hasInterruptIds (actionRequests) {
   return (actionRequests || []).some(ar => ar && ar.interrupt_id)
 }
