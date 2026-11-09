@@ -17,7 +17,6 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_openai import ChatOpenAI
 
 from easy_agent.bootstrap.config import Config, LLMConfig, RetryConfig
-
 logger = logging.getLogger(__name__)
 #: 模型入口参数 / 发给模型的完整上下文（请求）/ 模型原始返回报文，都是 DEBUG 级别：
 #: 日志级别为 debug（``EASY_LOG_LEVEL=debug`` 或 ``easy-web --log-level debug``）时才记录。
@@ -217,6 +216,37 @@ def inject_reasoning_content(payload: dict, messages: list) -> None:
         reasoning = extract_reasoning(message.additional_kwargs)
         if reasoning:
             item["reasoning_content"] = reasoning
+
+
+def _text_of_block(block) -> str | None:
+    if isinstance(block, str):
+        return block
+    if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+        return block["text"]
+    return None
+
+
+def flatten_system_content(payload: dict) -> None:
+    """把出站请求里 system 消息的文本块数组拼回一个字符串。
+
+    deepagents 0.7 的中间件（TodoList / Skills / Memory）每次往系统提示追加一个
+    ``{"type": "text"}`` 块，langchain_openai 把块数组原样序列化。OpenAI 标准两种形状都
+    允许，但只有 string 是所有兼容接口都接受的（DeepSeek 等只接受 string）；数组的唯一
+    用处是给块挂 ``cache_control``，本项目不发。各块自带 ``\\n\\n`` 分隔，按顺序直接拼接
+    即与原文一致。含非文本块时保持原样，不丢内容。
+    """
+    payload_messages = payload.get("messages")
+    if not isinstance(payload_messages, list):
+        return
+    for item in payload_messages:
+        if not isinstance(item, dict) or item.get("role") != "system":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        texts = [_text_of_block(block) for block in content]
+        if all(text is not None for text in texts):
+            item["content"] = "".join(texts)
 
 
 try:  # LangChain 公开的「中间件内部模型调用」标记（摘要 / 工具筛选 / 工具模拟等）
@@ -524,7 +554,7 @@ def _fill_cache_read_from_deepseek_usage(msg, usage) -> None:
 
 
 class ReasoningChatOpenAI(ChatOpenAI):
-    """ChatOpenAI 子类，承载三个独立职责：
+    """ChatOpenAI 子类，承载四个独立职责：
 
     职责 A - 多模态清理：在流式/非流式入口统一处理消息内容块
         （不再区分模型是否支持视觉）：
@@ -537,6 +567,8 @@ class ReasoningChatOpenAI(ChatOpenAI):
         供前端展示与出站回传。
     职责 C - reasoning 回传：出站请求里给每条带思考的 assistant 消息（本轮和历史
         轮次、带不带 tool_calls）补回 ``reasoning_content``（langchain 自己不序列化它）。
+    职责 D - system 字符串化：出站请求里 system 消息的文本块数组拼成一个字符串
+        （所有 OpenAI 兼容接口都接受 string，DeepSeek 等只接受 string）。
     """
 
     # ── 职责 A：多模态清理 ───────────────────────────────────────────
@@ -621,9 +653,10 @@ class ReasoningChatOpenAI(ChatOpenAI):
             logger.debug(f"非流式响应提取 reasoning 失败: {exc}")
         return result
 
-    # ── 职责 C：reasoning 回传 ────────────────────────────────────────
+    # ── 职责 C / D：reasoning 回传、system 字符串化 ──────────────────────
     def _get_request_payload(self, input_, *, stop=None, **kwargs):
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        flatten_system_content(payload)
         try:
             messages = self._convert_input(input_).to_messages()
         except Exception as exc:  # noqa: BLE001 - 对齐失败就按原载荷发送

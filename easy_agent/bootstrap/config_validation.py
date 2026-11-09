@@ -174,20 +174,6 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
     ),
 }
 
-# models.<provider> 下允许的键（provider 名本身是动态的）。
-KNOWN_PROVIDER_KEYS = frozenset(
-    {
-        "provider",
-        "api_key",
-        "model",
-        "api_base",
-        "context_length",
-        "max_input_tokens",  # 旧键，from_yaml 会映射为 context_length
-        "protocol",
-        "headers",
-    }
-)
-
 # 已废弃但仍兼容的键 -> 提示信息。不参与 unknown 判定，也不参与
 # config.yaml / config-example.yaml 的键集合漂移比较。
 DEPRECATED_CONFIG_KEYS: dict[str, str] = {
