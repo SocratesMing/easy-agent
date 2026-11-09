@@ -225,10 +225,10 @@ def build_assistant_message_dict(
     ``context_length`` 是本轮所用模型的上下文窗口：会话不记录所用模型（输入框可以逐轮
     切换），会话接口靠它还原占用率的分母；未知时不写这个键。
 
-    ``fallback_note`` 是「这一轮没跑完」的兜底说明（目前只有模型流式超时会带）。它作为
-    消息的**额外顶层键**落库：消息表只固定 role/content/timestamp，其余键进 ``extra_data``
-    JSON，读回时原样 update 回来，所以**不需要改表结构**。默认 ``None`` 时不写这个键，
-    正常消息与改动前的 JSON 完全一致。
+    ``fallback_note`` 是「这一轮没跑完」的兜底说明（异常兜底会带：超时与其他故障的文案
+    不同）。它作为消息的**额外顶层键**落库：消息表只固定 role/content/timestamp，其余键进
+    ``extra_data`` JSON，读回时原样 update 回来，所以**不需要改表结构**。默认 ``None`` 时
+    不写这个键，正常消息与改动前的 JSON 完全一致。
     """
     _raw_content = content or ""
     # 过滤空/纯空白的 content block，避免持久化与历史会话渲染空正文
@@ -271,7 +271,7 @@ def _partial_message_dict(
 ) -> dict:
     """从当前 StreamProcessor 构建「进行中」的 assistant 消息（增量/HITL/取消/异常共用）。
 
-    ``fallback_note`` 仅异常兜底传值：超时截断时把兜底文案一起落库，前端刷新/切会话后
+    ``fallback_note`` 仅异常兜底传值：截断时把兜底文案一起落库，前端刷新/切会话后
     仍能显示（前端 ``syncSessionFromServer`` 是整表替换，不落库就会丢）。
     """
     return build_assistant_message_dict(

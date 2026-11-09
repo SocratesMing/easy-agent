@@ -186,10 +186,13 @@ async def test_chat_stream_error_uses_shared_fallback(monkeypatch):
     assert events[-1]["content"] == "处理失败: boom"
     # 其他异常不带 code：帧结构与改动前一致（validate 也不会因它报错）
     assert "code" not in events[-1]
-    # chat 异常兜底现在也保存半成品（补齐「取消 / HITL 恢复都会存、普通对话不存」的历史
-    # 差异，否则刷新会被更短的 DB 版本覆盖）。非超时异常不带兜底文案。
+    # chat 异常兜底也保存半成品（补齐「取消 / HITL 恢复都会存、普通对话不存」的历史
+    # 差异，否则刷新会被更短的 DB 版本覆盖），并且与超时一样带上常驻兜底文案：
+    # 只发帧不落库的话，提示活不过流结束后的那次历史回填。
     assert len(db.persisted) == 1
-    assert "fallback_note" not in db.persisted[-1]
+    assert db.persisted[-1]["fallback_note"] == orchestrator.ERROR_FALLBACK_NOTE
+    # 落库的是中性文案，原始异常只进日志与 error 帧（不写进聊天历史）
+    assert "boom" not in db.persisted[-1]["fallback_note"]
     proc = FakeProc.instances[0]
     assert proc.is_in_thinking is False
     tool_block = proc.blocks[-1]

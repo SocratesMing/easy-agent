@@ -1600,8 +1600,7 @@ export default {
       this.loadMyExpertsPage(this.myExpertsPage + 1)
     },
     /**
-     * 专家搜索过滤：名称 / 描述 / 依赖技能名。
-     * 带上技能名是因为用户常按「这个专家用了什么技能」来找，而描述里未必出现该词。
+     * 专家搜索过滤：中英文名 / 功能描述。
      *
      * 注意只用于**公共专家**（目录全量下发、在本地过滤）；「我的专家」的关键字
      * 已下推给接口（服务端分页，本地拿不到未加载的条目，过滤会漏）。
@@ -1612,11 +1611,9 @@ export default {
       return (list || []).filter((item) => {
         if (!item) return false
         const name = String(item.export_name_cn || '').toLowerCase()
+        const nameEn = String(item.export_name_en || '').toLowerCase()
         const desc = String(item.export_description || '').toLowerCase()
-        const skills = Array.isArray(item.export_skills_names)
-          ? item.export_skills_names.join(' ').toLowerCase()
-          : String(item.export_skills_names || '').toLowerCase()
-        return name.includes(kw) || desc.includes(kw) || skills.includes(kw)
+        return name.includes(kw) || nameEn.includes(kw) || desc.includes(kw)
       })
     },
     /** 公共专家本地分页：再放 3 条 */
