@@ -120,19 +120,19 @@
               <!-- 专家：上下两区（我的专家 / 公共专家），点击行 = 召唤（再点 = 取消召唤） -->
               <ExpertSubpanelList
                 v-if="!plusListLoading && !plusListError && subpanelCategory === 'experts'"
-                :loading="plusListLoading"
-                :error="plusListError"
-                :my-experts="filteredMyExperts"
-                :visible-my-experts="visibleMyExperts"
+                :my-experts="myExperts"
+                :my-experts-total="myExpertsTotal"
+                :my-experts-loading="myExpertsLoading"
+                :my-experts-error="myExpertsError"
                 :public-experts="filteredPublicExperts"
                 :visible-public-experts="visiblePublicExperts"
                 :keyword="subpanelKeyword"
                 :active-expert-id="activeExpert && activeExpert.export_agent_id"
                 :stacked="compact"
                 @toggle="toggleExpert"
-                @more="loadMoreExperts"
+                @more-mine="loadMoreMyExperts"
+                @more-public="loadMorePublicExperts"
                 @create="handleMenuPanel('experts')"
-                @scroll="onExpertsScroll"
               />
 
               <!-- 技能 / 连接器：沿用通用条目列表 -->
@@ -446,6 +446,18 @@ const TEXTAREA_MAX_ROWS = 5
 const TEXTAREA_LINE_HEIGHT = 24
 const TEXTAREA_MAX_HEIGHT = TEXTAREA_MAX_ROWS * TEXTAREA_LINE_HEIGHT
 
+// 「+」→ 专家：上区「我的专家」走服务端分页（后端 /agent/list 已支持 keyword/status/page），
+// 一页 5 条，首屏取第 1 页，之后点「点击加载更多」再取下一页。
+// 不再用「一次拉全量 + 本地 slice」：库里第 N 页的专家从来没被请求过，
+// 关键字再准也搜不到（这是原来的缺陷）。
+const PLUS_EXPERTS_PAGE_SIZE = 5
+// 下区「公共专家」是随发行包内置的目录（只有个位数），继续本地过滤 + 本地分页：
+// 首屏 6 行，点「还有 N 位」再放 3 行。
+const PUBLIC_EXPERTS_PAGE_SIZE = 6
+const PUBLIC_EXPERTS_MORE_STEP = 3
+// 专家搜索防抖：连续输入时只在停手后打一次接口
+const EXPERT_SEARCH_DEBOUNCE_MS = 300
+
 export default {
   components: { FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList, PlusList, PlusSubpanelHeader },
   directives: { tip },
@@ -520,11 +532,20 @@ export default {
       plusListLoading: false,
       plusListError: '',
       // ========== 专家快捷面板（「+」→ 专家）==========
-      // 上区：本人创建且「可用」的专家；下区：内置公共（预置）专家。
+      // 上区：本人创建且「可用」的专家（服务端按 status=active 过滤 + 分页）；
+      // 下区：内置公共（预置）专家（全量下发，本地过滤）。
       myExperts: [],
+      myExpertsTotal: 0,
+      myExpertsPage: 0,
+      myExpertsLoading: false,
+      myExpertsError: '',
       publicExperts: [],
-      // 两个区块默认各展示 6 位（单行布局后一屏能放下 6 行），滚动到底部再加载 3 位
-      plusExpertsLimit: 6,
+      publicExpertsLimit: PUBLIC_EXPERTS_PAGE_SIZE,
+      // 上一次真正提交给接口的关键字：面板打开时清空搜索词不该再触发一次「按关键字重查」
+      expertsKeyword: '',
+      expertsSearchTimer: null,
+      // 请求序号：搜索时快速连续输入会有多个请求在飞，只认最后一次的结果
+      expertsRequestSeq: 0,
       plusMenuStyle: {},
       showTokenPopup: false,
       // ========== 会话耗时 ==========
@@ -611,10 +632,10 @@ export default {
       const meta = { experts: '专家', skills: '我的技能', connectors: '我的连接器' }
       return meta[this.plusListCategory] || ''
     },
-    /** 标题右侧计数：专家 = 过滤后两区之和；技能 / 连接器 = 过滤后条数 */
+    /** 标题右侧计数：专家 = 已加载的我的专家 + 公共专家命中数；技能 / 连接器 = 过滤后条数 */
     plusListCount() {
       if (this.plusListCategory === 'experts') {
-        return this.filteredMyExperts.length + this.filteredPublicExperts.length
+        return this.myExperts.length + this.filteredPublicExperts.length
       }
       return this.filteredPlusList.length
     },
@@ -635,7 +656,7 @@ export default {
     /** 当前面板是否有数据：空列表不显示搜索框，免得对着空列表以为「搜不到」 */
     hasPanelItems() {
       if (this.plusListCategory === 'experts') {
-        return this.myExpertsActive.length + this.publicExperts.length > 0
+        return this.myExperts.length + this.publicExperts.length > 0
       }
       return this.plusList.length > 0
     },
@@ -663,25 +684,14 @@ export default {
       if (byName.length > 0) return byName
       return this.plusList.filter((item) => String(item.desc || '').toLowerCase().includes(kw))
     },
-    /** 我的专家：仅保留「可用」（active）状态，与专家 Tab 的召唤约束一致 */
-    myExpertsActive() {
-      return this.myExperts.filter((item) => item && item.agent_status === 'active')
-    },
-    filteredMyExperts() {
-      return this.filterExperts(this.myExpertsActive)
-    },
+    /** 我的专家：服务端按 status=active 过滤后下发，前端不再筛状态、也不再按关键字过滤 */
     filteredPublicExperts() {
       return this.filterExperts(this.publicExperts)
     },
-    /** 上区当前可见条目：搜索时全量展示，否则按 plusExpertsLimit 分页 */
-    visibleMyExperts() {
-      if (this.subpanelKeyword.trim()) return this.filteredMyExperts
-      return this.filteredMyExperts.slice(0, this.plusExpertsLimit)
-    },
-    /** 下区当前可见条目：同上 */
+    /** 下区当前可见条目：搜索时全量展示，否则按 publicExpertsLimit 分页 */
     visiblePublicExperts() {
       if (this.subpanelKeyword.trim()) return this.filteredPublicExperts
-      return this.filteredPublicExperts.slice(0, this.plusExpertsLimit)
+      return this.filteredPublicExperts.slice(0, this.publicExpertsLimit)
     },
     plusListEmptyText() {
       const meta = {
@@ -817,8 +827,24 @@ export default {
     },
     // 搜索词一变，列表条数就变，面板高度必须跟着重算（底边会随条数上下浮动，
     // 所以变多/变少都要重算；是否关闭由 schedulePlusClose 的「聚焦保护」负责）。
-    subpanelKeyword() {
+    // 专家面板额外做一件事：关键字交给接口查（服务端分页），本地只保留公共专家那半区的过滤。
+    subpanelKeyword(val) {
       this.$nextTick(this.syncSubpanelBox)
+      if (this.subpanelCategory !== 'experts') return
+      const kw = String(val || '').trim()
+      // 面板打开时会主动清空搜索词（openPlusList），那不是用户输入，不该再打一次接口
+      if (kw === this.expertsKeyword) return
+      this.expertsKeyword = kw
+      if (this.expertsSearchTimer) clearTimeout(this.expertsSearchTimer)
+      this.expertsSearchTimer = setTimeout(() => {
+        this.expertsSearchTimer = null
+        // 防抖窗口内面板可能已关闭 / 已切到别的分类
+        if (this.subpanelCategory !== 'experts') return
+        this.myExperts = []
+        this.myExpertsTotal = 0
+        this.myExpertsPage = 0
+        this.loadMyExpertsPage(1)
+      }, EXPERT_SEARCH_DEBOUNCE_MS)
     },
     shouldCountLive(on) {
       if (on) this.startLiveDuration()
@@ -945,6 +971,7 @@ export default {
     document.removeEventListener('click', this.closePlusMenu)
     if (this.offConnectorsChanged) this.offConnectorsChanged()
     if (this.connectorNoticeTimer) clearTimeout(this.connectorNoticeTimer)
+    if (this.expertsSearchTimer) clearTimeout(this.expertsSearchTimer)
     this.cancelPlusClose()
     this.stopLiveDuration()
     if (this._uploadNoticeTimer) clearTimeout(this._uploadNoticeTimer)
@@ -1058,10 +1085,22 @@ export default {
       this.plusList = []
       // 每次打开都重新拉取（接口很轻，且公共专家目录是服务端实时扫描的）
       this.myExperts = []
+      this.myExpertsTotal = 0
+      this.myExpertsPage = 0
+      this.myExpertsLoading = false
+      this.myExpertsError = ''
       this.publicExperts = []
-      this.plusExpertsLimit = 6
+      this.publicExpertsLimit = PUBLIC_EXPERTS_PAGE_SIZE
       // 三个面板共用一份搜索词：切分类时一律清空，避免把上一个面板的关键字带过来
       this.subpanelKeyword = ''
+      // 同步记下「已提交的关键字」，让清空动作不触发 subpanelKeyword 的按关键字重查
+      this.expertsKeyword = ''
+      if (this.expertsSearchTimer) {
+        clearTimeout(this.expertsSearchTimer)
+        this.expertsSearchTimer = null
+      }
+      // 作废上一轮还在飞的请求，避免旧结果落到新面板上
+      this.expertsRequestSeq += 1
       if (category === 'connectors') this.clearConnectorNotice()
       this.loadPlusList(category)
     },
@@ -1245,12 +1284,16 @@ export default {
     async loadPlusList(category) {
       try {
         if (category === 'experts') {
-          // 并行拉取：我的专家（数据库） + 公共专家（内置目录）
+          // 并行拉取：我的专家第 1 页（服务端 status=active + 分页） + 公共专家（内置目录，全量）
           const [mine, preset] = await Promise.all([
-            listExperts({ includeDisabled: false }),
+            listExperts({ status: 'active', page: 1, pageSize: PLUS_EXPERTS_PAGE_SIZE }),
             listPublicExperts(),
           ])
+          // 期间用户已切到别的分类：这批结果直接丢弃，避免串到技能 / 连接器面板
+          if (this.plusListCategory !== 'experts') return
           this.myExperts = mine.items || []
+          this.myExpertsTotal = Number(mine.total) || 0
+          this.myExpertsPage = 1
           this.publicExperts = preset.items || []
         } else if (category === 'skills') {
           const data = await getUserSkills()
@@ -1266,17 +1309,6 @@ export default {
             enabled: !!s.enabled,
             tag: s.enabled ? '已启用' : '已停用',
             tagType: s.enabled ? 'on' : 'off',
-          }))
-        } else if (category === 'experts') {
-          const data = await listExperts({ pageSize: 20 })
-          this.plusList = (data.items || []).map((e) => ({
-            key: `expert:${e.export_agent_id}`,
-            name: e.export_name_cn,
-            desc: String(e.export_description || '').replace(/\s*\n+\s*/g, ' ').trim() || '暂无描述',
-            icon: '',
-            initial: String(e.export_name_cn || '').trim().slice(0, 1).toUpperCase() || '专',
-            tag: e.export_version ? `v${e.export_version}` : '',
-            tagType: 'off',
           }))
         } else if (category === 'connectors') {
           const data = await getConnectors()
@@ -1527,17 +1559,52 @@ export default {
       this.subpanelCategory = null
       this.cancelPlusClose()
     },
-    /** 列表滚动到底部附近时，每区多放出 3 条（防止面板一次性过高） */
-    onExpertsScroll(e) {
-      const el = e && e.target
-      if (!el) return
-      const reachedBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 8
-      if (!reachedBottom) return
-      this.loadMoreExperts()
+    /**
+     * 拉「我的专家」的某一页（服务端分页 + 关键字过滤）。
+     *
+     * page=1 替换列表（首次打开 / 搜索），page>1 追加（点「点击加载更多」）。
+     * 请求序号保证搜索时连续输入的多个请求只认最后一次；失败只提示，不清空已加载内容，
+     * 用户再点一次「点击加载更多」就能重试。
+     */
+    async loadMyExpertsPage(page = 1) {
+      const seq = ++this.expertsRequestSeq
+      this.myExpertsLoading = true
+      this.myExpertsError = ''
+      try {
+        const data = await listExperts({
+          keyword: this.expertsKeyword,
+          status: 'active',
+          page,
+          pageSize: PLUS_EXPERTS_PAGE_SIZE,
+        })
+        if (seq !== this.expertsRequestSeq) return
+        const items = data.items || []
+        this.myExperts = page === 1 ? items : this.myExperts.concat(items)
+        this.myExpertsTotal = Number(data.total) || 0
+        this.myExpertsPage = page
+      } catch (e) {
+        if (seq !== this.expertsRequestSeq) return
+        this.myExpertsError = (e && e.message) || '加载失败'
+      } finally {
+        if (seq === this.expertsRequestSeq) {
+          this.myExpertsLoading = false
+          // 条数变了，面板高度要跟着重算（变高才允许向上长）
+          this.$nextTick(this.syncSubpanelBox)
+        }
+      }
+    },
+    /** 「点击加载更多」：再取一页追加；已加载满 total 时按钮本身不渲染 */
+    loadMoreMyExperts() {
+      if (this.myExpertsLoading) return
+      if (this.myExperts.length >= this.myExpertsTotal) return
+      this.loadMyExpertsPage(this.myExpertsPage + 1)
     },
     /**
      * 专家搜索过滤：名称 / 描述 / 依赖技能名。
      * 带上技能名是因为用户常按「这个专家用了什么技能」来找，而描述里未必出现该词。
+     *
+     * 注意只用于**公共专家**（目录全量下发、在本地过滤）；「我的专家」的关键字
+     * 已下推给接口（服务端分页，本地拿不到未加载的条目，过滤会漏）。
      */
     filterExperts(list) {
       const kw = this.subpanelKeyword.trim().toLowerCase()
@@ -1552,14 +1619,12 @@ export default {
         return name.includes(kw) || desc.includes(kw) || skills.includes(kw)
       })
     },
-    /** 每区多放出 3 条（滚动到底 / 点「还有 N 位」都会走到这里） */
-    loadMoreExperts() {
-      const total = Math.max(this.myExpertsActive.length, this.publicExperts.length)
-      if (this.plusExpertsLimit < total) {
-        this.plusExpertsLimit += 3
-        // 内容变多是唯一允许面板长高的场景（向上长），重算一次尺寸
-        this.$nextTick(this.syncSubpanelBox)
-      }
+    /** 公共专家本地分页：再放 3 条 */
+    loadMorePublicExperts() {
+      if (this.publicExpertsLimit >= this.filteredPublicExperts.length) return
+      this.publicExpertsLimit += PUBLIC_EXPERTS_MORE_STEP
+      // 内容变多是唯一允许面板长高的场景（向上长），重算一次尺寸
+      this.$nextTick(this.syncSubpanelBox)
     },
     // 列表底部入口：跳到「专家·技能·连接器」面板做完整管理
     handleMenuPanel(tab) {
@@ -3610,7 +3675,8 @@ export default {
 
 /* ── 专家面板：上区「我的专家」+ 浅色分隔线 + 下区「公共专家」── */
 /* 高度与技能/连接器面板一致：不再单独限高，由 syncSubpanelBox 统一给面板算。
-   两区各 6 行（plusExpertsLimit）刚好铺满，滚动到底再放出下一批。 */
+   我的专家一页 5 条（服务端分页，点「点击加载更多」追加下一批），
+   公共专家首屏 6 条（本地分页，点「还有 N 位」再放 3 条）。 */
 /* 已召唤：整行高亮（再点一次取消） */
 
 /* 头像配色已收敛到全局 .ea-0 ~ .ea-7（style.css + utils/expertAvatar.js）：

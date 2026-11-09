@@ -37,8 +37,8 @@ def test_mutating_mcp_and_knowledge_materialize():
 
 
 # ── FW-04：HarnessProfile 查找键 ─────────────────────────────────────────
-# 键必须用模型实例的 LangChain provider（openai/anthropic），不是配置里的网关名
-# （deepseek/minimax），否则 create_deep_agent 对预构建模型实例查不到 profile。
+# 键必须用模型实例的 LangChain provider（openai），不是配置里的网关名
+# （deepseek/opencode），否则 create_deep_agent 对预构建模型实例查不到 profile。
 
 
 def test_profile_keys_follow_langchain_provider_not_gateway_name():
@@ -49,8 +49,8 @@ def test_profile_keys_follow_langchain_provider_not_gateway_name():
             "deepseek": SimpleNamespace(
                 provider="deepseek", protocol="openai", model="deepseek-v4-flash"
             ),
-            "claude": SimpleNamespace(
-                provider="minimax", protocol="anthropic", model="claude-sonnet-4-6"
+            "opencode": SimpleNamespace(
+                provider="opencode", protocol="openai", model="deepseek-v4.1-flash"
             ),
         },
         # active 模型与 models 重复时只保留一个键
@@ -60,7 +60,7 @@ def test_profile_keys_follow_langchain_provider_not_gateway_name():
     )
     assert _configured_model_profile_keys(config) == (
         "openai:deepseek-v4-flash",
-        "anthropic:claude-sonnet-4-6",
+        "openai:deepseek-v4.1-flash",
     )
 
 
@@ -83,7 +83,7 @@ def test_profile_keys_without_config_fall_back_to_provider_keys():
     from easy_agent.agent.hitl import _configured_model_profile_keys
 
     # 仅兼容旧的无参调用；正常路径总是传入 Config。
-    assert _configured_model_profile_keys(None) == ("openai", "anthropic")
+    assert _configured_model_profile_keys(None) == ("openai",)
 
 
 # ── FW-12：动态名单下的目录删除策略（直接拒绝，不进入审批） ──────────────

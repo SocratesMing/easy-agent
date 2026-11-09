@@ -6,7 +6,7 @@
 # ---------- Stage 1: Frontend Build ----------
 FROM node:20-slim AS frontend-builder
 
-# 前端构建时需要 AGENT_ENV 来决定加载哪个 .env 文件
+# 前端构建时需要 AGENT_ENV 来决定构建 MODE
 ARG AGENT_ENV=prod
 ENV AGENT_ENV=${AGENT_ENV}
 

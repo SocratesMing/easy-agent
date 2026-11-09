@@ -308,7 +308,7 @@ async def update_expert(
 def list_experts(
     db: Annotated[ExpertRepository, Depends(get_expert_repository)],
     username: Annotated[str, Depends(get_current_username)],
-    keyword: str = Query("", description="按中英文名模糊搜索"),
+    keyword: str = Query("", description="按中英文名/功能描述/技能名模糊搜索"),
     status: str = Query("", description="按状态过滤：active/failed/disabled"),
     include_disabled: bool = Query(False, description="是否包含已删除（软删）的专家"),
     page: int = Query(1, ge=1, description="页码，从 1 开始"),

@@ -126,12 +126,12 @@
     <!-- 我的专家视图的说明条：顶替 chips 行，保持两种视图的纵向节奏一致 -->
     <div v-else class="view-bar">
       <span class="view-title">我的专家</span>
-      <span v-if="experts.length" class="chip-count">{{ experts.length }}</span>
+      <span v-if="mineTotal" class="chip-count">{{ mineTotal }}</span>
       <span class="view-tip">仅展示你自己创建的专家，可编辑与删除</span>
     </div>
 
 
-    <div class="expert-center-content">
+    <div class="expert-center-content" @scroll="onContentScroll">
       <div v-if="loading" class="state-box">
         <div class="spinner"></div>
         <span>加载中…</span>
@@ -216,6 +216,16 @@
             </span>
           </div>
         </div>
+      </div>
+
+      <!-- 我的专家：滚到底自动追加下一页。三态各一行，避免「滚不动就再也试不了」：
+           加载中 / 失败可点重试 / 已全部加载。公共专家是目录全量下发，不参与分页。 -->
+      <div v-if="view === 'mine' && filteredExperts.length" class="list-more">
+        <span v-if="mineLoadingMore">加载中…</span>
+        <button v-else-if="mineMoreError" class="action-btn-outline" @click="loadMoreMine">
+          加载失败，点击重试
+        </button>
+        <span v-else-if="myExperts.length >= mineTotal">已全部加载（共 {{ mineTotal }} 位）</span>
       </div>
     </div>
 
@@ -408,6 +418,11 @@ const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
 const PENDING_EXPERT_EDIT_KEY = 'easy_agent_pending_expert_edit'
 /** 创建/修改专家所依赖的技能目录名 */
 const CREATE_EXPERT_SKILL_DIR = 'expert-creator'
+// 「我的专家」分页：后端 /agent/list 支持 page/page_size（上限 20）。一页 20 条，
+// 首屏取第 1 页，内容区滚到底再追加下一页；滚到底且已加载满 total 后不再请求。
+const MINE_PAGE_SIZE = 20
+// 距底部多少 px 触发预取：留一点提前量，滚到底时下一页已经在路上
+const MINE_PREFETCH_PX = 120
 /** 正在准备（安装技能 / 写草稿）时禁用入口，避免连点 */
 const preparing = ref(false)
 
@@ -544,8 +559,16 @@ function clip(text, max) {
 const view = ref('public')
 /** 公共（预置）专家：来自导出目录，只读 */
 const publicExperts = ref([])
-/** 我的专家：来自数据库，可编辑/删除 */
+/** 我的专家：来自数据库，可编辑/删除；按 MINE_PAGE_SIZE 增量追加 */
 const myExperts = ref([])
+/** 我的专家已加载到第几页（0 = 还没加载） */
+const minePage = ref(0)
+/** 我的专家命中的总条数（服务端 total），用来判断还有没有下一页 */
+const mineTotal = ref(0)
+/** 正在追加下一页（与整页骨架屏的 loading 分开，避免加载更多时整块变骨架） */
+const mineLoadingMore = ref(false)
+/** 追加下一页失败时的提示（滚轮继续滚动会再试） */
+const mineMoreError = ref('')
 /** 当前视图的数据源（模板与下方所有过滤逻辑统一读它） */
 const experts = computed(() => (view.value === 'public' ? publicExperts.value : myExperts.value))
 /** 分类标签候选（后端下发的 tags，来自 config.yaml 的 expert_tags；两视图共用） */
@@ -832,11 +855,34 @@ function formatTime(iso) {
  *
  * 分类标签候选（tags）两个接口都会下发，取到即缓存，供卡片底部的 tag_name 展示。
  */
+/**
+ * 拉「我的专家」的某一页：page=1 替换（首次进入 / 切换视图），page>1 追加（滚到底）。
+ *
+ * 追加时按 export_agent_id 去重：翻页期间若有人新建/删除专家，页边界会移动，
+ * 同一条可能出现在相邻两页里，不去重就会看到重复卡片。
+ */
+async function loadMinePage(page = 1) {
+  const data = await listExperts({
+    includeDisabled: false,
+    page,
+    pageSize: MINE_PAGE_SIZE,
+  })
+  const items = data.items || []
+  if (page === 1) {
+    myExperts.value = items
+  } else if (items.length) {
+    const seen = {}
+    myExperts.value.forEach((it) => { seen[it.export_agent_id] = true })
+    myExperts.value = myExperts.value.concat(items.filter((it) => !seen[it.export_agent_id]))
+  }
+  mineTotal.value = Number(data.total) || 0
+  minePage.value = page
+  if (!tagOptions.value.length && Array.isArray(data.tags)) tagOptions.value = data.tags
+}
+
 async function loadExperts(scope) {
   if (scope === 'mine') {
-    const data = await listExperts({ includeDisabled: false })
-    myExperts.value = data.items || []
-    if (!tagOptions.value.length && Array.isArray(data.tags)) tagOptions.value = data.tags
+    await loadMinePage(1)
     return
   }
   const data = await listPublicExperts()
@@ -844,9 +890,56 @@ async function loadExperts(scope) {
   if (Array.isArray(data.tags) && data.tags.length) tagOptions.value = data.tags
 }
 
+/** 滚到底 / 点「重试」：追加下一页。已加载满 total 时直接返回（不再请求接口） */
+async function loadMoreMine() {
+  if (view.value !== 'mine') return
+  if (mineLoadingMore.value) return
+  if (myExperts.value.length >= mineTotal.value) return
+  mineLoadingMore.value = true
+  mineMoreError.value = ''
+  try {
+    await loadMinePage(minePage.value + 1)
+  } catch (e) {
+    // 失败只提示，不清空已加载内容：滚轮继续往下滚（或点重试行）会再试一次
+    mineMoreError.value = e?.message || '加载失败'
+  } finally {
+    mineLoadingMore.value = false
+  }
+}
+
+/**
+ * 内容区滚动：我的专家视图滚到底前 120px 预取下一页。
+ *
+ * 只在「我的专家」视图生效——公共专家是目录全量下发，一次就能全部渲染。
+ * 失败时不写「已到底」之类的封锁标记，因此下一次滚动会自然重试。
+ */
+function onContentScroll(e) {
+  if (view.value !== 'mine') return
+  const el = e?.target
+  if (!el) return
+  if (el.scrollTop + el.clientHeight < el.scrollHeight - MINE_PREFETCH_PX) return
+  loadMoreMine()
+}
+
+/**
+ * 删除后按「已加载的页数」整段重放。
+ *
+ * 只重拉第 1 页会把已经展开的第 2、3 页清空，列表突然变短、内容区滚动位置被夹到底部，
+ * 反而又触发一次加载。逐页重放保持已加载长度不变。
+ */
+async function reloadMineLoadedPages() {
+  const pages = Math.max(minePage.value, 1)
+  try {
+    for (let p = 1; p <= pages; p += 1) {
+      await loadMinePage(p)
+    }
+  } catch (_) { /* 静默失败，保留旧数据 */ }
+}
+
 async function refresh() {
   loading.value = true
   error.value = ''
+  mineMoreError.value = ''
   try {
     await loadExperts(view.value)
     if (
@@ -862,12 +955,6 @@ async function refresh() {
   } finally {
     loading.value = false
   }
-}
-
-async function refreshSilently(scope = view.value) {
-  try {
-    await loadExperts(scope)
-  } catch (_) { /* 静默失败，保留旧数据 */ }
 }
 
 /** 切换视图：我的专家视图不带搜索与分类筛选，切换时把过滤条件复位 */
@@ -891,7 +978,7 @@ async function confirmDelete(item) {
   if (!ok) return
   try {
     await deleteExpert(item.export_agent_id, true)
-    await refreshSilently('mine')
+    await reloadMineLoadedPages()
     showToast(`已删除「${item.export_name_cn}」`)
   } catch (e) {
     showToast(e.message || '删除失败', 'error')
@@ -1212,6 +1299,18 @@ onMounted(refresh)
      —— 内容自然高度 ≈183px（2 行描述 + 技能标签行 + 底栏），
         既不贴到 180 下限，也远离 190 上限，留出字体差异余量。 */
   grid-auto-rows: minmax(184px, auto);
+}
+
+/* 我的专家的分页状态行（加载中 / 失败重试 / 已全部加载）：
+   贴在网格下方居中，高度固定，避免出现/消失时列表跳动。 */
+.list-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 12px 0 4px;
+  font-size: 12.5px;
+  color: var(--text-secondary, #64748b);
 }
 
 .expert-card {

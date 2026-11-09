@@ -5,8 +5,9 @@ const { defineConfig } = require("@vue/cli-service");
 //   · 开发/联调：由下面的 devServer.proxy 把 /agent 转发到对应环境后端，前端无跨域；
 //   · 生产：后端同源托管 dist/（或由 Nginx 反代 /agent），相对路径直接命中后端。
 //
-// 当前环境取自 .env.<mode> 中的 VUE_APP_AGENT_ENV（由 scripts/env-mode.mjs 决定加载哪个
-// .env 文件），也可用 VUE_APP_PROXY_TARGET 直接覆盖代理目标。
+// 代码内固定的代理目标表：按 AGENT_ENV / 平台选择，不再读取 VUE_APP_* 变量。
+// 临时连别的后端（如本机 http://localhost:8080）时设 AGENT_PROXY_TARGET 覆盖，不必改这张表；
+// 它只在 dev server 进程里读取，不会进入构建产物。
 const PROXY_TARGETS = {
   dev: "http://183.196.130.56:22333",
   test: "http://192.168.1.100:8007",
@@ -15,10 +16,10 @@ const PROXY_TARGETS = {
 };
 
 const AGENT_ENV =
-  process.env.VUE_APP_AGENT_ENV ||
+  process.env.AGENT_ENV ||
   (process.platform === "win32" ? "win" : "dev");
 const PROXY_TARGET =
-  process.env.VUE_APP_PROXY_TARGET ||
+  (process.env.AGENT_PROXY_TARGET || "").trim() ||
   PROXY_TARGETS[AGENT_ENV] ||
   PROXY_TARGETS.dev;
 

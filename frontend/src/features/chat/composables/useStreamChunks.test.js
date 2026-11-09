@@ -75,3 +75,26 @@ test('没有注入 runInSession 时也能派发（防御分支）', () => {
   handler.onChunk({ type: 'content', content: 'ok' })
   assert.ok(messages.value[0])
 })
+
+test('knowledge_evidence 写入证据与告警，供 ChatMessage 渲染', () => {
+  const { messages, handler } = makeHarness()
+  handler.onChunk({ type: 'knowledge_evidence', evidence: [{ id: 'doc-1' }], warnings: ['低相关度'] })
+  assert.deepEqual(messages.value[0].knowledge_evidence, [{ id: 'doc-1' }])
+  assert.deepEqual(messages.value[0].knowledge_warnings, ['低相关度'])
+})
+
+test('done 不带 content/title：正文由各段 content 块拼回，未完成的 streaming 标记被清掉', () => {
+  const { messages, state, handler } = makeHarness()
+  handler.onChunk({ type: 'content', content: '第一段', step: 1 })
+  handler.onChunk({ type: 'content_end' })
+  handler.onChunk({ type: 'content', content: '第二段', step: 2 })
+  handler.onChunk({ type: 'content_end' })
+  handler.onChunk({ type: 'tool_call_delta', tool_name: 'write_file', tool_call_id: 'c1', arguments: {}, step: 3 })
+  handler.onChunk({ type: 'done', session_id: 's1', elapsed_time: 1.2 })
+
+  const msg = messages.value[0]
+  assert.equal(msg.content, '第一段\n第二段')
+  assert.equal(msg.loading, false)
+  assert.equal(msg.blocks.find(b => b.type === 'tool_call').streaming, false)
+  assert.deepEqual(state.sessions.value, [], '会话标题由收尾时的 loadSessions() 回填，done 不改会话列表')
+})

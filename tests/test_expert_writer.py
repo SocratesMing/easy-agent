@@ -533,7 +533,8 @@ def _stub_skills_middleware(monkeypatch, recorded: list):
         recorded.append(kwargs)
         return SimpleNamespace(name="SkillsMiddleware")
 
-    monkeypatch.setattr(agent_mod, "SkillsMiddleware", _record)
+    # 主代理有技能源就挂项目的技能中间件（无门控工具时 tools=None）
+    monkeypatch.setattr(agent_mod, "EasySkillsMiddleware", _record)
 
 
 def test_agent_manager_keeps_save_expert_out_of_skill_gating(client, monkeypatch):
@@ -559,7 +560,8 @@ def test_agent_manager_keeps_save_expert_out_of_skill_gating(client, monkeypatch
     # 公共 expert-creator 仍声明 include_tools: save_expert，但它是例外清单成员，
     # 不会被交给任何 SkillsMiddleware（否则旧副本场景下又变成永不披露）
     assert all(
-        [t.name for t in kw["tools"]("save_expert", None)] == [] for kw in recorded
+        kw["tools"] is None or [t.name for t in kw["tools"]("save_expert", None)] == []
+        for kw in recorded
     )
 
     asyncio.run(

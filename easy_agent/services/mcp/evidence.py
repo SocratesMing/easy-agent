@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import uuid
 from collections.abc import Iterable, Mapping
@@ -128,25 +127,7 @@ class MCPEvidence:
 
 
 def _content_limit() -> int:
-    """当前文本上限；环境变量优先，异常配置回退到默认值。"""
-    raw = os.getenv("EASY_MCP_MAX_CONTENT_CHARS", "").strip()
-    if raw:
-        try:
-            value = int(raw)
-        except ValueError:
-            logger.warning(
-                "EASY_MCP_MAX_CONTENT_CHARS=%r 不是整数，使用默认值 %s",
-                raw,
-                DEFAULT_MAX_CONTENT_CHARS,
-            )
-        else:
-            if value > 0:
-                return value
-            logger.warning(
-                "EASY_MCP_MAX_CONTENT_CHARS=%s 必须为正整数，使用默认值 %s",
-                raw,
-                DEFAULT_MAX_CONTENT_CHARS,
-            )
+    """当前文本上限：固定取代码内常量，不再由环境变量覆盖。"""
     try:
         return max(1, int(DEFAULT_MAX_CONTENT_CHARS))
     except (TypeError, ValueError):

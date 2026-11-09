@@ -61,7 +61,11 @@ def _get_llm(model_name: Optional[str] = None):
 
 
 def _to_lc_messages(messages):
-    """将 {role, content} 列表转为 LangChain 消息列表。"""
+    """将 {role, content[, thinking]} 列表转为 LangChain 消息列表。
+
+    assistant 消息带的 ``thinking`` 放进 ``additional_kwargs["reasoning_content"]``，
+    由模型层随请求回传（见 ``agent/model.py`` 的 ``inject_reasoning_content``）。
+    """
     lc_messages = []
     for m in messages:
         role = (m.role or "").strip().lower()
@@ -71,8 +75,21 @@ def _to_lc_messages(messages):
                 status_code=400,
                 detail=f"不支持的消息角色: '{m.role}'，仅支持 system/user/assistant",
             )
-        lc_messages.append(msg_cls(content=m.content))
+        if msg_cls is AIMessage and m.thinking:
+            lc_messages.append(
+                AIMessage(content=m.content, additional_kwargs={"reasoning_content": m.thinking})
+            )
+        else:
+            lc_messages.append(msg_cls(content=m.content))
     return lc_messages
+
+
+def _context_item(message) -> dict:
+    """返回给调用方的上下文条目：带思考的 assistant 消息保留 thinking，下次原样传回即可。"""
+    item = {"role": message.role, "content": message.content}
+    if message.thinking and (message.role or "").strip().lower() == "assistant":
+        item["thinking"] = message.thinking
+    return item
 
 
 @router.post(
@@ -81,7 +98,8 @@ def _to_lc_messages(messages):
     description=(
         "传入消息数组（如 system 提示词 + user 需求），调用大模型后返回完整对话上下文"
         "（含本轮 assistant 回复）。供其他业务系统直接调用。需要登录（Bearer token），"
-        "并受 30 次/分钟限流；消息最多 50 条、内容总长最多 100000 字符。"
+        "并受 30 次/分钟限流；消息最多 50 条、内容（含 thinking）总长最多 100000 字符。"
+        "assistant 消息可带 thinking（返回结果里的思考内容），会随请求回传给模型。"
     ),
 )
 async def chat_completion(
@@ -91,7 +109,7 @@ async def chat_completion(
     if not request.messages:
         raise HTTPException(status_code=400, detail="消息列表不能为空")
 
-    total_chars = sum(len(m.content or "") for m in request.messages)
+    total_chars = sum(len(m.content or "") + len(m.thinking or "") for m in request.messages)
     if total_chars > MAX_TOTAL_CONTENT_CHARS:
         raise HTTPException(
             status_code=400,
@@ -115,7 +133,7 @@ async def chat_completion(
     thinking = extract_reasoning(getattr(result, "additional_kwargs", None))
 
     # 组装完整上下文：原始消息 + 本轮 assistant 回复
-    context = [{"role": m.role, "content": m.content} for m in request.messages]
+    context = [_context_item(m) for m in request.messages]
     assistant_message = {"role": "assistant", "content": assistant_content}
     if thinking:
         assistant_message["thinking"] = thinking

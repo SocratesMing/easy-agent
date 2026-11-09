@@ -1,8 +1,9 @@
-"""职责 C：思考内容必须随带 tool_calls 的 assistant 消息回传到出站请求。
+"""职责 C：每条 assistant 消息的思考都随出站请求回传（本轮和历史轮次、带不带 tool_calls）。
 
 langchain_openai 的 ``_convert_message_to_dict`` 不序列化
 ``additional_kwargs``，思考模式的上游在「工具调用 → 工具结果」续跑时会 400：
 ``The reasoning_content in the thinking mode must be passed back to the API``。
+DeepSeek 文档要求请求带 tools 时历史各轮的 ``reasoning_content`` 都回传。
 """
 
 from __future__ import annotations
@@ -52,16 +53,38 @@ def test_payload_omits_reasoning_content_when_absent():
     assert "reasoning_content" not in payload["messages"][1]
 
 
-def test_plain_assistant_message_is_not_polluted():
-    """无 tool_calls 的 assistant 消息不带 reasoning_content（非思考上游不认该字段）。"""
+def test_plain_assistant_message_carries_reasoning_content():
+    """不带 tool_calls 的回答也回传思考（DeepSeek：即使该轮没有调用工具）。"""
     messages = [
         HumanMessage(content="你好"),
         AIMessage(content="你好", additional_kwargs={"reasoning_content": "寒暄"}),
+        HumanMessage(content="再见"),
     ]
 
     payload = _model()._get_request_payload(messages)
 
-    assert "reasoning_content" not in payload["messages"][1]
+    assert payload["messages"][1]["reasoning_content"] == "寒暄"
+
+
+def test_every_turn_carries_its_reasoning_content():
+    """多轮 + 工具调用：历史轮次与本轮的每条 assistant 消息都带各自的思考。"""
+    messages = [
+        *_tool_loop("第1轮调工具"),
+        AIMessage(content="第1轮答复", additional_kwargs={"reasoning_content": "第1轮作答"}),
+        HumanMessage(content="第二轮"),
+        AIMessage(
+            content="",
+            tool_calls=[{**TOOL_CALL, "id": "call_2"}],
+            additional_kwargs={"reasoning_content": "第2轮调工具"},
+        ),
+        ToolMessage(content="b.txt", tool_call_id="call_2"),
+    ]
+
+    payload = _model()._get_request_payload(messages)
+
+    assistant = [m for m in payload["messages"] if m["role"] == "assistant"]
+    assert [m.get("reasoning_content") for m in assistant] == ["第1轮调工具", "第1轮作答", "第2轮调工具"]
+    assert all(m.get("reasoning_content") is None for m in payload["messages"] if m["role"] != "assistant")
 
 
 def test_reasoning_key_aliases_are_normalized_to_reasoning_content():

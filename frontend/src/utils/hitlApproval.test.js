@@ -5,6 +5,7 @@ import {
   applyApprovalRequests,
   approvalTargetForBlock,
   buildResumeDecisions,
+  derivePendingApproval,
   markApprovalDecision,
   unmatchedApprovalRequests,
 } from './hitlApproval.js'
@@ -152,4 +153,69 @@ test('buildResumeDecisions: 旧载荷（无 interrupt_id）编辑单条', () => 
     editedAction: { name: 'a', args: { y: 1 } }
   })
   assert.deepEqual(decisions, [{ type: 'edit', edited_action: { name: 'a', args: { y: 1 } } }])
+})
+
+// ── 会话列表「待审批」徽标的判据（DA-24，2026-11-07）────────────────────────────
+// 回归背景：刷新页面后点审批，左侧会话的「待审批」一直不消失，过一阵再刷新才复原。
+// 旧判据会把「块状态还停在 pending、但按钮已收起」的中间态算成待审批，形成死状态。
+
+const aiMessage = (extra = {}) => ({ role: 'assistant', content: '好的', blocks: [], ...extra })
+const toolBlock = (id, status, extra = {}) => ({ type: 'tool_call', tool_call_id: id, tool_name: 'save_expert', approval_status: status, ...extra })
+
+test('待审批判据：消息级载荷 + 待审批卡片 → 待审批', () => {
+  const msgs = [aiMessage({
+    pending_approval: { thread_id: 's-1', action_requests: [{ tool_call_id: 'tc1', interrupt_id: 'i1' }] },
+    blocks: [toolBlock('tc1', 'pending', { pending_approval: true })],
+  })]
+  assert.equal(derivePendingApproval(msgs), true)
+})
+
+test('待审批判据：答完后载荷清空、块状态残留 pending → 不再待审批（本次问题）', () => {
+  const msgs = [aiMessage({ pending_approval: null, blocks: [toolBlock('tc1', 'pending')] })]
+  assert.equal(derivePendingApproval(msgs), false)
+})
+
+test('待审批判据：块已批准但载荷残留 → 不待审批', () => {
+  const msgs = [aiMessage({
+    pending_approval: { thread_id: 's-1', action_requests: [{ tool_call_id: 'tc1', interrupt_id: 'i1' }] },
+    blocks: [toolBlock('tc1', 'approved')],
+  })]
+  assert.equal(derivePendingApproval(msgs), false)
+})
+
+test('待审批判据：只看最后一条 assistant，旧残留不影响', () => {
+  const msgs = [
+    aiMessage({ pending_approval: { thread_id: 's-1' }, blocks: [toolBlock('tc1', 'pending')] }),
+    { role: 'user', content: '继续' },
+    aiMessage({ pending_approval: null, blocks: [toolBlock('tc2', 'approved')] }),
+  ]
+  assert.equal(derivePendingApproval(msgs), false)
+})
+
+test('待审批判据：末尾出现用户消息（已发起新一轮）→ 不待审批', () => {
+  const msgs = [
+    aiMessage({ pending_approval: { thread_id: 's-1' }, blocks: [toolBlock('tc1', 'pending')] }),
+    { role: 'user', content: '再问一句' },
+  ]
+  assert.equal(derivePendingApproval(msgs), false)
+})
+
+test('待审批判据：子代理内部审批（主消息无对应卡片）→ 仍待审批', () => {
+  const msgs = [aiMessage({
+    pending_approval: { thread_id: 's-1', action_requests: [{ tool_call_id: 'sub-1', interrupt_id: 'i1' }] },
+    blocks: [],
+  })]
+  assert.equal(derivePendingApproval(msgs), true)
+})
+
+test('待审批判据：旧数据无消息级载荷 → 按块状态兜底', () => {
+  assert.equal(derivePendingApproval([aiMessage({ blocks: [toolBlock('tc1', 'pending')] })]), true)
+  assert.equal(derivePendingApproval([aiMessage({ blocks: [toolBlock('tc1', 'rejected')] })]), false)
+})
+
+test('待审批判据：数组形态载荷 / 空列表', () => {
+  assert.equal(derivePendingApproval([aiMessage({ pending_approval: [{ thread_id: 's-1' }] })]), true)
+  assert.equal(derivePendingApproval([]), false)
+  assert.equal(derivePendingApproval(null), false)
+  assert.equal(derivePendingApproval(undefined), false)
 })

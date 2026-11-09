@@ -12,6 +12,7 @@
  */
 
 import { setExpertLastSession } from '../../../shared/utils/expertSession.js'
+import { markStreamFlight } from '../services/streamResume.js'
 
 /**
  * 审批续跑前的会话用量基数：会话合计扣掉被中断这条消息已计入的耗时 / 步数。
@@ -37,7 +38,6 @@ export function createStreamChunkHandler(messages, ctx) {
     currentTodos,
     loadedSessionId,
     attachedStreamingSessions,
-    sessions,
     pendingApproval,
     error,
     markStreaming,
@@ -172,7 +172,7 @@ export function createStreamChunkHandler(messages, ctx) {
   }
 
   function onChunk(data) {
-    const { type: eventType, content, duration, step, tool_name, tool_call_id: toolCallId, arguments: args, result, success, title } = data
+    const { type: eventType, content, duration, step, tool_name, tool_call_id: toolCallId, arguments: args, result, success } = data
     const sid = ctx.streamSessionId
 
     if (eventType === 'start') {
@@ -197,7 +197,20 @@ export function createStreamChunkHandler(messages, ctx) {
           attachedStreamingSessions.value[data.session_id] = 'displayed'
         }
         markStreaming(ctx.streamSessionId || currentSessionId.value)
+        // 拿到 session_id 后补全在飞记录：刷新时若还没收到 start，只能靠发送时刻那条记录找回
+        markStreamFlight(ctx.streamSessionId || currentSessionId.value)
         if (data.session_id && onStreamStarted) onStreamStarted(data.session_id)
+      }
+    } else if (eventType === 'knowledge_evidence') {
+      // 知识依据：写到本条消息上，由 ChatMessage 渲染（刷新后由历史接口带回同名字段）
+      ensureMessage()
+      const idx = findIdx()
+      if (idx !== -1) {
+        messages.value[idx] = {
+          ...messages.value[idx],
+          knowledge_evidence: Array.isArray(data.evidence) ? data.evidence : [],
+          knowledge_warnings: Array.isArray(data.warnings) ? data.warnings : [],
+        }
       }
     } else if (eventType === 'token_usage') {
       applyUsage(data, ctx.streamSessionId)
@@ -282,12 +295,6 @@ export function createStreamChunkHandler(messages, ctx) {
       }
       currentThinking = ''
       currentBlock = null
-    } else if (eventType === 'content_start') {
-      if (!currentBlock || currentBlock.type !== 'content') {
-        currentContent = ''
-        currentBlock = null
-        addBlock('content', { content: '', step: step || 0 })
-      }
     } else if (eventType === 'content') {
       const targetStep = step || 0
       // 正文块必须带 step，否则按 step 排序时会落到顶部（step=0）。同一 step 的
@@ -318,19 +325,6 @@ export function createStreamChunkHandler(messages, ctx) {
       currentBlock = null
     } else if (eventType === 'todo_list') {
       if (data.todos && Array.isArray(data.todos)) currentTodos.value = data.todos
-    } else if (eventType === 'assistant_start') {
-      if (!ctx.isResume) {
-        ensureMessage()
-        currentContent = ''
-        currentThinking = ''
-        currentToolCalls = []
-        currentBlock = null
-      }
-    } else if (eventType === 'user_input_required') {
-      if (!ctx.isResume) {
-        const idx = findIdx()
-        if (idx !== -1) { messages.value[idx].loading = false; messages.value[idx] = { ...messages.value[idx] } }
-      }
     } else if (eventType === 'tool_call_delta') {
       // 大参数工具（write_file/edit_file）的 arguments 分片快照：模型还在生成
       // 文件内容时就先把当前快照合入对应工具卡片，diff 实时增长；完整参数随后由
@@ -424,8 +418,12 @@ export function createStreamChunkHandler(messages, ctx) {
           for (const b of messages.value[idx].blocks) { if (b.type === 'thinking' && b.duration == null) b.duration = 0 }
           if (data.usage) applyUsage(data.usage, ctx.streamSessionId)
         } else {
-          const finalContent = data.content || currentContent
-          messages.value[idx].content = finalContent
+          // done 事件不下发 content 字段：从正文块拼回完整正文，供复制/引用等
+          // 仍读 message.content 的路径使用（气泡渲染本身以 blocks 为准）。
+          messages.value[idx].content = (messages.value[idx].blocks || [])
+            .filter(b => b.type === 'content')
+            .map(b => b.content || '')
+            .join('\n')
           // SET 语义下 currentThinking 只剩最后一个 step 的内容；此处从所有思考块
           // 拼接出完整 thinking，保证 message.thinking 字段（旧数据回退/兼容）正确。
           messages.value[idx].thinking = (messages.value[idx].blocks || [])
@@ -457,29 +455,35 @@ export function createStreamChunkHandler(messages, ctx) {
         }
         messages.value[idx] = { ...messages.value[idx] }
       }
-      if (!ctx.isResume && title) {
-        const existingIdx = sessions.value.findIndex(s => s.session_id === currentSessionId.value)
-        if (existingIdx === -1) {
-          sessions.value = [{ session_id: currentSessionId.value, title, created_at: new Date().toISOString(), message_count: messages.value.length }, ...sessions.value]
-        } else {
-          sessions.value[existingIdx] = { ...sessions.value[existingIdx], title }
-          sessions.value = [...sessions.value]
-        }
-      }
+      // 后端 done 不带 title：会话标题由服务端生成，发送流程收尾（App.vue 的
+      // finally）会 loadSessions() 回填，这里不再做本地即时更新。
     } else if (eventType === 'error') {
+      // code === 'timeout'：模型流式静默超时。半成品和兜底文案后端已经落库，
+      // 这里只决定「怎么展示」：
+      //   - 不写 message.error、也不设全局 error —— 那是粉底红字条 + 页面底部弹窗；
+      //   - 改写 message.fallback_note，由 ChatMessage 在正文后渲染常驻灰条。
+      // 其他异常（步数用尽等）code 为 undefined，走原来的报错路径，行为不变。
+      const timedOut = data.code === 'timeout'
       const idx = findIdx()
       if (idx !== -1) {
         messages.value[idx].loading = false
-        messages.value[idx].error = data.content || '处理失败'
+        if (!timedOut) messages.value[idx].error = data.content || '处理失败'
         if (!ctx.isResume) {
           for (const blk of messages.value[idx].blocks) {
             if (blk.type === 'thinking' && blk.duration == null) blk.duration = 0
-            if (blk.type === 'tool_call' && blk.duration == null) { blk.duration = 0; blk.success = false; if (!blk.result) blk.result = data.content || '执行中断' }
+            if (blk.type === 'tool_call' && blk.duration == null) {
+              blk.duration = 0
+              blk.success = false
+              if (!blk.result) blk.result = timedOut ? '执行中断: 访问超时' : (data.content || '执行中断')
+            }
           }
         }
-        messages.value[idx] = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+        // Vue3 里整体替换才可靠触发渲染，fallback_note 要放进替换对象
+        const patch = { ...messages.value[idx], blocks: [...messages.value[idx].blocks] }
+        if (timedOut && data.content) patch.fallback_note = data.content
+        messages.value[idx] = patch
       }
-      error.value = data.content || '处理失败'
+      if (!timedOut) error.value = data.content || '处理失败'
     }
   }
 

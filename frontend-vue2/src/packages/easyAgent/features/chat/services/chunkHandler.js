@@ -9,6 +9,7 @@
  */
 import { chatBus } from '../store/chatStore.js'
 import { setReactive } from '../../../utils/reactiveSet.js'
+import { applyStreamError } from '../../../utils/streamErrorFallback.js'
 import { parseMCPResult } from '../../../utils/mcpResult.js'
 import { setExpertLastSession } from '../../../shared/utils/expertSession.js'
 
@@ -114,7 +115,10 @@ export function createStreamChunkHandler(vm, ctx) {
   }
   const applyUsage = (data, sid) => {
     const patch = usagePatchFrom(data)
-    const match = !sid || vm.currentSessionId === sid
+    // 状态路由按 runInSession 的 loadedSessionId 判定：组件数据要么就是该会话本身
+    // （展示中），要么已被临时换成就该会话的状态（ctx.stateSwapped）。两种情况都应
+    // 直接写组件数据；只有既不是展示中也没换状态时，才退回写 sessionStates 缓存。
+    const match = !sid || ctx.stateSwapped || vm.loadedSessionId === sid
     rememberMessageUsage(data)
     if (ctx.attachMode) {
       // 重挂载回放：token_usage/done 携带的 elapsed_time 是原始流从头开始的
@@ -152,7 +156,7 @@ export function createStreamChunkHandler(vm, ctx) {
   }
 
   const onChunk = (data) => {
-    const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success, title } = data
+    const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success } = data
 
     if (eventType === 'start') {
       if (!ctx.isResume) {
@@ -177,6 +181,14 @@ export function createStreamChunkHandler(vm, ctx) {
         vm.markStreaming(ctx.streamSessionId || vm.currentSessionId)
         if (data.session_id) chatBus.$emit('stream-started', { sessionId: data.session_id, origin: vm._uid })
       }
+    } else if (eventType === 'knowledge_evidence') {
+      ensureMessage()
+      const idx = findIdx()
+      if (idx !== -1) setReactive(vm.messages, idx, {
+        ...vm.messages[idx],
+        knowledge_evidence: Array.isArray(data.evidence) ? data.evidence : [],
+        knowledge_warnings: Array.isArray(data.warnings) ? data.warnings : [],
+      })
     } else if (eventType === 'token_usage') {
       applyUsage(data, ctx.streamSessionId)
     } else if (eventType === 'thinking_start') {
@@ -259,12 +271,6 @@ export function createStreamChunkHandler(vm, ctx) {
       }
       currentThinking = ''
       currentBlock = null
-    } else if (eventType === 'content_start') {
-      if (!currentBlock || currentBlock.type !== 'content') {
-        currentContent = ''
-        currentBlock = null
-        addBlock('content', { content: '', step: step || 0 })
-      }
     } else if (eventType === 'content') {
       const targetStep = step || 0
       // 正文块必须带 step，否则按 step 排序时会落到顶部（step=0）。同一 step 的
@@ -295,18 +301,23 @@ export function createStreamChunkHandler(vm, ctx) {
       currentBlock = null
     } else if (eventType === 'todo_list') {
       if (data.todos && Array.isArray(data.todos)) vm.currentTodos = data.todos
-    } else if (eventType === 'assistant_start') {
-      if (!ctx.isResume) {
-        ensureMessage()
-        currentContent = ''
-        currentThinking = ''
-        currentToolCalls = []
-        currentBlock = null
-      }
-    } else if (eventType === 'user_input_required') {
-      if (!ctx.isResume) {
-        const idx = findIdx()
-        if (idx !== -1) { vm.messages[idx].loading = false; setReactive(vm.messages, idx, { ...vm.messages[idx] }) }
+    } else if (eventType === 'tool_call_delta') {
+      // 大参数工具（write_file/edit_file）的 arguments 分片快照：先把当前快照合入
+      // 工具卡片，完整参数随后由 tool_call 事件权威覆盖（同一 tool_call_id）。
+      if (!ctx.isResume) ensureMessage()
+      const idx = findIdx()
+      if (idx !== -1) {
+        const callId = toolCallId || `tool-${toolName}`
+        const blockIdx = vm.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
+        if (blockIdx !== -1) {
+          const prev = vm.messages[idx].blocks[blockIdx]
+          setReactive(vm.messages[idx].blocks, blockIdx, { ...prev, arguments: args || prev.arguments || {}, streaming: true })
+        } else {
+          // 必须先清空 currentBlock：否则 addBlock 会把本次调用并进上一个 tool_call 块。
+          currentBlock = null
+          addBlock('tool_call', { id: callId, tool_name: toolName || '', arguments: args || {}, result: '', success: true, streaming: true, step: step || 0 })
+        }
+        touchBlocks()
       }
     } else if (eventType === 'tool_call') {
       if (!ctx.isResume) ensureMessage()
@@ -315,7 +326,9 @@ export function createStreamChunkHandler(vm, ctx) {
         const callId = toolCallId || `tool-${toolName}`
         const existingBlockIdx = vm.messages[idx].blocks.findIndex(b => b.type === 'tool_call' && (b.id === callId || b.tool_call_id === callId))
         if (existingBlockIdx !== -1) {
-          vm.messages[idx].blocks[existingBlockIdx].arguments = args || {}
+          // tool_call 是权威参数：覆盖 delta 快照并清掉「写入中」标记。
+          const prev = vm.messages[idx].blocks[existingBlockIdx]
+          setReactive(vm.messages[idx].blocks, existingBlockIdx, { ...prev, arguments: args || {}, streaming: false })
           currentBlock = vm.messages[idx].blocks[existingBlockIdx]
           touchBlocks()
         } else {
@@ -361,8 +374,12 @@ export function createStreamChunkHandler(vm, ctx) {
           for (const b of vm.messages[idx].blocks) { if (b.type === 'thinking' && b.duration == null) b.duration = 0 }
           if (data.usage) applyUsage(data.usage, ctx.streamSessionId)
         } else {
-          const finalContent = data.content || currentContent
-          vm.messages[idx].content = finalContent
+          // done 事件不下发 content 字段：从正文块拼回完整正文，供复制/引用等
+          // 仍读 message.content 的路径使用（气泡渲染本身以 blocks 为准）。
+          vm.messages[idx].content = (vm.messages[idx].blocks || [])
+            .filter(b => b.type === 'content')
+            .map(b => b.content || '')
+            .join('\n')
           // SET 语义下 currentThinking 只剩最后一个 step 的内容；此处从所有思考块
           // 拼接出完整 thinking，保证 message.thinking 字段（旧数据回退/兼容）正确。
           vm.messages[idx].thinking = (vm.messages[idx].blocks || [])
@@ -375,7 +392,7 @@ export function createStreamChunkHandler(vm, ctx) {
           }
           if (data.usage) {
             const patch = usagePatchFrom(data.usage)
-            const match = !ctx.streamSessionId || vm.currentSessionId === ctx.streamSessionId
+            const match = !ctx.streamSessionId || ctx.stateSwapped || vm.loadedSessionId === ctx.streamSessionId
             const finalDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
             const finalIterations = data.usage && typeof data.usage.step_count === 'number' ? ctx.preStreamIterationCount + data.usage.step_count : null
             if (match) {
@@ -392,44 +409,26 @@ export function createStreamChunkHandler(vm, ctx) {
             }
           }
         }
+        // 兜底：未收到完整参数的 streaming 占位块在流结束时清除标记，
+        // 避免工具卡片一直停留在「写入中…」。
+        for (const blk of vm.messages[idx].blocks || []) {
+          if (blk.streaming) blk.streaming = false
+        }
         setReactive(vm.messages, idx, { ...vm.messages[idx] })
       }
-      if (!ctx.isResume && title) {
-        const existingIdx = vm.sessions.findIndex(s => s.session_id === vm.currentSessionId)
-        if (existingIdx === -1) {
-          vm.sessions = [{ session_id: vm.currentSessionId, title, created_at: new Date().toISOString(), message_count: vm.messages.length }, ...vm.sessions]
-        } else {
-          setReactive(vm.sessions, existingIdx, { ...vm.sessions[existingIdx], title })
-          vm.sessions = [...vm.sessions]
-        }
-      }
+      // 后端 done 不带 title：会话标题由服务端生成，流结束后刷新列表回填。
+      if (!ctx.isResume && typeof vm.loadSessions === 'function') vm.loadSessions()
     } else if (eventType === 'error') {
-      const idx = findIdx()
-      // code === 'timeout'：模型流式静默超时（一次模型调用 120 秒没收到新 chunk）。
-      // 半成品和兜底文案后端已经落库，这里的差别只有「怎么展示」：
-      //   - 不写 message.error，也不设 vm.error —— 那是红色报错且 5 秒后自动消失；
-      //   - 改写 message.fallback_note，由 ChatMessage 在正文后渲染常驻灰条。
-      // 其他异常（步数用尽等）code 为 undefined，走原来的红字路径，行为不变。
-      const timedOut = data.code === 'timeout'
-      if (idx !== -1) {
-        vm.messages[idx].loading = false
-        if (!timedOut) vm.messages[idx].error = data.content || '处理失败'
-        if (!ctx.isResume) {
-          for (const blk of vm.messages[idx].blocks) {
-            if (blk.type === 'thinking' && blk.duration == null) blk.duration = 0
-            if (blk.type === 'tool_call' && blk.duration == null) {
-              blk.duration = 0
-              blk.success = false
-              if (!blk.result) blk.result = timedOut ? '执行中断: 访问超时' : (data.content || '执行中断')
-            }
-          }
-        }
-        const patch = { ...vm.messages[idx], blocks: [...vm.messages[idx].blocks] }
-        // 新增键必须放进被替换的对象里：Vue2 直接给原对象添属性不会触发视图更新
-        if (timedOut && data.content) patch.fallback_note = data.content
-        setReactive(vm.messages, idx, patch)
-      }
-      if (!timedOut) vm.error = data.content || '处理失败'
+      // 超时兜底与普通报错的分流逻辑在 utils/streamErrorFallback.js，
+      // 与 EasyAgentPage 内的同名方法共用同一份实现。
+      // 返回非空才写全局 error：超时在页内显示常驻灰条，不弹框。
+      const globalError = applyStreamError({
+        messages: vm.messages,
+        index: findIdx(),
+        data,
+        isResume: ctx.isResume
+      })
+      if (globalError) vm.error = globalError
     }
   }
 

@@ -5,7 +5,11 @@
  * 让 MarkdownBody、FilePreview 等入口共用同一个渲染器实例与代码块结构。
  */
 
-import { createMarkdownRenderer, renderMarkdown as renderWith } from '../../markdownSetup.js'
+import {
+  createMarkdownRenderer,
+  renderMarkdown as renderWith,
+  renderMarkdownBlocks as renderBlocksWith,
+} from '../../markdownSetup.js'
 import { highlightCode } from './highlight.js'
 
 /** 全站共用的 marked 渲染器（代码块外壳、外链、来源卡片） */
@@ -15,8 +19,14 @@ export const markdownRenderer = createMarkdownRenderer({ highlight: highlightCod
  * 渲染 markdown 为 HTML。
  *
  * @param {string} content markdown 文本（调用方负责先做业务改写，如知识引用）
+ * @param {Object} [options] 传给共享内核的渲染选项
  * @returns {string} HTML
  */
-export function renderMarkdown(content) {
-  return renderWith(content, markdownRenderer)
+export function renderMarkdown(content, options = {}) {
+  return renderWith(content, markdownRenderer, options)
+}
+
+/** 分块渲染（流式对话用）：已完成块命中缓存，只重渲最后一块 */
+export function renderMarkdownBlocks(content, options = {}) {
+  return renderBlocksWith(content, markdownRenderer, options)
 }

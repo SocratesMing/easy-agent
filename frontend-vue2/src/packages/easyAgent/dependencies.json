@@ -144,19 +144,6 @@
         "shared/markdown/index.js"
       ]
     },
-    "marked-emoji": {
-      "range": "^2.0.3",
-      "locked": "2.0.3",
-      "license": null,
-      "nodeEngines": null,
-      "declaredIn": "dependencies",
-      "specifiers": [
-        "marked-emoji"
-      ],
-      "usedBy": [
-        "shared/markdown/index.js"
-      ]
-    },
     "marked-katex-extension": {
       "range": "^5.1.10",
       "locked": "5.1.13",

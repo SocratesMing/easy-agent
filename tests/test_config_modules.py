@@ -16,6 +16,7 @@ import pytest
 import easy_agent.bootstrap.config as config_module
 import easy_agent.bootstrap.config_models as config_models
 import easy_agent.bootstrap.config_validation as config_validation
+from easy_agent.bootstrap.env import PLACEHOLDER_PREFIX
 
 
 def _write_minimal_config(tmp_path: Path, extra: str = "") -> Path:
@@ -229,6 +230,35 @@ class TestEnvExpansion:
         )
         assert config_validation._expand_env("${SPLIT_TEST_EMPTY}", missing) == ""
         assert missing == {"SPLIT_TEST_EMPTY"}
+
+    def test_placeholder_value_counts_as_unset(self, monkeypatch):
+        """模板哨兵值不能成为真实凭据：回退 YAML 默认值或记为未解析。"""
+        monkeypatch.setenv(
+            "SPLIT_TEST_PLACEHOLDER", PLACEHOLDER_PREFIX + "SPLIT_TEST_PLACEHOLDER"
+        )
+        missing: set[str] = set()
+        assert (
+            config_validation._expand_env("${SPLIT_TEST_PLACEHOLDER:-fallback}", missing)
+            == "fallback"
+        )
+        assert config_validation._expand_env("${SPLIT_TEST_PLACEHOLDER}", missing) == ""
+        assert missing == {"SPLIT_TEST_PLACEHOLDER"}
+
+    @pytest.mark.parametrize("legacy", ["CHANGE_ME", "replace_me", "changeme"])
+    def test_legacy_placeholder_markers_count_as_unset(self, monkeypatch, legacy):
+        monkeypatch.setenv("SPLIT_TEST_LEGACY", legacy)
+        assert (
+            config_validation._expand_env("${SPLIT_TEST_LEGACY:-fallback}", set())
+            == "fallback"
+        )
+
+    def test_non_placeholder_padded_value_is_unchanged(self, monkeypatch):
+        """带空格的真实密钥仍原样返回（哨兵判定不能 strip 后返回）。"""
+        monkeypatch.setenv("SPLIT_TEST_PADDED2", "  real secret  ")
+        assert (
+            config_validation._expand_env("${SPLIT_TEST_PADDED2}", set())
+            == "  real secret  "
+        )
 
 
 class TestConfigFromYaml:

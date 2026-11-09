@@ -118,8 +118,7 @@
           />
         </div>
         <template v-for="(block, idx) in finalContentBlocks" :key="'c'+block.origIndex">
-          <!-- 用户消息：技能标签与正文放在同一个气泡内横向排列（标签在左、正文在右），
-               避免标签独占一行；老数据正文里的 /技能名 指令由 displayContent 去掉 -->
+          <!-- 用户消息：技能标签作行内前缀接正文首行（标签在左前方，不分栏）；老数据的 /技能名 由 displayContent 去掉；正文按纯文本展示 -->
           <div
             v-if="block.type === 'content' && message.role === 'user'"
             class="message-text user-bubble"
@@ -135,7 +134,7 @@
                 <span class="message-skill-chip-name">{{ skill.name || skill.dir_name }}</span>
               </span>
             </span>
-            <MarkdownBody v-if="block.content" class="user-bubble-body" :content="block.content" :cite-map="citeNumberMap" />
+            <UserMessageText v-if="block.content" class="user-bubble-body" :content="block.content" />
           </div>
           <MarkdownBody v-else-if="block.type === 'content'" class="message-text" :content="block.content" :cite-map="citeNumberMap" />
         </template>
@@ -228,6 +227,7 @@
 import { ref, computed, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
 import { ensureHighlighter } from '../composables/useMarkdownRenderer.js'
 import MarkdownBody from './MarkdownBody.vue'
+import UserMessageText from './UserMessageText.vue'
 import KnowledgeEvidence from '../../knowledge/KnowledgeEvidence.vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
@@ -1038,12 +1038,10 @@ html[data-theme="dark"] .process-body .process-inline-content {
   max-width: 100%;
 }
 
-/* 用户气泡：技能标签与正文同行（标签在左、正文在右），标签自身换行不挤走正文 */
+/* 用户气泡：技能标签作行内前缀接正文首行，正文换行后回到气泡左边缘。
+   不用 flex 分栏：长正文会成为标签右侧的竖列、标签被居中，看着像「独占左边一列」。 */
 .message.user .message-text.user-bubble {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
+  display: block;
 }
 
 /* 用户气泡内的技能标签：与输入框「已选技能」同一套胶囊样式，但整体缩一档，
@@ -1056,8 +1054,11 @@ html[data-theme="dark"] .process-body .process-inline-content {
   max-width: 100%;
 }
 
+/* 气泡内的标签按行内元素排布，紧贴正文首行、不单独占宽；多个标签仍横排 */
 .user-bubble .message-skill-chips {
-  flex-shrink: 0;
+  display: inline-flex;
+  vertical-align: middle;
+  margin-right: 6px;
 }
 
 .message-skill-chip {
@@ -1098,10 +1099,9 @@ html[data-theme="dark"] .process-body .process-inline-content {
   font-size: 11px;
 }
 
-/* 气泡内正文：占满标签之后的剩余宽度，长文本正常换行 */
+/* 气泡内正文：行内流式排版——首行紧跟标签之后，换行回到气泡左边缘 */
 .user-bubble-body {
-  flex: 1 1 auto;
-  min-width: 0;
+  display: inline;
 }
 
 .message.assistant .message-content {

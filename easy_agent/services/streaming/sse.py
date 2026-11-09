@@ -90,8 +90,8 @@ EVENT_SPECS: dict[str, SSEEventSpec] = {
             "elapsed_time",
         )
     ),
-    # docs 曾用 `items` 描述、实现用 `evidence`/`warnings`：两种口径都登记为可选，
-    # 保持现网实现不变，避免契约测试误报。
+    # canonical 字段是 `evidence`/`warnings`（见 Emitter.knowledge_evidence）；
+    # `items`/`session_id` 仅为旧消费者向后兼容登记，不保证下发。
     SSEEvent.KNOWLEDGE_EVIDENCE: SSEEventSpec(
         optional=("evidence", "warnings", "items", "session_id")
     ),

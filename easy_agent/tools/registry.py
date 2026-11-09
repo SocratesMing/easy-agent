@@ -425,7 +425,7 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="delete",
         source=SOURCE_BUILTIN,
-        description="删除文件（DeepAgents 0.7 新增；默认进 HITL）",
+        description="删除文件或目录（DeepAgents 0.7 新增；默认进 HITL）",
         mutating=True,
         is_hitl=True,
         interrupt_decisions=DESTRUCTIVE_INTERRUPT_DECISIONS,
