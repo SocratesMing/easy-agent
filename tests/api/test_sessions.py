@@ -273,8 +273,8 @@ def test_api_sessions_module_has_no_database_facade_import():
     source = inspect.getsource(sessions_api)
     assert "from ..db import Database" not in source
     assert "Annotated[Database" not in source
-    # 路由依赖必须是 repository provider（12 个路由）。
-    assert source.count("Annotated[SessionRepository, Depends(get_session_repository)]") == 12
+    # 路由依赖必须是 repository provider（13 个路由）。
+    assert source.count("Annotated[SessionRepository, Depends(get_session_repository)]") == 13
     # 批次 4：provider 统一到 api.deps，本模块不再声明数据库依赖。
     assert "Depends(get_database)" not in source
     assert "def get_session_repository(" not in source

@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from easy_agent.agent.backend import agent_artifacts_dir
 from easy_agent.persistence.checkpoints import delete_session_threads
-from easy_agent.db.session_repository import SessionRepository
+from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     as_session_repository as _as_session_repository,
     get_session_repository,
@@ -21,6 +21,8 @@ from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
 from easy_agent.models.db import SessionModel
 from easy_agent.models.api import (
     CompactContextRequest,
+    ArchiveSessionRequest,
+    SessionArchiveResponse,
     SessionPinUpdateResponse,
     SessionTitleUpdateResponse,
     SessionUploadResponse,
@@ -217,10 +219,12 @@ def list_sessions(
     username: Annotated[str, Depends(get_current_username)],
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    archived: bool = False,
+    q: str | None = None,
 ):
     repo = _as_session_repository(db)
 
-    sessions = repo.list_sessions(limit=limit, offset=offset, username=username)
+    sessions = repo.list_sessions(limit=limit, offset=offset, username=username, archived=archived, q=q)
 
     return [
         SessionInfo(
@@ -230,6 +234,7 @@ def list_sessions(
             updated_at=s.updated_at,
             message_count=len(s.messages),
             pinned=s.pinned,
+            archived=s.archived,
         )
         for s in sessions
     ]
@@ -239,10 +244,12 @@ def list_sessions(
 def count_sessions(
     db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
+    archived: bool | None = None,
+    q: str | None = None,
 ):
     repo = _as_session_repository(db)
 
-    total = repo.count_sessions(username=username)
+    total = repo.count_sessions(username=username, archived=archived, q=q)
     return SessionCountResponse(total_sessions=total)
 
 
@@ -261,6 +268,7 @@ async def get_session(
 
     return SessionDetail(
         session_id=session.session_id,
+        archived=session.archived,
         title=session.title,
         created_at=session.created_at,
         updated_at=session.updated_at,
@@ -270,6 +278,19 @@ async def get_session(
         context_length=context_length,
         compactions=await compaction_service.records(session_id),
     )
+
+
+@router.put("/{session_id}/archive", summary="设置会话归档状态", response_model=SessionArchiveResponse)
+def archive_session(
+    session_id: str,
+    request: ArchiveSessionRequest,
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
+    username: Annotated[str, Depends(get_current_username)],
+):
+    repo = _as_session_repository(db)
+    repo.get_owned_session_meta(session_id, username)
+    repo.set_session_archived(session_id, username, request.archived)
+    return SessionArchiveResponse(session_id=session_id, archived=request.archived)
 
 
 @router.put("/{session_id}/title", summary="更新会话标题", response_model=SessionTitleUpdateResponse)
@@ -430,6 +451,7 @@ async def get_chat_history(
 
     return GetChatHistoryResponse(
         session_id=session.session_id,
+        archived=session.archived,
         title=session.title,
         messages=session.messages,
         created_at=session.created_at,

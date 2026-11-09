@@ -1,3 +1,4 @@
+import { rememberSession, sessionRevision, sessionGuard, sessionDeleted, staleSessionError } from '../shared/sessionManagement/state.js'
 import request, {
   fetchWithAuth,
   handleStreamResponse,
@@ -16,29 +17,39 @@ export async function createSession(title, username = null) {
   )
 }
 
-export async function listSessions(username = null) {
+export async function listSessions(username = null, filters = {}) {
   return request(
     {
       url: '/agent/sessions',
       method: 'get',
-      params: username ? { username } : undefined,
+      params: { archived: false, ...(username ? { username } : {}), ...filters },
     },
     '获取会话列表失败'
   )
 }
 
 export async function getSession(sessionId) {
-  return request(
-    { url: `/agent/sessions/${sessionId}`, method: 'get' },
-    '获取会话失败'
-  )
+  const readRevision = sessionRevision()
+  const valid = sessionGuard(sessionId)
+  const data = await request({ url: `/agent/sessions/${sessionId}`, method: 'get' }, '获取会话失败')
+  if (!valid()) throw staleSessionError()
+  rememberSession(data, readRevision)
+  return data
 }
 
 export async function deleteSession(sessionId) {
-  return request(
-    { url: `/agent/sessions/${sessionId}`, method: 'delete' },
-    '删除会话失败'
-  )
+  const valid = sessionGuard(sessionId)
+  const data = await request({ url: `/agent/sessions/${sessionId}`, method: 'delete' }, '删除会话失败')
+  if (!valid()) throw staleSessionError()
+  sessionDeleted(sessionId)
+  return data
+}
+
+export async function setSessionArchived(sessionId, archived) {
+  return request({ url: `/agent/sessions/${sessionId}/archive`, method: 'put', data: { archived } }, '归档操作失败')
+}
+export async function countSessions(filters = { archived: false }) {
+  return request({ url: '/agent/sessions/count', method: 'get', params: filters }, '读取会话数量失败')
 }
 
 export async function renameSession(sessionId, title) {
@@ -60,11 +71,10 @@ export async function togglePinSession(sessionId) {
 }
 
 export async function getChatHistory(sessionId) {
-  const data = await request(
-    { url: `/agent/sessions/${sessionId}`, method: 'get' },
-    '获取聊天历史失败'
-  )
+  const data = await getSession(sessionId)
   return {
+    session_id: data.session_id,
+    archived: data.archived,
     messages: data.messages || [],
     todos: data.todos || [],
     compactions: data.compactions || [],

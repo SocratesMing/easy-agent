@@ -165,6 +165,7 @@
 
 <script>
 import Vue from 'vue'
+import { loadDailySessions, sessionGuard, isStaleSessionError, initialSessionId as resolveInitialSessionId } from './shared/sessionManagement/state.js'
 import SessionList from './features/chat/components/SessionList.vue'
 import Chat from './features/chat/components/Chat.vue'
 // 面板级懒加载：首屏不解析这些重型面板，首次打开时再拉对应 chunk
@@ -471,6 +472,7 @@ export default {
     // 刷新后恢复全部进行中的流式任务：逐个查询后端状态，活跃的恢复"进行中"标记；
     // 最近活跃的会话直接重挂载，其余会话在切换到它时懒挂载。
     async tryAttachLiveStream() {
+      const valid = sessionGuard()
       let saved = null
       try {
         const raw = sessionStorage.getItem(STREAM_STATE_KEY)
@@ -493,11 +495,10 @@ export default {
           // 会话可能已被删除：忽略
         }
       }
+      if (!valid()) return
       for (const sid of active) this.markStreaming(sid)
 
-      const attachTarget = saved.lastActive && active.includes(saved.lastActive)
-        ? saved.lastActive
-        : active[0]
+      const attachTarget = active.includes(this.currentSessionId) ? this.currentSessionId : null
       if (attachTarget) {
         this.attachToStreamingSession(attachTarget, { switchTo: true, displayed: true })
       }
@@ -638,16 +639,7 @@ export default {
       }
       if (['experts', 'skills', 'connectors', 'knowledge'].includes(panel)) this.openSkillCenterPanel(panel)
 
-      let initialSessionId = null
-      if (linked && this.sessions.some(s => s.session_id === linked)) {
-        initialSessionId = linked
-      } else if (stored === NEW_SESSION_MARK) {
-        initialSessionId = null
-      } else if (stored && this.sessions.some(s => s.session_id === stored)) {
-        initialSessionId = stored
-      } else if (this.sessions.length > 0) {
-        initialSessionId = this.sessions[0].session_id
-      }
+      const initialSessionId = await resolveInitialSessionId({ linked, stored, rows: this.sessions, read: getChatHistory })
 
       if (initialSessionId) {
         this.currentSessionId = initialSessionId
@@ -848,12 +840,8 @@ export default {
     },
     async loadSessions() {
       try {
-        const data = await listSessions(this.userProfile.username || null)
-        this.sessions = Array.isArray(data) ? data : (data.sessions || [])
-      } catch (e) {
-        console.error('加载会话列表失败:', e)
-        this.error = '加载会话列表失败'
-      }
+        await loadDailySessions(() => listSessions(this.userProfile.username || null, { archived: false }), rows => { this.sessions = rows })
+      } catch (e) { if (!isStaleSessionError(e)) this.error = '加载会话列表失败' }
     },
     async ensureCurrentSession(initialTitle = '') {
       if (!this.currentSessionId) {

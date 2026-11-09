@@ -133,6 +133,8 @@
 
 <script setup>
 import { API_BASE_URL, APP_WELCOME_TITLE, appRuntime } from './config.js'
+import { readStandaloneSessionLink } from './features/chat/services/sessionNavigation.js'
+import { loadDailySessions, sessionGuard, isSessionDeleted, isStaleSessionError, initialSessionId as resolveInitialSessionId } from './shared/sessionManagement/state.js'
 import { ref, computed, onMounted, watch, toRef, defineAsyncComponent } from 'vue'
 import SessionList from './features/chat/components/SessionList.vue'
 import Chat from './features/chat/components/Chat.vue'
@@ -477,14 +479,14 @@ async function attachToStreamingSession(sessionId, opts = {}) {
   } catch (e) {
     if (e.name !== 'AbortError') {
       console.error('挂载流式输出失败:', e)
-      if (displayed) error.value = e.message || '挂载流式输出失败'
+      if (displayed && currentSessionId.value === sessionId) error.value = e.message || '挂载流式输出失败'
     }
   } finally {
     if (attachedStreamingSessions.value[sessionId] === mode) {
       delete attachedStreamingSessions.value[sessionId]
     }
     if (!displayed || !pendingApprovalOf(sessionId)) {
-      if (displayed) currentAbortController.value = null
+      if (displayed && currentSessionId.value === sessionId) currentAbortController.value = null
       unmarkStreaming(sessionId)
       if (sessionStates.value[sessionId]) {
         sessionStates.value[sessionId].isStreaming = false
@@ -492,7 +494,7 @@ async function attachToStreamingSession(sessionId, opts = {}) {
       }
       // 列表"进行中"标记此时移除（显示已完成）：以服务端历史为准回填完整内容
       await syncSessionFromServer(sessionId)
-      if (displayed) {
+      if (displayed && currentSessionId.value === sessionId) {
         // 兜底：挂载流结束时确保占位消息不再标记 loading，避免页面残留"执行中"
         let idx = messages.value.findIndex(m => m.id === attachId)
         if (idx === -1) {
@@ -514,6 +516,7 @@ async function attachToStreamingSession(sessionId, opts = {}) {
 // 刷新后恢复全部进行中的流式任务：逐个查询后端状态，活跃的恢复"进行中"标记；
 // 最近活跃的会话直接重挂载，其余会话在切换到它时懒挂载。
 async function tryAttachLiveStream() {
+  const valid = sessionGuard()
   let saved = null
   try {
     const raw = sessionStorage.getItem(STREAM_STATE_KEY)
@@ -536,11 +539,10 @@ async function tryAttachLiveStream() {
       // 会话可能已被删除：忽略
     }
   }
+  if (!valid()) return
   for (const sid of active) markStreaming(sid)
 
-  const attachTarget = saved.lastActive && active.includes(saved.lastActive)
-    ? saved.lastActive
-    : active[0]
+  const attachTarget = active.includes(currentSessionId.value) ? currentSessionId.value : null
   if (attachTarget) {
     attachToStreamingSession(attachTarget, { switchTo: true, displayed: true })
   }
@@ -557,7 +559,7 @@ async function tryAttachLiveStream() {
 function saveCurrentSessionState() {
   if (!loadedSessionId.value) return
   sessionStates.value[loadedSessionId.value] = {
-    messages: JSON.parse(JSON.stringify(messages.value)),
+    messages: messages.value.slice(),
     isStreaming: isStreaming.value,
     sessionUsage: { ...sessionUsage.value },
     sessionDuration: sessionDuration.value,
@@ -672,10 +674,11 @@ function buildStreamState() {
 }
 
 function runInSession(sid, ctx, fn) {
+  if (ctx?._sessionValid && !ctx._sessionValid()) return
   if (!sid || sid === loadedSessionId.value) return fn() // 展示中的会话：直接用全局 refs
   const st = ensureSessionState(sid)
   // 会话级 refs ↔ 缓存字段；含 pendingApproval：多个会话同时停在审批时各自持有
-  const fields = [[messages, 'messages'], [sessionUsage, 'sessionUsage'], [sessionDuration, 'sessionDuration'], [iterationCount, 'iterationCount'], [currentTodos, 'todos'], [streamingAssistantId, 'streamingAssistantId'], [pendingApproval, 'pendingApproval']]
+  const fields = [[messages, 'messages'], [sessionUsage, 'sessionUsage'], [sessionDuration, 'sessionDuration'], [iterationCount, 'iterationCount'], [currentTodos, 'todos'], [streamingAssistantId, 'streamingAssistantId'], [pendingApproval, 'pendingApproval'], [error, 'error']]
   const saved = fields.map(([r, key]) => { const v = r.value; r.value = st[key]; return v })
   // 不用缓存覆盖 ctx.assistantMsgId：ctx 属于这条流，覆盖会让后台事件丢失（切回无实时过程）
   const restore = () => {
@@ -710,9 +713,12 @@ function clearPendingApprovalOf(sid) {
 // 以服务端历史为准回填某会话：流式结束（列表"进行中"标记移除）后调用。
 // 本地增量流状态在后台收尾/事件未命中时可能不完整，history 接口返回的是后端
 // 完整落库消息，用它回填可保证"列表已完成"时页面渲染完整内容（无需刷新）。
+const historyVersions = {}
 async function syncSessionFromServer(sessionId) {
   if (!sessionId) return
-  if (!sessions.value.some(s => s.session_id === sessionId)) return // 会话已删除/切换用户，跳过
+  if (isSessionDeleted(sessionId)) return
+  const valid = sessionGuard(sessionId)
+  const version = historyVersions[sessionId] = (historyVersions[sessionId] || 0) + 1
   let history
   try {
     history = await getChatHistory(sessionId)
@@ -720,6 +726,7 @@ async function syncSessionFromServer(sessionId) {
     console.warn('回填会话历史失败:', e)
     return
   }
+  if (!valid() || version !== historyVersions[sessionId]) return
   // 拉取期间该会话若又开始了新一轮流式，别用旧历史覆盖
   if (isSessionStreaming(sessionId)) return
 
@@ -950,14 +957,7 @@ async function restoreInitialSession() {
     stored = localStorage.getItem(ACTIVE_SESSION_KEY)
   } catch (_) { /* ignore */ }
 
-  let initialSessionId = null
-  if (stored === NEW_SESSION_MARK) {
-    initialSessionId = null
-  } else if (stored && sessions.value.some(s => s.session_id === stored)) {
-    initialSessionId = stored
-  } else if (sessions.value.length > 0) {
-    initialSessionId = sessions.value[0].session_id
-  }
+  const initialSessionId = await resolveInitialSessionId({ linked: readStandaloneSessionLink(), stored, rows: sessions.value, read: getChatHistory })
 
   if (initialSessionId) {
     currentSessionId.value = initialSessionId
@@ -1138,12 +1138,8 @@ async function handlePasswordlessUrlLogin() {
 
 async function loadSessions() {
   try {
-    const data = await listSessions(userProfile.value.username || null)
-    sessions.value = Array.isArray(data) ? data : (data.sessions || [])
-  } catch (e) {
-    console.error('加载会话列表失败:', e)
-    error.value = '加载会话列表失败'
-  }
+    await loadDailySessions(() => listSessions(userProfile.value.username || null, { archived: false }), rows => { sessions.value = rows })
+  } catch (e) { if (!isStaleSessionError(e)) error.value = '加载会话列表失败' }
 }
 
 async function ensureCurrentSession(initialTitle = '') {
@@ -1329,6 +1325,11 @@ const { aiPageContext, handleOpenSessionInMain, fallbackAfterSessionRemoved } = 
   panels: { showSkillCenter, showScheduledTasks, showSettingsPanel, showUserManagementPanel },
   userProfile, sessions, currentSessionId, loadedSessionId, messages, sessionUsage, availableModels, selectedModel,
   sessionStates, attachedStreamingSessions, attachToStreamingSession, handleSelectSession, handleCreateSession, error,
+  leaveArchivedSession(sessionId) {
+    if (currentSessionId.value !== sessionId) return
+    handleCreateSession(); sessionLoading.value = false; error.value = null; pendingApproval.value = null; streamingAssistantId.value = null; currentAbortController.value = null
+    localStorage.setItem(ACTIVE_SESSION_KEY, NEW_SESSION_MARK)
+  },
 })
 
 async function handleRenameSession(sessionId, newTitle) {

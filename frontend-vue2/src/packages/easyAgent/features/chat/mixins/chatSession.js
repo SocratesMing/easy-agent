@@ -1,3 +1,5 @@
+import { connectSessionView } from '../../../shared/sessionManagement/viewLifecycle.js'
+import { loadDailySessions, sessionGuard, isSessionDeleted, isStaleSessionError } from '../../../shared/sessionManagement/state.js'
 import { setReactive } from '../../../utils/reactiveSet.js'
 import { parseMCPResult } from '../../../utils/mcpResult.js'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, attachStream } from '../../../api/chat.js'
@@ -9,7 +11,7 @@ import streamLifecycle from './streamLifecycle.js'
 import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
 
 // 会话级界面字段 → sessionStates 缓存字段，后台流事件期间换入（runInSession）；含 pendingApproval：多会话同时待审批时各自持有
-const SESSION_FIELDS = [['messages', 'messages'], ['sessionUsage', 'sessionUsage'], ['sessionDuration', 'sessionDuration'], ['iterationCount', 'iterationCount'], ['currentTodos', 'todos'], ['streamingAssistantId', 'streamingAssistantId'], ['pendingApproval', 'pendingApproval']]
+const SESSION_FIELDS = [['messages', 'messages'], ['sessionUsage', 'sessionUsage'], ['sessionDuration', 'sessionDuration'], ['iterationCount', 'iterationCount'], ['currentTodos', 'todos'], ['streamingAssistantId', 'streamingAssistantId'], ['pendingApproval', 'pendingApproval'], ['error', 'error']]
 
 // MCP 工具结果解析：正常流与 HITL 恢复流共用（App.vue 经本模块引用）
 export { parseMCPResult }
@@ -101,9 +103,11 @@ export default {
   },
   created() {
     chatBus.$on('stream-started', this.onPeerStreamStarted)
+    this._offSessionState = connectSessionView(this)
     chatBus.$on('session-removed', this.onPeerSessionRemoved)
   },
   beforeDestroy() {
+    this._offSessionState?.()
     chatBus.$off('stream-started', this.onPeerStreamStarted)
     chatBus.$off('session-removed', this.onPeerSessionRemoved)
   },
@@ -151,6 +155,7 @@ export default {
       const doCheck = async () => {
         try {
           const files = await getSessionGeneratedFiles(targetId)
+          if (this.currentSessionId !== targetId) return
           this.currentSessionHasFiles = Array.isArray(files) && files.length > 0
           console.log('[Files] Session', targetId, 'has files:', this.currentSessionHasFiles, 'count:', files?.length)
         } catch (e) {
@@ -341,7 +346,7 @@ export default {
       } catch (e) {
         if (e.name !== 'AbortError') {
           console.error('挂载流式输出失败:', e)
-          if (displayed) this.error = e.message || '挂载流式输出失败'
+          if (displayed && this.currentSessionId === sessionId) this.error = e.message || '挂载流式输出失败'
         }
       } finally {
         this.untrackStream(controller)
@@ -349,7 +354,7 @@ export default {
           delete this.attachedStreamingSessions[sessionId]
         }
         if (!this._chatDisposed && (!displayed || !this.pendingApprovalOf(sessionId))) {
-          if (displayed) this.currentAbortController = null
+          if (displayed && this.currentSessionId === sessionId) this.currentAbortController = null
           this.unmarkStreaming(sessionId)
           if (this.sessionStates[sessionId]) {
             this.sessionStates[sessionId].isStreaming = false
@@ -359,7 +364,7 @@ export default {
           await this.syncSessionFromServer(sessionId)
           // 流结束回填后重算"待审批"标识（审批已被处理/失效则熄灭，仍 pending 则保持）
           this.recomputePendingApprovalFlag(sessionId)
-          if (displayed) {
+          if (displayed && this.currentSessionId === sessionId) {
             // 同上兜底：挂载流结束时确保占位消息不再标记 loading，避免页面残留"执行中"
             let idx = this.messages.findIndex(m => m.id === attachId)
             if (idx === -1) {
@@ -381,7 +386,7 @@ export default {
     saveCurrentSessionState() {
       if (!this.loadedSessionId) return
       this.sessionStates[this.loadedSessionId] = {
-        messages: JSON.parse(JSON.stringify(this.messages)),
+        messages: this.messages.slice(),
         isStreaming: this.isStreaming,
         sessionUsage: { ...this.sessionUsage },
         sessionDuration: this.sessionDuration,
@@ -461,6 +466,7 @@ export default {
       else if (this.sessionStates[sid]) this.sessionStates[sid].pendingApproval = null
     },
     runInSession(sid, ctx, fn) {
+      if (ctx?._sessionValid && !ctx._sessionValid()) return
       if (!sid || sid === this.loadedSessionId) return fn() // 展示中：直接用组件数据
       const st = this.ensureSessionState(sid)
       const saved = SESSION_FIELDS.map(([vmKey, stKey]) => {
@@ -493,7 +499,10 @@ export default {
     // 完整落库消息，用它回填可保证"列表已完成"时页面渲染完整内容（无需刷新）。
     async syncSessionFromServer(sessionId) {
       if (!sessionId) return
-      if (!this.sessions.some(s => s.session_id === sessionId)) return // 会话已删除/切换用户，跳过
+      if (isSessionDeleted(sessionId)) return
+      const valid = sessionGuard(sessionId)
+      this._historyVersions ||= {}
+      const version = this._historyVersions[sessionId] = (this._historyVersions[sessionId] || 0) + 1
       let history
       try {
         history = await getChatHistory(sessionId)
@@ -501,6 +510,7 @@ export default {
         console.warn('回填会话历史失败:', e)
         return
       }
+      if (!valid() || version !== this._historyVersions[sessionId]) return
       // 拉取期间该会话若又开始了新一轮流式，别用旧历史覆盖
       if (this.isSessionStreaming(sessionId)) return
 
@@ -578,14 +588,9 @@ export default {
     },
     async loadSessions() {
       try {
-        const data = await listSessions(chatStore.username || null)
-        this.sessions = Array.isArray(data) ? data : (data.sessions || [])
-        if (this.error === '加载会话列表失败') this.error = null
+        await loadDailySessions(() => listSessions(chatStore.username || null, { archived: false }), rows => { this.sessions = rows })
       } catch (e) {
-        console.error('加载会话列表失败:', e)
-        // 401 由登录失效流程接管（SDK 自动重登后会再次加载），不提示
-        if (e && e.response && e.response.status === 401) return
-        this.error = '加载会话列表失败'
+        if (!isStaleSessionError(e)) this.error = '加载会话列表失败'
       }
     },
     async ensureCurrentSession(initialTitle = '') {

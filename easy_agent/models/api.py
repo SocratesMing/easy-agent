@@ -2,7 +2,7 @@
 
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 
 
 class AgentConfig(BaseModel):
@@ -27,6 +27,7 @@ class CreateSessionResponse(BaseModel):
 
 
 class SessionInfo(BaseModel):
+    archived: bool = False
     session_id: str = Field(..., description="会话唯一标识符")
     title: str = Field(..., description="会话标题")
     created_at: str = Field(..., description="创建时间")
@@ -41,6 +42,7 @@ class CompactContextRequest(BaseModel):
 
 
 class SessionDetail(BaseModel):
+    archived: bool = False
     compactions: list[dict[str, Any]] = Field(default_factory=list)
     session_id: str = Field(..., description="会话唯一标识符")
     title: str = Field(..., description="会话标题")
@@ -233,6 +235,7 @@ class DeleteSessionResponse(BaseModel):
 
 
 class GetChatHistoryResponse(BaseModel):
+    archived: bool = False
     compactions: list[dict[str, Any]] = Field(default_factory=list)
     session_id: str = Field(..., description="会话ID")
     title: str = Field(..., description="会话标题")
@@ -579,3 +582,13 @@ class McpDeleteResponse(BaseModel):
     servers: list[str]
     path: str
     agents_invalidated: int
+
+
+class ArchiveSessionRequest(BaseModel):
+    archived: StrictBool
+
+
+class SessionArchiveResponse(BaseModel):
+    status: str = "updated"
+    session_id: str
+    archived: bool

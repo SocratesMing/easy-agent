@@ -1,9 +1,12 @@
+import { sessionGuard } from '../../../shared/sessionManagement/state.js'
 import { setReactive } from '../../../utils/reactiveSet.js'
 import { parseMCPResult } from '../../../utils/mcpResult.js'
 import { createStreamCheckpoint, STREAM_RECONNECTING_MESSAGE } from '../../../shared/utils/chatStreamRecovery.js'
 
 // 主页面状态机保留知识证据及工具参数增量行为，与侧栏分别维护。
 export function createPageStreamChunkHandler(vm, ctx) {
+  const valid = sessionGuard(ctx.streamSessionId)
+  ctx._sessionValid = valid
   let currentBlock = null
   let currentThinking = ''
   let currentContent = ''
@@ -83,62 +86,20 @@ export function createPageStreamChunkHandler(vm, ctx) {
     if (data.auto_compress_tokens) patch.auto_compress_tokens = data.auto_compress_tokens
     return patch
   }
-  const applyUsage = (data, sid) => {
+  function applyUsage(data) {
     const patch = usagePatchFrom(data)
-    const match = !sid || vm.currentSessionId === sid
-    const rows = match ? vm.messages : vm.sessionStates[sid]?.messages
-    const messageIndex = rows?.findIndex(m => m.id === ctx.assistantMsgId) ?? -1
-    if (messageIndex !== -1) {
-      setReactive(rows, messageIndex, { ...rows[messageIndex], usage: {
-        input_tokens: data.input_tokens || 0, output_tokens: data.output_tokens || 0,
-        reasoning_tokens: data.reasoning_tokens || 0, context_tokens: data.context_tokens || data.input_tokens || 0,
-      } })
+    const index = vm.messages.findIndex(m => m.id === ctx.assistantMsgId)
+    const messageUsage = { input_tokens: data.input_tokens || 0, output_tokens: data.output_tokens || 0,
+      reasoning_tokens: data.reasoning_tokens || 0, context_tokens: data.context_tokens || data.input_tokens || 0 }
+    if (index !== -1) setReactive(vm.messages, index, { ...vm.messages[index], usage: messageUsage })
+    Object.assign(vm.sessionUsage, patch)
+    // Live replay reports totals from the original run; HITL resume reports a new segment.
+    if (typeof data.elapsed_time === 'number') {
+      const base = ctx.attachMode ? 0 : ctx.isResume ? vm.sessionDuration : (ctx.preStreamDuration || 0)
+      vm.sessionDuration = Math.round((base + data.elapsed_time) * 10) / 10
     }
-    if (ctx.attachMode) {
-      // 重挂载回放：token_usage/done 携带的 elapsed_time 是原始流从头开始的
-      // 累计值，应 SET 而非累加（isResume 分支的累加语义只适用于 HITL 续跑）
-      if (match) {
-        Object.assign(vm.sessionUsage, patch)
-        if (typeof data.elapsed_time === 'number') vm.sessionDuration = Math.round(data.elapsed_time * 10) / 10
-        if (typeof data.step_count === 'number') vm.iterationCount = data.step_count
-      } else {
-        const cached = vm.sessionStates[sid]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-          if (typeof data.elapsed_time === 'number') cached.sessionDuration = Math.round(data.elapsed_time * 10) / 10
-          if (typeof data.step_count === 'number') cached.iterationCount = data.step_count
-        }
-      }
-      return
-    }
-    if (ctx.isResume) {
-      if (match) {
-        Object.assign(vm.sessionUsage, patch)
-        if (typeof data.elapsed_time === 'number') vm.sessionDuration = Math.round((vm.sessionDuration + data.elapsed_time) * 10) / 10
-        if (typeof data.step_count === 'number') vm.iterationCount = data.step_count
-      } else {
-        const cached = vm.sessionStates[sid]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-          if (typeof data.elapsed_time === 'number') cached.sessionDuration = Math.round(((cached.sessionDuration || 0) + data.elapsed_time) * 10) / 10
-          if (typeof data.step_count === 'number') cached.iterationCount = data.step_count
-        }
-      }
-    } else {
-      const newDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
-      const newIterations = typeof data.step_count === 'number' ? ctx.preStreamIterationCount + data.step_count : null
-      if (match) {
-        Object.assign(vm.sessionUsage, patch)
-        if (newDuration !== null) vm.sessionDuration = newDuration
-        if (newIterations !== null) vm.iterationCount = newIterations
-      } else {
-        const cached = vm.sessionStates[sid]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-          if (newDuration !== null) cached.sessionDuration = newDuration
-          if (newIterations !== null) cached.iterationCount = newIterations
-        }
-      }
+    if (typeof data.step_count === 'number') {
+      vm.iterationCount = (ctx.attachMode || ctx.isResume ? 0 : (ctx.preStreamIterationCount || 0)) + data.step_count
     }
   }
 
@@ -459,33 +420,22 @@ export function createPageStreamChunkHandler(vm, ctx) {
           }
           if (data.usage) {
             const patch = usagePatchFrom(data.usage)
-            const match = !ctx.streamSessionId || vm.currentSessionId === ctx.streamSessionId
             const finalDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
             const finalIterations = data.usage && typeof data.usage.step_count === 'number' ? ctx.preStreamIterationCount + data.usage.step_count : null
-            if (match) {
-              Object.assign(vm.sessionUsage, patch)
-              if (finalDuration !== null) vm.sessionDuration = finalDuration
-              if (finalIterations !== null) vm.iterationCount = finalIterations
-            } else {
-              const cached = vm.sessionStates[ctx.streamSessionId]
-              if (cached) {
-                cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-                if (finalDuration !== null) cached.sessionDuration = finalDuration
-                if (finalIterations !== null) cached.iterationCount = finalIterations
-              }
-            }
+
+            Object.assign(vm.sessionUsage, patch)
+            if (finalDuration !== null) vm.sessionDuration = finalDuration
+            if (finalIterations !== null) vm.iterationCount = finalIterations
+
           }
         }
         setReactive(vm.messages, idx, { ...vm.messages[idx] })
       }
       if (!ctx.isResume && title) {
-        const existingIdx = vm.sessions.findIndex(s => s.session_id === vm.currentSessionId)
-        if (existingIdx === -1) {
-          vm.sessions = [{ session_id: vm.currentSessionId, title, created_at: new Date().toISOString(), message_count: vm.messages.length }, ...vm.sessions]
-        } else {
-          setReactive(vm.sessions, existingIdx, { ...vm.sessions[existingIdx], title })
-          vm.sessions = [...vm.sessions]
-        }
+        const sid = ctx.streamSessionId
+        const existingIdx = vm.sessions.findIndex(s => s.session_id === sid)
+        if (existingIdx !== -1) setReactive(vm.sessions, existingIdx, { ...vm.sessions[existingIdx], title })
+        else vm.loadSessions() // the server confirms visibility before insertion
       }
     } else if (eventType === 'error') {
       const idx = findIdx()
@@ -505,5 +455,5 @@ export function createPageStreamChunkHandler(vm, ctx) {
   }
 
   // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
-  return { onChunk: (data) => vm.runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
+  return { onChunk: (data) => valid() && vm.runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
 }

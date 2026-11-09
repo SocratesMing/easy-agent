@@ -1,3 +1,4 @@
+import { resetSessions } from '../shared/sessionManagement/state.js'
 import { API_BASE_URL } from '../config.js'
 
 const TOKEN_KEY = 'mini_agent_token'
@@ -62,12 +63,13 @@ export function getStoredUsername() {
 }
 
 export function storeAuth(token, username) {
-  if (getStoredUsername() !== username) window.dispatchEvent(new CustomEvent('auth-changed'))
+  if (getStoredUsername() !== username) { resetSessions(); window.dispatchEvent(new CustomEvent('auth-changed')) }
   localStorage.setItem(TOKEN_KEY, token)
   localStorage.setItem(USERNAME_KEY, username)
 }
 
 export function clearAuth() {
+  resetSessions()
   window.dispatchEvent(new CustomEvent('auth-changed'))
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(USERNAME_KEY)

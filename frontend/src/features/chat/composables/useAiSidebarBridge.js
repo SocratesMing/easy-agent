@@ -1,3 +1,4 @@
+import { subscribeSessions } from '../../../shared/sessionManagement/state.js'
 import { computed, onMounted, onUnmounted, watch } from 'vue'
 import { createAutoDismiss } from '../../../utils/autoDismiss.js'
 import { chatBus, chatStore } from '../store/chatStore.js'
@@ -72,11 +73,16 @@ export function useAiSidebarBridge(app) {
   watch(error, (value) => { dismissError(value) })
   onUnmounted(() => { dismissError(null) })
 
+  const offSessionState = subscribeSessions(event => {
+    if (event.type === 'archive' && event.archived) app.leaveArchivedSession(event.sessionId)
+    if (event.type === 'reset') { sessionStates.value = {}; currentSessionId.value = null; loadedSessionId.value = null; messages.value = [] }
+  })
   onMounted(() => {
     chatBus.on('stream-started', onPeerStreamStarted)
     chatBus.on('session-removed', onPeerSessionRemoved)
   })
   onUnmounted(() => {
+    offSessionState()
     chatBus.off('stream-started', onPeerStreamStarted)
     chatBus.off('session-removed', onPeerSessionRemoved)
   })

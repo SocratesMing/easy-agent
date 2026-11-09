@@ -7,6 +7,7 @@ import { stateFor } from './state.js'
 const source = (await readFile(new URL('./mixin.js', import.meta.url), 'utf8'))
   .replace("import { compactContext, getContextStatus } from '../../api/chat.js'",
     'const { compactContext, getContextStatus } = globalThis.__compactionTestApi')
+  .replace("from '../sessionManagement/state.js'", `from '${new URL('../sessionManagement/state.js', import.meta.url).href}'`)
   .replace("from './state.js'", `from '${new URL('./state.js', import.meta.url).href}'`)
 
 async function setup(sid, compact, status) {
@@ -80,4 +81,24 @@ test('authoritative idle without a result clears pending and stops repeated poll
   assert.equal(storage.has(`compact:${sid}`), false)
   assert.equal(state.busy, false)
   assert.equal(state.queryFailed, false)
+})
+
+test('归档退出展示后，压缩断线保留请求 ID，迟到结果仅写原会话', async () => {
+  const { archiveChanged } = await import('../sessionManagement/state.js')
+  let finish, calls = 0
+  const { vm, storage, state } = await setup('archive-compact', async (sid, model, id) => {
+    calls++
+    await new Promise(resolve => { finish = resolve })
+    throw new Error('disconnect')
+  }, async () => { throw new Error('offline') })
+  const operation = vm.runCompact()
+  const request = storage.get('compact:archive-compact')
+  archiveChanged('archive-compact', true)
+  vm.currentSessionId = null; vm.messages = []; vm.sessionUsage = { input_tokens: 0 }
+  finish(); await operation
+  assert.equal(storage.get('compact:archive-compact'), request)
+  assert.equal(calls, 1)
+  assert.equal(state.busy, true)
+  assert.equal(vm.sessionUsage.input_tokens, 0)
+  assert.deepEqual(vm.messages, [])
 })

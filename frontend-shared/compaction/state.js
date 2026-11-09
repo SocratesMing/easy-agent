@@ -1,3 +1,4 @@
+import { subscribeSessions } from '../sessionManagement/state.js'
 // 所有 Chat 实例（主页面和侧边栏）共享会话操作，异步结果始终写回发起会话。
 const sessions = new Map()
 const listeners = new Set()
@@ -51,3 +52,5 @@ export function estimatedUsage(records, messages, usage, streaming) {
   return { ...usage, context_tokens: record.after_tokens + extraTokens, context_length: record.context_length,
     context_estimated: true, estimate_basis: record.estimate_basis }
 }
+
+subscribeSessions(event => { if (event.type === 'reset') { sessions.clear(); notify() } })

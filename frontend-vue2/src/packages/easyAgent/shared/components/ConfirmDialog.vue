@@ -2,6 +2,7 @@
   <!-- 用 element-ui 的 el-dialog 承载，保留 show() 的 Promise 用法，调用方零改动 -->
   <el-dialog
     :visible.sync="visible"
+    :modal-append-to-body="modalAppendToBody"
     :title="title"
     width="380px"
     :close-on-click-modal="true"
@@ -44,6 +45,7 @@ export default {
   name: 'ConfirmDialog',
   components: { ElButton, ElDialog },
   props: {
+    modalAppendToBody: { type: Boolean, default: true },
     title: {
       type: String,
       default: '确认',
@@ -135,5 +137,27 @@ export default {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* 宿主的 [type=button] reset 可能晚于 Element 主题，局部明确操作按钮配色。 */
+.confirm-actions .el-button--warning {
+  color: #fff;
+  background-color: #b45309;
+  border-color: #b45309;
+}
+.confirm-actions .el-button--warning:hover,
+.confirm-actions .el-button--warning:focus {
+  background-color: #92400e;
+  border-color: #92400e;
+}
+.confirm-actions .el-button--danger {
+  color: #fff;
+  background-color: #dc2626;
+  border-color: #dc2626;
+}
+.confirm-actions .el-button--danger:hover,
+.confirm-actions .el-button--danger:focus {
+  background-color: #b91c1c;
+  border-color: #b91c1c;
 }
 </style>

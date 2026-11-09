@@ -1,3 +1,4 @@
+import { rememberSession, sessionRevision, sessionGuard, sessionDeleted, staleSessionError } from '../shared/sessionManagement/state.js'
 import { API_BASE_URL } from '../config.js'
 import { getAuthHeaders, authFetch } from './auth.js'
 import { readSSE } from './sse.js'
@@ -19,27 +20,47 @@ export async function createSession(title, username = null) {
   return response.json()
 }
 
-export async function listSessions(username = null) {
-  let url = `${API_BASE_URL}/agent/sessions`
-  if (username) {
-    url += `?username=${encodeURIComponent(username)}`
-  }
+export async function listSessions(username = null, filters = {}) {
+  const params = new URLSearchParams({ archived: false, ...(username ? { username } : {}), ...filters })
+  const url = `${API_BASE_URL}/agent/sessions?${params}`
   const response = await authFetch(url)
   if (!response.ok) throw new Error('获取会话列表失败')
   return response.json()
 }
 
 export async function getSession(sessionId) {
+  const readRevision = sessionRevision()
+  const valid = sessionGuard(sessionId)
   const response = await authFetch(`${API_BASE_URL}/agent/sessions/${sessionId}`)
   if (!response.ok) throw new Error('获取会话失败')
-  return response.json()
+  const data = await response.json()
+  if (!valid()) throw staleSessionError()
+  rememberSession(data, readRevision)
+  return data
 }
 
 export async function deleteSession(sessionId) {
+  const valid = sessionGuard(sessionId)
   const response = await authFetch(`${API_BASE_URL}/agent/sessions/${sessionId}`, {
     method: 'DELETE',
   })
   if (!response.ok) throw new Error('删除会话失败')
+  const data = await response.json()
+  if (!valid()) throw staleSessionError()
+  sessionDeleted(sessionId)
+  return data
+}
+
+export async function setSessionArchived(sessionId, archived) {
+  const response = await authFetch(`${API_BASE_URL}/agent/sessions/${sessionId}/archive`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived }),
+  })
+  if (!response.ok) throw new Error('归档操作失败')
+  return response.json()
+}
+export async function countSessions(filters = { archived: false }) {
+  const response = await authFetch(`${API_BASE_URL}/agent/sessions/count?${new URLSearchParams(filters)}`)
+  if (!response.ok) throw new Error('读取会话数量失败')
   return response.json()
 }
 
@@ -64,10 +85,10 @@ export async function togglePinSession(sessionId) {
 }
 
 export async function getChatHistory(sessionId) {
-  const response = await authFetch(`${API_BASE_URL}/agent/sessions/${sessionId}`)
-  if (!response.ok) throw new Error('获取聊天历史失败')
-  const data = await response.json()
+  const data = await getSession(sessionId)
   return {
+    session_id: data.session_id,
+    archived: data.archived,
     messages: data.messages || [],
     todos: data.todos || [],
     compactions: data.compactions || [],

@@ -38,7 +38,7 @@ logger = logging.getLogger("easy_agent.db.schema")
 # 14：合并 rag-1018 与 audit-improvements：两侧都用过 13，统一再 +1，
 # 否则任一侧的旧库会命中快速路径、跳过另一侧的变更。
 # 15：恢复 agent_checkpoints，用于共享 MySQL HITL 状态快照。
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 # utf8mb4 复合主键必须 ≤ 3072 字节：(512 + 191) * 4 = 2812。
 LANGGRAPH_STORE_NS_LEN = 512
 LANGGRAPH_STORE_KEY_LEN = 191
@@ -107,6 +107,7 @@ def _create_sessions_table(db, cursor, messages_type):
         cursor, "sessions", "workspace_name", "VARCHAR(255) DEFAULT ''"
     )
     _ensure_column(db, cursor, "sessions", "pinned", "INTEGER DEFAULT 0")
+    _ensure_column(db, cursor, "sessions", "archived", "INTEGER NOT NULL DEFAULT 0")
 
     if db.db_type == "mysql":
         # 只在实际类型不满足时改列：MODIFY 会重建整表，sessions 表较大时

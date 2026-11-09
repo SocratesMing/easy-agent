@@ -1,3 +1,4 @@
+import { sessionGuard } from '../../../shared/sessionManagement/state.js'
 /**
  * SSE 流式事件 → 消息 blocks 的状态机（2026-10-20 从 App.vue 原样抽出，行为不变）。
  *
@@ -33,6 +34,8 @@ export function createStreamChunkHandler(messages, ctx) {
     parseMCPResult,
     onStreamStarted,
   } = ctx.state || {}
+  const valid = sessionGuard(ctx.streamSessionId)
+  ctx._sessionValid = valid
   let currentBlock = null
   let currentThinking = ''
   let currentContent = ''
@@ -113,62 +116,20 @@ export function createStreamChunkHandler(messages, ctx) {
     if (data.auto_compress_tokens) patch.auto_compress_tokens = data.auto_compress_tokens
     return patch
   }
-  function applyUsage(data, sid) {
+  function applyUsage(data) {
     const patch = usagePatchFrom(data)
-    const match = !sid || currentSessionId.value === sid
-    const rows = match ? messages.value : sessionStates.value[sid]?.messages
-    const messageIndex = rows?.findIndex(m => m.id === ctx.assistantMsgId) ?? -1
-    if (messageIndex !== -1) {
-      rows[messageIndex] = { ...rows[messageIndex], usage: {
-        input_tokens: data.input_tokens || 0, output_tokens: data.output_tokens || 0,
-        reasoning_tokens: data.reasoning_tokens || 0, context_tokens: data.context_tokens || data.input_tokens || 0,
-      } }
+    const index = messages.value.findIndex(m => m.id === ctx.assistantMsgId)
+    const messageUsage = { input_tokens: data.input_tokens || 0, output_tokens: data.output_tokens || 0,
+      reasoning_tokens: data.reasoning_tokens || 0, context_tokens: data.context_tokens || data.input_tokens || 0 }
+    if (index !== -1) messages.value[index] = { ...messages.value[index], usage: messageUsage }
+    Object.assign(sessionUsage.value, patch)
+    // Live replay reports totals from the original run; HITL resume reports a new segment.
+    if (typeof data.elapsed_time === 'number') {
+      const base = ctx.attachMode ? 0 : ctx.isResume ? sessionDuration.value : (ctx.preStreamDuration || 0)
+      sessionDuration.value = Math.round((base + data.elapsed_time) * 10) / 10
     }
-    if (ctx.attachMode) {
-      // 重挂载回放：token_usage/done 携带的 elapsed_time 是原始流从头开始的
-      // 累计值，应 SET 而非累加（isResume 分支的累加语义只适用于 HITL 续跑）
-      if (match) {
-        Object.assign(sessionUsage.value, patch)
-        if (typeof data.elapsed_time === 'number') sessionDuration.value = Math.round(data.elapsed_time * 10) / 10
-        if (typeof data.step_count === 'number') iterationCount.value = data.step_count
-      } else {
-        const cached = sessionStates.value[sid]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-          if (typeof data.elapsed_time === 'number') cached.sessionDuration = Math.round(data.elapsed_time * 10) / 10
-          if (typeof data.step_count === 'number') cached.iterationCount = data.step_count
-        }
-      }
-      return
-    }
-    if (ctx.isResume) {
-      if (match) {
-        Object.assign(sessionUsage.value, patch)
-        if (typeof data.elapsed_time === 'number') sessionDuration.value = Math.round((sessionDuration.value + data.elapsed_time) * 10) / 10
-        if (typeof data.step_count === 'number') iterationCount.value = data.step_count
-      } else {
-        const cached = sessionStates.value[sid]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-          if (typeof data.elapsed_time === 'number') cached.sessionDuration = Math.round(((cached.sessionDuration || 0) + data.elapsed_time) * 10) / 10
-          if (typeof data.step_count === 'number') cached.iterationCount = data.step_count
-        }
-      }
-    } else {
-      const newDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
-      const newIterations = typeof data.step_count === 'number' ? ctx.preStreamIterationCount + data.step_count : null
-      if (match) {
-        Object.assign(sessionUsage.value, patch)
-        if (newDuration !== null) sessionDuration.value = newDuration
-        if (newIterations !== null) iterationCount.value = newIterations
-      } else {
-        const cached = sessionStates.value[sid]
-        if (cached) {
-          cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-          if (newDuration !== null) cached.sessionDuration = newDuration
-          if (newIterations !== null) cached.iterationCount = newIterations
-        }
-      }
+    if (typeof data.step_count === 'number') {
+      iterationCount.value = (ctx.attachMode || ctx.isResume ? 0 : (ctx.preStreamIterationCount || 0)) + data.step_count
     }
   }
 
@@ -473,33 +434,21 @@ export function createStreamChunkHandler(messages, ctx) {
           }
           if (data.usage) {
             const patch = usagePatchFrom(data.usage)
-            const match = !ctx.streamSessionId || currentSessionId.value === ctx.streamSessionId
             const finalDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
             const finalIterations = data.usage && typeof data.usage.step_count === 'number' ? ctx.preStreamIterationCount + data.usage.step_count : null
-            if (match) {
-              Object.assign(sessionUsage.value, patch)
-              if (finalDuration !== null) sessionDuration.value = finalDuration
-              if (finalIterations !== null) iterationCount.value = finalIterations
-            } else {
-              const cached = sessionStates.value[ctx.streamSessionId]
-              if (cached) {
-                cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-                if (finalDuration !== null) cached.sessionDuration = finalDuration
-                if (finalIterations !== null) cached.iterationCount = finalIterations
-              }
-            }
+
+            Object.assign(sessionUsage.value, patch)
+            if (finalDuration !== null) sessionDuration.value = finalDuration
+            if (finalIterations !== null) iterationCount.value = finalIterations
+
           }
         }
         messages.value[idx] = { ...messages.value[idx] }
       }
       if (!ctx.isResume && title) {
-        const existingIdx = sessions.value.findIndex(s => s.session_id === currentSessionId.value)
-        if (existingIdx === -1) {
-          sessions.value = [{ session_id: currentSessionId.value, title, created_at: new Date().toISOString(), message_count: messages.value.length }, ...sessions.value]
-        } else {
-          sessions.value[existingIdx] = { ...sessions.value[existingIdx], title }
-          sessions.value = [...sessions.value]
-        }
+        const existingIdx = sessions.value.findIndex(s => s.session_id === ctx.streamSessionId)
+        if (existingIdx !== -1) sessions.value[existingIdx] = { ...sessions.value[existingIdx], title }
+        else loadSessions()
       }
     } else if (eventType === 'error') {
       const idx = findIdx()
@@ -521,6 +470,7 @@ export function createStreamChunkHandler(messages, ctx) {
   // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
   return {
     onChunk: (data) => {
+      if (!valid()) return
       const dispatch = () => onChunk(data)
       // runInSession 由调用方（App.vue）注入：它依赖页面级 refs（sessionStates 等），
       // 抽成模块后不能再直接引用，否则运行期报 runInSession is not defined。

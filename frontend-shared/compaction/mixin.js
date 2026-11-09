@@ -1,3 +1,4 @@
+import { sessionGuard } from '../sessionManagement/state.js'
 import { compactContext, getContextStatus } from '../../api/chat.js'
 import { stateFor, subscribe, notify, mergeStatus, recordsAt, estimatedUsage } from './state.js'
 
@@ -55,6 +56,7 @@ export default {
     },
     compactionsAt(index) { return recordsAt(this.contextState.records, this.messages, index) },
     async refreshCompaction(sid) {
+      const valid = sessionGuard(sid)
       const request = savedRequest(sid)
       const previous = stateFor(sid)
       if (request && !previous.records.some(r => r.id === request.id)) {
@@ -64,6 +66,7 @@ export default {
       }
       try {
         const status = await getContextStatus(sid)
+        if (!valid()) return
         const state = mergeStatus(sid, status)
         state.queryFailed = false
         if (request && !state.running && !state.busy) {
@@ -75,6 +78,7 @@ export default {
           notify()
         }
       } catch {
+        if (!valid()) return
         const state = stateFor(sid)
         state.queryFailed = true
         state.reason = '无法查询压缩状态，请稍后重试'
@@ -85,6 +89,7 @@ export default {
     async runCompact() {
       if (this.compactReason) return
       const sid = this.currentSessionId
+      const valid = sessionGuard(sid)
       const state = stateFor(sid)
       if (state.running || state.busy) return
       const id = savedRequest(sid)?.id || (globalThis.crypto && globalThis.crypto.randomUUID
@@ -98,9 +103,11 @@ export default {
       notify()
       try {
         const result = await compactContext(sid, this.selectedModel, id)
+        if (!valid()) return
         state.records = [...state.records.filter(r => r.id !== id), result.compaction]
         saveRequest(sid, null)
       } catch (error) {
+        if (!valid()) return
         const status = error.status || error.response?.status
         if (status >= 400 && status < 500 && status !== 408) {
           Object.assign(record, { status: 'failed', message: error.message || '压缩请求被拒绝，请稍后重试' })
@@ -110,6 +117,7 @@ export default {
           state.busy = true // 查询成功前，不能把断线当作未提交。
         }
       } finally {
+        if (!valid()) return
         state.running = false
         notify()
         await this.refreshCompaction(sid)

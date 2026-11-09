@@ -11,7 +11,7 @@
     >
       <div class="settings-header">
         <h2 id="settings-title">设置</h2>
-        <button @click="$emit('close')" class="close-btn">
+        <button @click="$emit('close')" class="close-btn" aria-label="关闭设置">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -35,7 +35,7 @@
             @click="activeTab = item.key"
             @keydown="onNavKeydown($event, item.key)"
           >
-            <span class="nav-icon" v-html="item.icon"></span>
+            <span class="nav-icon" aria-hidden="true" v-html="item.icon"></span>
             <span class="nav-label">{{ item.label }}</span>
           </button>
         </div>
@@ -106,6 +106,11 @@
               ></div>
             </div>
           </div>
+
+          <div v-if="activeTab === 'archive'" class="content-panel" role="tabpanel" id="panel-archive" aria-labelledby="tab-archive">
+            <ArchiveManager ref="archiveManager" :open="true" @close="$emit('close')" />
+          </div>
+
         </div>
       </div>
     </div>
@@ -114,6 +119,7 @@
 
 <script setup>
 import { ref, watch, onMounted, onBeforeUnmount, nextTick, computed } from 'vue'
+import ArchiveManager from '../../chat/components/ArchiveManager.vue'
 import {
   getMemory,
   updateMemory,
@@ -224,6 +230,7 @@ const navItems = [
     label: '提示词',
     icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
   },
+  { key: 'archive', label: '归档管理', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h18v4H3zM5 7v14h14V7M10 11h4"/></svg>' },
 ]
 
 async function loadTabData() {
@@ -446,12 +453,15 @@ onBeforeUnmount(() => {
 
 .settings-content {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
   overflow-y: auto;
   padding: 2rem;
 }
 
 .content-panel {
   height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -689,27 +699,6 @@ onBeforeUnmount(() => {
 .save-error {
   font-size: 13px;
   color: #ef4444;
-}
-
-.save-btn {
-  padding: 8px 20px;
-  border: none;
-  background: #0ea5e9;
-  color: white;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.save-btn:hover:not(:disabled) {
-  background: #0284c7;
-}
-
-.save-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 
 /* 提示词查看器 */

@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises'
 // exercise the real authFetch and enhancement transport unchanged.
 const configImport = /import \{ API_BASE_URL \} from ['"]\.\.\/config\.js['"]/g
 const authSource = (await readFile(new URL('./auth.js', import.meta.url), 'utf8')).replace(configImport, "const API_BASE_URL = 'https://example.invalid'")
+  .replace("'../shared/sessionManagement/state.js'", JSON.stringify(new URL('../shared/sessionManagement/state.js', import.meta.url).href))
 const authURL = 'data:text/javascript;base64,' + Buffer.from(authSource).toString('base64')
 const { storeAuth } = await import(authURL)
 const source = (await readFile(new URL('./promptEnhancement.js', import.meta.url), 'utf8'))
