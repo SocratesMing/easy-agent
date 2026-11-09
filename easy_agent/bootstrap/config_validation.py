@@ -134,6 +134,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "max_filename_utf8_bytes",
             "allowed_extensions",
             "max_documents_per_query",
+            "max_documents_per_base",
             "parse_timeout_seconds",
         }
     ),

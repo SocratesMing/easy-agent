@@ -2045,13 +2045,15 @@ class KnowledgeService:
             folder_id = await self._ensure_folder_chain(
                 base_id, folder_id, relative_path
             )
+        max_per_base = self.config.limits.max_documents_per_base
         if (
-            await self._repo(self.repository.count_documents, base_id)
-            >= self.config.limits.max_documents_per_query
+            max_per_base > 0
+            and await self._repo(self.repository.count_documents, base_id)
+            >= max_per_base
         ):
             raise KnowledgeServiceError(
                 "KNOWLEDGE_DOCUMENT_LIMIT",
-                "知识库文档数量已达到第一期上限",
+                f"知识库文档数量已达上限（{max_per_base}）",
                 status_code=409,
             )
         if size_bytes > self.config.limits.max_file_size_mb * 1024 * 1024:

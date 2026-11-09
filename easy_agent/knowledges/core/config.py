@@ -68,6 +68,8 @@ class LimitsConfig(BaseModel):
         default_factory=lambda: ["pdf", "doc", "docx", "txt", "md", "xls", "xlsx", "csv"]
     )
     max_documents_per_query: int = Field(default=500, gt=0)
+    # 单个知识库可存储的文档总数上限（上传前拦截）。0 = 不限制。
+    max_documents_per_base: int = Field(default=0, ge=0)
     # 解析绝对超时秒数；0 = 不限制（批量同步场景推荐）。
     # 计时起点为 parse_started_at（首次观察到上游 RUNNING），不含排队时间；
     # 超时即失败终态，暂停/恢复/重试会清空旧计时重新开始。

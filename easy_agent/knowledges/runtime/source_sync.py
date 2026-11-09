@@ -22,7 +22,7 @@
 - dry-run（演习模式）：只打印“本来要做什么”，不真正上传，用于上线前检查。
 
 流程：
-1. 从外部 MySQL（文档 SQL）按 ``create_time`` 取最近窗口内的记录；
+1. 从外部 MySQL（文档 SQL）按 ``publishDate`` 取最近窗口内的记录；
 2. 按 ``batchid``（与磁盘文件名相同）在 ``file_root`` 下匹配文件，
    生成 ``{report_title}_{id}.扩展名`` 的上传名；
 3. 配置 ``staging_dir`` 时，先把本窗口内去重通过的文件批量拷贝到暂存目录；
@@ -155,9 +155,6 @@ _SOURCE_COLUMNS = {
 }
 # 查询的列清单（写死，不用 SELECT *，避免表结构变化时把无关的大字段也查出来）
 _SOURCE_SELECT = "id, publishDate, batchid, reportTitle, reportTag, reportSecondSource"
-# 时间窗口过滤列：按记录写入时间（create_time，格式 yyyy-MM-dd HH:mm:ss）扫描，
-# publishDate 只用于生成发布日期目录和文档元数据，不再参与筛选。
-_SOURCE_TIME_COLUMN = "create_time"
 
 
 def resolve_table_name(sync_config: SourceSyncConfig) -> str:
@@ -186,7 +183,7 @@ def build_source_query(table: str) -> str:
     生成的 SQL 形如::
 
         SELECT id, publishDate, ... FROM `t_report`
-        WHERE create_time >= %(start)s AND create_time < %(end)s
+        WHERE publishDate >= %(start)s AND publishDate < %(end)s
 
     %(start)s / %(end)s 是 pymysql 的“参数占位符”：真正的值在执行时才由
     驱动安全地传进去，既不用手动拼接日期字符串，也能避免 SQL 注入。
@@ -194,8 +191,7 @@ def build_source_query(table: str) -> str:
     """
     return (
         f"SELECT {_SOURCE_SELECT} FROM `{table}` "
-        f"WHERE {_SOURCE_TIME_COLUMN} >= %(start)s "
-        f"AND {_SOURCE_TIME_COLUMN} < %(end)s"
+        "WHERE publishDate >= %(start)s AND publishDate < %(end)s"
     )
 
 
@@ -491,19 +487,19 @@ def date_folder_segments(publish_date: str) -> list[str]:
 
 
 def _iter_windows(
-    start: datetime, end: datetime, step: timedelta
+    start: datetime, end: datetime, days: int
 ) -> Iterable[tuple[datetime, datetime]]:
-    """按 step 切分 [start, end) 窗口，避免一次拉取过大数据量。
+    """按 days 切分 [start, end) 窗口，避免一次拉取过大数据量。
 
-    例：start=10-01, end=10-20, step=7 天 →
+    例：start=10-01, end=10-20, days=7 →
     ``(10-01, 10-08), (10-08, 10-15), (10-15, 10-20)``
 
-    每个窗口单独执行一次 SQL 查询，最后一段可能不足 step。
+    每个窗口单独执行一次 SQL 查询，最后一段可能不足 days 天。
     区间是“左闭右开”：包含 start、不包含 end，避免相邻窗口重复取到同一条记录。
     """
     cursor = start  # 当前窗口的起点，会不断往后挪
     while cursor < end:
-        boundary = min(cursor + step, end)  # 窗口终点，最多到 end
+        boundary = min(cursor + timedelta(days=days), end)  # 窗口终点，最多到 end
         yield cursor, boundary  # yield：生成器写法，调用方可以一边取一边处理
         cursor = boundary  # 下一段从这一段终点开始
 
@@ -583,8 +579,7 @@ def fetch_source_rows(
             cursor.execute(
                 build_source_query(table),
                 {
-                    # 占位符 %(start)s / %(end)s 的值在这里传进去；
-                    # create_time 是 yyyy-MM-dd HH:mm:ss 格式的字符串，与此处格式一致
+                    # 占位符 %(start)s / %(end)s 的值在这里传进去
                     "start": start.strftime("%Y-%m-%d %H:%M:%S"),
                     "end": end.strftime("%Y-%m-%d %H:%M:%S"),
                 },
@@ -1295,7 +1290,7 @@ class SourceSyncEngine:
 
         整体流程：
             1. 确定目标知识库（base_id）；
-            2. 决定时间窗口：首次回填从 start_date 开始，否则只回溯 lookback_hours 小时；
+            2. 决定时间窗口：首次回填从 start_date 开始，否则只回溯 lookback_days 天；
             3. 恢复上次中断时还在途的文档，并清理超期暂存残留；
             4. 按窗口拉取源记录：已入库→跳过，失败→重试；
             5. 新记录先批量拷贝到暂存目录，再从暂存文件上传；
@@ -1356,9 +1351,9 @@ class SourceSyncEngine:
             self.repository.count_sync_items, source=self.source
         )
         window_start = self._window_start(now, start_date, first_run=not any(counts.values()))
-        # 把 [起始时间, 现在) 按固定步长（1 天）切成若干段，逐段查询，
+        # 把 [起始时间, 现在) 按 lookback_days 天切成若干段，逐段查询，
         # 避免一次性把几个月的数据全部拉进内存
-        windows = list(_iter_windows(window_start, now, timedelta(days=1)))
+        windows = list(_iter_windows(window_start, now, self.sync_config.lookback_days))
 
         inflight: list[dict[str, Any]] = []  # 在途台账行（上传/解析中，尚未结束）
         if not dry_run:
@@ -1600,7 +1595,7 @@ class SourceSyncEngine:
         规则：
         - 首次运行（台账里还没有任何记录）且配置/参数指定了 start_date：
           从 start_date 开始，做“历史回填”；
-        - 其他情况：只处理最近 lookback_hours 小时，避免每次都全量扫描。
+        - 其他情况：只处理最近 lookback_days 天，避免每次都全量扫描。
 
         注意：即使有 start_date，非首次运行也不会再从头扫，
         因为老记录已经在台账里，重新扫只会浪费时间。
@@ -1609,7 +1604,7 @@ class SourceSyncEngine:
         if configured and first_run:
             # 首次回填：从配置的起始日期开始按窗口切分，避免一次拉全量
             return datetime.strptime(configured, "%Y-%m-%d").replace(tzinfo=UTC)
-        return now - timedelta(hours=self.sync_config.lookback_hours)
+        return now - timedelta(days=self.sync_config.lookback_days)
 
 
 # ---------------------------------------------------------------------------
