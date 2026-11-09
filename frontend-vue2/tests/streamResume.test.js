@@ -13,11 +13,13 @@ import assert from 'node:assert/strict'
 
 import {
   clearStreamFlight,
+  hasAssistantReply,
   markStreamFlight,
   probeActive,
   readStreamFlight,
   resolveResumeTargets,
   resumeCandidates,
+  turnCompleted,
   waitForActive,
 } from '../src/packages/easyAgent/features/chat/services/streamResume.js'
 
@@ -282,4 +284,28 @@ test('等待超时：始终 inactive 时按超时返回空，不阻塞页面', a
   })
   assert.deepEqual(active, [])
   assert.ok(Date.now() - start >= 40)
+})
+
+test('异常兜底文案算「这一轮已收尾」：有 fallback_note 就不再等', async () => {
+  const sentAt = Date.now()
+  // 普通异常 / 超时都会在落库消息上带 fallback_note：这一轮已经结束（虽然没跑完），
+  // 再盯着等答复只是空转。
+  assert.equal(hasAssistantReply({ role: 'assistant', fallback_note: '异常' }), true)
+  assert.equal(
+    turnCompleted(
+      { role: 'assistant', fallback_note: '异常', timestamp: new Date(sentAt + 100).toISOString() },
+      { sessionId: 's-1', at: sentAt }
+    ),
+    true
+  )
+  // 空 assistant 占位仍算「还没答复」
+  assert.equal(hasAssistantReply({ role: 'assistant' }), false)
+  // 上一轮遗留的兜底文案不会被当成本轮答复（时间戳早于发送时刻）
+  assert.equal(
+    turnCompleted(
+      { role: 'assistant', fallback_note: '异常', timestamp: new Date(sentAt - 600000).toISOString() },
+      { sessionId: 's-1', at: sentAt }
+    ),
+    false
+  )
 })

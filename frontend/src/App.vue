@@ -596,6 +596,7 @@ function awaitingAnswer() {
   return last.role === 'assistant'
     && !last.content && !last.thinking
     && !last.pending_approval
+    && !last.fallback_note
     && !(Array.isArray(last.blocks) && last.blocks.length)
 }
 
