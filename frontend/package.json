@@ -8,7 +8,7 @@
     "build": "node ../scripts/dev/sync-frontend-shared.mjs && node scripts/run-vite.mjs build",
     "sync:shared": "node ../scripts/dev/sync-frontend-shared.mjs",
     "preview": "vite preview",
-    "test:unit": "node --test src/api/*.test.js src/utils/*.test.js src/features/**/*.test.js src/shared/**/*.test.js",
+    "test:unit": "node --test \"src/api/*.test.js\" \"src/utils/*.test.js\" \"src/features/**/*.test.js\" \"src/shared/**/*.test.js\"",
     "serve": "node scripts/print-serve-env.mjs && npx --yes serve -s dist/"
   },
   "dependencies": {
