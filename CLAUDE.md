@@ -1,12 +1,21 @@
 # CLAUDE.md
 
+> ℹ️ **2026-10-18 事实同步**：模块地图 / 数据流 / 命令以
+> `docs/architecture-current.md` 为准。本文件已同步的关键事实：
+> 双前端基线（`frontend-vue2/` Vue 2.7 当前托管、`frontend/` Vue 3.5 + Vite
+> 并行维护）；运行时技能 7 个；公共技能经只读路由 `/skills/builtin/` 共享（按用户
+> 添加 / 启停，不再复制，DA-13 S2），用户技能在 `/user-skills/`；`X-Username` 兼容回退已移除；JWT secret 在 dev/test
+> 持久化于 `data/.jwt_secret`（prod 必须显式设置 `EASY_JWT_SECRET`）；
+> 仓库已有 Dockerfile / docker-compose / k8s / `.github/workflows/ci.yml`。
+
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Commands
 
 ```bash
-# Run web server (serves frontend from frontend/dist/)
-easy-web [--port 8000] [--reload]
+# Run web server (serves frontend from frontend-vue2/dist/)
+easy-web [--port 8000] [--reload] [--log-level debug|info|warning|error]
 
 # Alternative: run via main.py
 python main.py
@@ -18,70 +27,83 @@ pytest tests/ -v
 pytest tests/test_basic.py::TestConfig -v
 
 # Install package (dev mode)
-uv pip install -e ".[dev]"
+uv pip install -e . --group dev
 
-# Start frontend dev server (proxy to backend at localhost:8000)
-cd frontend && npm run dev
+# Vue2 baseline (currently served by easy-web)
+cd frontend-vue2 && npm run dev      # dev server :5173, /agent → PROXY_TARGETS[AGENT_ENV] in vue.config.js
+AGENT_PROXY_TARGET=http://localhost:8080 npm run dev   # (in frontend-vue2/) proxy to a local backend instead
+cd frontend-vue2 && npm run build    # output frontend-vue2/dist/
 
-# Build frontend (required before easy-web can serve it)
+# Vue3 baseline (Vite, maintained in parallel)
+cd frontend && npm run dev     # Vite dev server, /agent → PROXY_TARGETS[mode] in vite.config.js (dev: localhost:8080); AGENT_PROXY_TARGET overrides
 cd frontend && npm run build
 ```
 
 ## Configuration
 
-Copy `easy_agent/config/config.yaml.example` to `easy_agent/config/config.yaml` and configure your models. Config is searched in cwd, home dir, and package dir (in that order).
+Copy `easy_agent/config/config-example.yaml` to `easy_agent/config/config.yaml` and configure your models. The active config is `EASY_CONFIG` if set, otherwise `easy_agent/config/config.yaml` (legacy `config.{AGENT_ENV}.yaml` is only a fallback when the unified file is missing). `Config.find_config_file()` (cwd → `~/.easy-agent/config` → package) is used for auxiliary files such as `mcp.json`, not for the main config.
 
-The YAML format uses a `models:` dict for multi-provider support and `model:` to select the active one. Top-level keys: `model` (active model name), `models` (dict of provider configs), `max_steps`, `workspace_dir`, `system_prompt_path`. Nested sections: `retry`, `tools`, `database`, `summarization`. Parsed manually in `Config.from_yaml()`, not mapped from Pydantic models.
+The YAML format uses a `models:` dict for multi-provider support and `model:` to select the active one. Top-level keys include `model`, `models`, `retry`, `max_steps`, `workspace_dir`, `memories_dir`, `sessions_dir`, `prompt_path` (legacy `system_prompt_path`), `app_welcome_title`. Nested sections: `tools`, `database`, `checkpoint`, `hitl`, `summarization`, `web_search`, `distributed_lock`, `personnel`, `upload_limits`, `file_context`, `expert`, `knowledge`. `Config.from_yaml()` hands each section to the Pydantic models in `bootstrap/config_models.py`, the single source of field names and defaults (the known-key list behind the unknown-key warning is generated from them); it only adapts what the YAML shape adds: the active `model`, agent fields at the top level, the legacy `system_prompt_path`, and flat `expert_*` keys vs the `expert:` section. Unknown keys only warn by default; set `EASY_CONFIG_STRICT=1` to fail fast, or run `python scripts/quality/check_config_schema.py --check`.
 
 Environment variables:
 - `EASY_CONFIG` — override config file path (set by `web_runner.py` automatically)
-- `EASY_JWT_SECRET` — JWT signing secret. If unset, a random secret is generated at startup (tokens invalidate on restart)
+- `EASY_CONFIG_STRICT` — `1` makes unknown config keys fail startup (default: warn)
+- `EASY_JWT_SECRET` — JWT signing secret. Optional in dev/test (persisted in `data/.jwt_secret`); required when `AGENT_ENV=prod`
+- `EASY_LOG_LEVEL` — `debug` / `info` (default) / `warning` / `error`; `easy-web --log-level` sets it, and it is also read from `.env.{AGENT_ENV}` (applied right after the env file loads, `bootstrap/initialization/runtime.py`). At `debug` the proc log records every LLM request body and raw response (`[LLM_REQUEST]` / `[LLM_RESPONSE]`, logger `easy_agent.llm_wire`, file only); noisy third-party loggers (aiosqlite, httpcore, openai SDK …) stay at INFO (`LOG_QUIET_WHEN_DEBUG` in `bootstrap/initialization/log.py`). The old `EASY_LLM_REQUEST_LOG` switch is retired
 
 ## Code Architecture
 
 ### Python Backend (`easy_agent/`)
 
-**Agent layer** (`agent.py`) — `EasyAgent` class wraps `deepagents.create_deep_agent()`. Built-in tools: `write_todos`, `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`, `task` (subagent). Creates a `CompositeBackend` mapping `/workspace/` to user/session-isolated directory (`workspace/{username}/{session_id}/`), `/skills/` to read-only skill files, and `/memories/` to per-user memory files. System prompt is dynamically augmented with OS-specific commands, workspace path, skills root, and shared dependency paths. Supports `SummarizationMiddleware` for context compression (configurable via `config.summarization`).
+**Agent layer** (`agent/core.py`) — `EasyAgent` class wraps `deepagents.create_deep_agent()`. Built-in tools: `write_todos`, `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, `execute`, `task` (subagent). Creates a `CompositeBackend` mapping `/workspace/` to the user/session-isolated directory (`workspace/{username}/{session_id}/`), `/user-skills/` to the user's skill library, `/skills/builtin/` to the canonical public skills (read-only view showing only the skills this user added and enabled), and `/memories/` to per-user memory files (plus configured `external_dirs`); unmatched paths and framework artifacts (`/.agent/...`) go to a hidden per-session dir `workspace/{username}/.agent/{session_id}/` outside the workspace. The shared graph gets a two-level real `CompositeBackend` (`backends/context.py`) that resolves the session at run time. System prompt is dynamically augmented with OS-specific commands, workspace path, skills root, and shared dependency paths. Context compression uses the official `SummarizationMiddleware`, with thresholds from `config.summarization` (`agent/summarization.py`); the main agent's instance (`TurnAwareSummarizationMiddleware`, `agent/turn_context.py`) first renders the per-turn `turn_context` into the request, and memory sources reload on every run (`SessionMemoryMiddleware`, `agent/memory.py`).
 
-**Config** (`config.py`) — Pydantic models: `LLMConfig`, `AgentConfig`, `ToolsConfig`, `DatabaseConfig`, `ProviderConfig`. Multi-provider support via `ProviderConfig` entries.
+**Config** (`bootstrap/config.py`) — `Config` 门面；Pydantic 模型在 `bootstrap/config_models.py`，校验/env 展开在 `bootstrap/config_validation.py`。
 
-**LLM factory** (`model.py`) — Supports `anthropic` (ChatAnthropic), `openai` (ChatOpenAI), `deepseek` (langchain-deepseek), `minimax` (OpenAI-compatible with 120s timeout). All use LangChain wrappers.
+**LLM factory** (`agent/model.py`) — Protocol-driven, and `openai` is the only protocol: every provider (DeepSeek / Qwen / Ark / OpenCode gateway …) goes through `ReasoningChatOpenAI` (a `ChatOpenAI` subclass that sanitizes media blocks, extracts `reasoning_content`, and passes it back). The `anthropic` protocol was removed; any other protocol raises `ValueError` in `create_model`.
 
-**Skills** (`skills.py`) — Discovers skills by scanning for directories containing `SKILL.md` or `README.md`. Skills are mounted at `/skills/` virtual path in the agent backend.
+**Skills** (`agent/skills.py`) — Discovers skills by scanning for directories containing `SKILL.md` or `README.md`. Canonical runtime skills live in the repo-root `skills/` (7: docx/pptx/xlsx/pdf/mcp-builder/skill-creator/expert-creator); `easy_agent/skills/` is the packaged fallback copy. Skill sources are fixed to `["/skills/builtin/", "/user-skills/"]` (a user skill overrides a public one with the same name); the per-user list of added public skills is `workspace/{username}/builtin-skills.json` (`agent/builtin_skills.py`), the read-only view is `backends/builtin_skills.py`.
 
-**Web app** (`app.py`) — FastAPI app with lifespan that initializes config, database, vector store, system prompt, skills, and shared npm deps. Serves Vue SPA from `frontend/dist/` with fallback to `index.html`. CORS enabled (all origins by default; tighten via `EASY_CORS_ALLOW_ORIGINS`). Registers routers from `easy_agent/api/`.
+**Web app** (`app.py`) — FastAPI app with lifespan that initializes config, database, knowledge base, prompt/skills discovery, checkpointers, and the scheduler (with multi-worker protection). Serves the Vue 2 SPA from `frontend-vue2/dist/` with fallback to `index.html`; `frontend/` is the parallel Vue 3 + Vite baseline. CORS is enabled (all origins by default; tighten via `EASY_CORS_ALLOW_ORIGINS`). Registers routers from `easy_agent/api/` and installs `LegacyHostRoutes` for old `/api/<prefix>` callers.
 
-**Web runner** (`web_runner.py`) — Entry point for `easy-web` CLI command. Does `os.chdir(project_root)` and sets `EASY_CONFIG` env var before starting uvicorn.
+**Web runner** (`bootstrap/web_runner.py`) — Entry point for `easy-web` CLI command. Does `os.chdir(project_root)` and sets `EASY_CONFIG` env var before starting uvicorn.
 
-### API Routes (`easy_agent/api/`)
+### API Routes (`easy_agent/api/`, prefix `/agent`)
 
-- `chat.py` — `POST /api/chat/stream` creates/retrieves session, parses uploaded files (PDF/DOCX/XLSX/images), returns SSE `StreamingResponse`
-- `sessions.py` — Session CRUD, workspace name generation
-- `auth.py` — Login/register endpoints
-- `files.py` — File upload/management
-- `prompts.py` — Prompt template management
+- `chat.py` — `POST /agent/chat/stream` creates/retrieves the session, parses uploaded files (PDF/DOCX/XLSX/images), and returns an SSE `StreamingResponse`; `/agent/chat/resume` continues HITL interruptions
+- `sessions.py` — Session CRUD and workspace-name generation
+- `auth.py` — Login/register and login-policy endpoints; single sign-on via `token_version`
+- `files.py` — File upload/download/preview/management
+- `expert.py` / `connectors.py` / `skill_center.py` — expert agents, MCP connectors, skill library
+- `settings.py` / `prompts.py` / `scheduled_tasks.py` / `knowledge.py` / `completion.py` — remaining routers（人员管理路由在 `knowledges/personnel/api.py`）
 
 ### Services (`easy_agent/services/`)
 
-- `streaming.py` — **Core SSE generator** (`chat_stream_generator`). Processes DeepAgents `astream` output, emits typed events: `start`, `thinking_start`, `thinking`, `thinking_end`, `content`, `content_end`, `tool_call`, `tool_result`, `user_input_required`, `done`, `error`. Parses `<think>` tags. Accumulates partial tool call JSON across chunks.
-- `agent_manager.py` — In-memory session-level agent cache (`_session_agents` dict). Lost on server restart.
+- `streaming/` — **Core SSE orchestrator** (`orchestrator.chat_stream_generator` / `resume_stream_generator`; `projector`, `persistence` and `side_effects` hold the pure projections, DB writes and post-stream work; the package `__init__` exports nothing). Processes DeepAgents `astream` output through `StreamProcessor` and emits typed events registered in `services/streaming/sse.py`; the full contract is `docs/sse-events.md` (15 events incl. `approval_required` / `knowledge_evidence`). Parses `<think>` tags and accumulates partial tool-call JSON.
+- `agents/manager.py` — In-memory session-level agent cache (`OrderedDict` LRU, `SessionState` registry) plus per-session stream locks. Lost on server restart; multi-instance deployments need sticky sessions.
+- `sessions/` 运行期状态（runtime/thread/uploads）、`mcp/`（连接器工具/会话/策略/证据）、`memory/`、`experts/`、`skills/` 为其余领域子包；`scheduler.py`、`health.py`、`metrics.py`、`document_convert.py` 留在根下。
 
 ### Other Backend Modules
 
-- `middleware/auth.py` — JWT (python-jose) + bcrypt. IP binding on first login (rejects different IPs). 30min token expiry. `get_current_username()` extracts from JWT `Authorization: Bearer` header, then `X-Username` header, then defaults to `"default"`.
-- `db/database.py` — SQLite (default) or MySQL (DBUtils pool, auto-fallback to SQLite). Sessions store messages as a JSON blob (not separate rows). Schema migration via `_ensure_column()` (ALTER TABLE on startup).
+- `middleware/auth.py` — JWT (python-jose) + bcrypt. The login-state decision lives in `db/login_state.py:verify_login_token`, shared by `get_current_username()`, the query-token `verify_token_sso()` and the knowledge principal. The token's 30-minute `exp` is not enforced: a session ends by idle logout (DB `last_activity_at`) or single sign-on (a new login increments `token_version`, invalidating older tokens). Every rejection logs a `[鉴权] 拒绝 …` WARNING with the reason and request_id. `get_current_username()` only accepts a valid `Authorization: Bearer` token (no `X-Username` fallback). Login does not bind to an IP.
+- `db/database.py` — SQLite (default) or MySQL (DBUtils pool); MySQL failures do **not** silently fall back to SQLite. Messages are stored in the `session_messages` row table; `sessions.messages` remains only as a legacy blob fallback for old sessions. Schema migrations run via `db/schema_registry.py` / `_ensure_column()`.
+- `knowledges/` — Knowledge base v2 (RAGFlow service/API/runtime worker). Its `personnel/` subpackage owns knowledge-scoped personnel management and Excel import (`/agent/personnel`).
 - `utils/file_parser.py` — Extracts text from PDF, DOCX, XLSX, PPTX, images (OCR), CSV, code files. Auto-detects encoding.
 - `utils/session_logger.py` — Per-session logging utility.
 - `models/api.py` — Pydantic request/response models for API endpoints.
 - `models/db.py` — Database model definitions.
 
-### Frontend (`frontend/`)
+### Frontend (`frontend-vue2/` + `frontend/`)
 
-Vue 3 (Composition API `<script setup>`) + Vite + Tailwind CSS 4. **No Vue Router** — routing is manual via boolean refs in `App.vue`. **No state management library** — all state lives in `App.vue` and passes down as props.
+Two maintained baselines:
 
-- `api/auth.js` — `authFetch()` wrapper adds JWT header, dispatches `auth-expired` custom event on 401. Tokens in `localStorage` keys `mini_agent_token` / `mini_agent_username`.
-- `api/chat.js` — `sendMessage()` reads SSE via `ReadableStream`, parses `data:` lines, calls `onChunk(data)` per event
-- `App.vue` — Root orchestrator: loads profile, gates on auth, manages sessions/messages
+- `frontend-vue2/` — Vue 2.7 (Options API; built-in Composition API functions allowed, `<script setup>` forbidden — guarded by `tests/vue2Compat.test.js`) + Element UI + Vue CLI (webpack). Currently served by the backend. **All business code lives in the managed module `src/packages/easyAgent/`** (entries `index.js` for routes, `sidebar.js` for the SDK; root component `EasyAgentPage.vue`), which is synced as one directory into the intranet Vue 2 host as a route page. `src/App.vue` + `src/main.js` + `src/standalone/` are only the standalone shell; `src/sdk/index.js` builds the AI-sidebar SDK from the same module. Host differences go through `configureEasyAgent()` (`runtime/config.js`, contract version in `EASY_AGENT_CONTRACT_VERSION`), never into module code. Rules (relative imports only, no global registration / `document.title` / `history` / `<html>` writes, styles scoped to `.easy-agent-root`, new deps → `npm run deps:easy-agent`) are enforced by `npm run check:easy-agent`; see `src/packages/easyAgent/README.md` and `integration/README.md` (export: `npm run export:easy-agent`; intranet sync: `integration/tools/sync-easy-agent.cjs`).
+- `frontend/` — Vue 3.5 + Vite. **No Vue Router** in either baseline — routing is manual via boolean refs in the root component (`EasyAgentPage.vue` in Vue 2, `App.vue` in Vue 3); **no state management library** — state lives in the root component and passes down as props. Both baselines share the same `api/sse.js` (`readSSE`) contract.
+
+Vue 2 paths below are relative to `frontend-vue2/src/packages/easyAgent/`:
+
+- `utils/request.js` — the only transport (axios instance + `fetchWithAuth` for SSE); reads base URL / token keys / renew hooks from the runtime config at call time; 401 never dispatches `window` events (module-internal `runtime/events.js` + `auth.onExpired`). `api/auth.js` re-exports the auth helpers and `authFetch()`. Tokens in `localStorage` keys `mini_agent_token` / `mini_agent_username` by default.
+- `api/chat.js` — `sendMessage()` reads SSE via `api/sse.js` (`readSSE`), parses `data:` lines, and invokes the per-event callbacks
+- `EasyAgentPage.vue` (Vue 3: `App.vue`) — Root orchestrator: loads profile, gates on auth, manages sessions/messages
 - `Chat.vue` / `ChatMessage.vue` — Message rendering with block-level layout (collapsible thinking, markdown content, tool call/result cards)
 - `ChatInput.vue` — Input with file upload
 - `SessionList.vue` — Sidebar with session CRUD
@@ -93,23 +115,28 @@ Vue 3 (Composition API `<script setup>`) + Vite + Tailwind CSS 4. **No Vue Route
 
 1. User input → `api/chat.py:chat_stream()` → persists user message → gets/creates per-session `EasyAgent`
 2. EasyAgent invokes DeepAgents `astream` with `HumanMessage`
-3. `services/streaming.py:chat_stream_generator()` processes streaming chunks: parses `<think>` tags, accumulates tool call JSON, persists thinking/tool records to DB
+3. `services/streaming/orchestrator.py:chat_stream_generator()` processes streaming chunks: parses `<think>` tags, accumulates tool call JSON, persists thinking/tool records to DB
 4. SSE events sent to frontend, rendered as blocks within assistant messages
-5. Final response persisted to sessions table (JSON blob append)
+5. Final response persisted to `session_messages` (row table; legacy `sessions.messages` blob only for old sessions)
 
-### Skills (`easy_agent/skills/`)
+### Skills (`skills/`)
 
-17 skills covering: office document manipulation (`docx`, `pptx`, `xlsx` with Python scripts + shared `node_modules` via `shared_deps/`), PDF forms (`pdf`), web testing (`webapp-testing`), MCP integration (`mcp-builder`), skill creation meta-skill (`skill-creator`), and descriptive/creative skills (SKILL.md only). Skills are accessed by the agent via virtual paths like `/skills/pptx/SKILL.md`. Shared npm dependencies (`docx`, `pptxgenjs`) are installed once in `easy_agent/shared_deps/node_modules/` and symlinked into per-user/session workspaces.
+7 runtime skills: office document manipulation (`docx`, `pptx`, `xlsx` with Python scripts + shared `node_modules`), PDF forms (`pdf`), MCP integration (`mcp-builder`), skill creation (`skill-creator`), and expert creation (`expert-creator`). Canonical copies live in the repo-root `skills/`; `easy_agent/skills/` is the packaged fallback. Adding a public skill no longer copies it: it is recorded in `builtin-skills.json` and read from the canonical dir at `/skills/builtin/` (writes are rejected; in the execute sandbox bwrap binds only the enabled skills, Landlock makes the whole canonical dir read-only). User skills live at `workspace/{username}/skills/` and are exposed as `/user-skills/`. Copies made before DA-13 S2 that match the canonical skill are migrated on first access (`scripts/skills/migrate_builtin_skills.py` previews / applies it for all users); modified copies stay as user skills. Skill directories carry no dependencies: their scripts use packages installed in the runtime environment (e.g. `npm install -g docx`).
 
 ### Gotchas
 
-- **JWT secret is ephemeral** — restart invalidates all tokens unless `EASY_JWT_SECRET` env var is set
-- **IP binding on login** — auth rejects logins from different IPs than the first login (can cause issues behind load balancers or in dev)
-- **Messages stored as JSON blob** — not separate rows; every append reads/modifies the full array
+- **JWT secret persistence** — dev/test store the secret in `data/.jwt_secret`, so restarts keep tokens valid; `AGENT_ENV=prod` requires an explicit `EASY_JWT_SECRET`. Replicas without a shared secret reject each other's tokens: tokens carry the key fingerprint as `kid`, startup logs `[鉴权] JWT 签名密钥指纹`, and the rejection log says `token 由另一把密钥签发`
+- **Single sign-on** — a new login increments `token_version` and invalidates older tokens; login is not IP-bound
+- **Messages are row-based** — `session_messages` is authoritative; `sessions.messages` is a legacy blob fallback
 - **Context compression** via `SummarizationMiddleware` — configurable threshold/target in config, triggers on token count
 - **Agent cache is in-memory only** — server restarts lose all cached agents
+- **Session threads are on by default** — `session_thread: true` (default) runs one LangGraph thread per session (`thread_id = session_id`, only the new message is input; empty threads hydrate from the DB) on official savers only; `false` is the compatibility mode that rebuilds history per message. The legacy in-process fallback (`PersistentMemorySaver`, used only with `EASY_CHECKPOINT_BACKEND=legacy` or when a single pod cannot open its SQLite checkpoint file; it persists nothing, so pending approvals are lost on restart) keeps per-message threads either way. The approval handle sent to the frontend stays `{session_id}-{message_id}` (`services/sessions/thread.py`)
+- **`save_expert` is skill-gated** — it is not in the agent's tool list; `agent/core.py` hands it to a `SkillsMiddleware(tools=...)` that replaces the default one, so it is bound only after the model reads or pins `expert-creator` (whose frontmatter declares `metadata.include_tools: save_expert`). Expert sessions never get it. `extras={"defer_loading": True}` would not hide it on OpenAI-compatible models (see `docs/design/2026-10-20-da13-skills-sources.md`)
+- **Reasoning is passed back on every assistant message** — current turn and history, with or without tool calls (DeepSeek requires the `reasoning_content` of all earlier turns once a request carries tools). Requests carry it as the `reasoning_content` field (`agent/model.py:inject_reasoning_content`); thread history is sent as-is (`agent/turn_context.py` only renders the current turn); DB hydration puts each step's thinking back on its AIMessage (`services/streaming/messages.py`); summarization counts it (`agent/summarization.py:count_tokens_with_reasoning`). Don't reintroduce stripping of historical reasoning
+- **Per-turn context goes through `turn_context`** — the workspace prefix, knowledge/page context and upload preview are rendered into the model request only (skills selected in the input box are loaded via `pinned_skills`, not text directives); the turn's `HumanMessage` holds the raw user text (id = message_id, also stored as `turn_id` on the DB row). Don't concatenate per-turn context into message content (see `docs/archive/design/2026-10-19-da03-session-thread.md`)
 - **`web_runner.py` does `os.chdir(project_root)`** — important for relative path resolution
-- **`frontend/dist/` not committed** — must `npm run build` before `easy-web` can serve the UI
-- **No CI/CD or Docker** — deployment is manual via uvicorn
-- **Per-user dependency isolation** — each user gets `workspace/{username}/.deps/` with shared `node_modules` and Python `.venv`, symlinked into session workspaces
-- **Per-user memory files** — stored at `memories/{username}/{username}_AGENTS.md`, read/written by agent for long-term context
+- **`frontend-vue2/dist/` not committed** — must `npm run build` (in `frontend-vue2/`) before `easy-web` can serve the UI
+- **Vue 2 business code belongs in `frontend-vue2/src/packages/easyAgent/`** — it is exported and synced to the intranet host as one directory; don't add Easy Agent code to `src/App.vue`/`src/main.js`/`src/standalone/`, don't use `@/` aliases or global registration inside it, and run `npm run check:easy-agent` (frontend unit tests need Node ≥ 20.11; builds and the easy-agent tools still run on Node 14)
+- **CI/Docker exist** — `.github/workflows/ci.yml` runs ruff + pytest + both frontend builds; Dockerfile/docker-compose/k8s manifests are in the repo
+- **Per-user memory files** — neither memory is rewritten every turn: the session's `memory.md` on a decision / constraint / correction signal or a rejected action, otherwise every 3 turns; the long-term `memories/{username}/AGENTS.md` on a profile signal, otherwise every 5 turns; the batched turns are passed along (`services/memory/triggers.py`; pending turns live in-process) — both via `services/streaming/side_effects.py:submit_memory_updates`, using the top-level `memory_model` (a `models` key) when set, otherwise the session's chat model; the agent only reads them. The session-memory update also sees a digest of the turn's tool calls, changed files and approvals (`services/memory/digest.py`), and long replies keep both head and tail. Updates are incremental: the model gets the memory as numbered entries and returns JSON add / update / delete ops, untouched entries stay verbatim and a no-op leaves the file unchanged; a Markdown reply still works as a full rewrite (`services/memory/ops.py`). Over budget, an incremental result is compacted with the same op format (`prompts/memory_compact.md`, update/delete only), then by dropping the longest entries whole — never the old full-rewrite compress, which renamed sections and cut sentences. The built-in fallback prompts in `manager.py` must stay identical to `prompts/memory_update.md` / `long_term_memory.md` / `memory_compact.md` (tested) An update is read → LLM (seconds) → write, so updates to one memory run in submission order (`_submit_memory_job`), and each write first checks the file is unchanged since it was read, redoing the update on the newer content otherwise (`services/memory/manager.py`). The settings page saves through the same `write_memory` path and the same 1500-char budget. Memory contents are not in the system prompt: `SessionMemoryMiddleware` (`agent/memory.py`) prepends them to the current turn's user message in the request only (not written back to the thread / DB), and the system prompt keeps only the static `MEMORY_GUIDELINES` — with memory at the end of the system prompt, every rewrite cost the next turn its prefix cache (first call 8–9% hit vs 77–97%). Each chat turn logs `🧮 前缀缓存 | 首次调用缓存命中 …` (`services/streaming/processor.py:describe_cache_usage`; DeepSeek's `prompt_cache_hit_tokens` is mapped in `agent/model.py`)
+- **Framework prompt sections are replaced** — the memory and skills sections use project templates (`agent/memory.py:SESSION_MEMORY_PROMPT` / `MEMORY_GUIDELINES`, `agent/skills_middleware.py`), because deepagents' defaults tell the model to `edit_file` its memory and to create skills in the read-only `/skills/builtin/`; the `execute` / `delete` descriptions are overridden through `HarnessProfile` (`agent/hitl.py`). Re-check them when upgrading deepagents

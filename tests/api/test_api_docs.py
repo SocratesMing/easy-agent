@@ -1,3 +1,5 @@
+"""API 文档页测试：/docs 用 ReDoc 渲染，页面里不再有 Swagger UI。"""
+
 from starlette.requests import Request
 
 from easy_agent.app import app

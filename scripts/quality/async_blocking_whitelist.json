@@ -1,0 +1,29 @@
+{
+  "_comment": "async def 里同步数据库调用的基线：allowed 是 文件 → 「异步函数() -> 被调用项」→ 次数，reasons 是每个文件留在事件循环上的原因。只减不增；能挪进线程（def 路由 / to_thread / run_blocking）的不要加。",
+  "allowed": {
+    "easy_agent/app.py": {
+      "lifespan() -> _init_database_and_state": 1,
+      "lifespan() -> _start_scheduler": 1
+    },
+    "easy_agent/knowledges/scripts/migrate_knowledge_to_shared.py": {
+      "_migrate_document() -> repository.get_original_object": 1,
+      "_migrate_document() -> repository.update_document": 1,
+      "run() -> _load_base_documents": 1,
+      "run() -> _load_unmigrated_bases": 1,
+      "run() -> init_database": 1,
+      "run() -> repository.update_base": 1
+    },
+    "easy_agent/knowledges/scripts/sync_source_docs.py": {
+      "_run() -> init_database": 1
+    },
+    "easy_agent/middleware/rate_limit.py": {
+      "_allow() -> self.counter.allow": 1
+    }
+  },
+  "reasons": {
+    "easy_agent/app.py": "lifespan 启动阶段，还没有接流量",
+    "easy_agent/knowledges/scripts/migrate_knowledge_to_shared.py": "命令行脚本（asyncio.run），没有并发请求",
+    "easy_agent/knowledges/scripts/sync_source_docs.py": "命令行脚本（asyncio.run），没有并发请求",
+    "easy_agent/middleware/rate_limit.py": "这一行只走进程内计数器（is_shared=False，只改内存）；共享计数器已经 run_blocking"
+  }
+}

@@ -1,9 +1,13 @@
+"""StreamProcessor 测试：把 DeepAgents astream 输出转成 SSE 事件，包括工具调用与结果配对、
+思考块按 step 切分与去重、正文块顺序、token 用量统计和流式工具参数。
+"""
+
 import sys
 import time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from easy_agent.services.stream_processor import StreamProcessor
+from easy_agent.services.streaming.processor import StreamProcessor
 
 
 def test_handle_unknown_mode_returns_empty():
@@ -89,7 +93,6 @@ from langchain_core.messages import AIMessageChunk
 def test_messages_reasoning_emits_thinking_events():
     p = StreamProcessor(sid="s1")
     c1 = AIMessageChunk(content="", additional_kwargs={"reasoning_content": "hello "})
-    c2 = AIMessageChunk(content="", additional_kwargs={"reasoning_content": "world"})
     e1 = p.handle("messages", (c1, {}))
     assert any(e["type"] == "thinking_start" for e in e1)
     assert any(e["type"] == "thinking" and e["content"] == "hello " for e in e1)
@@ -175,6 +178,31 @@ def test_step_increments_each_turn():
     assert p.current_step == 2
 
 
+def test_token_usage_emitted_once_per_step_even_within_throttle_window():
+    """每个 step 边界都必须下发一帧 token_usage。
+
+    曾经的 0.3s 节流对 step 边界也生效：连续 step 间隔小于节流窗口时，中间 step 的
+    token_usage 会被整体丢掉，前端「会话信息」只在 done 时跳一次值。
+    """
+    p = StreamProcessor(sid="s1")
+    frames = []
+    for i in range(3):
+        events = p.handle("updates", {"model": {"messages": [AIMessage(
+            content="",
+            tool_calls=[{"name": "ls", "args": {}, "id": f"tc{i}"}],
+            usage_metadata={
+                "input_tokens": (i + 1) * 100,
+                "output_tokens": 10,
+                "total_tokens": (i + 1) * 100 + 10,
+            },
+        )]}})
+        frames += [e for e in events if e["type"] == "token_usage"]
+        p.handle("updates", {"tools": {"messages": [
+            ToolMessage(content="ok", tool_call_id=f"tc{i}", name="ls")]}})
+    assert [f["step_count"] for f in frames] == [1, 2, 3]
+    assert [f["input_tokens"] for f in frames] == [100, 200, 300]
+
+
 def test_token_usage_enriched_fields():
     p = StreamProcessor(sid="s1", context_length=200000,
                         auto_compress_tokens=170000,
@@ -240,6 +268,15 @@ def test_tool_result_error_detection():
         ToolMessage(content="Error: File not found", tool_call_id="tc1", name="ls")]}})[0]
     assert tr["success"] is False
     assert p.blocks[0]["success"] is False
+
+
+def test_tool_result_chinese_error_detection():
+    """自定义工具（web_search 等）以「错误：」开头的返回值也应标记为失败。"""
+    p = StreamProcessor(sid="s1")
+    p.handle("updates", {"model": {"messages": [_ai_with_tool_call()]}})
+    tr = p.handle("updates", {"tools": {"messages": [
+        ToolMessage(content="错误：联网搜索超时，请稍后重试。", tool_call_id="tc1", name="web_search")]}})[0]
+    assert tr["success"] is False
 
 
 def test_tool_result_ok_success_true():
@@ -389,20 +426,32 @@ def test_thinking_reopen_no_flicker_keeps_duration():
     assert blk["content"] == "ab"
 
 
-def test_thinking_event_carries_full_content_and_delta():
-    """The `thinking` SSE event carries both the delta (`content`) and the FULL
-    per-step content (`full_content`). The frontend SETs `full_content` (idempotent
-    against re-emitted/aggregate chunks) while an old frontend can still append the
-    `content` delta -- so neither cache state duplicates the thinking."""
+def test_thinking_event_carries_delta_and_throttled_snapshot():
+    """thinking 事件每包都发增量 delta；full_content 全量快照只在首包/周期/大增量
+    时发送（避免 O(n²) SSE）。前端在无 full_content 时 append delta。"""
     p = StreamProcessor(sid="s1")
+    first_events = p.handle("messages", (AIMessageChunk(content="", additional_kwargs={"reasoning_content": "hello "}), {}))
+    first_thinking = [e for e in first_events if e["type"] == "thinking"][-1]
+    # 首个 chunk 必须带全量快照，供前端 SET 语义初始化
+    assert first_thinking["full_content"] == "hello "
+
+    ev = p.handle("messages", (AIMessageChunk(content="", additional_kwargs={"reasoning_content": "world"}), {}))
+    last = [e for e in ev if e["type"] == "thinking"][-1]
+    # 同一 step、1.5s 内且增量 < 8192 字符：不再重复 full_content
+    assert last["content"] == "world"
+    assert "full_content" not in last
+    # blocks 内容仍然完整
+    block = next(b for b in p.blocks if b["type"] == "thinking")
+    assert block["content"] == "hello world"
+
+
+def test_thinking_snapshot_forced_by_interval():
+    """把快照间隔设为 0 时，每个增量包都应携带全量 full_content。"""
+    p = StreamProcessor(sid="s1")
+    p.THINKING_SNAPSHOT_INTERVAL = 0.0
     p.handle("messages", (AIMessageChunk(content="", additional_kwargs={"reasoning_content": "hello "}), {}))
     ev = p.handle("messages", (AIMessageChunk(content="", additional_kwargs={"reasoning_content": "world"}), {}))
-    thinking_events = [e for e in ev if e["type"] == "thinking"]
-    assert thinking_events, "should emit a thinking event"
-    last = thinking_events[-1]
-    # delta of the second chunk
-    assert last["content"] == "world"
-    # full per-step content after the second delta
+    last = [e for e in ev if e["type"] == "thinking"][-1]
     assert last["full_content"] == "hello world"
 
 
@@ -491,7 +540,7 @@ def test_usage_reasoning_defaults_to_zero_when_absent():
 
 def test_build_assistant_message_dict_carries_reasoning_tokens():
     """持久化的消息 usage 必须带上 reasoning_tokens，供历史会话回放展示。"""
-    from easy_agent.services.streaming import build_assistant_message_dict
+    from easy_agent.services.streaming.messages import build_assistant_message_dict
 
     msg = build_assistant_message_dict(
         content="c", thinking="t", thinking_duration=1.0,
@@ -539,3 +588,178 @@ def test_token_usage_reports_last_call_not_accumulated():
     done = p.finalize(session_id="s", elapsed_time=0.1)[0]
     assert done["usage"]["input_tokens"] == 150
     assert done["usage"]["output_tokens"] == 30
+
+
+def test_tool_call_chunks_stream_args_for_write_file():
+    """write_file 的 arguments 分片（tool_call_chunks）应下发 tool_call_delta，
+    让前端在模型生成文件内容的过程中实时渲染 diff。"""
+    p = StreamProcessor(sid="s1")
+    def feed(frag):
+        # 绕开 40ms 节流，逐片验证
+        p._arg_stream.get(0, {})
+        return p.handle("messages", (AIMessageChunk(content="", tool_call_chunks=[frag]), {}))
+
+    e1 = feed({"name": "write_file", "args": '{"file_path": "demo.md", "content": "# T', "id": "tc1", "index": 0})
+    p._arg_stream[0]["last_emit"] = 0.0
+    e2 = feed({"name": None, "args": 'itle\\nline1\\n', "id": None, "index": 0})
+    p._arg_stream[0]["last_emit"] = 0.0
+    e3 = feed({"name": None, "args": 'line2\\n"}', "id": None, "index": 0})
+
+    deltas = [e for e in e1 + e2 + e3 if e["type"] == "tool_call_delta"]
+    assert len(deltas) == 3
+    assert deltas[0]["tool_name"] == "write_file"
+    assert deltas[0]["tool_call_id"] == "tc1"
+    assert deltas[0]["arguments"] == {"file_path": "demo.md", "content": "# T"}
+    # 最后一片能得到完整 content（parse_partial_json 允许截断解析）
+    assert deltas[-1]["arguments"]["content"] == "# Title\nline1\nline2\n"
+    # 完整 AIMessage 到达后清空累积状态
+    p.handle("updates", {"model": {"messages": [AIMessage(
+        content="",
+        tool_calls=[{"name": "write_file", "args": {"file_path": "demo.md", "content": "# Title\nline1\nline2\n"}, "id": "tc1"}],
+    )]}})
+    assert p._arg_stream == {}
+
+
+def test_tool_call_chunks_ignored_for_small_arg_tools():
+    """非大参数工具（如 ls）不下发参数流式事件，避免无意义的前端重渲染。"""
+    p = StreamProcessor(sid="s1")
+    events = p.handle("messages", (AIMessageChunk(content="", tool_call_chunks=[
+        {"name": "ls", "args": '{"path": "/workspace/"}', "id": "tc1", "index": 0}
+    ]), {}))
+    assert not any(e["type"] == "tool_call_delta" for e in events)
+
+
+def test_parse_partial_args_tolerates_truncated_json():
+    assert StreamProcessor._parse_partial_args('{"a": 1, "b": "x') == {"a": 1, "b": "x"}
+    assert StreamProcessor._parse_partial_args("not json") is None
+    assert StreamProcessor._parse_partial_args("[1, 2]") is None
+
+
+# ── 诊断采集（P1：把「静默截断」变成可观测，见 orchestrator._log_stream_diagnostics）──
+
+def test_diagnostics_collect_finish_reason_and_valid_tool_calls():
+    p = StreamProcessor(sid="s1")
+    p.handle("updates", {"model": {"messages": [AIMessage(
+        content="",
+        response_metadata={"finish_reason": "tool_calls"},
+        tool_calls=[{"name": "ls", "args": {"path": "/"}, "id": "tc1"}],
+    )]}})
+    assert p.last_finish_reason == "tool_calls"
+    assert p.tool_call_count == 1
+    assert p.last_turn_tool_call_count == 1
+    assert p.invalid_tool_call_count == 0
+    assert p.invalid_tool_call_sample == ""
+
+
+def test_diagnostics_record_unclosed_tool_call_arguments():
+    """参数未闭合：LangChain 归入 invalid_tool_calls —— 没有 tool_call 事件也没有异常，
+    用户看到的就是「正文写了一半、工具没执行」。这条用例锁住这个形状可被观测到。"""
+    p = StreamProcessor(sid="s1")
+    events = p.handle("updates", {"model": {"messages": [AIMessage(
+        content="好的，我来创建。",
+        response_metadata={"finish_reason": "stop"},
+        invalid_tool_calls=[{
+            "name": "save_expert",
+            "args": '{"expert_name": "贵金属',
+            "id": "tc9",
+            "error": "Function arguments JSON is invalid",
+            "type": "invalid_tool_call",
+        }],
+    )]}})
+    assert not [e for e in events if e["type"] == "tool_call"]
+    assert p.invalid_tool_call_count == 1
+    assert p.last_turn_invalid_tool_call_count == 1
+    assert p.last_turn_tool_call_count == 0
+    assert "save_expert" in p.invalid_tool_call_sample
+    assert "Function arguments JSON is invalid" in p.invalid_tool_call_sample
+    assert len(p.invalid_tool_call_sample) <= 200
+
+
+def test_diagnostics_pending_arg_stream_cleared_by_full_message():
+    """参数分片残留 = 模型停在中途的直接证据；完整 AIMessage 到达后应清空。"""
+    p = StreamProcessor(sid="s1")
+    raw = '{"file_path": "demo.md", "content": "# T'
+    p.handle("messages", (AIMessageChunk(content="", tool_call_chunks=[
+        {"name": "write_file", "args": raw, "id": "tc1", "index": 0}
+    ]), {}))
+    assert p.pending_arg_stream_names() == [f"write_file:{len(raw)}字符"]
+    p.handle("updates", {"model": {"messages": [AIMessage(
+        content="",
+        tool_calls=[{"name": "write_file", "args": {"file_path": "demo.md", "content": "# T"}, "id": "tc1"}],
+    )]}})
+    assert p.pending_arg_stream_names() == []
+
+
+def test_diagnostics_track_tool_args_length():
+    """最后一轮工具参数的序列化长度要能被统计（判断 token 花在哪里的关键口径）。"""
+    p = StreamProcessor(sid="s1")
+    p.handle("updates", {"model": {"messages": [AIMessage(
+        content="",
+        response_metadata={"finish_reason": "tool_calls"},
+        tool_calls=[{"name": "save_expert", "args": {"expert_name": "贵金属"}, "id": "tc1"}],
+    )]}})
+    assert p.last_turn_tool_args_len == len('{"expert_name": "贵金属"}')
+
+
+class _DiagProc:
+    """_log_stream_diagnostics 的最小替身：只提供它读的字段。"""
+
+    def __init__(self, *, out=0, rea=0, thinking="", response="", args_len=0,
+                 valid=0, invalid=0, finish_reason=None):
+        self.last_usage = {"input_tokens": 1, "output_tokens": out, "reasoning_tokens": rea}
+        self.accumulated_thinking = thinking
+        self.accumulated_response = response
+        self.last_turn_tool_args_len = args_len
+        self.tool_call_count = valid
+        self.last_turn_tool_call_count = valid
+        self.invalid_tool_call_count = invalid
+        self.last_finish_reason = finish_reason
+        self.invalid_tool_call_sample = ""
+
+
+def _diag_logs(caplog, proc):
+    from easy_agent.services.streaming.orchestrator import _log_stream_diagnostics
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        _log_stream_diagnostics("s1", proc)
+    return [r.getMessage() for r in caplog.records]
+
+
+def test_diagnostics_no_warning_when_tokens_match_content(caplog):
+    # 中文 1 字 ≈ 1.2 token：500 字正文 ≈ 600 token，远低于 2.5 倍阈值
+    logs = _diag_logs(caplog, _DiagProc(
+        out=600, response="字" * 500, finish_reason="stop"))
+    assert any("🧰 工具调用" in m and "finish_reason=stop" in m for m in logs)
+    assert not [m for m in logs if "⚠️" in m]
+
+
+def test_diagnostics_warns_on_truncated_body(caplog):
+    # 模型被截断：out 里只有 40 字正文，其余 token 不知去向
+    logs = _diag_logs(caplog, _DiagProc(out=1700, rea=240, response="字" * 40))
+    assert any("输出与内容不匹配" in m for m in logs)
+
+
+def test_diagnostics_warns_on_truncated_tool_args(caplog):
+    """参数被容错成「合法但极短」的 tool_call（LangChain 的 parse_partial_json 行为）：
+    不进 invalid 列表，只能靠 token 与参数长度的偏离发现。"""
+    logs = _diag_logs(caplog, _DiagProc(
+        out=1700, rea=240, response="好的，我来创建。", args_len=30, valid=1,
+        finish_reason="tool_calls"))
+    assert any("输出与内容不匹配" in m for m in logs)
+
+
+def test_diagnostics_warns_on_length_finish_reason(caplog):
+    logs = _diag_logs(caplog, _DiagProc(
+        out=900, response="字" * 700, finish_reason="length"))
+    assert any("长度上限截断" in m for m in logs)
+
+
+def test_diagnostics_tolerates_proc_without_diag_fields(caplog):
+    """处理器替身（旧测试里的 FakeProc）没有诊断字段时不得抛错。"""
+    class _Bare:
+        last_usage = {"output_tokens": 5, "reasoning_tokens": 0}
+        accumulated_thinking = ""
+        accumulated_response = "你好"
+
+    logs = _diag_logs(caplog, _Bare())
+    assert any("finish_reason=未返回" in m for m in logs)

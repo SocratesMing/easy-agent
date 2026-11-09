@@ -9,10 +9,10 @@
 """
 
 import pytest
-from fastapi import HTTPException
 
 from easy_agent.models.db import SessionModel
-from easy_agent.utils.session import get_owned_session, session_owned_by
+from easy_agent.models.exceptions import NotFoundError
+from easy_agent.db.session_ownership import get_owned_session
 
 
 def _make_session(session_id: str, username: str) -> SessionModel:
@@ -47,22 +47,16 @@ def test_get_owned_session_returns_when_owner(two_user_sessions):
 
 
 def test_get_owned_session_denies_cross_user(two_user_sessions):
-    """userB 访问 userA 的会话 -> 404（不泄露会话是否存在）。"""
-    with pytest.raises(HTTPException) as exc:
+    """userB 访问 userA 的会话 -> NotFoundError（HTTP 层 404，不泄露会话是否存在）。"""
+    with pytest.raises(NotFoundError) as exc:
         get_owned_session(two_user_sessions, "sess-A", "userB")
-    assert exc.value.status_code == 404
+    assert exc.value.message == "会话不存在"
 
 
 def test_get_owned_session_404_for_missing(two_user_sessions):
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(NotFoundError) as exc:
         get_owned_session(two_user_sessions, "nonexistent", "userA")
-    assert exc.value.status_code == 404
-
-
-def test_session_owned_by_returns_none_cross_user(two_user_sessions):
-    assert session_owned_by(two_user_sessions, "sess-A", "userB") is None
-    assert session_owned_by(two_user_sessions, "sess-A", "userA") is not None
-    assert session_owned_by(two_user_sessions, "nope", "userA") is None
+    assert exc.value.message == "会话不存在"
 
 
 # ---------------------------------------------------------------------------
@@ -70,65 +64,65 @@ def test_session_owned_by_returns_none_cross_user(two_user_sessions):
 # ---------------------------------------------------------------------------
 
 
-async def test_get_session_denies_cross_user(two_user_sessions):
+def test_get_session_denies_cross_user(two_user_sessions):
     from easy_agent.api.sessions import get_session
 
     # userA reads own session -> OK
-    detail = await get_session("sess-A", db=two_user_sessions, username="userA")
+    detail = get_session("sess-A", db=two_user_sessions, username="userA")
     assert detail.session_id == "sess-A"
 
     # userB reads userA's session -> 404
-    with pytest.raises(HTTPException) as exc:
-        await get_session("sess-A", db=two_user_sessions, username="userB")
-    assert exc.value.status_code == 404
+    with pytest.raises(NotFoundError) as exc:
+        get_session("sess-A", db=two_user_sessions, username="userB")
+    assert exc.value.message == "会话不存在"
 
 
-async def test_get_chat_history_denies_cross_user(two_user_sessions):
+def test_get_chat_history_denies_cross_user(two_user_sessions):
     from easy_agent.api.sessions import get_chat_history
 
-    with pytest.raises(HTTPException) as exc:
-        await get_chat_history("sess-A", db=two_user_sessions, username="userB")
-    assert exc.value.status_code == 404
+    with pytest.raises(NotFoundError) as exc:
+        get_chat_history("sess-A", db=two_user_sessions, username="userB")
+    assert exc.value.message == "会话不存在"
 
 
-async def test_update_title_denies_cross_user(two_user_sessions):
+def test_update_title_denies_cross_user(two_user_sessions):
     from easy_agent.api.sessions import update_title
     from easy_agent.models.api import UpdateTitleRequest
 
     req = UpdateTitleRequest(title="hacked")
-    with pytest.raises(HTTPException) as exc:
-        await update_title("sess-A", req, db=two_user_sessions, username="userB")
-    assert exc.value.status_code == 404
+    with pytest.raises(NotFoundError) as exc:
+        update_title("sess-A", req, db=two_user_sessions, username="userB")
+    assert exc.value.message == "会话不存在"
     # 标题未被篡改
     assert two_user_sessions.get_session("sess-A").title == "title-sess-A"
 
 
-async def test_toggle_pin_denies_cross_user(two_user_sessions):
+def test_toggle_pin_denies_cross_user(two_user_sessions):
     from easy_agent.api.sessions import toggle_pin
 
-    with pytest.raises(HTTPException) as exc:
-        await toggle_pin("sess-A", db=two_user_sessions, username="userB")
-    assert exc.value.status_code == 404
+    with pytest.raises(NotFoundError) as exc:
+        toggle_pin("sess-A", db=two_user_sessions, username="userB")
+    assert exc.value.message == "会话不存在"
 
 
 async def test_delete_session_denies_cross_user(two_user_sessions):
     from easy_agent.api.sessions import delete_session
 
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(NotFoundError) as exc:
         await delete_session("sess-A", db=two_user_sessions, username="userB")
-    assert exc.value.status_code == 404
+    assert exc.value.message == "会话不存在"
     # 会话仍然存在
     assert two_user_sessions.get_session("sess-A") is not None
 
 
-async def test_add_message_denies_cross_user(two_user_sessions):
+def test_add_message_denies_cross_user(two_user_sessions):
     from easy_agent.api.sessions import add_message
     from easy_agent.models.api import AddMessageRequest
 
     req = AddMessageRequest(role="user", content="injected")
-    with pytest.raises(HTTPException) as exc:
-        await add_message("sess-A", req, db=two_user_sessions, username="userB")
-    assert exc.value.status_code == 404
+    with pytest.raises(NotFoundError) as exc:
+        add_message("sess-A", req, db=two_user_sessions, username="userB")
+    assert exc.value.message == "会话不存在"
 
 
 # ---------------------------------------------------------------------------
@@ -136,34 +130,22 @@ async def test_add_message_denies_cross_user(two_user_sessions):
 # ---------------------------------------------------------------------------
 
 
-async def test_get_session_generated_files_denies_cross_user(two_user_sessions):
+def test_get_session_generated_files_denies_cross_user(two_user_sessions):
     from easy_agent.api.files import get_session_generated_files
 
-    with pytest.raises(HTTPException) as exc:
-        await get_session_generated_files(
+    with pytest.raises(NotFoundError) as exc:
+        get_session_generated_files(
             "sess-A", db=two_user_sessions, username="userB"
         )
-    assert exc.value.status_code == 404
+    assert exc.value.message == "会话不存在"
 
 
-async def test_list_files_denies_cross_user(two_user_sessions):
-    from easy_agent.api.files import list_files
-
-    with pytest.raises(HTTPException) as exc:
-        await list_files(
-            db=two_user_sessions, username="userB", session_id="sess-A"
-        )
-    assert exc.value.status_code == 404
-
-
-async def test_get_workspace_tree_denies_cross_user(two_user_sessions, monkeypatch):
-    from easy_agent.api import files as files_mod
+def test_get_workspace_tree_denies_cross_user(two_user_sessions, monkeypatch):
     from easy_agent.api.files import get_workspace_tree
-    from easy_agent.config import Config
+    from easy_agent.bootstrap.config import Config
 
-    tmp_base = two_user_sessions  # just for naming
     # 重定向工作区目录到临时目录，避免触碰真实文件系统
-    import tempfile, os
+    import tempfile
     from pathlib import Path
 
     tmp = Path(tempfile.mkdtemp())
@@ -172,8 +154,8 @@ async def test_get_workspace_tree_denies_cross_user(two_user_sessions, monkeypat
         staticmethod(lambda u: tmp / "users" / u),
     )
 
-    with pytest.raises(HTTPException) as exc:
-        await get_workspace_tree(
+    with pytest.raises(NotFoundError) as exc:
+        get_workspace_tree(
             username="userB", session_id="sess-A", db=two_user_sessions
         )
-    assert exc.value.status_code == 404
+    assert exc.value.message == "会话不存在"

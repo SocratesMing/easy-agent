@@ -1,103 +1,117 @@
-# Easy Agent Configuration（唯一配置文件）
-#
-# 环境差异（路径 / 窗口 / 阈值 / 模型名等）不在本文件分环境拆分，
-# 统一用 ${VAR:-默认值} 占位符从环境变量注入，按 AGENT_ENV 加载对应 .env：
-#   AGENT_ENV=dev  → 项目根 .env.dev  （不存在则回退 .env）
-#   AGENT_ENV=test → 项目根 .env.test （不存在则回退 .env）
-#   AGENT_ENV=prod → 项目根 .env.prod （不存在则回退 .env）
-#
-# 占位符的默认值即「开发环境」取值，不提供任何 .env 时也能直接启动。
-# 敏感值（api_key / password）只写进 .env，不要写进本文件。
-# 应急指定其它配置文件：EASY_CONFIG=/path/to/xxx.yaml
-#
-# 可用变量清单见 .env.dev.example / .env.test.example / .env.prod.example。
+# Easy Agent 配置模板：复制为 config.yaml。
+# 环境差异用 ${VAR:-默认值} 占位符从 .env.{AGENT_ENV}（dev/test/prod，缺省回退 .env）注入，默认值即开发环境取值。
+# 敏感值（api_key / password）只写 .env。备用配置：EASY_CONFIG=/path/to/xxx.yaml。
+# 校验：python scripts/quality/check_config_schema.py --check
 
-# ===== LLM Configuration =====
-# Select which model to use: deepseek | ark
-model: "${ACTIVE_MODEL:-deepseek}"
+# ===== LLM =====
+model: "${ACTIVE_MODEL:-deepseek}"   # 当前模型：deepseek
 
-# Provider-specific configurations
 models:
   deepseek:
     provider: "deepseek"
-    protocol: "openai"  # anthropic or openai
-    model: "${DEEPSEEK_MODEL:-deepseek-flash}"
+    protocol: "openai"                # 目前只支持 openai（OpenAI 兼容接口）
+    model: "${DEEPSEEK_MODEL:-deepseek-v4-pro-0813}"
     api_key: "${DEEPSEEK_API_KEY}"
-    api_base: "https://api.deepseek.com"
-    context_length: ${DEEPSEEK_CONTEXT_LENGTH:-1000000}
-  
-  ark:
-    provider: "ark"
-    protocol: "openai"  # anthropic or openai
-    model: "${ARK_MODEL:-ark-code-latest}"
-    api_key: "${ARK_API_KEY}"
-    api_base: "https://ark.cn-beijing.volces.com/api/coding/v3"
-    context_length: ${ARK_CONTEXT_LENGTH:-200000}
+    api_base: "${DEEPSEEK_API_BASE:-https://llm-tyyt06c5mq54ngq7.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}"
+    context_length: ${DEEPSEEK_CONTEXT_LENGTH:-131072}
+    headers: {}                       # 可选透传请求头，值支持 {session_id} 占位符
 
-# ===== Retry Configuration =====
+# ===== 重试 =====
 retry:
-  enabled: true           # Enable retry mechanism
-  max_retries: 3          # Maximum number of retries
+  enabled: true           # 是否启用重试
+  max_retries: 3          # 最大重试次数
 
-# ===== Agent Configuration =====
-max_steps: ${MAX_STEPS:-100}  # Maximum execution steps
-workspace_dir: "${WORKSPACE_DIR:-/qts/workspace}"  # Working directory (project-relative). 实际路径会按用户/会话隔离：{workspace_dir}/{username}/{session_dir}
-memories_dir: "${MEMORIES_DIR:-/qts/memories}"    # Long-term memory directory (project-relative). 实际路径：{memories_dir}/{username}/AGENTS.md
-sessions_dir: "${SESSIONS_DIR:-/qts/sessions}"     # 会话数据存储目录（项目相对路径）。实际路径：{sessions_dir}/{username}/{session_id}.json
-prompt_path: "prompts"  # 提示词目录（相对配置目录）：system.md + fragments/ + memory_*.md
-idle_logout_minutes: ${IDLE_LOGOUT_MINUTES:-0}   # 前端空闲自动登出（分钟）：用户超过该时长无界面操作或后端交互则退出到登录页；0 表示永不过期（默认，后台不启用登录超时机制）
-app_welcome_title: "Easy Agent，让工作更简单"  # 首页欢迎语
-sandbox_enabled: ${SANDBOX_ENABLED:-true}    # Linux 使用 bwrap/Landlock；Windows 无等效沙箱时拒绝 execute。仅在可信单用户环境设为 false
+# ===== 流式响应（SSE）=====
+streaming:
+  # 空闲心跳间隔（秒）：流上超过该时长没有事件时补一帧 SSE 注释行（: keep-alive），
+  # 防止反向代理（nginx 默认 proxy_read_timeout 60s）按「上游静默」掐断连接
+  # （表现为浏览器 ERR_INCOMPLETE_CHUNKED_ENCODING 200 / 前端 network error）。
+  # 须小于反向代理读超时；<= 0 关闭心跳。心跳不是事件，不落库、前端自动忽略。
+  sse_heartbeat_seconds: ${EASY_SSE_HEARTBEAT_SECONDS:-15}
 
-# 外部目录映射：虚拟路径前缀 → 宿主机实际路径
-# 将 skill 需要访问的宿主机目录挂载为虚拟路径路由，使文件工具能通过虚拟路径访问
+# ===== Agent =====
+max_steps: ${MAX_STEPS:-100}                      # 单轮最大执行步数
+tool_progress_enabled: ${TOOL_PROGRESS_ENABLED:-true}  # 工具空结果终止提示 + 原地打转提醒（只改结果文本，不改工具行为）
+tool_progress_empty_limit: ${TOOL_PROGRESS_EMPTY_LIMIT:-3}      # MCP 同一目标连续空结果到几次要求停止（仅在从未取到过数据时生效）
+tool_progress_converge_limit: ${TOOL_PROGRESS_CONVERGE_LIMIT:-8}  # MCP 同工具连续「无进展」到几次提示收敛（分页取数不计入）
+tool_progress_stop_limit: ${TOOL_PROGRESS_STOP_LIMIT:-12}        # MCP 同工具连续「无进展」到几次要求停机并输出数据质量报告
+tool_progress_empty_hard_limit: ${TOOL_PROGRESS_EMPTY_HARD_LIMIT:-9}  # MCP 同工具连续空结果到几次无条件止损（兜「先查到 A 又反复查 B」的场景）
+workspace_dir: "${WORKSPACE_DIR:-/qts/workspace}" # 工作区根目录，实际按用户/会话隔离
+memories_dir: "${MEMORIES_DIR:-/qts/memories}"    # 长期记忆根目录，实际 {memories_dir}/{username}/AGENTS.md
+memory_model: ""                                  # 整理记忆用的模型（models 里的键），留空 = 用会话的对话模型；建议配一个便宜、快的
+sessions_dir: "${SESSIONS_DIR:-/qts/sessions}"    # 会话数据目录，实际 {sessions_dir}/{username}/{session_id}.json
+prompt_path: "prompts"                            # 提示词目录（相对配置目录）
+idle_logout_minutes: ${IDLE_LOGOUT_MINUTES:-0}    # 前端空闲登出分钟数，0 = 不登出
+app_welcome_title: "今天，你要研究什么"            # 首页欢迎语
+sandbox_enabled: ${SANDBOX_ENABLED:-true}         # 启用 bwrap/Landlock 沙箱；无沙箱平台拒绝 execute
+sandbox_network: ${SANDBOX_NETWORK:-host}         # 沙箱网络：host = 可联网 / none = 断网（Landlock 模式降级为告警）
+execute_max_timeout: ${EXECUTE_MAX_TIMEOUT:-600}  # execute 可指定的最长超时（秒）
+session_thread: ${SESSION_THREAD:-true}           # 一会话一 thread（需 checkpointer）；false = 每条消息重建历史（兼容模式）
+
+# 外部目录映射：虚拟路径 → 宿主机路径（供技能访问）
 external_dirs:
   "/strategy-workspace": "${STRATEGY_WORKSPACE:-/qts/workspace}"
 
-# ===== Summarization Configuration =====
-# Auto-compress conversation context when token usage exceeds threshold
+# ===== 上下文压缩 =====
 summarization:
-  enabled: true                    # Enable context compression
-  compression_threshold: 0.8       # Trigger compression at 80% of context window
-  compression_target: 0.1          # Keep 10% of context window after compression
+  enabled: true                    # false = 关闭压缩与参数截断（阈值抬到不可达）
+  compression_threshold: 0.8       # 上下文用量达到该比例时压缩
+  compression_target: 0.1          # 压缩后保留的上下文比例
 
-# ===== Tools Configuration =====
+# ===== 工具 =====
 tools:
-  result_log_truncate: 200  # 工具结果在日志中的截断字符数（默认 200）
-  skills_dir: "${SKILLS_DIR:-./skills}"   # Skills directory path
-  prompts_dir: "${PROMPTS_DIR:-/qts/prompts}" # Prompts directory path (for forex, etc.)
-  read_file_line_limit: 2000  # read_file 内置工具每次读取的行数（默认 2000）
+  result_log_truncate: 200                        # 工具结果在日志中的截断字符数
+  skills_dir: "${SKILLS_DIR:-./skills}"           # 公共技能目录
+  prompts_dir: "${PROMPTS_DIR:-/qts/prompts}"     # 提示词目录（外汇等技能使用）
+  experts_dir: "${EXPERTS_DIR:-./experts}"        # 预置专家目录（只读扫描）
 
-# ===== Preset Questions =====
-# Quick action questions shown on the welcome screen
+# ===== 联网搜索 =====
+web_search:
+  enabled: ${WEB_SEARCH_ENABLED:-true}                        # 是否启用；api_key 为空时前端置灰
+  provider: "${WEB_SEARCH_PROVIDER:-tavily}"                  # tavily | internal
+  api_url: "${WEB_SEARCH_API_URL:-}"                          # 留空用 provider 默认地址
+  api_key: "${WEB_SEARCH_API_KEY}"                            # tavily 在 app.tavily.com 申请（tvly- 开头）
+  search_depth: "${WEB_SEARCH_SEARCH_DEPTH:-basic}"           # 仅 tavily：basic | advanced | fast | ultra-fast
+  topic: "${WEB_SEARCH_TOPIC:-general}"                       # 仅 tavily：general | news | finance
+  timeout_seconds: ${WEB_SEARCH_TIMEOUT:-30}                  # 请求超时（秒）
+  default_time_range: "${WEB_SEARCH_TIME_RANGE:-NoLimit}"     # NoLimit | OneDay | OneWeek | OneMonth | OneYear | YYYY-MM-DD..YYYY-MM-DD
+  max_results: ${WEB_SEARCH_MAX_RESULTS:-10}                  # 每次返回条数（tavily 上限 20）
+  main_text_max_chars: ${WEB_SEARCH_MAIN_TEXT_CHARS:-500}     # 单条结果摘要字符上限
+
+# ===== 首页预置问题（每条一张卡片，最多 6 张）=====
 preset_questions:
-  - category: "文档处理"
+  - category: "宏观与资产研判"
+    icon: "❄️"
+    questions:
+      - "结合国内外宏观指标判断增长与通胀方向，再落到 10 年期国债给出趋势研判与验证信号。"
+  - category: "大类配置"
+    icon: "📊"
+    questions:
+      - "基于最新 CMA 与当前持仓，在 PVBP、RWA 与分中心久期约束下测算目标持仓与约束。"
+  - category: "组合管理"
     icon: "📄"
     questions:
-      - "帮我创建一份智能体介绍的docx,ppt和pdf文件"
-      - "帮我生成一份金融量化的pptx"
-      - "总结这份PDF的核心要点"
-  - category: "量化策略"
+      - "按信评、行业、期限、流动性与地域穿透信用债投组，标出久期集中区间与低流动性资产占比。"
+  - category: "策略工坊"
+    icon: "💻"
+    questions:
+      - "参考 XBOND 最优报价与经纪商跟随策略，新建一个债券日内做市策略并给出回测与验证方案。"
+  - category: "因子工坊"
     icon: "📈"
     questions:
-      - "帮我生成一个策略如下： 1、交易货币：EUR/USD， 2、周期：采用1小时图作为主信号周期， 3、核心指标包括：集合EMA(20)、MACD指实现入开仓； 4、止盈止损：止盈采用固定40点，止损采用固定100点。 5、持仓时间：无限制 6、回测区间 2021-01-01 至 2021-03-31 不需要回测，生成策略即可"
-      - "解释一下什么是动量策略"
-      - "帮我写一个双均线交叉策略"
-  - category: "信息查询"
-    icon: "🔍"
+      - "围绕资金面、期限利差与机构行为挖掘利率债择时因子，并说明检验标准。"
+  - category: "数据底座"
+    icon: "🗄️"
     questions:
-      - "今天A股哪些板块比较强势？"
-      - "帮我查一下贵州茅台的最新财报"
-      - "解释一下MACD指标的原理"
+      - "调 USDCNH 近一周分钟 bar，算 5 分钟已实现波动率，并说明数据渠道与更新时点。"
 
-# ===== Database Configuration =====
-# Supports SQLite (local) or MySQL (remote)
+# ===== 数据库 =====
 database:
-  type: "${DB_TYPE:-mysql}"
-  
+  type: "${DB_TYPE:-mysql}"                         # sqlite | mysql
+
   sqlite:
-    path: "${SQLITE_PATH:-/qts/data/easy_agent.db}"
-  
+    path: "${SQLITE_PATH:-/qts/data/easy_agent.db}" # SQLite 文件路径
+
   mysql:
     host: "${MYSQL_HOST:-127.0.0.1}"
     port: ${MYSQL_PORT:-3306}
@@ -106,23 +120,146 @@ database:
     database: "${MYSQL_DATABASE:-easy_agent}"
     charset: "utf8mb4"
     pool:
-      pool_size: ${MYSQL_POOL_SIZE:-5}
-      max_overflow: 10
-      pool_timeout: 30
-      pool_recycle: 3600
-    connect_timeout: 10
-    read_timeout: 30
-    write_timeout: 30
+      pool_size: ${MYSQL_POOL_SIZE:-5}    # 常驻连接数
+      max_overflow: 10                    # 超出 pool_size 的临时连接数
+      pool_recycle: 3600                  # 连接复用次数上限（DBUtils maxusage，非秒）
+    connect_timeout: 10                   # 建立连接超时（秒）
+    read_timeout: 30                      # 读超时（秒）
+    write_timeout: 30                     # 写超时（秒）
 
-# ===== Vector Store Configuration (Chroma + Sentence Transformers) =====
-# 禁止智能体读写的虚拟路径目录列表（通过 permissions deny 规则限制）
-# 路径必须是虚拟路径（以 / 开头），且必须是 CompositeBackend 已挂载的 route 前缀。
-# 系统会自动为路径补充 /** glob 通配符递归匹配子目录。
-# 支持两种格式：
-#   - 字符串："/strategy-workspace"                       → 默认禁止 read+write
-#   - 字典：  {path: "/user-skills", operations: ["write"]} → 只禁止指定操作
-# operations 可选值：read、write。user-skills 建议只禁止 write，
-# 允许模型读取 SKILL.md 和 reference 文件以正常使用技能。
-denied_dirs:
-  - path: "/user-skills"
-    operations: ["write"]
+# ===== HITL 审批 checkpoint =====
+checkpoint:
+  # 人工审批断点的 SQLite 文件（官方 AsyncSqliteSaver）。{pod} 启动时换成 pod 名
+  # （EASY_POD_NAME → POD_NAME → HOSTNAME），每个 pod 一个文件；相对路径按项目根解析。
+  # 不配置时默认 /qts/checkpoint/{pod}.db。要放 pod 本地盘，不能放 NAS 等网络盘（SQLite WAL 不能跨主机）。
+  # 本机开发可在 .env.dev 里设 CHECKPOINT_DIR=data/checkpoints。
+  sqlite_path: "${CHECKPOINT_DIR:-/qts/checkpoint}/{pod}.db"
+
+# ===== 人员账号 =====
+personnel:
+  self_registration_enabled: false   # 自助注册：true 时登录页显示注册入口
+  passwordless_login_enabled: false  # 门户免密登录：true 时支持 URL 直登与 /login-passwordless（admin 不支持）
+
+# ===== 分布式锁（多实例部署）=====
+distributed_lock:
+  enabled: ${DISTRIBUTED_LOCK_ENABLED:-false}                  # 多 pod/多 worker 时开启，避免定时任务重复执行
+  key_prefix: "${DISTRIBUTED_LOCK_KEY_PREFIX:-easy_agent}"     # 多套系统共库时用于区分
+  ttl_seconds: ${DISTRIBUTED_LOCK_TTL:-300}                    # 锁存活时间（秒），持有者崩溃后最多等这么久
+  renew_interval_seconds: ${DISTRIBUTED_LOCK_RENEW_INTERVAL:-100}  # 长任务续约间隔（秒），实际取 min(本值, ttl/3)
+  retry_interval_seconds: ${DISTRIBUTED_LOCK_RETRY_INTERVAL:-1}    # 抢锁轮询间隔（秒）
+
+# ===== 文件权限 =====
+skill_write: ${SKILL_WRITE:-new-only}  # 技能库写权限：new-only（只可新建）| deny（全禁写）| allow（不限制）
+interrupt_sensitive_writes: true       # /memories/**、/user-skills/** 的写入是否走人工审批（需 checkpointer）
+denied_dirs: []                        # 禁读写的虚拟路径；字符串 = 读+写，{path, operations} = 仅指定操作
+
+# ===== 人工审批（HITL）=====
+hitl:
+  enabled: true                  # false：对话里也不审批（和定时任务一样），也不提供创建定时任务的工具
+  # 执行这些工具前要人工审批；不写 tools 时就是下面这份默认名单
+  tools:
+    - execute                    # 只拦删除类命令（rm / unlink / shred 等），删目录直接拒绝
+    - delete                     # 删除文件或目录（删目录只走这里，用户批准后执行）
+    - save_expert                # 新建 / 修改专家
+    - create_scheduled_task      # 创建定时任务
+    - access_knowledge_original  # 只拦 action=materialize（把知识库原文取到工作区）
+  # MCP 工具写工具名即可（带不带服务前缀都行）；没列出的 MCP 工具仍按服务端标注 / 名字自动判断
+
+# ===== 专家 =====
+expert:
+  guardrail_enabled: true            # 在专家提示词末尾追加职责边界
+  relevance_check_enabled: true      # 每轮预检相关性，无关消息直接拒答
+  relevance_strict: false            # true = 部分相关也整条拒答；false = 放行只答相关部分
+  relevance_disable_thinking: true   # 预检调用关闭思考模式
+  auto_install_required_skills: true # 用预置专家时自动「添加」其 required_skills 声明的公共技能（不复制技能包）
+  tool_scope_enabled: true           # 专家选定技能包时做硬隔离：只挂这些技能 + 本轮另选的技能；未选=全量可见
+
+# ===== 专家分类标签（tag_id 落库，tag_name 展示）=====
+expert_tags:
+  - { tag_id: macro_research, tag_name: 宏观投研 }
+  - { tag_id: bond_research, tag_name: 债券投研 }
+  - { tag_id: fx_research, tag_name: 外汇投研 }
+  - { tag_id: gold_research, tag_name: 黄金投研 }
+  - { tag_id: alm_calc, tag_name: 资负测算 }
+  - { tag_id: strategy_research, tag_name: 策略研究 }
+  - { tag_id: factor_analysis, tag_name: 因子分析 }
+  - { tag_id: equity_research, tag_name: 权益投研 }
+  - { tag_id: industry_research, tag_name: 行业研究 }
+  - { tag_id: credit_research, tag_name: 信用研究 }
+  - { tag_id: asset_allocation, tag_name: 资产配置 }
+  - { tag_id: risk_management, tag_name: 风险管理 }
+  - { tag_id: business_analysis, tag_name: 经营分析 }
+  - { tag_id: other, tag_name: 其他 }
+
+# ===== 附件上传限额（单个会话单次对话）=====
+upload_limits:
+  enabled: ${UPLOAD_LIMITS_ENABLED:-true}            # false = 不限制
+  max_file_size_mb: ${UPLOAD_MAX_FILE_SIZE_MB:-10}   # 单文件上限
+  max_files_per_message: ${UPLOAD_MAX_FILES:-5}      # 单次数量上限
+  max_total_size_mb: ${UPLOAD_MAX_TOTAL_SIZE_MB:-20} # 单次总大小上限（>100 需同步 nginx client_max_body_size）
+
+# ===== 上传文件解析与记忆（file_context）=====
+file_context:
+  enabled: ${FILE_CONTEXT_ENABLED:-true}                     # false = 回退全量注入
+  parse_max_file_size_mb: ${FILE_PARSE_MAX_MB:-20}           # 超过该大小不解析，仍记清单
+  max_stored_chars: ${FILE_MAX_STORED_CHARS:-200000}         # 单文件落盘文本上限（字符）
+  manifest_max_chars: ${FILE_MANIFEST_MAX_CHARS:-2000}       # 上传清单上限，超出丢最旧条目
+  preview_max_chars: ${FILE_PREVIEW_MAX_CHARS:-2000}         # 本轮预览注入上限（0 = 不注入）
+
+# ===== 知识库 / RAGFlow =====
+knowledge:
+  enabled: ${KNOWLEDGE_ENABLED:-false}                   # 启用前需配置 RAGFLOW_BASE_URL / RAGFLOW_API_KEY
+  base_url: "${RAGFLOW_BASE_URL}"
+  api_key: "${RAGFLOW_API_KEY}"
+  shared_dataset_id: "${RAGFLOW_SHARED_DATASET_ID:-}"    # 留空按 EA_SHARED 名称查找或创建
+  embedding:
+    # 首次使用时会校验共享数据集：空库自动更新模型；有 chunk 且模型不一致时
+    # 自动切换到 EA_SHARED_<模型哈希> 新库（旧库文档需重新上传）。模型 ID 必须
+    # 是 RAGFlow 已注册的完整格式：模型名@实例名@provider名。
+    model: "${RAGFLOW_EMBEDDING_MODEL:-}"
+  # 审计事件记录开关与 details 截断上限
+  audit:
+    enabled: true                                        # 记录知识库审计事件
+    max_details_bytes: 4096                              # 事件 details 截断上限
+  limits:
+    max_file_size_mb: 100
+    max_request_size_mb: 110
+    max_filename_utf8_bytes: 127
+    allowed_extensions:
+      - pdf
+      - doc
+      - docx
+      - txt
+      - md
+      - xls
+      - xlsx
+      - csv
+    max_documents_per_query: 0
+    # 单个知识库可存储的文档总数上限（上传前拦截）。0 = 不限制。
+    max_documents_per_base: 0
+    # 解析绝对超时（秒）：0 = 不限制；计时从真正开始解析算起，不含上游排队
+    parse_timeout_seconds: ${KNOWLEDGE_PARSE_TIMEOUT_SECONDS:-0}
+  # 研报接入：文档 SQL 增量同步（enabled=true 即启用；mysql 连接/表名按需填写）
+  source_sync:
+    enabled: ${KNOWLEDGE_SOURCE_SYNC_ENABLED:-false}
+    owner_username: "admin"     # 入库归属用户（需已存在，以该用户身份上传并授权）
+    file_root: "${SOURCE_SYNC_FILE_ROOT:-}"  # 源目录（绝对路径，必填）：按文档 SQL 的 batchid 在此目录下匹配同名文件
+    staging_dir: "${SOURCE_SYNC_STAGING_DIR:-}"  # 暂存目录（绝对路径，可选）：先把本批文件拷贝到这里（同名文件直接覆盖），READY 后删除暂存副本；留空=直接读源目录
+    staging_retention_hours: 24  # 暂存残留清理阈值（小时）：每轮同步开始时清理超过该时长的残留文件
+    base_id: ""                # 精确指定入库的知识库 ID（同名库有多个时用它锁定）；留空则按 base_name 查找/新建
+    base_name: "报告库"  # 按这个名字找知识库，找不到才新建（新建固定为团队公共库）；base_id 为空时生效
+    lookback_days: 7           # 按 publishDate 取最近 N 天
+    start_date: ""             # 首次回填起始日期 YYYY-MM-DD
+    start_delay_minutes: 0     # 启动后延迟多少分钟执行第一次同步（0 = 启动即执行）
+    interval_minutes: 60       # 固定间隔触发（按首次执行时刻对齐，不等待上一轮解析完成；超时跳过错过点）；0 = 只执行一次
+    max_inflight: 10           # 同时在途（排队/解析中）文档上限
+    poll_interval_seconds: 15  # 轮询在途文档解析状态的间隔（秒）
+    max_attempts: 3            # 单篇文档上传/解析失败后的最大重试次数
+    mysql:
+      host: "${COL_SQL_HOST:-}"         # 研报 SQL 必填，不复用主库
+      port: ${COL_SQL_PORT:-3306}
+      user: "${COL_SQL_USER:-}"
+      password: "${COL_SQL_PASSWORD:-}"
+      database: "${COL_SQL_DB:-}" # 研报 SQL 必填，不复用主库
+      charset: "${COL_SQL_CHARSET:-utf8mb4}"
+      table: "${COL_SQL_TABLE:-}"       # 研报源表名（必填，源库已存在）

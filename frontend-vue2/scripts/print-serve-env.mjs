@@ -22,14 +22,11 @@ const require = createRequire(import.meta.url)
 
 // serve 面向已构建产物，mode 解析与 build 保持一致（默认 prod）
 const mode = resolveEnvMode('build')
-const envFile = path.join(root, `.env.${mode}`)
 const distIndex = path.join(root, 'dist', 'index.html')
 
 /** 读取 vue.config.js 中 devServer.proxy 的代理目标（后端地址唯一定义在 vue.config.js） */
 function loadProxyTarget() {
   try {
-    // vue.config.js 依赖 VUE_APP_AGENT_ENV 判断环境（由 .env.<mode> 提供），此处对齐
-    if (!process.env.VUE_APP_AGENT_ENV) process.env.VUE_APP_AGENT_ENV = mode
     const config = require(path.join(root, 'vue.config.js'))
     const proxy = config && config.devServer && config.devServer.proxy
     const entry = proxy && proxy['/agent']
@@ -44,7 +41,7 @@ const distReady = fs.existsSync(distIndex)
 
 const title = 'Easy Agent Frontend — 静态托管启动'
 const rows = [
-  `  构建模式        : ${mode}  (${fs.existsSync(envFile) ? path.basename(envFile) : `.env.${mode} 不存在`})`,
+  `  构建模式        : ${mode}`,
   `  接口地址策略    : 相对路径 (/agent/...) —— 必须与后端同源`,
   `  后端地址参考    : ${proxyTarget || '见 vue.config.js 的 PROXY_TARGETS'}`,
   `  构建产物        : ${distReady ? 'dist/index.html 已就绪' : '⚠ 未找到 dist/index.html，请先执行 npm run build'}`,

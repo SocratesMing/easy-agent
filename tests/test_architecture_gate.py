@@ -1,0 +1,656 @@
+"""阶段 0 架构门禁测试：import 图 SCC + 分层方向 + 双写冻结 + 裸 os.getenv 基线。
+
+所有用例都用 ``tmp_path`` 注入坏/好样本，不依赖网络、真实数据库或
+``tests/conftest.py`` 里的 app fixture。
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = REPO_ROOT / "scripts"
+
+
+def _load_script(name: str):
+    path = SCRIPTS / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"arch_gate_{name}", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+import_graph = _load_script("quality/import_graph")
+double_write = _load_script("quality/check_double_write")
+env_usage = _load_script("quality/check_env_usage")
+async_blocking = _load_script("quality/check_async_blocking")
+
+
+def _write(root: Path, relative: str, content: str) -> Path:
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def _make_cycle_package(root: Path) -> None:
+    _write(root, "pkg/__init__.py", "")
+    _write(root, "pkg/a.py", "from . import b\nfrom .sub import helper\n")
+    _write(root, "pkg/b.py", "from pkg.a import thing\n")
+    _write(root, "pkg/sub/__init__.py", "from ..util import thing\n")
+    _write(root, "pkg/util.py", "")
+
+
+def _write_whitelist(path: Path, entries: list[dict]) -> Path:
+    path.write_text(
+        json.dumps({"schema_version": 1, "sccs": entries}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+# --- import graph ------------------------------------------------------------
+
+
+def test_import_graph_resolves_relative_and_absolute_imports(tmp_path):
+    _make_cycle_package(tmp_path)
+    graph = import_graph.build_graph(tmp_path, "pkg")
+    adjacency = graph.adjacency()
+
+    assert set(graph.modules) == {"pkg", "pkg.a", "pkg.b", "pkg.sub", "pkg.util"}
+    assert adjacency["pkg.a"] == {"pkg.b", "pkg.sub"}
+    assert adjacency["pkg.b"] == {"pkg.a"}
+    assert adjacency["pkg.sub"] == {"pkg.util"}
+    assert graph.cycles() == [["pkg.a", "pkg.b"]]
+
+
+def test_literal_import_module_calls_are_edges(tmp_path):
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/a.py",
+        "import importlib\n\n\ndef load():\n    return importlib.import_module('pkg.b')\n",
+    )
+    _write(tmp_path, "pkg/b.py", "from pkg import a\n")
+    _write(
+        tmp_path,
+        "pkg/c.py",
+        "from importlib import import_module\n\n\ndef load(name):\n"
+        "    return import_module(f'pkg.{name}')\n",
+    )
+
+    graph = import_graph.build_graph(tmp_path, "pkg")
+
+    assert "pkg.b" in graph.adjacency()["pkg.a"]
+    # 动态导入藏住的环，门禁现在看得到
+    assert graph.cycles() == [["pkg.a", "pkg.b"]]
+    # 模块名不是字面量的只能告警
+    assert len(graph.warnings) == 1
+    assert graph.warnings[0].startswith("pkg.c:5 ")
+
+
+def test_import_graph_whitelist_comparison(tmp_path):
+    _make_cycle_package(tmp_path)
+    cycles = import_graph.build_graph(tmp_path, "pkg").cycles()
+
+    # 没有环时，空白名单就是通过（SCC=0 的目标态）。
+    assert import_graph.compare_sccs([], [], "pkg") == []
+
+    empty_errors = import_graph.compare_sccs(cycles, [], "pkg")
+    assert any("白名单为空" in error for error in empty_errors)
+    assert any("新增未白名单环" in error for error in empty_errors)
+
+    known = [{"id": "known", "reason": "fixture cycle", "modules": ["pkg.a", "pkg.b"]}]
+    assert import_graph.compare_sccs(cycles, known, "pkg") == []
+
+    changed = [
+        {
+            "id": "known",
+            "reason": "fixture cycle",
+            "modules": ["pkg.a", "pkg.b", "pkg.c"],
+        }
+    ]
+    changed_errors = import_graph.compare_sccs(cycles, changed, "pkg")
+    assert any("模块集合变化" in error for error in changed_errors)
+    assert any("pkg.c" in error for error in changed_errors)
+
+    stale_errors = import_graph.compare_sccs([], known, "pkg")
+    assert any("白名单过期环" in error for error in stale_errors)
+
+
+def test_whitelist_requires_reasons_and_unique_modules(tmp_path):
+    whitelist = tmp_path / "whitelist.json"
+    whitelist.write_text(
+        json.dumps({"sccs": [{"modules": ["pkg.a", "pkg.b"]}]}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="reason"):
+        import_graph.load_whitelist(whitelist, "pkg")
+
+    _write_whitelist(
+        whitelist, [{"reason": "duplicate", "modules": ["pkg.a", "pkg.a"]}]
+    )
+    with pytest.raises(ValueError, match="duplicates"):
+        import_graph.load_whitelist(whitelist, "pkg")
+
+    _write_whitelist(
+        whitelist,
+        [
+            {"reason": "one", "modules": ["pkg.a"]},
+            {"reason": "two", "modules": ["pkg.a"]},
+        ],
+    )
+    with pytest.raises(ValueError, match="both"):
+        import_graph.load_whitelist(whitelist, "pkg")
+
+
+def test_import_graph_cli_exit_codes_and_json(tmp_path):
+    _make_cycle_package(tmp_path)
+    script = SCRIPTS / "quality" / "import_graph.py"
+    base = [
+        sys.executable,
+        str(script),
+        "--root",
+        str(tmp_path),
+        "--package",
+        "pkg",
+    ]
+
+    empty = _write_whitelist(tmp_path / "empty.json", [])
+    failed = subprocess.run(
+        base + ["--check-scc", "--whitelist", str(empty)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert failed.returncode == 1
+    assert "[check-scc] FAIL" in failed.stdout
+
+    known = _write_whitelist(
+        tmp_path / "known.json",
+        [{"id": "known", "reason": "fixture cycle", "modules": ["pkg.a", "pkg.b"]}],
+    )
+    passed = subprocess.run(
+        base + ["--check-scc", "--whitelist", str(known)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert passed.returncode == 0, passed.stderr
+    assert "[check-scc] OK" in passed.stdout
+
+    report = subprocess.run(
+        base + ["--json"], capture_output=True, text=True, check=False
+    )
+    assert report.returncode == 0
+    data = json.loads(report.stdout)
+    assert data["n_modules"] == 5
+    assert data["sccs"][0]["size"] == 2
+    assert data["sccs"][0]["modules"] == ["pkg.a", "pkg.b"]
+    assert any(edge["from"] == "pkg.a" and edge["to"] == "pkg.b" for edge in data["edges"])
+
+
+def test_repository_import_graph_matches_whitelist():
+    graph = import_graph.build_graph(REPO_ROOT, "easy_agent")
+    entries = import_graph.load_whitelist(
+        SCRIPTS / "quality" / "import_graph_whitelist.json", "easy_agent"
+    )
+
+    # A1 断环后 SCC=0，白名单应为空；若未来出现新环，必须显式登记原因。
+    if graph.cycles():
+        assert entries, "出现 SCC 时白名单必须逐项记录原因"
+    else:
+        assert entries == [], "SCC=0 时白名单必须为空"
+    assert import_graph.compare_sccs(graph.cycles(), entries, "easy_agent") == []
+
+
+# --- layer direction ---------------------------------------------------------
+
+
+def _make_layered_package(root: Path) -> None:
+    _write(root, "pkg/__init__.py", "")
+    # 函数内导入同样计入
+    _write(root, "pkg/low.py", "def helper():\n    from pkg import high\n")
+    _write(root, "pkg/high.py", "from pkg.low import helper\n")
+
+
+def _write_layers(path: Path, allow: list[dict]) -> Path:
+    path.write_text(
+        json.dumps(
+            {"schema_version": 1, "layers": {"pkg": 1, "pkg.low": 0}, "allow": allow},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_layer_check_flags_a_lower_layer_importing_a_higher_one(tmp_path):
+    _make_layered_package(tmp_path)
+    graph = import_graph.build_graph(tmp_path, "pkg")
+    layers, allow = import_graph.load_layers(_write_layers(tmp_path / "layers.json", []), "pkg")
+
+    assert import_graph.layer_of("pkg.low", layers) == 0
+    # 没有单独配置的模块取最长匹配前缀（这里是包本身）的层号
+    assert import_graph.layer_of("pkg.high", layers) == 1
+    errors = import_graph.check_layers(graph, layers, allow)
+    assert len(errors) == 1
+    assert "pkg.low" in errors[0] and "pkg.high" in errors[0]
+
+
+def test_layer_allow_list_passes_and_goes_stale(tmp_path):
+    _make_layered_package(tmp_path)
+    allow = [{"from": "pkg.low", "to": "pkg.high", "reason": "fixture"}]
+    layers, entries = import_graph.load_layers(_write_layers(tmp_path / "layers.json", allow), "pkg")
+    assert import_graph.check_layers(import_graph.build_graph(tmp_path, "pkg"), layers, entries) == []
+
+    _write(tmp_path, "pkg/low.py", "")
+    stale = import_graph.check_layers(import_graph.build_graph(tmp_path, "pkg"), layers, entries)
+    assert any("白名单过期" in error for error in stale)
+
+
+def test_layer_config_requires_the_root_package_and_reasons(tmp_path):
+    path = tmp_path / "layers.json"
+    path.write_text(json.dumps({"layers": {"pkg.low": 0}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="root package"):
+        import_graph.load_layers(path, "pkg")
+
+    _write_layers(path, [{"from": "pkg.low", "to": "pkg.high"}])
+    with pytest.raises(ValueError, match="reason"):
+        import_graph.load_layers(path, "pkg")
+
+
+def test_layer_check_cli_exit_codes(tmp_path):
+    _make_layered_package(tmp_path)
+    base = [
+        sys.executable,
+        str(SCRIPTS / "quality" / "import_graph.py"),
+        "--root",
+        str(tmp_path),
+        "--package",
+        "pkg",
+        "--check-layers",
+    ]
+
+    strict = _write_layers(tmp_path / "strict.json", [])
+    failed = subprocess.run(base + ["--layers", str(strict)], capture_output=True, text=True, check=False)
+    assert failed.returncode == 1
+    assert "[check-layers] FAIL" in failed.stdout
+
+    allowed = _write_layers(
+        tmp_path / "allowed.json", [{"from": "pkg.low", "to": "pkg.high", "reason": "fixture"}]
+    )
+    passed = subprocess.run(base + ["--layers", str(allowed)], capture_output=True, text=True, check=False)
+    assert passed.returncode == 0, passed.stderr
+    assert "[check-layers] OK" in passed.stdout
+
+
+def test_repository_imports_follow_the_layers():
+    graph = import_graph.build_graph(REPO_ROOT, "easy_agent")
+    layers, allow = import_graph.load_layers(SCRIPTS / "quality" / "import_layers.json", "easy_agent")
+    assert import_graph.check_layers(graph, layers, allow) == []
+
+
+# --- package entries ---------------------------------------------------------
+
+
+def _make_package_with_init_imports(root: Path) -> None:
+    _write(root, "pkg/__init__.py", "from pkg.a import thing\n")
+    _write(root, "pkg/a.py", "thing = 1\n")
+    _write(root, "pkg/sub/__init__.py", "")
+
+
+def _write_init_allow(path: Path, init_allow: list[dict]) -> Path:
+    path.write_text(
+        json.dumps(
+            {"schema_version": 1, "layers": {"pkg": 0}, "init_allow": init_allow},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_package_init_importing_project_modules_fails(tmp_path):
+    _make_package_with_init_imports(tmp_path)
+    errors = import_graph.check_package_inits(import_graph.build_graph(tmp_path, "pkg"), [])
+    assert len(errors) == 1
+    assert "pkg（__init__.py）" in errors[0] and "pkg.a" in errors[0]
+
+
+def test_package_init_allow_list_passes_and_goes_stale(tmp_path):
+    _make_package_with_init_imports(tmp_path)
+    allow = import_graph.load_init_allow(
+        _write_init_allow(tmp_path / "layers.json", [{"package": "pkg", "reason": "fixture facade"}]),
+        "pkg",
+    )
+    assert import_graph.check_package_inits(import_graph.build_graph(tmp_path, "pkg"), allow) == []
+
+    _write(tmp_path, "pkg/__init__.py", "")
+    stale = import_graph.check_package_inits(import_graph.build_graph(tmp_path, "pkg"), allow)
+    assert any("白名单过期" in error for error in stale)
+
+
+def test_init_allow_requires_reasons(tmp_path):
+    path = _write_init_allow(tmp_path / "layers.json", [{"package": "pkg"}])
+    with pytest.raises(ValueError, match="reason"):
+        import_graph.load_init_allow(path, "pkg")
+
+
+def test_init_check_cli_exit_codes(tmp_path):
+    _make_package_with_init_imports(tmp_path)
+    base = [
+        sys.executable,
+        str(SCRIPTS / "quality" / "import_graph.py"),
+        "--root",
+        str(tmp_path),
+        "--package",
+        "pkg",
+        "--check-inits",
+    ]
+
+    strict = _write_init_allow(tmp_path / "strict.json", [])
+    failed = subprocess.run(base + ["--layers", str(strict)], capture_output=True, text=True, check=False)
+    assert failed.returncode == 1
+    assert "[check-inits] FAIL" in failed.stdout
+
+    allowed = _write_init_allow(tmp_path / "allowed.json", [{"package": "pkg", "reason": "fixture"}])
+    passed = subprocess.run(base + ["--layers", str(allowed)], capture_output=True, text=True, check=False)
+    assert passed.returncode == 0, passed.stderr
+    assert "[check-inits] OK" in passed.stdout
+
+
+def test_repository_package_inits_match_the_allow_list():
+    graph = import_graph.build_graph(REPO_ROOT, "easy_agent")
+    allow = import_graph.load_init_allow(SCRIPTS / "quality" / "import_layers.json", "easy_agent")
+    assert import_graph.check_package_inits(graph, allow) == []
+    # §7 瘦身过的包入口不能再回到白名单里
+    slimmed = {"easy_agent", "easy_agent.services", "easy_agent.services.streaming", "easy_agent.utils"}
+    assert not slimmed & {entry["package"] for entry in allow}
+
+
+def _modules_loaded_by(module: str) -> set[str]:
+    """在新进程里只导入 ``module``，返回之后已加载的模块名（pytest 进程早就导入过一切）。"""
+    result = subprocess.run(
+        [sys.executable, "-c", f"import sys, {module}; print('\\n'.join(sys.modules))"],
+        cwd=REPO_ROOT,
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO_ROOT), os.environ.get("PYTHONPATH")])),
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    )
+    return set(result.stdout.split())
+
+
+def test_importing_bootstrap_env_does_not_load_the_agent():
+    loaded = _modules_loaded_by("easy_agent.bootstrap.env")
+    assert "easy_agent.agent" not in loaded
+    assert "deepagents" not in loaded
+
+
+def test_importing_services_health_does_not_load_agent_manager():
+    loaded = _modules_loaded_by("easy_agent.services.health")
+    assert "easy_agent.services.agents.manager" not in loaded
+
+
+# --- double-write freeze -----------------------------------------------------
+
+BAD_SESSIONS = """
+import json
+
+
+def create_session(db, session_data):
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        db._execute(
+            cursor,
+            \"\"\"
+            INSERT INTO sessions (session_id, title, messages, created_at)
+            VALUES (?, ?, ?, ?)
+            \"\"\",
+            (
+                session_data.session_id,
+                session_data.title,
+                json.dumps(session_data.messages, ensure_ascii=False),
+                session_data.created_at,
+            ),
+        )
+"""
+
+GOOD_SESSIONS = """
+import json
+
+
+def create_session(db, session_data):
+    db._execute(
+        cursor,
+        "INSERT INTO sessions (session_id, title, messages, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (session_data.session_id, session_data.title, "", session_data.created_at),
+    )
+
+
+def update_session(db, session_data):
+    db._execute(
+        cursor,
+        "UPDATE sessions SET title=?, updated_at=? WHERE session_id=?",
+        (session_data.title, session_data.updated_at, session_data.session_id),
+    )
+
+
+def read_legacy(db, session_id):
+    db._execute(cursor, "SELECT messages FROM sessions WHERE session_id=?", (session_id,))
+    raw = row["messages"]
+    return json.loads(raw) if raw else []
+
+
+def update_todos(db, session_id, todos):
+    db._execute(
+        cursor,
+        "UPDATE sessions SET todos=? WHERE session_id=?",
+        (json.dumps(todos), session_id),
+    )
+"""
+
+BAD_DATABASE = """
+from .repositories import sessions as sessions_repo
+
+
+class Database:
+    def get_connection(self):
+        return None
+
+    def get_session(self, *args, **kwargs):
+        return sessions_repo.get_session(self, *args, **kwargs)
+
+    def create_knowledge_base(self, name):
+        return {"name": name}
+"""
+
+DIRECT_SQL_DATABASE = """
+from .repositories import sessions as sessions_repo
+
+
+class Database:
+    def get_session(self, session_id):
+        with self.get_connection() as conn:
+            return conn.execute("SELECT * FROM sessions").fetchone()
+"""
+
+
+def test_sessions_checker_flags_dynamic_message_writes(tmp_path):
+    path = _write(
+        tmp_path, "easy_agent/db/repositories/sessions.py", BAD_SESSIONS
+    )
+    violations = double_write.check_sessions_file(path)
+    codes = {violation.code for violation in violations}
+
+    assert "DW101" in codes
+    assert "DW102" in codes
+    assert all(violation.line > 0 for violation in violations)
+    assert all(violation.function for violation in violations)
+
+
+def test_sessions_checker_allows_fixed_empty_and_legacy_reads(tmp_path):
+    path = _write(
+        tmp_path, "easy_agent/db/repositories/sessions.py", GOOD_SESSIONS
+    )
+    assert double_write.check_sessions_file(path) == []
+
+
+def test_database_checker_rejects_unknown_and_non_delegating_methods(tmp_path):
+    bad = _write(tmp_path, "easy_agent/db/database.py", BAD_DATABASE)
+    codes = {violation.code for violation in double_write.check_database_file(bad)}
+    assert "DW201" in codes
+
+    direct = _write(tmp_path, "easy_agent/db/direct_database.py", DIRECT_SQL_DATABASE)
+    codes = {violation.code for violation in double_write.check_database_file(direct)}
+    assert "DW202" in codes
+
+
+def test_double_write_cli_fails_on_bad_sample(tmp_path):
+    _write(tmp_path, "easy_agent/db/repositories/sessions.py", BAD_SESSIONS)
+    _write(tmp_path, "easy_agent/db/database.py", BAD_DATABASE)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS / "quality" / "check_double_write.py"),
+            "--root",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 1
+    assert "easy_agent/db/repositories/sessions.py:" in completed.stdout
+    assert "DW101" in completed.stdout
+    assert "DW201" in completed.stdout
+
+
+def test_repository_double_write_gate_is_green():
+    result = double_write.check_repository(REPO_ROOT)
+    assert result.ok, "\n".join(violation.format() for violation in result.violations)
+    # 下限只用来发现扫描器失效（认不出方法或纯委托），不是精确值；
+    # T3a/T3b/T3c 收敛后 Database 只剩 47 方法 / 12 纯委托（knowledges 保留项）。
+    assert result.stats.get("database_methods", 0) >= 45
+    assert result.stats.get("database_delegations", 0) >= 10
+    # T3 新增的两个计数也在门禁结果里（上限见 double_write_allowlists）。
+    assert result.stats.get("get_database_calls_outside_db", 0) >= 3
+    assert result.stats.get("database_escape_hatch_refs", 0) >= 3
+
+
+# --- bare os.getenv baseline -------------------------------------------------
+
+
+def test_env_usage_moved_module_is_new_until_baseline_refreshed():
+    """基线按文件路径记账：模块搬家后，同一行在新路径算新增、旧路径算可删除。"""
+    line = 'raw = os.environ.get("X")'
+    errors, stale = env_usage.compare(
+        {"easy_agent/pkg/mod.py": {line: 1}}, {"easy_agent/mod.py": {line: 1}}
+    )
+    assert errors == [f"easy_agent/pkg/mod.py: 新增裸 os.getenv/os.environ.get -> {line!r}"]
+    assert stale == [f"easy_agent/mod.py: 基线条目可删除 -> {line!r}"]
+
+
+def test_repository_env_usage_gate_is_green():
+    """与 CI 的 ``check_env_usage.py --check`` 同口径；搬模块后要 ``--update`` 刷新基线。"""
+    errors, _stale = env_usage.compare(
+        env_usage.current_baseline(), env_usage.load_baseline()
+    )
+    assert errors == [], "\n".join(errors)
+
+
+# --- async 里的同步数据库调用 ---------------------------------------------------
+
+
+def _blocking_keys(root: Path) -> set[str]:
+    modules = async_blocking.iter_modules(root / "easy_agent")
+    return {key for _rel, _line, key in async_blocking.find_blocking_calls(modules)}
+
+
+def test_async_blocking_flags_db_calls_left_on_the_event_loop(tmp_path):
+    _write(
+        tmp_path,
+        "easy_agent/store.py",
+        "def load_row(db, key):\n"
+        "    return db.fetch(key)\n"
+        "\n"
+        "def load_twice(db, key):\n"
+        "    return load_row(db, key), load_row(db, key)\n"
+        "\n"
+        "public_load = load_row\n"
+        "\n"
+        "def ensure(check):\n"
+        "    return check()\n",
+    )
+    _write(
+        tmp_path,
+        "easy_agent/handlers.py",
+        "import asyncio\n"
+        "from easy_agent.store import ensure, load_row, load_twice, public_load\n"
+        "\n"
+        "async def handler(repo, db, config):\n"
+        "    repo.add_message('s', {})\n"
+        "    load_twice(db, 'k')\n"
+        "    public_load(db, 'k')\n"
+        "    ensure(lambda: load_row(db, 'k'))\n"
+        "    await repo.aget('k')\n"
+        "    await asyncio.to_thread(load_row, db, 'k')\n"
+        "    await asyncio.to_thread(lambda: load_row(db, 'k'))\n"
+        "    config.mysql.database.strip()\n"
+        "    {}.get('k')\n"
+        "\n"
+        "    def later():\n"
+        "        return load_row(db, 'k')\n"
+        "\n"
+        "    return later\n",
+    )
+
+    # 直接调用句柄、传递调用、别名、交给同步函数当场调用的 lambda 都算；await、传进线程的
+    # 函数引用和 lambda、配置字段、通用方法名、嵌套 def 都不算
+    assert _blocking_keys(tmp_path) == {
+        "handler() -> repo.add_message",
+        "handler() -> load_twice",
+        "handler() -> public_load",
+        "handler() -> load_row",
+    }
+
+
+def test_async_blocking_compare_reports_new_and_stale():
+    errors, stale = async_blocking.compare(
+        {"easy_agent/a.py": {"f() -> repo.x": 2}},
+        {"easy_agent/a.py": {"f() -> repo.x": 1}, "easy_agent/b.py": {"g() -> db.y": 1}},
+    )
+    assert errors == ["easy_agent/a.py: 新增 async 里的同步数据库调用 -> f() -> repo.x"]
+    assert stale == ["easy_agent/b.py: 基线条目可删除 -> g() -> db.y"]
+
+
+def test_repository_async_blocking_gate_is_green():
+    """与 CI 的 ``check_async_blocking.py --check`` 同口径；另外要求基线没有过期条目（只减不增）。"""
+    errors, stale = async_blocking.compare(
+        async_blocking.current_baseline(), async_blocking.load_baseline()
+    )
+    assert errors == [], "\n".join(errors)
+    assert stale == [], "调用已挪进线程，请执行 check_async_blocking.py --update 收缩基线：\n" + "\n".join(stale)
+
+
+def test_async_blocking_whitelist_explains_every_file():
+    reasons = async_blocking.load_reasons()
+    missing = sorted(
+        rel for rel in async_blocking.load_baseline() if not reasons.get(rel, "").strip()
+    )
+    assert missing == [], f"基线里这些文件没写留在事件循环上的原因：{missing}"

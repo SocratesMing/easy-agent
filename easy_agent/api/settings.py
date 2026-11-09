@@ -1,47 +1,43 @@
-"""设置相关 API：记忆读写、系统提示词、Skills 列表、MCP 列表、模型列表"""
+"""设置相关 API：记忆读写、系统提示词、Skills 列表、模型列表、联网搜索状态
 
-import json
+MCP（连接器）相关接口已迁到 ``easy_agent/api/connectors.py``。
+"""
+
 import logging
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from langchain_mcp_adapters.client import MultiServerMCPClient
-
-from ..config import Config
-from ..middleware import get_current_username
-from ..skills import discover_skills
-from ..services.mcp import (
-    load_mcp_config,
-    normalize_servers_mapping,
-    _unpack_error,
-    invalidate_mcp_cache,
-    get_mcp_tools,
-    validate_mcp_servers,
+from easy_agent.bootstrap.config import Config
+from easy_agent.middleware import get_current_username
+from easy_agent.models.api import (
+    ContentResponse,
+    MemoryContentResponse,
+    KnowledgeStatusResponse,
+    MemoryUpdateResponse,
+    ModelsResponse,
+    SkillsResponse,
+    UploadLimitsResponse,
+    WebSearchStatusResponse,
 )
-from ..services import get_agent_config, invalidate_user_agents
-from ..services.prompt_loader import load_system_prompt
+from easy_agent.agent.skills import discover_skills
+from easy_agent.services.agents.manager import get_agent_config
+from easy_agent.services.agents.prompts import load_system_prompt
+from easy_agent.services.memory.manager import MAX_LONG_TERM_MEMORY_CHARS, write_memory
+from easy_agent.utils.blocking import run_blocking
+from easy_agent.tools.web_search import TIME_RANGE_VALUES, is_web_search_available, resolve_provider
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent/settings", tags=["Settings"])
 
 
-def _market_mysql_config() -> dict[str, Any] | None:
-    """Use the backend database config for in-process Market MCP operations."""
-    agent_config = get_agent_config() or {}
-    config = agent_config.get("config") or Config.load()
-    if config.database.type != "mysql":
-        return None
-    return config.database.mysql.model_dump()
-
-
 # ── 记忆 ──────────────────────────────────────────────────────────────
 
 
-@router.get("/memory", summary="获取当前用户的记忆文件内容")
+@router.get("/memory", summary="获取当前用户的记忆文件内容", response_model=MemoryContentResponse)
 async def get_memory(username: Annotated[str, Depends(get_current_username)]):
     safe_name = Config.sanitize_username(username)
     _cfg = get_agent_config()
@@ -62,10 +58,11 @@ class UpdateMemoryRequest(BaseModel):
     content: str
 
 
-MEMORY_MAX_CHARS = 2000
+#: 与后台长期记忆更新的上限一致：这里放得更宽，下一轮更新就会把用户刚写的内容压缩掉
+MEMORY_MAX_CHARS = MAX_LONG_TERM_MEMORY_CHARS
 
 
-@router.put("/memory", summary="更新当前用户的记忆文件内容")
+@router.put("/memory", summary="更新当前用户的记忆文件内容", response_model=MemoryUpdateResponse)
 async def update_memory(
     request: UpdateMemoryRequest,
     username: Annotated[str, Depends(get_current_username)],
@@ -86,7 +83,9 @@ async def update_memory(
             f"记忆文件超出限制已截断 | 用户: {username} | 原始: {len(request.content)} | 截断后: {len(content)}"
         )
 
-    memory_file.write_text(content, encoding="utf-8")
+    # 与后台记忆更新走同一条写入路径：同一把锁 + 原子写 + 同步结构化 sidecar。
+    # 后台更新若正在进行，写回前会发现文件已变，基于这份内容重做，不会把它覆盖掉。
+    await run_blocking(write_memory, memory_file, content, raise_on_error=True)
     logger.info(f"记忆文件已更新 | 用户: {username} | 字符数: {len(content)}")
     return {"status": "ok", "chars": len(content)}
 
@@ -118,7 +117,7 @@ def _truncate_memory(content: str, max_chars: int) -> str:
 # ── 系统提示词 ────────────────────────────────────────────────────────
 
 
-@router.get("/system-prompt", summary="获取系统提示词（只读）")
+@router.get("/system-prompt", summary="获取系统提示词（只读）", response_model=ContentResponse)
 async def get_system_prompt(
     username: Annotated[str, Depends(get_current_username)],
 ):
@@ -135,7 +134,7 @@ async def get_system_prompt(
 # ── Skills ────────────────────────────────────────────────────────────
 
 
-@router.get("/skills", summary="获取所有可用的 Skills 列表")
+@router.get("/skills", summary="获取所有可用的 Skills 列表", response_model=SkillsResponse)
 async def get_skills(
     username: Annotated[str, Depends(get_current_username)],
 ):
@@ -168,7 +167,7 @@ async def get_skills(
 # ── 模型列表 ──────────────────────────────────────────────────────────
 
 
-@router.get("/models", summary="获取所有可选模型列表（公共接口，无需登录）")
+@router.get("/models", summary="获取所有可选模型列表（公共接口，无需登录）", response_model=ModelsResponse)
 async def get_models():
     """返回 config.models 中的模型列表及当前激活模型。
 
@@ -205,439 +204,93 @@ async def get_models():
     return {"models": models, "active_model": config.active_model}
 
 
-# ── MCP ───────────────────────────────────────────────────────────────
+# ── 联网搜索 ──────────────────────────────────────────────────────────
 
 
-@router.get("/mcp", summary="获取当前用户的 MCP 服务配置")
-async def get_mcp_servers(
-    username: Annotated[str, Depends(get_current_username)],
-):
-    """读取用户专属 mcp.json（不存在则回退全局）。
+@router.get("/web-search", summary="获取联网搜索配置状态（公共接口，无需登录）", response_model=WebSearchStatusResponse)
+async def get_web_search_status():
+    """返回联网搜索是否可用，供前端决定输入框地球按钮是否可点击。
 
-    不暴露 env 中的敏感值，仅返回 key 列表。
+    与 /models 一致，只暴露「是否可用」与时间范围选项，**不返回** api_url / api_key。
+    api_key 为空或功能关闭时 configured=false，前端按钮置灰并提示未配置。
     """
-    config = load_mcp_config(username)
     _cfg = get_agent_config()
-    agent_config: Config | None = _cfg["config"] if _cfg and _cfg.get("config") else None
-    user_mcp_path = Config.get_user_mcp_path(username, agent_config)
+    if not _cfg or not _cfg.get("config"):
+        raise HTTPException(status_code=503, detail="Agent 配置未初始化")
+    config: Config = _cfg["config"]
 
-    servers = []
-    for name, cfg in config.items():
-        # 保留完整原始配置供前端编辑（env 值脱敏）
-        raw = dict(cfg)
-        if "env" in raw and isinstance(raw["env"], dict):
-            raw["env"] = {k: "***" for k in raw["env"]}
+    ws = getattr(config, "web_search", None)
+    enabled = bool(getattr(ws, "enabled", False))
+    configured = is_web_search_available(config)
+    if configured:
+        reason = ""
+    elif not enabled:
+        reason = "disabled"
+    else:
+        reason = "not_configured"
 
-        server_info = {
-            "name": name,
-            "transport": cfg.get("transport", cfg.get("type", "unknown")),
-            "command": cfg.get("command", ""),
-            "args": cfg.get("args", []),
-            "origin": "user" if user_mcp_path.exists() else "global",
-            "_raw": raw,
-        }
-        # 不暴露 env 中的敏感信息（如密码），仅返回 key 列表
-        env_keys = list(cfg.get("env", {}).keys())
-        server_info["env_keys"] = env_keys
-        servers.append(server_info)
-
-    # 标注来源：用户专属文件是否存在
     logger.info(
-        f"获取 MCP 配置 | 用户: {username} | 来源: "
-        f"{'user' if user_mcp_path.exists() else 'global'} | servers: {len(servers)}"
+        f"获取联网搜索状态 | enabled={enabled} | configured={configured} | reason={reason or '-'}"
     )
     return {
-        "servers": servers,
-        "source": "user" if user_mcp_path.exists() else "global",
-        "user_mcp_path": str(user_mcp_path),
+        "enabled": enabled,
+        "configured": configured,
+        "reason": reason,
+        "provider": resolve_provider(config),
+        "default_time_range": str(
+            getattr(ws, "default_time_range", "NoLimit") or "NoLimit"
+        ),
+        "time_ranges": list(TIME_RANGE_VALUES),
     }
 
 
-@router.get("/mcp/market", summary="获取公共 MCP 市场列表")
-async def get_mcp_market(
-    username: Annotated[str, Depends(get_current_username)],
-):
-    """读取全局 mcp.json 作为公共市场，并标记当前用户是否已添加。"""
-    _cfg = get_agent_config()
-    config: Config | None = _cfg["config"] if _cfg and _cfg.get("config") else None
-    market_config = load_mcp_config(None)
-    user_servers = _read_user_mcp_raw(username, config).get("servers", {})
-
-    servers = []
-    for name, cfg in market_config.items():
-        raw = dict(cfg)
-        if "env" in raw and isinstance(raw["env"], dict):
-            raw["env"] = {key: "***" for key in raw["env"]}
-        servers.append({
-            "name": name,
-            "transport": cfg.get("transport", cfg.get("type", "unknown")),
-            "command": cfg.get("command", ""),
-            "args": cfg.get("args", []),
-            "added": name in user_servers,
-            "env_keys": list(cfg.get("env", {}).keys()) if isinstance(cfg.get("env"), dict) else [],
-            "_raw": raw,
-        })
-
-    global_path = Config.find_config_file("mcp.json")
-    logger.info(
-        f"获取 MCP 市场 | 用户: {username} | 全局路径: {global_path} | "
-        f"总数: {len(servers)} | 已添加: {sum(1 for s in servers if s['added'])}"
-    )
-    return {"servers": servers, "source": "global", "path": str(global_path or "")}
+# ── 上传限额 ──────────────────────────────────────────────────────────
 
 
-class AddMarketMcpRequest(BaseModel):
-    name: str
+@router.get("/upload-limits", summary="获取上传限额（公共接口，无需登录）", response_model=UploadLimitsResponse)
+async def get_upload_limits():
+    """返回对话附件上传限额，供前端在选文件时即时拦截并展示已用额度。
 
-
-class IssueMcpApiKeyRequest(BaseModel):
-    business: str
-
-
-@router.get("/mcp/api-keys", summary="获取当前用户各业务的 MCP API Key 状态")
-async def get_mcp_api_keys(
-    username: Annotated[str, Depends(get_current_username)],
-):
-    """返回每个业务的 key 是否已生成与更新时间（不含任何密钥信息）。"""
-    from ..services.mcp_api_keys import SUPPORTED_BUSINESSES, list_key_status
-
-    statuses = {row["business"]: row for row in list_key_status(username)}
-    return {
-        "businesses": [
-            {
-                "business": name,
-                "issued": name in statuses and not statuses[name]["revoked"],
-                "updated_at": statuses.get(name, {}).get("updated_at"),
-            }
-            for name in SUPPORTED_BUSINESSES
-        ]
-    }
-
-
-@router.post("/mcp/api-key", summary="为当前用户生成指定业务的 MCP API Key")
-async def generate_mcp_api_key(
-    request: IssueMcpApiKeyRequest,
-    username: Annotated[str, Depends(get_current_username)],
-):
-    """生成新的 API Key；数据库仅保存哈希，明文只返回一次。重签后旧 Key 失效。"""
-    from ..services.mcp_api_keys import issue_api_key, is_supported_business
-
-    if not is_supported_business(request.business):
-        raise HTTPException(status_code=400, detail=f"不支持的 MCP 业务: {request.business}")
-
-    try:
-        api_key = issue_api_key(username, request.business)
-    except Exception as e:
-        logger.warning(f"生成 MCP API Key 失败 | 用户: {username} | 错误: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail="生成 MCP API Key 失败，请检查数据库配置",
-        )
-
-    logger.info(f"生成 MCP API Key 成功 | 用户: {username} | 业务: {request.business}")
-    return {"status": "ok", "api_key": api_key, "business": request.business}
-
-
-@router.post("/mcp/market/add", summary="从公共市场添加 MCP 到个人配置")
-async def add_mcp_from_market(
-    request: AddMarketMcpRequest,
-    username: Annotated[str, Depends(get_current_username)],
-):
-    """把市场中的全局 server 配置复制到当前用户 mcp.json。"""
-    _cfg = get_agent_config()
-    config: Config | None = _cfg["config"] if _cfg and _cfg.get("config") else None
-    market_config = load_mcp_config(None)
-    server_config = market_config.get(request.name)
-    if not server_config:
-        raise HTTPException(status_code=404, detail=f"MCP 市场服务不存在: {request.name}")
-
-    raw = _read_user_mcp_raw(username, config)
-    existing: dict[str, Any] = raw.get("servers", {})
-    if request.name in existing:
-        raise HTTPException(status_code=409, detail=f"MCP 服务已添加: {request.name}")
-
-    existing[request.name] = dict(server_config)
-    raw["servers"] = existing
-    user_mcp_path = _write_user_mcp_raw(username, config, raw)
-    invalidate_mcp_cache(username)
-    evicted = invalidate_user_agents(username)
-    logger.info(
-        f"从 MCP 市场添加 | 用户: {username} | 服务: {request.name} | "
-        f"路径: {user_mcp_path} | 失效 Agent: {evicted} 个"
-    )
-
-    return {
-        "status": "ok",
-        "added": [request.name],
-        "servers": list(existing.keys()),
-        "path": str(user_mcp_path),
-        "agents_invalidated": evicted,
-    }
-
-
-class UpdateMcpRequest(BaseModel):
-    servers: dict[str, dict[str, Any]]
-
-
-@router.put("/mcp", summary="更新当前用户的 MCP 服务配置")
-async def update_mcp_servers(
-    request: UpdateMcpRequest,
-    username: Annotated[str, Depends(get_current_username)],
-):
-    """写入用户专属 mcp.json，并失效该用户的 MCP 缓存与缓存 Agent。
-
-    下次聊天请求会重建 Agent 并加载新的 MCP 工具，实现动态加载。
+    约束对象是「单个会话、单次对话」的附件（输入框待发送列表），发送后重置。
+    与 /models、/web-search 一致为公共接口：这些阈值不敏感，且 SDK 内嵌场景
+    需要一个不依赖登录态的取数通道。前端拉取失败时会回落到内置默认值
+    （10MB / 5 个 / 20MB），不会因接口异常而放行。
     """
     _cfg = get_agent_config()
-    config: Config = _cfg["config"] if _cfg and _cfg.get("config") else None
-    user_mcp_path = Config.get_user_mcp_path(username, config)
-    user_mcp_path.parent.mkdir(parents=True, exist_ok=True)
+    if not _cfg or not _cfg.get("config"):
+        raise HTTPException(status_code=503, detail="Agent 配置未初始化")
+    config: Config = _cfg["config"]
 
-    # 前端展示时 env 值被脱敏为 ***，保存时必须保留磁盘上的真实值，
-    # 否则会把密码/用户等覆盖成 *** 导致 MCP 无法连接。
-    current_raw = _read_user_mcp_raw(username, config)
-    current_servers = current_raw.get("servers", {})
-    payload_servers: dict[str, Any] = {}
-    for name, cfg in (request.servers or {}).items():
-        new_cfg = dict(cfg)
-        if isinstance(new_cfg.get("env"), dict):
-            existing_env = (current_servers.get(name) or {}).get("env", {})
-            new_cfg["env"] = _merge_mcp_env(existing_env, new_cfg["env"])
-        payload_servers[name] = new_cfg
-    payload = {"servers": payload_servers}
-    user_mcp_path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    logger.info(
-        f"写入用户 MCP 配置 | 用户: {username} | 路径: {user_mcp_path} | "
-        f"servers: {list(request.servers.keys())}"
-    )
-
-    # 失效 MCP 工具缓存（按用户路径）
-    invalidate_mcp_cache(username)
-
-    # 失效该用户已缓存的 Agent，使下次请求重建并加载新 MCP
-    evicted = invalidate_user_agents(username)
-    logger.info(
-        f"用户 MCP 更新完成 | 用户: {username} | 失效 Agent: {evicted} 个"
-    )
-
-    # 逐个校验 server 状态：异常的 server 前端会自动关闭开关并提示
-    server_status = []
-    try:
-        server_status = await validate_mcp_servers(username)
-        ok_count = sum(1 for s in server_status if s["status"] == "ok")
-        err_count = len(server_status) - ok_count
-        logger.info(
-            f"用户 MCP 校验 | 用户: {username} | "
-            f"成功: {ok_count} | 失败: {err_count} | 详情: {server_status}"
-        )
-    except Exception as e:
-        logger.warning(f"用户 MCP 校验失败 | 用户: {username} | {e}")
-
-    return {
-        "status": "ok",
-        "path": str(user_mcp_path),
-        "servers": list(request.servers.keys()),
-        "agents_invalidated": evicted,
-        "server_status": server_status,
+    limits = getattr(config, "upload_limits", None)
+    payload = {
+        "enabled": bool(getattr(limits, "enabled", True)),
+        "max_file_size_mb": int(getattr(limits, "max_file_size_mb", 10)),
+        "max_files_per_message": int(getattr(limits, "max_files_per_message", 5)),
+        "max_total_size_mb": int(getattr(limits, "max_total_size_mb", 20)),
     }
-
-
-# ── MCP 单条添加 / 删除（即时同步后端） ────────────────────────────────
-
-
-def _read_user_mcp_raw(username: str, config: Config | None) -> dict[str, Any]:
-    """读取用户专属 mcp.json 原始内容，返回 {"servers": {name: cfg}}。
-
-    兼容标准 mcpServers 顶层键与旧版误存的嵌套外壳（名为 "mcpServers" 的
-    伪 server），统一展开归一化，避免写入时保留脏结构。
-    文件不存在或格式异常时返回空 servers。
-    """
-    user_mcp_path = Config.get_user_mcp_path(username, config)
-    if not user_mcp_path.exists():
-        return {"servers": {}}
-    try:
-        data = json.loads(user_mcp_path.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            servers = data.get("servers")
-            if servers is None:
-                servers = data.get("mcpServers", {})
-            if isinstance(servers, dict):
-                return {"servers": normalize_servers_mapping(servers)}
-    except Exception as e:
-        logger.warning(f"读取用户 mcp.json 失败 | 用户: {username} | {e}")
-    return {"servers": {}}
-
-
-def _merge_mcp_env(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
-    """合并 server env：值为 ***（脱敏占位）或空字符串的键保留旧值。
-
-    前端展示时 env 值被替换成 ***，若直接写回会把真实密码/用户覆盖；
-    只有用户真正修改过的键（值不是 ***/空）才更新。
-    """
-    existing = existing or {}
-    incoming = incoming or {}
-    merged = dict(existing)
-    for k, v in incoming.items():
-        if v == "***" or v == "":
-            # 未修改：保留旧值；旧值不存在则保留占位便于前端提示
-            merged.setdefault(k, v)
-        else:
-            merged[k] = v
-    return merged
-
-
-def _write_user_mcp_raw(username: str, config: Config | None, payload: dict[str, Any]) -> Path:
-    """写入用户专属 mcp.json，返回文件路径。"""
-    user_mcp_path = Config.get_user_mcp_path(username, config)
-    user_mcp_path.parent.mkdir(parents=True, exist_ok=True)
-    user_mcp_path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    return user_mcp_path
-
-
-def _extract_servers(user_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """从用户粘贴的 JSON 中提取 {name: cfg} 映射。
-
-    支持三种格式（以 mcp.json 的 servers 结构为基准）：
-      1. {"servers": {"mysql": {...}}}          - 完整 mcp.json 片段
-      2. {"mysql": {...}}                        - 对象格式
-      3. {"name": "mysql", "transport": ...}     - 单条 server
-      4. {"mcpServers": {"mysql": {...}}}        - 标准 Claude Desktop 格式
-
-    所有格式都会把标准字段 "type" 归一化为应用内部字段 "transport"
-    （如 {"type": "sse", "url": ...} -> {"transport": "sse", "url": ...}）。
-    """
-    # 格式1: {"servers": {"mysql": {...}}}
-    servers = user_config.get("servers")
-    if isinstance(servers, dict):
-        return normalize_servers_mapping(servers)
-    # 格式4: {"mcpServers": {"mysql": {...}}} - 标准 Claude Desktop 格式
-    mcp_servers = user_config.get("mcpServers")
-    if isinstance(mcp_servers, dict):
-        return normalize_servers_mapping(mcp_servers)
-    # 格式3: {"name": "mysql", ...}
-    if "name" in user_config and isinstance(user_config["name"], str):
-        name = user_config["name"]
-        cfg = {k: v for k, v in user_config.items() if k != "name"}
-        return normalize_servers_mapping({name: cfg})
-    # 格式2: {"mysql": {...}}
-    return normalize_servers_mapping(user_config)
-
-
-class AddMcpServerRequest(BaseModel):
-    config: dict[str, Any]
-
-
-@router.post("/mcp/server", summary="添加 MCP 服务（按 servers 下的名称判重，即时生效）")
-async def add_mcp_server(
-    request: AddMcpServerRequest,
-    username: Annotated[str, Depends(get_current_username)],
-):
-    """添加一个或多个 MCP server。
-
-    用户粘贴的 JSON 会被解析，以 servers 下的 key 作为 MCP 名称进行判重：
-    若名称已存在则返回 409（不写入）。全部新增成功后立即失效缓存与 Agent，
-    并逐个校验新添加的 server，异常的在前端提示。
-    """
-    _cfg = get_agent_config()
-    config: Config | None = _cfg["config"] if _cfg and _cfg.get("config") else None
-
-    new_servers = _extract_servers(request.config)
-    if not new_servers:
-        raise HTTPException(status_code=400, detail="未找到有效的 server 配置，请检查 JSON 格式")
-
-    raw = _read_user_mcp_raw(username, config)
-    existing: dict[str, Any] = raw.get("servers", {})
-
-    # 判重：以 servers 下的名称识别
-    duplicates = [n for n in new_servers if n in existing]
-    if duplicates:
-        raise HTTPException(
-            status_code=409,
-            detail=f"MCP 服务已存在: {', '.join(duplicates)}（请先删除或改名）",
-        )
-
-    # 合并写入
-    existing.update(new_servers)
-    raw["servers"] = existing
-    user_mcp_path = _write_user_mcp_raw(username, config, raw)
     logger.info(
-        f"添加 MCP | 用户: {username} | 新增: {list(new_servers.keys())} | "
-        f"总数: {len(existing)} | 路径: {user_mcp_path}"
+        f"获取上传限额 | enabled={payload['enabled']} | "
+        f"单文件 {payload['max_file_size_mb']}MB | "
+        f"数量 {payload['max_files_per_message']} | "
+        f"总量 {payload['max_total_size_mb']}MB"
     )
-
-    # 失效 MCP 工具缓存 + 该用户已缓存 Agent，使下次请求重建并加载新 MCP
-    invalidate_mcp_cache(username)
-    evicted = invalidate_user_agents(username)
-
-    # 仅校验新添加的 server
-    server_status = []
-    try:
-        all_config = load_mcp_config(username)
-        for name in new_servers:
-            cfg = all_config.get(name)
-            if not cfg:
-                continue
-            single = {name: cfg}
-            try:
-                client = MultiServerMCPClient(single)
-                tools = await client.get_tools()
-                server_status.append({"name": name, "status": "ok", "tools_count": len(tools), "error": ""})
-                logger.info(f"MCP 校验 | {name} ✅ 成功 ({len(tools)} 工具)")
-            except Exception as e:
-                err_text = _unpack_error(e)
-                server_status.append({"name": name, "status": "error", "tools_count": 0, "error": err_text})
-                logger.warning(f"MCP 校验 | {name} ❌ 失败: {err_text}")
-    except Exception as e:
-        logger.warning(f"MCP 校验失败 | 用户: {username} | {e}")
-
-    return {
-        "status": "ok",
-        "added": list(new_servers.keys()),
-        "servers": list(existing.keys()),
-        "path": str(user_mcp_path),
-        "agents_invalidated": evicted,
-        "server_status": server_status,
-    }
+    return payload
 
 
-@router.delete("/mcp/server/{name}", summary="删除指定 MCP 服务（即时同步后端）")
-async def delete_mcp_server(
-    name: str,
-    username: Annotated[str, Depends(get_current_username)],
-):
-    """按 servers 下的名称删除单个 MCP server。
+# ── 知识库开关 ────────────────────────────────────────────────────────
 
-    删除后立即失效缓存与 Agent，下次请求不会再加载该 MCP。
+
+@router.get(
+    "/knowledge",
+    summary="获取知识库是否启用（公共接口，无需登录）",
+    response_model=KnowledgeStatusResponse,
+)
+async def get_knowledge_status(request: Request):
+    """只返回 ``knowledge.enabled``，不暴露 Ragflow 地址和密钥。
+
+    侧边栏据此决定是否显示「知识库」菜单。配置未注入时按未启用处理。
     """
-    _cfg = get_agent_config()
-    config: Config | None = _cfg["config"] if _cfg and _cfg.get("config") else None
+    config = getattr(request.app.state, "knowledge_config", None)
+    enabled = bool(getattr(config, "enabled", False))
+    return {"enabled": enabled}
 
-    raw = _read_user_mcp_raw(username, config)
-    existing: dict[str, Any] = raw.get("servers", {})
-
-    if name not in existing:
-        raise HTTPException(status_code=404, detail=f"MCP 服务不存在: {name}")
-
-    existing.pop(name, None)
-    raw["servers"] = existing
-    user_mcp_path = _write_user_mcp_raw(username, config, raw)
-    logger.info(
-        f"删除 MCP | 用户: {username} | 删除: {name} | 剩余: {list(existing.keys())} | "
-        f"路径: {user_mcp_path}"
-    )
-
-    # 失效 MCP 工具缓存 + 该用户已缓存 Agent，使下次请求不再加载已删除的 MCP
-    invalidate_mcp_cache(username)
-    evicted = invalidate_user_agents(username)
-
-    return {
-        "status": "ok",
-        "deleted": name,
-        "servers": list(existing.keys()),
-        "path": str(user_mcp_path),
-        "agents_invalidated": evicted,
-    }

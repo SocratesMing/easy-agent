@@ -1,0 +1,232 @@
+/**
+ * Easy Agent 模块基础样式：只作用于 .easy-agent-root（页面根节点 / SDK 影子根内的挂载点）之内。
+ *
+ * 原 src/style.css 是全局重置（Tailwind Preflight 的等价子集），嵌入宿主后会改掉宿主所有
+ * button / ul / h1 / 滚动条的样式。这里把选择器限定在模块根节点内，并统一用 :where() 包住
+ * 根节点，保持与原全局重置相同的优先级（标签 0,0,1、通配 0,0,0）：
+ *   - 组件 scoped 样式（.x[data-v]，0,2,0）与 Element UI（.el-button，0,1,0）照旧覆盖重置，
+ *     与 CSS 加载顺序无关；直接写 `.easy-agent-root button` 会抬到 0,1,1，把 el-button 的
+ *     背景 / 边框重置掉。
+ *   - 代价：宿主若有同为 0,0,1 的全局标签样式（如 `button { padding: 4px }`），与这里的重置
+ *     按加载顺序决胜；模块样式随路由 chunk 后加载，通常是模块生效。更高优先级的宿主规则
+ *     （`#app button` 之类）无法靠限域抵御，见 integration/README.md「样式」。
+ *   - :where() 需要 Chrome / Edge 88+、Firefox 78+、Safari 14+。
+ *
+ * html / body / #app 的尺寸与页面级滚动条只属于外网独立应用，见 src/standalone/global.css。
+ */
+
+/* ── 主题变量（浅色默认值；暗色见 theme-dark.css，运行期覆盖写在根节点内联 style） ── */
+.easy-agent-root {
+  --primary-color: #0ea5e9;
+  --accent-color: #0ea5e9;
+  --bg-primary: #f8fafc;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f1f5f9;
+  --bg-surface: #ffffff;
+  --text-primary: #1e293b;
+  --text-secondary: #64748b;
+  --border-color: #e2e8f0;
+}
+
+/* ── 重置（原 Tailwind Preflight 等价子集） ── */
+:where(.easy-agent-root),
+:where(.easy-agent-root) *,
+:where(.easy-agent-root) ::before,
+:where(.easy-agent-root) ::after {
+  box-sizing: border-box;
+  border-width: 0;
+  border-style: solid;
+  border-color: #e5e7eb;
+}
+
+:where(.easy-agent-root) blockquote,
+:where(.easy-agent-root) dl,
+:where(.easy-agent-root) dd,
+:where(.easy-agent-root) h1,
+:where(.easy-agent-root) h2,
+:where(.easy-agent-root) h3,
+:where(.easy-agent-root) h4,
+:where(.easy-agent-root) h5,
+:where(.easy-agent-root) h6,
+:where(.easy-agent-root) hr,
+:where(.easy-agent-root) figure,
+:where(.easy-agent-root) p,
+:where(.easy-agent-root) pre {
+  margin: 0;
+}
+
+/* 标题沿用正文字号（组件 CSS 只设置 margin/weight），保持原有视觉效果 */
+:where(.easy-agent-root) h1,
+:where(.easy-agent-root) h2,
+:where(.easy-agent-root) h3,
+:where(.easy-agent-root) h4,
+:where(.easy-agent-root) h5,
+:where(.easy-agent-root) h6 {
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+:where(.easy-agent-root) ol,
+:where(.easy-agent-root) ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+:where(.easy-agent-root) img,
+:where(.easy-agent-root) svg,
+:where(.easy-agent-root) video,
+:where(.easy-agent-root) canvas,
+:where(.easy-agent-root) iframe {
+  display: block;
+  vertical-align: middle;
+}
+
+:where(.easy-agent-root) img,
+:where(.easy-agent-root) video {
+  max-width: 100%;
+  height: auto;
+}
+
+:where(.easy-agent-root) button,
+:where(.easy-agent-root) input,
+:where(.easy-agent-root) optgroup,
+:where(.easy-agent-root) select,
+:where(.easy-agent-root) textarea {
+  font-family: inherit;
+  font-size: 100%;
+  font-weight: inherit;
+  line-height: inherit;
+  color: inherit;
+  margin: 0;
+  padding: 0;
+}
+
+:where(.easy-agent-root) button,
+:where(.easy-agent-root) select {
+  text-transform: none;
+}
+
+/* 唯一刻意降低的优先级：原规则含 [type='button'] 等属性选择器（0,1,0），与 .el-button
+   同优先级、按加载顺序决胜（原注释要求「重置必须先于 element 主题加载」）。嵌入宿主后
+   模块 CSS 总是晚于宿主的 element 主题，这里用 :where() 把属性选择器归零，el-button 不再丢底色 */
+:where(.easy-agent-root) button,
+:where(.easy-agent-root) :where([type='button'], [type='reset'], [type='submit']) {
+  -webkit-appearance: button;
+  background-color: transparent;
+  background-image: none;
+}
+
+/* Win10 Chrome 在 -webkit-appearance:button 时忽略按钮内部的 flex 居中，
+   图标贴着继承来的 1.6 行高上沿，工具栏看起来上浮、互相不齐。
+   只改输入框底栏按钮，不波及加号菜单里的文字按钮。 */
+:where(.easy-agent-root) .input-actions .plus-btn,
+:where(.easy-agent-root) .input-actions .web-search-btn,
+:where(.easy-agent-root) .input-actions .model-btn,
+:where(.easy-agent-root) .input-actions .send-btn,
+:where(.easy-agent-root) .input-actions .stop-btn,
+:where(.easy-agent-root) .input-actions .expert-chip-clear {
+  -webkit-appearance: none;
+  appearance: none;
+  line-height: 1;
+}
+
+:where(.easy-agent-root) input::placeholder,
+:where(.easy-agent-root) textarea::placeholder {
+  opacity: 1;
+  color: #9ca3af;
+}
+
+:where(.easy-agent-root) textarea {
+  resize: vertical;
+}
+
+:where(.easy-agent-root) a {
+  color: inherit;
+  text-decoration: inherit;
+}
+
+:where(.easy-agent-root) b,
+:where(.easy-agent-root) strong {
+  font-weight: bolder;
+}
+
+:where(.easy-agent-root) pre,
+:where(.easy-agent-root) code,
+:where(.easy-agent-root) kbd,
+:where(.easy-agent-root) samp {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 1em;
+}
+
+:where(.easy-agent-root) table {
+  border-collapse: collapse;
+  text-indent: 0;
+}
+
+:where(.easy-agent-root) hr {
+  height: 0;
+  color: inherit;
+  border-top-width: 1px;
+}
+
+:where(.easy-agent-root) [hidden] {
+  display: none;
+}
+
+:where(.easy-agent-root),
+:where(.easy-agent-root) * {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:where(.easy-agent-root) input,
+:where(.easy-agent-root) textarea,
+:where(.easy-agent-root) button,
+:where(.easy-agent-root) select {
+  font-family: 'Microsoft YaHei', '微软雅黑', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* 模块内滚动区域的滚动条（不改宿主页面滚动条） */
+:where(.easy-agent-root) ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+:where(.easy-agent-root) ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:where(.easy-agent-root) ::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+:where(.easy-agent-root) ::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* 专家头像配色（.ea-0 ~ .ea-7）：由 utils/expertAvatar.js 按 export_agent_id 哈希取档，
+   技能中心专家 Tab、+ 号下拉、输入框专家胶囊、回答面板标识四处共用，同一专家处处同色。
+   注意：组件里的头像基础样式（.expert-badge-avatar / .plus-expert-avatar / .expert-avatar
+   等）**不再声明 background/color** —— scoped 规则会带上 [data-v-x]，与 .easy-agent-root .ea-N
+   同权重（0,2,0），谁后注入谁生效，必然打架。这里加根节点前缀只是防住将来新增的单类样式；
+   :host 供 AI 侧边栏 SDK（影子根）。浅底 + 深字，深浅主题各一套；改档数时需同步 EXPERT_PALETTE_SIZE。 */
+.easy-agent-root .ea-0, :host .ea-0 { background: #d0e5fb; color: #0a5299; }
+.easy-agent-root .ea-1, :host .ea-1 { background: #fbe7c5; color: #905c09; }
+.easy-agent-root .ea-2, :host .ea-2 { background: #f9d7e2; color: #960d3b; }
+.easy-agent-root .ea-3, :host .ea-3 { background: #e3f3ce; color: #4a6f15; }
+.easy-agent-root .ea-4, :host .ea-4 { background: #d9d7f9; color: #19109e; }
+.easy-agent-root .ea-5, :host .ea-5 { background: #d3f3e8; color: #176e51; }
+.easy-agent-root .ea-6, :host .ea-6 { background: #fad6d6; color: #990a0a; }
+.easy-agent-root .ea-7, :host .ea-7 { background: #d1ecf5; color: #14617b; }
+
+.easy-agent-root[data-theme="dark"] .ea-0 { background: #2b66a1; color: #d9ebfd; }
+.easy-agent-root[data-theme="dark"] .ea-1 { background: #8f6219; color: #fdf3e2; }
+.easy-agent-root[data-theme="dark"] .ea-2 { background: #933454; color: #fbdfe9; }
+.easy-agent-root[data-theme="dark"] .ea-3 { background: #577d21; color: #f4fde7; }
+.easy-agent-root[data-theme="dark"] .ea-4 { background: #3b33a3; color: #dcdafb; }
+.easy-agent-root[data-theme="dark"] .ea-5 { background: #1f7a5c; color: #e7fef6; }
+.easy-agent-root[data-theme="dark"] .ea-6 { background: #9b3131; color: #fcdfdf; }
+.easy-agent-root[data-theme="dark"] .ea-7 { background: #277691; color: #ddf5fd; }

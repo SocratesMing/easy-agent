@@ -9,6 +9,19 @@ from easy_agent.models.db import ScheduledTaskModel
 from fastapi.testclient import TestClient
 
 
+def _scheduled(db):
+    """T3c：定时任务/执行记录走领域 repository（Database 转发方法已删除）。"""
+    from easy_agent.db.repositories.scheduled_task_repository import (
+        ScheduledTaskRepository,
+    )
+
+    if isinstance(db, ScheduledTaskRepository):
+        return db
+    if hasattr(db, "create_scheduled_task") and not hasattr(db, "get_connection"):
+        return db
+    return ScheduledTaskRepository(db)
+
+
 def _seed_task(client: TestClient, task_id: str = "unit-task-1"):
     db = get_database()
     task = ScheduledTaskModel(
@@ -19,7 +32,7 @@ def _seed_task(client: TestClient, task_id: str = "unit-task-1"):
         task_prompt="ping",
         enabled=1,
     )
-    db.create_scheduled_task(task)
+    _scheduled(db).create_scheduled_task(task)
     return task_id
 
 
@@ -49,6 +62,39 @@ def test_run_task(client: TestClient):
     # 运行需要智能体；无论成功触发还是因无智能体失败，都不应返回 5xx 之外的错误
     resp = client.post(f"/agent/scheduled-tasks/{tid}/run")
     assert resp.status_code < 600
+
+
+def test_task_workspace_file_rejects_bad_token(client: TestClient):
+    tid = _seed_task(client, "unit-task-ws-bad")
+    resp = client.get(
+        f"/agent/scheduled-tasks/{tid}/workspace/file",
+        params={"file_path": "x.md", "token": "not-a-token"},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "登录已过期或未登录，请重新登录"
+
+
+def test_task_workspace_file_accepts_valid_token(client: TestClient):
+    """token 查询参数认证通过后进入文件定位（文件不存在 -> 404，而非 401）。"""
+    registered = client.post(
+        "/api/auth/register",
+        json={
+            "username": "testuser",
+            "password": "secret123",
+            "organization_id": "test-org",
+            "employee_id": "E-scheduled-ws",
+        },
+    )
+    assert registered.status_code == 200
+    token = registered.json()["access_token"]
+    tid = _seed_task(client, "unit-task-ws-ok")
+
+    resp = client.get(
+        f"/agent/scheduled-tasks/{tid}/workspace/file",
+        params={"file_path": "missing.md", "token": token},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "文件不存在"
 
 
 def test_delete_task(client: TestClient):

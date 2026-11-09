@@ -24,28 +24,29 @@ env/
 .git/
 .gitignore
 
-# Docker
-Dockerfile
-docker/
-
-# Frontend dev artifacts (we build in Docker)
+# Frontend dev artifacts（frontend-vue2/dist 需打进前端镜像，勿排除）
 frontend/node_modules/
+frontend-vue2/node_modules/
 frontend/.vite/
+frontend/dist/
 
 # Data & logs (runtime generated)
 data/
 logs/
 workspace/
 memories/
+sessions/
 *.db
 
-# Config with secrets (use env-specific templates instead)
-easy_agent/config/config.yaml
-
-# Test & docs
+# Test & docs（保留提示词 markdown）
 tests/
 *.md
-!easy_agent/config/system_prompt.md
+!easy_agent/config/**/*.md
+!deploy/**/*.md
+!skills/**/*.md
+!prompts/**/*.md
+!experts/**/*.md
+
 
 # OS
 .DS_Store

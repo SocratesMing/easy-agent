@@ -1,24 +1,7 @@
-from .auth import (
-    hash_password,
-    verify_password,
-    create_access_token,
-    decode_access_token,
-    get_username_from_token,
-)
-from .file_parser import parse_file_content
-from .session import get_owned_session, session_owned_by
-from .session_logger import SessionLogger
-from .task_logger import log_task_event
+"""通用工具包：密码与 JWT、文件解析、会话 / 任务日志、部署校验等。
 
-__all__ = [
-    "hash_password",
-    "verify_password",
-    "create_access_token",
-    "decode_access_token",
-    "get_username_from_token",
-    "parse_file_content",
-    "get_owned_session",
-    "session_owned_by",
-    "SessionLogger",
-    "log_task_event",
-]
+包入口不导入任何子模块：在这里导入会让任何 ``utils`` 子模块都连带加载文件解析器等重模块。
+请直接从子模块导入，例如 ``easy_agent.utils.auth.create_access_token``。会话归属校验在
+``db/session_ownership.py``，分布式锁在 ``persistence/distributed_lock.py``（都依赖数据库，
+不属于这一层）。
+"""

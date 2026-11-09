@@ -11,36 +11,34 @@ license = {text = "MIT"}
 dependencies = [
     "pydantic>=2.0.0",
     "pyyaml>=6.0.0",
-    "deepagents>=0.1.0",
-    "langchain>=1.3.0",
+    "deepagents>=0.7.28,<0.8",
+    "langchain>=1.4.6,<1.5",
     "langchain-anthropic>=0.3.0",
     "langchain-openai>=0.3.0",
     "fastapi>=0.115.0",
+    "httpx>=0.28.0,<1",
     "uvicorn[standard]>=0.34.0",
     "python-multipart>=0.0.18",
+    "openpyxl>=3.0.0",
     "pymysql>=1.1.0",
     "DBUtils>=3.0.0",
     "bcrypt>=4.1.0",
     "python-jose[cryptography]>=3.3.0",
-    "schedule>=1.2.0",
     "apscheduler>=3.10.0,<4.0.0",
     "langchain-mcp-adapters>=0.1.0",
-    "requests>=2.34.2",
-    "mysql-mcp-server>=0.4.0",
+    # 生产 HITL checkpointer（官方 AsyncSqliteSaver）；不能放在可选依赖里，否则镜像和 CI 都装不上
+    "langgraph-checkpoint-sqlite>=3.1.2",
 ]
 
 [project.scripts]
-easy-web = "easy_agent.web_runner:run_web"
+easy-web = "easy_agent.bootstrap.web_runner:run_web"
+# NOTE: 历史上的 easy-knowledge-worker 指向不存在的 easy_agent.knowledge.worker，
+# 已移除；知识库 worker 由应用 lifespan（knowledges.runtime.lifecycle）托管。
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-]
 docs = [
     "python-docx>=1.0.0",
     "python-pptx>=1.0.0",
-    "openpyxl>=3.0.0",
     "pymupdf>=1.24.0",
     "pdfplumber>=0.11.0",
     "pdfminer.six>=20231228",
@@ -61,16 +59,110 @@ include-package-data = true
 include = ["easy_agent*"]
 exclude = ["tests*"]
 
+# 包内运行时资源（配置模板、提示词片段、静态资源）必须随 wheel 安装，
+# 否则 pip 安装场景启动时会退化为内置默认提示词 / 找不到配置。
+[tool.setuptools.package-data]
+easy_agent = [
+    "config/*.yaml",
+    "config/*.json",
+    "config/**/*.md",
+    "prompts/**/*.md",
+    "static/**/*",
+]
+
+[tool.pyright]
+# 类型检查按目录接入（T12）：先用 basic 模式覆盖数据层 / 基础工具 / 流式核心三个目录，
+# 稳定后再逐步扩大；不要一次 include 全仓（存量未覆盖目录留着分批接入）。
+# - basic 模式：捕获真实可判定的类型错误，不强制完整注解（项目大量代码是渐进类型化的）；
+# - venv/venvPath：CI 在 `uv sync --frozen` 之后才有 .venv，本地开发同样用仓库根 .venv；
+#   没有它时第三方依赖会被判成 MissingImport，产生大面积假阳性；
+# - pythonVersion 固定 3.11：项目声明 requires-python >= 3.11，按最低支持版本检查，
+#   避免 CI 的更新 Python 上误用更高版本才有的 typing 特性；
+# - extraPaths 加仓库根：pyright 从子目录反查 `easy_agent.*` 导入时需要。
+typeCheckingMode = "basic"
+include = [
+    "easy_agent/db/repositories",
+    "easy_agent/utils",
+    "easy_agent/services/streaming",
+]
+exclude = [
+    "**/__pycache__",
+    "easy_agent/skills/**",
+    "skills/**",
+]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.11"
+extraPaths = ["."]
+# 少数第三方包只发布运行期代码、没有 py.typed / stub（jose、openpyxl、xlrd 等）：
+# 保持默认的 warning，不升级成 error，也不逐条 ignore（数量多且随依赖变化）。
+reportMissingModuleSource = "warning"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# 未知 marker 视为错误（防止 pytest.mark.sikp 之类的拼写错误被静默忽略）
+addopts = "--strict-markers"
 
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 default = true
 
 [dependency-groups]
+# 开发依赖只在这里声明（依赖组不进 wheel 元数据）；安装：uv pip install -e . --group dev
 dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
 ]
+
+
+# Ruff 配置：先只拦「语法错误 / 未定义名 / 失效导入」等致命问题，
+# 风格类规则（E402/F401/F841 等现存 50+）按审计 ARCH-19 分阶段治理。
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+respect-gitignore = true
+# docs/archive 下是当时的取证脚本，归档后不再修改；
+# 仓库根 skills/** 是 easy_agent/skills 的 vendored 副本（运行时技能，
+# scripts/skills/sync_skills.py 会与包内副本比对），和 easy_agent/skills 一样
+# 不属于后端服务代码，不参与 lint。
+exclude = [
+    "easy_agent/skills/**",
+    "easy_agent/static/**",
+    "skills/**",
+    ".venv",
+    "_analysis",
+    "docs/archive",
+]
+
+[tool.ruff.lint]
+# E9: 语法/IO 错误；F63/F7/F82: 无效比较、语法错误、未定义名——命中即代表运行期必坏。
+# F401/F811/F841: 未使用的 import、重复定义、未使用的局部变量，防止清理过的死代码长回来。
+# 有意保留的兼容重导出在 import 语句首行写 `# noqa: F401 - 原因`。
+# S110: try/except/pass 必须留痕——需要留痕的补日志，确属无害的写 `# noqa: S110 - 原因`
+#        （T1：吞错修复，见 docs/design/2026-11-01-backend-improvement-backlog.md）。
+# ASYNC: async def 里的同步阻塞调用；能放进线程的用 asyncio.to_thread / run_blocking，
+#        确属无害的写 `# noqa: ASYNC240 - 原因` 等（T13：ruff ASYNC 规则开启）。
+select = ["E9", "F63", "F7", "F82", "F401", "F811", "F841", "S110", "ASYNC"]
+
+# 测试不参与 T1 / T13 治理：命中的都是测试自身的语义（等异步任务就绪的轮询、假 backend
+# 复刻协议签名、故意阻塞事件循环验证监控、手动脚本的 input() 等），改测试写法不在本任务
+# 范围。这里逐文件只放开确认过的那几条，测试里新命中的其他规则仍然会被拦下。
+[tool.ruff.lint.per-file-ignores]
+# mcp-server/tests：启动 uvicorn 后轮询 server.started，等端口就绪（ASYNC110）。
+"mcp-server/tests/conftest.py" = ["ASYNC110"]
+"mcp-server/tests/test_app.py" = ["ASYNC110"]
+"mcp-server/tests/test_market.py" = ["ASYNC110"]
+# tests/helpers：手动 demo 脚本——吞掉 schema 探测异常（S110）、os.path.isdir 判断环境变量
+# 目录（ASYNC240）、交互式 input()（ASYNC250）。
+"tests/helpers/demo_mysql_mcp_gold.py" = ["S110", "ASYNC240"]
+"tests/helpers/interactive_agent.py" = ["ASYNC250"]
+"tests/helpers/virtual_root_agent.py" = ["ASYNC240", "ASYNC250"]
+# 单测：假 backend 复刻 aexecute(timeout=...) 协议签名（ASYNC109）；等后台任务置位 started
+# 的轮询（ASYNC110）；故意 time.sleep 阻塞事件循环以验证 lag 监控（ASYNC251）。
+"tests/agent/test_langsmith_sandbox.py" = ["ASYNC109"]
+"tests/api/test_expert.py" = ["ASYNC109"]
+"tests/services/test_metrics.py" = ["ASYNC251"]
+"tests/services/test_session_skill_registration.py" = ["ASYNC110"]
+"tests/services/test_stream_offload.py" = ["ASYNC110"]
+"tests/utils/test_blocking.py" = ["ASYNC110"]

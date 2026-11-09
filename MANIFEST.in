@@ -1,0 +1,9 @@
+include README.md
+include pyproject.toml
+recursive-include easy_agent/config *.yaml *.yml *.json *.md
+recursive-include easy_agent/prompts *.md
+recursive-include easy_agent/static *
+recursive-include prompts *.md
+recursive-include experts *
+recursive-include skills *
+global-exclude __pycache__ *.py[cod]

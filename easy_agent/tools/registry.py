@@ -1,0 +1,716 @@
+"""Agent 工具注册表：后端工具元数据的单一来源（D1）。
+
+本模块只负责两件事：
+
+1. **声明**：每个工具的 ``name`` / ``source`` / 是否内置 / 是否写操作 /
+   是否 HITL / 审批决策，集中在一处（``TOOL_REGISTRY``）；
+2. **装配**：按既有条件与顺序返回会话工具列表（``build_session_tools``），
+   使 ``services/agents/manager.py`` 不再逐个工具写 ``if/append``。
+
+约束（与改造前逐项等价）：
+
+- ``hitl.DEFAULT_INTERRUPT_TOOLS`` 由 :func:`default_interrupt_tool_names` 派生，
+  内容与顺序保持 ``("save_expert", "create_scheduled_task")``；
+- 注入顺序固定为 MCP 基底 → ``access_knowledge_original`` →
+  ``create_scheduled_task`` → ``save_expert`` → ``read_uploaded_file`` →
+  ``web_search``，条件与原 ``agent_manager`` 中的 ``if`` 一致；
+- 带 ``when`` 谓词的条件 HITL（``execute`` / ``access_knowledge_original``）的
+  决策与谓词名同样登记在表内，``agent.py`` 按注册表元数据构造 ``interrupt_on``；
+  谓词名到函数的绑定留在 ``agent.py``，注册表保持无包内 import 的叶子模块；
+- MCP 工具由 ``services/mcp/tools.py`` 运行时加载，本模块不静态枚举；未登记的名字
+  一律视为 ``mcp``（见 :func:`resolve_tool_source`）。
+
+设计文档：``docs/archive/design/2026-10-18-d1-tool-registry.md``。
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from typing import Any, Callable, Iterable, Iterator, Mapping
+
+logger = logging.getLogger("easy-agent.chat_service")
+
+# ── 来源枚举 ─────────────────────────────────────────────────────────────
+SOURCE_BUILTIN = "builtin"
+SOURCE_KNOWLEDGE = "knowledge"
+SOURCE_EXPERT = "expert"
+SOURCE_SCHEDULING = "scheduling"
+SOURCE_FILE_CONTEXT = "file_context"
+SOURCE_WEB_SEARCH = "web_search"
+SOURCE_MCP = "mcp"
+
+KNOWN_SOURCES = frozenset(
+    {
+        SOURCE_BUILTIN,
+        SOURCE_KNOWLEDGE,
+        SOURCE_EXPERT,
+        SOURCE_SCHEDULING,
+        SOURCE_FILE_CONTEXT,
+        SOURCE_WEB_SEARCH,
+        SOURCE_MCP,
+    }
+)
+
+#: ``interrupt_on`` 允许的决策（与 ``agent.py`` 现有配置一致）。
+ALLOWED_INTERRUPT_DECISIONS = ("approve", "edit", "reject")
+
+#: 删除类操作只给「批准 / 拒绝」：不给改参数，避免把 rm 的目标改成通配、
+#: 把删除路径改到审批之外的位置等方式绕过策略层（目录删除在 shell 层直接拒绝）。
+DESTRUCTIVE_INTERRUPT_DECISIONS = ("approve", "reject")
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """单个工具的元数据声明（不可变，见设计文档 §2）。
+
+    ``builder`` / ``condition`` 用 ``compare=False`` 排除在相等性之外：
+    它们只影响装配行为，不影响元数据比较（测试可用 ``dataclasses.replace`` 替换）。
+    """
+
+    name: str
+    source: str
+    description: str = ""
+    mutating: bool = False
+    is_hitl: bool = False
+    interrupt_decisions: tuple[str, ...] = ()
+    hitl_conditional: bool = False
+    #: ``when`` 谓词的注册名（如 ``is_destructive_command``）。仅条件 HITL 使用；
+    #: 由 ``agent.py`` 绑定到实际函数——注册表不 import 谓词实现（保持叶子模块）。
+    hitl_predicate: str = ""
+    #: HITL 触发条件的可读说明（文档/排查用，不参与判定）。
+    hitl_trigger_note: str = ""
+    hitl_order: int = 100
+    inject_order: int | None = None
+    condition_note: str = ""
+    #: 由技能带出（DA-13）：不进 agent 的工具列表，交给 SkillsMiddleware(tools=...)，模型读到或
+    #: pin 了在 ``metadata.include_tools`` 里声明它的技能之后才出现
+    skill_gated: bool = False
+    #: 工具开启时追加到系统提示词的行为约束（``agent/core.py`` 从这里读，不反向依赖工具实现）
+    prompt_note: str = ""
+    builder: Callable[["ToolBuildContext"], Any] | None = field(
+        default=None, repr=False, compare=False
+    )
+    condition: Callable[["ToolBuildContext"], bool] | None = field(
+        default=None, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        if not self.name or not self.name.strip():
+            raise ValueError("ToolSpec.name 不能为空")
+        if self.source not in KNOWN_SOURCES:
+            raise ValueError(f"未知工具来源: {self.source!r}（工具 {self.name!r}）")
+        if self.is_hitl:
+            if not self.interrupt_decisions:
+                raise ValueError(f"HITL 工具 {self.name!r} 必须声明 interrupt_decisions")
+            invalid = [
+                d for d in self.interrupt_decisions
+                if d not in ALLOWED_INTERRUPT_DECISIONS
+            ]
+            if invalid:
+                raise ValueError(
+                    f"HITL 工具 {self.name!r} 含非法决策 {invalid!r}，"
+                    f"允许值: {ALLOWED_INTERRUPT_DECISIONS!r}"
+                )
+        elif self.interrupt_decisions:
+            raise ValueError(f"非 HITL 工具 {self.name!r} 不应声明 interrupt_decisions")
+        if self.hitl_conditional and not self.is_hitl:
+            raise ValueError(f"hitl_conditional 仅对 HITL 工具有意义: {self.name!r}")
+        if self.hitl_conditional and not self.hitl_predicate:
+            raise ValueError(
+                f"条件 HITL 工具 {self.name!r} 必须声明 hitl_predicate（when 谓词名）"
+            )
+        if self.hitl_predicate and not self.hitl_conditional:
+            raise ValueError(
+                f"hitl_predicate 仅对条件 HITL 有效: {self.name!r}"
+            )
+        if self.inject_order is not None and self.builder is None:
+            raise ValueError(f"可注入工具 {self.name!r} 缺少 builder")
+        if self.builder is not None and self.inject_order is None:
+            raise ValueError(
+                f"内置/非装配工具 {self.name!r} 不应声明 builder（由框架提供）"
+            )
+
+    @property
+    def is_builtin(self) -> bool:
+        """是否 DeepAgents 内置工具（不参与 ``build_session_tools`` 装配）。"""
+        return self.source == SOURCE_BUILTIN
+
+    @property
+    def is_injectable(self) -> bool:
+        """是否由本注册表装配注入。"""
+        return self.inject_order is not None
+
+
+@dataclass(frozen=True)
+class ToolBuildContext:
+    """装配会话工具时的只读上下文（字段均来自 ``agent_manager`` 现状）。"""
+
+    config: Any
+    username: str = "default"
+    session_id: str = ""
+    workspace_name: str = ""
+    enable_hitl: bool = True
+    model_name: str = ""
+    #: 专家会话（挂了专家）：不提供 save_expert，避免领域专家被借来创建 / 修改别的专家
+    expert_session: bool = False
+    web_search_tool: Any = None
+    edit_targets: Mapping[str, str] | None = None
+    #: 会话 → 本轮输入框选中的技能目录名（``{session_id: [dir_name, ...]}``）。
+    #: ``save_expert`` 用它把技能包写进专家的 ``export_required_skills``——技能胶囊
+    #: 只在请求体的 ``skills`` 字段里，工具侧看不到，必须由装配根暂存一份。
+    turn_skills: Mapping[str, list[str]] | None = None
+    # 工具工厂（按工具名索引），由装配根 ``agent_manager._tool_factories()`` 提供。
+    # 注册表刻意不 import tools/knowledge 模块，保持包内无 import 边的叶子模块，
+    # 避免把 tools.registry 并进既有 knowledge→scheduler→agent_manager SCC。
+    factories: Mapping[str, Callable[..., Any]] | None = None
+
+    @property
+    def sid(self) -> str:
+        """日志用短会话 id（与 agent_manager 现有 ``session_id[-5:]`` 口径一致）。"""
+        return (self.session_id or "new")[-5:]
+
+
+# ── 注入条件（与改造前 agent_manager 中的 if 一一对应） ──────────────────
+
+
+def _scheduled_task_enabled(ctx: ToolBuildContext) -> bool:
+    return bool(ctx.enable_hitl)
+
+
+def _save_expert_enabled(ctx: ToolBuildContext) -> bool:
+    # 非专家会话都注入，且**不参与技能门控**：创建专家的入口是产品级的，不能依赖用户手里
+    # 那份 expert-creator 技能的 frontmatter 写成什么样。DA-13 曾把它交给技能带出，结果
+    # 升级前整份复制到用户目录的旧副本（frontmatter 没有 metadata.include_tools）永远
+    # 披露不出这个工具，「新建专家」直接不可用。见 agent/core.py 的 _ALWAYS_AVAILABLE_TOOLS。
+    return not ctx.expert_session
+
+
+def _file_context_enabled(ctx: ToolBuildContext) -> bool:
+    file_context = getattr(ctx.config, "file_context", None)
+    return file_context is not None and bool(getattr(file_context, "enabled", True))
+
+
+def _web_search_enabled(ctx: ToolBuildContext) -> bool:
+    return ctx.web_search_tool is not None
+
+
+# ── 工具工厂（由装配根注入，注册表保持包内无 import 边） ─────────────────
+#
+# 这里不 ``import`` 任何 tools/knowledge 模块，工具工厂由
+# ``agent_manager._tool_factories()`` 经 ``ToolBuildContext.factories`` 注入，
+# 测试可以直接换成假工厂。最初这样做是为了不并进当年的
+# knowledge-chat-scheduler-core SCC；该环已在 A1 拆掉，2026-10-19 核对过：
+# 工厂所在模块都没有回到本模块的 import 路径，把工厂直接登记进 ToolSpec
+# 不会形成环（可作为后续简化，届时测试改为替换 builder）。
+
+
+def _get_factory(ctx: ToolBuildContext, name: str) -> Callable[..., Any]:
+    factories = ctx.factories or {}
+    factory = factories.get(name)
+    if factory is None:
+        raise LookupError(
+            f"工具工厂未提供: {name!r}（应由 agent_manager._tool_factories 注入）"
+        )
+    return factory
+
+
+def _build_knowledge_tools(ctx: ToolBuildContext) -> list:
+    # 与原实现一致：extend_agent_tools 内部按 KnowledgeConfig.enabled 决定是否
+    # 返回工具，并自行捕获异常；这里以空列表为基底，只取它追加的条目。
+    extender = _get_factory(ctx, "access_knowledge_original")
+    return extender(
+        [],
+        config=ctx.config,
+        username=ctx.username,
+        session_id=ctx.session_id,
+        workspace_name=ctx.workspace_name,
+    )
+
+
+def _build_scheduled_task_tool(ctx: ToolBuildContext) -> Any:
+    factory = _get_factory(ctx, "create_scheduled_task")
+    return factory(username=ctx.username, session_id=ctx.session_id or "")
+
+
+def _build_save_expert_tool(ctx: ToolBuildContext) -> Any:
+    factory = _get_factory(ctx, "save_expert")
+    tool = factory(
+        username=ctx.username,
+        session_id=ctx.session_id or "",
+        config_model=ctx.model_name or "",
+        tag_options=getattr(ctx.config, "expert_tags", None),
+        # 传同一张表（不能 ``or {}``：空表会被换成新字典），之后写入的绑定和技能工具才看得到
+        edit_targets=ctx.edit_targets if ctx.edit_targets is not None else {},
+        turn_skills=ctx.turn_skills if ctx.turn_skills is not None else {},
+    )
+    logger.info(f"[{ctx.sid}] 🧑‍🔬 已注入 save_expert 工具")
+    return tool
+
+
+def _build_read_uploaded_file_tool(ctx: ToolBuildContext) -> Any:
+    factory = _get_factory(ctx, "read_uploaded_file")
+    tool = factory(username=ctx.username, session_id=ctx.session_id or "")
+    logger.info(f"[{ctx.sid}] 📎 已注入 read_uploaded_file 工具")
+    return tool
+
+
+def _build_web_search_tool(ctx: ToolBuildContext) -> Any:
+    if ctx.web_search_tool is None:
+        return None
+    logger.info(f"[{ctx.sid}] 🌐 联网搜索已开启（注入 web_search 工具）")
+    return ctx.web_search_tool
+
+
+# 联网搜索开启时追加到系统提示词的行为约束（web_search 条目的 prompt_note）
+#
+# 「来源标注」小节是硬要求：只写「关键结论请给出来源链接」时，模型会把来源理解成
+# 一串媒体名（「来源：网络搜索（新华社、央行官网…）」），正文里没有任何可跳转链接。
+# 这里把「写法 / 位置 / 数量 / 禁止项 / 示例」全部写成可照做的规则：
+#   表格来源列 / 正文句末 `[媒体名](链接)` → 前端 renderer.link 渲染成新标签页可点链接
+#   （表格单元格内的链接同样走 renderer.link；beautifySourceLinks 的三个正则都要求整行匹配，
+#    表格行以 `|` 开头不会命中，因此不会被误当成来源卡片）；
+#   文末 `- [标题](链接)` 独占行 → 前端 beautifySourceLinks 渲染成来源卡片。
+# 链接必须原样取自工具结果的「链接」字段，Model 侧不做任何改写。
+#
+# 粒度：事实给链接、观点不给。早期版本要求「凡是事实、数据、结论都逐句标」，模型会把
+# 自身的推断也挂上链接，还会在相邻两句重复挂同一个 URL；清单型回答（Top 10 之类）则因为
+# 表格单元格里没有「句末」，整列来源退化为纯文本。故按「结构化列优先，叙述次之，观点不标」
+# 分组重写。
+_WEB_SEARCH_PROMPT_NOTE = """## 联网搜索
+
+- 用户已开启「联网搜索」，你可以调用 `web_search` 工具检索公开网页信息。
+- 涉及实时/时效性内容（新闻、政策、行情、价格、版本号、人物动态、近期事件）或你不确定的事实时，先调用 `web_search` 核实再回答。
+- 检索结果来自公网，可能不完整或不准确；关键结论请交叉验证。
+
+### 来源标注（硬要求，不可省略）
+
+**核心原则：事实给链接，观点不给。** 从检索结果里读到的事件、数字、时间，必须落在带链接的位置——
+要么表格 / 清单的「来源 / 时间」列，要么正文句末；你自己做的分析、推断、排序理由、风险判断、建议
+不标链接，那是你的观点，标了会让人误以为原文这么说过。
+
+- **表格 / 清单的来源列必须带链接**：凡用表格或清单罗列多条信息，就在「来源 / 时间」这类列里把每个
+  媒体名写成 `[媒体名](链接)`，时间写在链接外面：`[第一财经](https://…) 11-05 18:00；[NBC](https://…) 11-05 07:51`。
+  列成表却不给链接，读者无法逐条核对，视为不合格。
+- **时间一律换算成北京时间（UTC+8）**：按 `MM-dd HH:mm` 格式书写（如 `11-06 14:30`），不要出现「UTC」字样；
+  检索结果里只有 UTC 或其他时区时间时，先换算再写。
+- **不要输出裸 URL 或用反引号包裹 URL**：链接一律走 `[媒体名](URL)` 语法——反引号里的 URL
+  不会渲染成可点击链接，用户无法跳转。
+- **正文叙述标在句末标点之后**：`……收益率下行 3bp。[新华社](https://…)`；
+  不要写成 `……下行 3bp[新华社](https://…)。`——媒体名会看起来像句子的一部分。
+- **同一篇来源只挂一次链接**：第一次出现时标出，后文再提到写纯媒体名即可；
+  不要在相邻两句里重复挂同一个 URL，也不要把同一篇的多个转载当成多个来源分别标。
+- **一句话含多个来源时**，在对应分句后各标一个，一句不超过 2 个。
+- **链接必须原样照抄**工具结果里该条的「链接」字段，不要改写、拼接、缩略，也不要凭记忆或经验编写。
+- **一条结果 = 一个链接 = 一篇报道**：一次检索里每条结果对应一个页面，只能用来支撑一条事件的来源。
+  不得把某条结果里顺带提到的其他新闻拆成多行、再统一挂上这一个链接——那样每行都指向同一篇文章，
+  读者点开只会看到与文字无关的内容，这是最严重的错误。
+- **列表页 / 频道页 / 关键词聚合页不能当来源**：结果里标注了「该页是列表/频道/关键词聚合页」的条目，
+  只能当作检索线索。想引用其中某条标题，必须先用该标题再检索一次，拿到文章页链接后才能写进来源列。
+- **同一个链接不得出现在表格的多行里**：出现这种情况说明你把一个页面当成了多条新闻，
+  必须改成逐条重新检索、各给各的文章页链接。
+- **媒体名写法**：优先用结果里的中文站名（`新华社`、`证券时报`）；只有域名时（`www.pbc.gov.cn`）
+  取主体 `pbc.gov.cn`。不要拼接成 `中信建投 via 新浪财经` 这类自造形式，媒体名一律写站名本身；
+  也不要写「网络搜索」「搜索结果」「公开资料」这类泛称。
+- **总结段不重复标注**：对前文表格、清单做的归纳、排序、交叉验证、风险提示，不再逐句挂链接——
+  前面已经标过，重复标注会让正文读起来像一串脚注。
+- **文末清单只列实际用过的来源**：回答最后另起一行加粗写 `参考来源`，每条一行、按首次引用顺序，
+  格式 `- [文章标题](链接)`，标题取结果里的 `[n] 标题`（可去掉末尾的站名后缀）。
+  只列正文或表格里真正引用过的条目；检索到但没用上的不要列——否则读者点开会发现
+  「文章里没有你写的这句话」，整篇的可信度都会被打折。
+- **禁止无链接的来源汇总**：不得只写「来源：网络搜索（新华社、央行官网、中新网等）」这类没有 URL 的一句话——
+  没有链接就等于没有来源，会被判定为不合格回答。
+- **不得张冠李戴**：链接必须与该条事实对应；检索结果里没有的内容，不要配一个看起来像的链接。
+
+示例（列成表格时链接进来源列，分析段不标）：
+
+```
+| # | 事件 | 来源 / 时间 |
+|---|---|---|
+| 1 | 央行开展 2630 亿元 7 天逆回购 | [新华社](https://www.news.cn/xxx.html) 11-05 17:00 |
+| 2 | 10 年期国债收益率 1.65% | [央行官网](https://www.pbc.gov.cn/xxx.html) 11-05 17:20 |
+
+……10 年期国债收益率运行在 1.65% 附近，较上月末下行 3bp。[央行官网](https://www.pbc.gov.cn/xxx.html)
+
+两点判断：逆回购放量说明短端流动性偏松；长端仍停在 1.65% 附近，说明市场更在意供给压力。
+
+**参考来源**
+- [央行开展 2630 亿元逆回购操作](https://www.news.cn/xxx.html)
+- [三季度货币政策执行报告](https://www.pbc.gov.cn/xxx.html)
+```
+
+（上例最后一段是分析，没有链接；表格每一行、正文每一次引用都有链接。）
+
+### 检索纪律
+
+- 单轮回答的检索次数尽量控制在 1~3 次：先想清楚检索词再调用，结果不足时更换关键词，不要机械重复相同查询。
+- 工具报错或结果为空时如实告知用户，不要编造结果，也不要输出任何来源链接。
+"""
+
+
+# 联网搜索关闭/未配置时追加到系统提示词的纪律约束（agent/core.py 在关闭分支引用）。
+# 背景：关闭联网搜索只挡住了 web_search 工具，挡不住模型借 execute/shell 里的
+# curl / Python urllib 等直发网络请求（沙箱网络默认 host）。这段纪律明确禁止
+# 规划与执行任何联网取数步骤，把「地球按钮」变成 Agent 的网络总闸。
+# 注意：MCP/连接器等进程内工具调用不在此约束范围（它们不走 shell）。
+WEB_SEARCH_OFF_PROMPT_NOTE = """## 联网搜索（当前关闭）
+
+- 本轮未开启「联网搜索」：你没有 web_search 工具，禁止规划或执行任何访问外网获取数据的步骤，包括在 execute/shell 中用 curl、wget、ping 或 Python 的 urllib / requests / httpx 等方式发起网络请求来检索、下载数据。
+- 规划任务（write_todos）时不得出现「联网搜索 / 网上查询 / 检索最新数据」类步骤；所需信息只能来自：用户上传的文件、工作区文件、知识库，以及你已有的知识。
+- 复述本会话此前检索到的结果时，引用来源一律使用 markdown 链接格式 `[媒体名](完整URL)`，不要输出裸 URL，也不要用反引号包裹 URL；提到的时间一律换算成北京时间（UTC+8），按 `MM-dd HH:mm` 格式书写（如 11-06 14:30），不要出现「UTC」字样。
+- 如果任务确实需要最新的外部数据，或用户给出 URL 要求抓取网页，如实告知用户"当前未开启联网搜索"，请用户点击输入框的地球图标开启后再继续，不要自行尝试其他联网途径。
+"""
+
+
+# ── 注册表本体 ───────────────────────────────────────────────────────────
+#
+# 声明顺序 = 阅读顺序；实际注入顺序由 inject_order 决定，
+# HITL 名单顺序由 hitl_order 决定（保证 DEFAULT_INTERRUPT_TOOLS 逐字不变）。
+
+TOOL_REGISTRY: tuple[ToolSpec, ...] = (
+    # DeepAgents 内置工具（框架自动提供，inject_order=None）
+    ToolSpec(
+        name="ls",
+        source=SOURCE_BUILTIN,
+        description="列出目录内容（DeepAgents 内置）",
+    ),
+    ToolSpec(
+        name="read_file",
+        source=SOURCE_BUILTIN,
+        description="读取文件（DeepAgents 内置）",
+    ),
+    ToolSpec(
+        name="write_file",
+        source=SOURCE_BUILTIN,
+        description="写入文件（DeepAgents 内置；是否进 HITL 为独立产品决策）",
+        mutating=True,
+    ),
+    ToolSpec(
+        name="edit_file",
+        source=SOURCE_BUILTIN,
+        description="编辑文件（DeepAgents 内置；是否进 HITL 为独立产品决策）",
+        mutating=True,
+    ),
+    ToolSpec(
+        name="glob",
+        source=SOURCE_BUILTIN,
+        description="按 glob 匹配路径（DeepAgents 内置）",
+    ),
+    ToolSpec(
+        name="grep",
+        source=SOURCE_BUILTIN,
+        description="按正则检索文件内容（DeepAgents 内置）",
+    ),
+    ToolSpec(
+        name="execute",
+        source=SOURCE_BUILTIN,
+        description="沙箱内执行 Shell 命令（DeepAgents 内置）",
+        mutating=True,
+        is_hitl=True,
+        # 只有删除类命令才进审批，因此只给批准/拒绝：删除参数不可编辑。
+        interrupt_decisions=DESTRUCTIVE_INTERRUPT_DECISIONS,
+        # 删除类命令才进审批；目录删除直接拒绝，不进入审批。
+        hitl_conditional=True,
+        hitl_predicate="is_destructive_command",
+        hitl_trigger_note=(
+            "command 命中文件删除类模式（rm/unlink/shred 等）；目录删除直接拒绝"
+        ),
+        hitl_order=0,
+    ),
+    ToolSpec(
+        name="write_todos",
+        source=SOURCE_BUILTIN,
+        description="任务规划清单（DeepAgents 0.7 需显式 TodoListMiddleware）",
+    ),
+    ToolSpec(
+        name="delete",
+        source=SOURCE_BUILTIN,
+        description="删除文件或目录（DeepAgents 0.7 新增；默认进 HITL）",
+        mutating=True,
+        is_hitl=True,
+        interrupt_decisions=DESTRUCTIVE_INTERRUPT_DECISIONS,
+        hitl_order=5,
+    ),
+    ToolSpec(
+        name="task",
+        source=SOURCE_BUILTIN,
+        description="派生子代理（DeepAgents 内置）",
+    ),
+    # 应用注入工具（顺序 10/20/30/40/50，与改造前 if/append 顺序一致）
+    ToolSpec(
+        name="access_knowledge_original",
+        source=SOURCE_KNOWLEDGE,
+        description="按权限访问知识库原文（list/metadata/extract/materialize）",
+        mutating=True,
+        is_hitl=True,
+        interrupt_decisions=("approve", "edit", "reject"),
+        # 仅 action=materialize 触发审批（list/metadata/extract 只读，无需审批）。
+        hitl_conditional=True,
+        hitl_predicate="is_knowledge_materialize",
+        hitl_trigger_note="args.action == 'materialize'",
+        hitl_order=30,
+        inject_order=10,
+        condition_note="总是尝试；KnowledgeConfig.enabled 由 extend_agent_tools 内部判定",
+        builder=_build_knowledge_tools,
+    ),
+    ToolSpec(
+        name="create_scheduled_task",
+        source=SOURCE_SCHEDULING,
+        description="创建 cron 定时任务",
+        mutating=True,
+        is_hitl=True,
+        interrupt_decisions=("approve", "edit", "reject"),
+        hitl_order=20,
+        inject_order=20,
+        condition_note="enable_hitl=True",
+        condition=_scheduled_task_enabled,
+        builder=_build_scheduled_task_tool,
+    ),
+    ToolSpec(
+        name="save_expert",
+        source=SOURCE_EXPERT,
+        description="在对话内新建/修改专家配置",
+        mutating=True,
+        is_hitl=True,
+        interrupt_decisions=("approve", "edit", "reject"),
+        hitl_order=10,
+        inject_order=30,
+        condition_note="非专家会话（产品级入口，不参与技能门控）",
+        condition=_save_expert_enabled,
+        builder=_build_save_expert_tool,
+    ),
+    ToolSpec(
+        name="read_uploaded_file",
+        source=SOURCE_FILE_CONTEXT,
+        description=(
+            "按需读取/重解析用户上传文件正文（会回填 uploads/ 正文与清单）；"
+            "名字含 upload，历史 HITL 名字启发式会将其纳入审批（FW-12 保持等价）"
+        ),
+        mutating=True,
+        inject_order=40,
+        condition_note="config.file_context.enabled（缺省开启）",
+        condition=_file_context_enabled,
+        builder=_build_read_uploaded_file_tool,
+    ),
+    ToolSpec(
+        name="web_search",
+        source=SOURCE_WEB_SEARCH,
+        description="联网搜索（需配置 api_url/api_key）",
+        inject_order=50,
+        condition_note="本轮开启且 create_web_search_tool 返回工具",
+        prompt_note=_WEB_SEARCH_PROMPT_NOTE,
+        condition=_web_search_enabled,
+        builder=_build_web_search_tool,
+    ),
+)
+
+
+def _validate_registry(specs: Iterable[ToolSpec]) -> None:
+    """导入期校验：名字唯一、注入顺序唯一（顺序冲突会导致装配不确定）。"""
+    names: set[str] = set()
+    inject_orders: dict[int, str] = {}
+    for spec in specs:
+        if spec.name in names:
+            raise ValueError(f"工具注册表名字重复: {spec.name!r}")
+        names.add(spec.name)
+        if spec.inject_order is not None:
+            previous = inject_orders.get(spec.inject_order)
+            if previous is not None:
+                raise ValueError(
+                    f"工具注册表 inject_order 冲突: {previous!r} 与 {spec.name!r} "
+                    f"都是 {spec.inject_order}"
+                )
+            inject_orders[spec.inject_order] = spec.name
+
+
+_validate_registry(TOOL_REGISTRY)
+
+
+# ── 查询函数 ─────────────────────────────────────────────────────────────
+
+
+def iter_tool_specs() -> Iterator[ToolSpec]:
+    """按声明顺序迭代全部注册条目。"""
+    return iter(TOOL_REGISTRY)
+
+
+def tool_names() -> tuple[str, ...]:
+    """全部已登记工具名（不含动态 MCP 工具）。"""
+    return tuple(spec.name for spec in TOOL_REGISTRY)
+
+
+def get_tool_spec(name: str) -> ToolSpec | None:
+    """按名查询；未登记（如 MCP 动态工具）返回 ``None``。"""
+    for spec in TOOL_REGISTRY:
+        if spec.name == name:
+            return spec
+    return None
+
+
+def require_tool_spec(name: str) -> ToolSpec:
+    """按名查询；未登记抛 ``KeyError``（需要强校验的调用方用）。"""
+    spec = get_tool_spec(name)
+    if spec is None:
+        raise KeyError(name)
+    return spec
+
+
+def builtin_tool_names() -> tuple[str, ...]:
+    """DeepAgents 内置工具名单（框架自动提供，不装配）。"""
+    return tuple(spec.name for spec in TOOL_REGISTRY if spec.is_builtin)
+
+
+def hitl_tool_specs() -> tuple[ToolSpec, ...]:
+    """全部 HITL 工具（含条件 HITL），按 ``hitl_order`` 排序。
+
+    该顺序即 ``agent.py`` 构造 ``interrupt_on`` 的顺序：``execute`` →
+    ``save_expert`` → ``create_scheduled_task`` → ``access_knowledge_original``。
+    """
+    return tuple(
+        sorted(
+            (spec for spec in TOOL_REGISTRY if spec.is_hitl),
+            key=lambda spec: (spec.hitl_order, spec.name),
+        )
+    )
+
+
+def default_interrupt_tool_names() -> tuple[str, ...]:
+    """派生 ``hitl.DEFAULT_INTERRUPT_TOOLS``。
+
+    只包含**无条件** HITL 工具；``execute`` / ``access_knowledge_original`` 带
+    ``when`` 谓词，由 ``agent.py`` 按注册表的 ``hitl_predicate`` 元数据构造，
+    不在此列表内。
+    """
+    return tuple(
+        spec.name
+        for spec in hitl_tool_specs()
+        if not spec.hitl_conditional
+    )
+
+
+def hitl_predicate_names() -> tuple[str, ...]:
+    """条件 HITL 用到的全部 ``when`` 谓词注册名（去重，保持声明顺序）。
+
+    供 ``agent.py`` 绑定实际函数、测试校验「注册表声明的谓词都已绑定」。
+    """
+    return tuple(
+        dict.fromkeys(spec.hitl_predicate for spec in TOOL_REGISTRY if spec.hitl_predicate)
+    )
+
+
+def is_hitl_tool(name: str) -> bool:
+    spec = get_tool_spec(name)
+    return bool(spec and spec.is_hitl)
+
+
+def is_mutating_tool(name: str) -> bool:
+    spec = get_tool_spec(name)
+    return bool(spec and spec.mutating)
+
+
+def name_heuristic_exempt_tools() -> frozenset[str]:
+    """``looks_like_mutating_tool`` 的豁免集合（名字启发式不适用）。
+
+    与改造前手写名单等价：已单独配置 HITL 的工具（``execute`` / ``save_expert`` /
+    ``create_scheduled_task`` / ``access_knowledge_original``）与只读内置工具
+    （``ls`` / ``read_file`` / ``glob`` / ``grep`` / ``write_todos`` / ``task``）。
+    """
+    return frozenset(
+        spec.name
+        for spec in TOOL_REGISTRY
+        if spec.is_hitl or (spec.is_builtin and not spec.mutating)
+    )
+
+
+def skill_gated_tool_names() -> frozenset[str]:
+    """由技能带出的工具名（DA-13）：建图时交给 SkillsMiddleware(tools=...)，不进 agent 工具列表。"""
+    return frozenset(spec.name for spec in TOOL_REGISTRY if spec.skill_gated)
+
+
+def resolve_tool_source(name: str) -> str:
+    """已登记返回其 ``source``；未登记名字视为 ``mcp``（动态加载，不静态枚举）。"""
+    spec = get_tool_spec(name)
+    return spec.source if spec is not None else SOURCE_MCP
+
+
+def ordered_injectable_specs() -> tuple[ToolSpec, ...]:
+    """按 ``inject_order`` 升序返回可注入条目。"""
+    return tuple(
+        sorted(
+            (spec for spec in TOOL_REGISTRY if spec.is_injectable),
+            key=lambda spec: int(spec.inject_order or 0),
+        )
+    )
+
+
+def build_session_tools(
+    base_tools: Iterable[Any] | None,
+    ctx: ToolBuildContext,
+    *,
+    specs: Iterable[ToolSpec] | None = None,
+) -> list:
+    """按注册表装配会话工具列表。
+
+    Args:
+        base_tools: 基底工具（当前为 MCP 工具），原样保留在最前。
+        ctx: 装配上下文（用户/会话/条件开关）。
+        specs: 仅测试用；默认使用 ``TOOL_REGISTRY`` 的可注入条目。
+
+    Returns:
+        新列表：``base_tools`` + 满足条件且构造成功的工具（顺序由 ``inject_order`` 决定）。
+        单个条目的构造异常只告警并跳过，不影响其余工具。
+    """
+    tools = list(base_tools or ())
+    ordered = ordered_injectable_specs() if specs is None else tuple(
+        sorted(
+            (spec for spec in specs if spec.is_injectable),
+            key=lambda spec: int(spec.inject_order or 0),
+        )
+    )
+    for spec in ordered:
+        if spec.condition is not None and not spec.condition(ctx):
+            continue
+        try:
+            built = spec.builder(ctx) if spec.builder is not None else None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[{ctx.sid}] 注入 {spec.name} 工具失败: {exc}")
+            continue
+        if built is None:
+            continue
+        if isinstance(built, (list, tuple)):
+            tools.extend(built)
+        else:
+            tools.append(built)
+    return tools
+
+
+__all__ = [
+    "ALLOWED_INTERRUPT_DECISIONS",
+    "DESTRUCTIVE_INTERRUPT_DECISIONS",
+    "KNOWN_SOURCES",
+    "SOURCE_BUILTIN",
+    "SOURCE_EXPERT",
+    "SOURCE_FILE_CONTEXT",
+    "SOURCE_KNOWLEDGE",
+    "SOURCE_MCP",
+    "SOURCE_SCHEDULING",
+    "SOURCE_WEB_SEARCH",
+    "TOOL_REGISTRY",
+    "ToolBuildContext",
+    "ToolSpec",
+    "WEB_SEARCH_OFF_PROMPT_NOTE",
+    "build_session_tools",
+    "builtin_tool_names",
+    "default_interrupt_tool_names",
+    "get_tool_spec",
+    "hitl_predicate_names",
+    "hitl_tool_specs",
+    "is_hitl_tool",
+    "is_mutating_tool",
+    "iter_tool_specs",
+    "name_heuristic_exempt_tools",
+    "ordered_injectable_specs",
+    "require_tool_spec",
+    "resolve_tool_source",
+    "tool_names",
+]

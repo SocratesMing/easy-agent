@@ -1,0 +1,822 @@
+"""Shared stream processor for DeepAgents hybrid streaming.
+
+Consumes (mode, data) events from agent.astream(stream_mode=['messages','updates'])
+and emits SSE event dicts. Unit-testable with synthetic messages (no agent loop).
+
+- ``updates`` mode: authoritative tool_call / tool_result / token_usage from
+  complete node outputs (model node AIMessage, tools node ToolMessage).
+- ``messages`` mode: token-level thinking / content (typewriter UX).
+
+Step semantics: one step per model turn. ``_step_advanced_this_turn`` is set when
+a turn's thinking/AIMessage first advances the step, and reset when the tools
+node's ToolMessage arrives (the turn boundary), so a turn that both thinks and
+calls a tool counts as a single step. Each turn gets its own thinking card
+(step-incrementing); reasoning that arrives in segments within one turn reopens
+that turn's card instead of creating a duplicate (no within-step split).
+"""
+import json
+import logging
+import re
+import time
+from typing import Any, cast
+
+logger = logging.getLogger(__name__)
+
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.utils.json import parse_partial_json
+
+from easy_agent.agent.model import extract_reasoning, is_internal_model_call
+from easy_agent.services.streaming.sse import SSEEvent
+
+
+# 需要「参数流式渲染」的工具：这些工具的 arguments 体量很大（write_file 的
+# content、edit_file 的 new_string 动辄几 KB～几十 KB）。若只在 updates 模式收到
+# 完整 AIMessage 时才下发 tool_call，用户在模型生成文件内容的整个过程中看不到
+# 任何反馈（大文件可能要等十几秒）。这里解析 messages 模式的 tool_call_chunks
+# 分片参数，边收边下发 tool_call_delta，前端即可实时渲染正在写入的文件内容。
+STREAM_ARG_TOOLS = {"write_file", "edit_file", "write_tool"}
+
+
+def _truncate(text, limit: int) -> str:
+    text = str(text or "")
+    if len(text) > limit:
+        return text[:limit] + "..."
+    return text
+
+
+def _fmt_tool_args(args) -> str:
+    if not args:
+        return "{}"
+    try:
+        return json.dumps(args, ensure_ascii=False)
+    except Exception:
+        return str(args)
+
+
+def _is_error_result(text: str) -> bool:
+    """Check if a tool result string indicates an error (DeepAgents plain-text errors)."""
+    if not text:
+        return False
+    stripped = text.strip()
+    if stripped.startswith("Error:") or stripped.startswith("Error "):
+        return True
+    # 项目内自定义工具（scheduled_task / web_search 等）的失败约定
+    if stripped.startswith("错误："):
+        return True
+    if stripped.startswith("Cannot write to"):
+        return True
+    if "[Command failed with exit code" in stripped:
+        return True
+    stderr_match = re.search(r"\[stderr\]\s*(.+)", text, re.DOTALL)
+    if stderr_match:
+        stderr_lower = stderr_match.group(1).strip().lower()
+        return any(p in stderr_lower for p in (
+            "permission denied", "cannot create directory", "can't cd to",
+            "cannot cd to", "no such file", "not found", "command not found",
+            "is not a directory", "is not a file", "access denied",
+            "operation not permitted", "read-only",
+        ))
+    return False
+
+
+def _is_reemitted_reasoning(rc: str, accumulated: str) -> bool:
+    """Detect whether a reasoning chunk ``rc`` is a re-emission of reasoning
+    already accumulated for the current turn (``accumulated``).
+
+    Provider/LangGraph streams sometimes re-emit reasoning: either the full
+    aggregate (``rc == accumulated``) or a large contiguous block already
+    present earlier (prefix/suffix/middle). Appending such a chunk would
+    duplicate the step's thinking on the frontend ("分两次渲染").
+    A >50 char guard avoids false-positives on short legitimate repetition.
+    """
+    if not rc or not accumulated:
+        return False
+    if rc == accumulated:
+        return True
+    if len(rc) > 50 and rc in accumulated:
+        return True
+    return False
+
+
+def describe_cache_usage(cache_usage) -> str:
+    """把本轮各次模型调用的 (输入 token, 命中缓存 token) 写成一句日志；没有数据时返回空串。
+
+    看「首次调用」：每轮第一次调用的系统提示词里刚换上新记忆，若记忆变化让前缀缓存失效，
+    这一次只能命中系统提示词靠前的部分，整段历史都按未命中计费。同一轮后面的调用（工具
+    循环）系统提示词不变，命中率应接近 100%。服务端不返回缓存字段时全程为 0。
+    """
+    calls = [(int(inp), int(hit)) for inp, hit in (cache_usage or ()) if inp]
+    if not calls:
+        return ""
+    first_in, first_hit = calls[0]
+    total_in = sum(inp for inp, _ in calls)
+    total_hit = sum(hit for _, hit in calls)
+    return (
+        f"首次调用缓存命中 {first_hit}/{first_in} ({first_hit / first_in * 100:.0f}%) | "
+        f"全轮 {total_hit}/{total_in} ({total_hit / total_in * 100:.0f}%) | 调用 {len(calls)} 次"
+    )
+
+
+class StreamProcessor:
+    def __init__(self, *, sid: str = "", current_step: int = 0,
+                 blocks: list | None = None, db=None, session_id: str | None = None,
+                 message_id: str = "", session_logger=None,
+                 context_length: int | None = None,
+                 auto_compress_tokens: int | None = None,
+                 start_time: float | None = None,
+                 result_log_truncate: int = 5000,
+                 last_context_tokens: int = 0,
+                 accumulated_response: str = "",
+                 accumulated_thinking: str | None = None):
+        self.sid = sid
+        self.current_step = current_step
+        self.blocks = blocks if blocks is not None else []
+        self.db = db
+        self.session_id = session_id
+        self.message_id = message_id
+        self.session_logger = session_logger
+        self.context_length = context_length
+        self.auto_compress_tokens = auto_compress_tokens
+        # 说明：会话累计 token（pre_session_tokens / session_estimate）已移除，
+        # 前端只按类型展示本轮 input/output/reasoning。
+        self.start_time = start_time if start_time is not None else time.time()
+        self.result_log_truncate = result_log_truncate
+
+        self.is_in_thinking = False
+        self.thinking_start_time = None
+        self.thinking_step_start_len = len(self._thinking_text())
+        self.accumulated_thinking = (
+            accumulated_thinking if accumulated_thinking is not None
+            else self._thinking_text()
+        )
+        self.accumulated_response = accumulated_response
+        self.tool_call_start_times: dict[str, float] = {}
+        # 注意：**不做跨步累加**（历史实现里的 total_usage 已移除）。
+        # 前端每次渲染的是「当前 step / 最近一次模型调用」的用量 —— agent 多步会
+        # 反复发送同一份上下文，累加值会被放大数倍（实测同一份 15.8k 上下文跑 5 步
+        # 累加成 70k），与"当前上下文占用"语义冲突。
+        self.last_usage = {
+            "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0}
+        self.last_context_tokens = last_context_tokens
+        self._step_advanced_this_turn = False
+        self._todo_emitted_for: set[str] = set()
+        self._last_token_usage_time = 0.0
+        # 上一次下发 token_usage 所属的 step。step 变化即回合边界，必须强制下发一帧，
+        # 否则两次边界事件间隔 < 0.3s 时会被节流吞掉，前端「会话信息」就会丢掉整个 step
+        # （表现为只在 done 时跳一次值）。
+        self._last_token_usage_step = 0
+        # 每步统计：在 step 边界（_reset_step_stats）清零，用于「stepN 结束」汇总行。
+        self._step_thinking_len = 0
+        self._step_content_len = 0
+        self._step_tool_count = 0
+        self._step_usage = {
+            "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0, "cached_tokens": 0}
+        self._step_end_logged: set = set()
+        # 本轮每次模型调用的 (输入 token, 其中命中前缀缓存的 token)，只用于日志
+        # （describe_cache_usage）：核对「记忆每轮改写会不会让历史前缀缓存失效」。
+        self.cache_usage: list[tuple[int, int]] = []
+
+        # 累计思考耗时：同一 turn 内思考被分段（如 思考->工具调用->继续思考）时，
+        # 保存上一段已结束的 duration，使该 turn 最终"用时"为各段之和。
+        self._thinking_duration_acc = 0.0
+
+        # PERF: thinking 的 full_content 全量快照节流。
+        # 旧实现每个 chunk 都重发本 step 全量思考（O(n²)）：实测 71K 字符思考
+        # 会产生约 365MB SSE 与同等量级内存。前端同时支持「content 增量 append」
+        # 与「full_content SET 幂等覆盖」，因此只在首包/每 1.5s/每增长 8K 字符时
+        # 发送全量快照，既保留纠错能力又把带宽降到 O(n)。
+        self.THINKING_SNAPSHOT_INTERVAL = 1.5
+        self.THINKING_SNAPSHOT_MIN_GROWTH = 8192
+        self._thinking_snapshot_ts = 0.0
+        self._thinking_snapshot_len = 0
+        self._thinking_snapshot_step = -1
+        # 当前 step 的思考内容缓存：避免每 chunk 对 accumulated_thinking 做 O(n) 切片。
+        self._thinking_step_content = ""
+
+        # tool_call_chunks 参数流式累积：index -> {id, name, raw, last_emit}。
+        # 仅在 messages 模式解析大参数工具（见 STREAM_ARG_TOOLS）时使用，
+        # 每个 model turn 结束（updates 的完整 AIMessage 到达）时清空。
+        self._arg_stream: dict = {}
+
+        # ── 诊断采集（只读，供收尾日志判定「模型是否静默截断」）──────────────
+        # 这些字段不参与事件产出与状态机，仅用于回答「这一轮模型到底怎么结束的」。
+        # 见 orchestrator._log_stream_diagnostics。
+        self.last_finish_reason: str | None = None
+        self.tool_call_count = 0
+        self.invalid_tool_call_count = 0
+        self.last_turn_tool_call_count = 0
+        self.last_turn_invalid_tool_call_count = 0
+        # 最后一轮 tool_calls 参数的序列化长度：判断「output token 到底落到了哪里」。
+        # 注意 LangChain 用 parse_partial_json 容错解析，**被砍断的参数多会被补成
+        # 合法但缺字段的 tool_call**（不进 invalid_tool_calls），因此只靠
+        # invalid 计数抓不到这类截断，必须同时看参数长度。
+        self.last_turn_tool_args_len = 0
+        self.invalid_tool_call_sample = ""
+        # 已跳过的中间件内部模型调用来源（如 summarization），每种只记一次日志。
+        self._internal_sources_skipped: set[str] = set()
+
+    def _thinking_text(self) -> str:
+        blk = next((b for b in self.blocks if b.get("type") == "thinking"), None)
+        return blk.get("content", "") if blk else ""
+
+    def handle(self, mode: str, data: Any) -> list[dict]:
+        if mode == "updates":
+            return self._handle_updates(data)
+        if mode == "messages":
+            return self._handle_messages(data)
+        return []
+
+    def _handle_updates(self, data: dict) -> list[dict]:
+        events = []
+        for node, delta in (data.items() if isinstance(data, dict) else []):
+            if not isinstance(delta, dict):
+                continue
+            for m in delta.get("messages", []):
+                if isinstance(m, AIMessage):
+                    events.extend(self._on_ai_message(m))
+                elif isinstance(m, ToolMessage):
+                    events.extend(self._on_tool_message(m))
+        return events
+
+    def _advance_step_for_turn(self) -> None:
+        if not self._step_advanced_this_turn:
+            self.current_step += 1
+            self._step_advanced_this_turn = True
+
+    def _end_thinking(self) -> list[dict]:
+        """End the current thinking phase.
+
+        Sets the duration on the *current* (last) thinking block, resets
+        ``is_in_thinking`` and emits a ``thinking_end`` event. The block is
+        located by type (not ``blocks[-1]``) so this stays correct even when a
+        ``tool_call`` block was appended after the thinking block -- which is
+        exactly what happens when the model thinks and then immediately calls a
+        tool without emitting text content in between.
+
+        When a single turn's thinking is split into several segments (e.g. the
+        model emits reasoning, then a tool call, then more reasoning for the
+        same turn), ``_thinking_duration_acc`` holds the previously ended
+        segment's duration so the final value is the cumulative thinking time
+        for that turn (see the reopen logic in ``_handle_messages``).
+
+        Returns an empty list when not currently thinking (idempotent).
+        """
+        if not self.is_in_thinking:
+            return []
+        dur = (round(time.time() - self.thinking_start_time, 2) if self.thinking_start_time else 0) + self._thinking_duration_acc
+        target = None
+        for blk in reversed(self.blocks):
+            if blk.get("type") == "thinking":
+                target = blk
+                target["duration"] = dur
+                break
+        self.is_in_thinking = False
+        self._thinking_duration_acc = 0.0
+        content = target.get("content", "") if target is not None else ""
+        _content_len = len(content)
+        self._step_thinking_len = _content_len
+        # 合并「推理过程开始/结束」为一行：打印用时、长度与推理内容前 100 字预览。
+        logger.info(
+            "[%s] step%d 🧠 | 用时=%.2fs | 长度=%d字符 | 内容: %s",
+            self.sid, self.current_step, dur, _content_len,
+            _truncate(content, 100),
+        )
+        return [{"type": SSEEvent.THINKING_END, "duration": dur, "step": self.current_step}]
+
+    def _on_ai_message(self, m: AIMessage) -> list[dict]:
+        events = []
+        self._collect_turn_diagnostics(m)
+        # Each model turn = one step (unless thinking already advanced it).
+        # NOTE: do NOT reset _step_advanced_this_turn here -- the turn boundary
+        # is marked by the subsequent ToolMessage (see _on_tool_message). Resetting
+        # here would make late reasoning chunks (same turn, arriving after this
+        # AIMessage) increment the step and create a duplicate thinking card
+        # (within-step split).
+        _prev_step = self.current_step
+        self._advance_step_for_turn()
+        if self.current_step != _prev_step:
+            # 上一个 step（工具/思考）在下一个 model turn 开始时结束：先打印汇总再重置本步统计。
+            self._log_step_end(_prev_step)
+            self._reset_step_stats()
+        # If the model was thinking and now emits tool calls (no text content in
+        # between), close the thinking phase now. Otherwise is_in_thinking stays
+        # True: subsequent turns' thinking gets appended to accumulated_thinking
+        # but is lost from blocks, and the thinking block keeps duration=None
+        # (frontend shows a perpetual "思考中" spinner and history loses records).
+        events.extend(self._end_thinking())
+
+        for tc in (m.tool_calls or []):
+            # LangChain AIMessage.tool_calls 的 TypedDict.get 返回 Optional；缺字段按空串处理（与原行为一致）
+            tid = str(tc.get("id") or "")
+            name = str(tc.get("name") or "")
+            args = tc.get("args", {}) or {}
+            self._step_tool_count += 1
+            self.tool_call_start_times[tid] = time.time()
+            self.blocks.append({
+                "type": SSEEvent.TOOL_CALL, "tool_name": name, "tool_call_id": tid,
+                "arguments": args, "result": "", "success": True,
+                "duration": None, "step": self.current_step,
+                "order": len(self.blocks),
+            })
+            events.append({"type": SSEEvent.TOOL_CALL, "tool_name": name,
+                           "tool_call_id": tid, "arguments": args,
+                           "step": self.current_step})
+            events.extend(self._maybe_todo_from_args(name, tid, args))
+        # 本 turn 的参数流式分片已被完整 tool_calls 取代：清空累积状态，
+        # 供下一个 turn（tool_call_chunks 的 index 从 0 重新开始）重新累积。
+        self._arg_stream.clear()
+        self.consume_usage_metadata(m)
+        events.extend(self._emit_token_usage())
+        return events
+
+    def _collect_turn_diagnostics(self, m: AIMessage) -> None:
+        """采集「这一轮模型是怎么结束的」（纯读，不影响事件与状态机）。
+
+        用户侧的典型故障是「思考/正文吐了一半就没有了，工具也没执行、界面也没报错」。
+        成因分两类，都要能看到：
+
+        * 参数**根本不是 JSON**（如以裸文本开头）→ 进 ``invalid_tool_calls``，
+          既不下发 tool_call 事件、也不进 tools 节点、更不抛异常；
+        * 参数是 JSON 但被砍断 → LangChain 用 ``parse_partial_json`` 补成「合法但
+          缺字段」的 ``tool_calls``，工具会带着残缺参数执行（或缺参数直接报错）。
+          这类截断只能靠「output token 与参数长度的偏离」发现，故一并记下
+          ``last_turn_tool_args_len``。
+
+        这里只记计数与样本，由收尾日志统一打印（见
+        ``orchestrator._log_stream_diagnostics``）。
+        """
+        metadata = getattr(m, "response_metadata", None) or {}
+        # OpenAI 兼容网关用 finish_reason，Anthropic 风格用 stop_reason，二者取其一。
+        reason = metadata.get("finish_reason") or metadata.get("stop_reason")
+        if reason:
+            self.last_finish_reason = str(reason)
+        valid = getattr(m, "tool_calls", None) or []
+        invalid = getattr(m, "invalid_tool_calls", None) or []
+        self.tool_call_count += len(valid)
+        self.invalid_tool_call_count += len(invalid)
+        self.last_turn_tool_call_count = len(valid)
+        self.last_turn_invalid_tool_call_count = len(invalid)
+        self.last_turn_tool_args_len = sum(
+            len(_fmt_tool_args(tc.get("args"))) for tc in valid
+        )
+        if invalid:
+            last = invalid[-1]
+            name = str(last.get("name") or "")
+            args = last.get("args")
+            detail = args if isinstance(args, str) else _fmt_tool_args(args)
+            error = str(last.get("error") or "")
+            self.invalid_tool_call_sample = _truncate(
+                f"name={name or '<未命名>'} | error={error} | args={detail}", 200
+            )
+
+    def pending_arg_stream_names(self) -> list[str]:
+        """参数分片仍在累积、却始终没等到完整 AIMessage 的工具（诊断用，纯读）。
+
+        ``_arg_stream`` 每次完整 AIMessage 到达都会清空；流结束时仍有残留，说明
+        这些工具的参数分片被切断（模型停在中途 / 连接断开），是「静默截断」的
+        直接证据。
+        """
+        return [
+            f"{state.get('name') or '?'}:{len(state.get('raw') or '')}字符"
+            for state in self._arg_stream.values()
+            if state.get("raw")
+        ]
+
+    def _on_tool_message(self, m: ToolMessage) -> list[dict]:
+        # A tool result marks the end of a model turn: close any thinking phase
+        # still open (e.g. late reasoning that reopened the card after the
+        # AIMessage) and mark the turn done so the next reasoning starts a new
+        # step. In the normal flow thinking was already ended by _on_ai_message,
+        # so this is a no-op there.
+        events = list(self._end_thinking())
+        tid = m.tool_call_id
+        name = m.name or "tool"
+        result = str(m.content) if m.content else ""
+        is_error = bool(getattr(m, "additional_kwargs", {}).get("is_error", False))
+        if not is_error and result:
+            is_error = _is_error_result(result)
+        start = self.tool_call_start_times.pop(tid, None)
+        duration = round(time.time() - start, 2) if start else 0
+        args = {}
+        for blk in reversed(self.blocks):
+            if blk.get("type") == "tool_call" and blk.get("tool_call_id") == tid:
+                blk["result"] = result
+                blk["success"] = not is_error
+                blk["duration"] = duration
+                args = blk.get("arguments", {})
+                break
+        ev = {"type": SSEEvent.TOOL_RESULT, "tool_name": name, "tool_call_id": tid,
+              "arguments": args, "result": result, "success": not is_error,
+              "duration": duration, "step": self.current_step}
+        events.append(ev)
+        events.extend(self._maybe_todo_from_result(name, tid, result))
+        mark = "✅" if not is_error else "❌"
+        logger.info(
+            "[%s] step%d 🔧 %s %s | 参数: %s | 结果: %s | 耗时: %.2fs",
+            self.sid, self.current_step, name, mark,
+            _fmt_tool_args(args), _truncate(result, self.result_log_truncate), duration,
+        )
+        # 工具轮次不在此打印「step 结束」汇总：step 要等该 step 的「全部工具执行」之后，
+        # 在下一个思考/正文开始、或 finalize 时才真正结束。否则「结束」会排在工具之前/中间。
+        self._step_advanced_this_turn = False
+        return events
+
+    def _should_skip_internal_call(self, metadata) -> bool:
+        """摘要等中间件内部模型调用的 token 不是回复：返回 True 表示本 chunk 跳过。"""
+        if not is_internal_model_call(metadata):
+            return False
+        source = str(metadata.get("lc_source") or "internal")
+        if source not in self._internal_sources_skipped:
+            self._internal_sources_skipped.add(source)
+            logger.info(
+                "[%s] 跳过中间件内部模型调用的流式输出 | lc_source=%s",
+                self.sid, source,
+            )
+        return True
+
+    def _deduplicate_reasoning(self, rc: str) -> str:
+        """去掉 provider/LangGraph 在流末尾重放的整段 reasoning（避免同一 step 重复渲染）。"""
+        if not self._step_advanced_this_turn:
+            return rc
+        # 去重：当前 turn 的思考块已存在（_step_advanced_this_turn=True，即继续
+        # 思考或重开同一 step）时，部分 provider/LangGraph 会在流末尾重放整段
+        # reasoning（聚合块），其内容等于本 turn 已累积的思考。直接追加会使同一
+        # step 的思考内容重复（前端表现为"分两次渲染"）。检测到整段重复时跳过。
+        # 新 turn 的首段思考（_step_advanced_this_turn=False）不在此列，不会被误跳过。
+        turn_thinking = self._thinking_step_content
+        # 命中条件：整段重复（聚合块等于本 turn 已累积思考），或大段重复块
+        #（>50 字符，前缀/后缀/中段均算，避免短增量误伤）。均为
+        # provider/LangGraph 流末尾重放，直接追加会让同一 step 的思考内容
+        # 重复渲染。
+        if _is_reemitted_reasoning(rc, turn_thinking):
+            logger.info(
+                "[%s] step%d 跳过重复 reasoning (rc_len=%d turn_len=%d)",
+                self.sid, self.current_step, len(rc), len(turn_thinking),
+            )
+            return ""
+        return rc
+
+    def _begin_thinking_block(self) -> list[dict]:
+        """本轮思考真正开始时初始化状态（每 step 一张思考卡片），返回 thinking_start 事件。"""
+        if self.is_in_thinking:
+            return []
+        self.is_in_thinking = True
+        self.thinking_start_time = time.time()
+        # 重新进入思考（同一 step 的分段）：强制下一包发送全量快照。
+        self._thinking_snapshot_ts = 0.0
+        self._thinking_snapshot_len = 0
+        self._thinking_snapshot_step = -1
+        _prev_step = self.current_step
+        self._advance_step_for_turn()
+        # 每个 model turn（step）一张思考卡片，按 step 递增存储。仅当当前
+        # step 已存在被结束的 thinking 块时复用它（同一 turn 内思考被分段：
+        # 如 思考->工具调用->继续思考，或 messages 模式的 reasoning 晚于
+        # updates 模式的 AIMessage 到达），累计耗时并继续追加内容--避免一个
+        # step 的思考被渲染成多张卡片。仅匹配当前 step，跨 turn 不合并。
+        reused = None
+        for blk in reversed(self.blocks):
+            if blk.get("type") == "thinking" and blk.get("step") == self.current_step:
+                reused = blk
+                break
+        if reused is not None:
+            self._thinking_duration_acc = reused.get("duration") or 0
+            self._thinking_step_content = reused.get("content", "") or ""
+            # 不重置 duration=None：避免卡片在"思考过程"与"正在思考"间闪烁、
+            # 也避免同一步骤思考被视觉上分成两段。最终 _end_thinking 写入累计耗时。
+            # thinking_step_start_len 保留该块创建时的起点，使累积内容正确
+        else:
+            self._thinking_duration_acc = 0.0
+            self.thinking_step_start_len = len(self.accumulated_thinking)
+            self._thinking_step_content = ""
+            # 进入新 step：先打印上一步汇总，再清空本步统计（供「stepN 结束」
+            # 汇总行按步重新累计）。(step 结束也会在工具边界/_on_tool_message
+            # 与 finalize 处打印，_step_end_logged 去重保证只打印一次)
+            if _prev_step != self.current_step:
+                self._log_step_end(_prev_step)
+            self._reset_step_stats()
+            self.blocks.append({"type": "thinking", "order": len(self.blocks),
+                                "content": "", "step": self.current_step, "duration": None})
+        # 仅在本轮思考「真正开始」时发送一次 thinking_start 事件（前端用），
+        # 日志改为在 _end_thinking 合并为一行（含推理内容预览），不在此单独打印。
+        return [{"type": SSEEvent.THINKING_START, "step": self.current_step}]
+
+    def _thinking_event(self, rc: str, step_content: str) -> dict:
+        """增量 thinking 事件；首包/周期/大增量时带全量快照（前端 SET 幂等覆盖）。"""
+        # 增量 content 每包都发（前端 append）；full_content 仅在首包/周期/大增量时
+        # 发送（前端 SET 幂等覆盖），避免 O(n²) 带宽与内存放大。
+        now = time.time()
+        need_snapshot = (
+            self._thinking_snapshot_step != self.current_step
+            or len(step_content) - self._thinking_snapshot_len >= self.THINKING_SNAPSHOT_MIN_GROWTH
+            or now - self._thinking_snapshot_ts >= self.THINKING_SNAPSHOT_INTERVAL
+        )
+        if need_snapshot:
+            self._thinking_snapshot_step = self.current_step
+            self._thinking_snapshot_ts = now
+            self._thinking_snapshot_len = len(step_content)
+            return {"type": SSEEvent.THINKING, "content": rc,
+                    "full_content": step_content, "step": self.current_step}
+        return {"type": SSEEvent.THINKING, "content": rc, "step": self.current_step}
+
+    def _process_reasoning(self, rc: str) -> list[dict]:
+        """处理一包 reasoning：去重 → 按需开思考卡片 → 累积并下发 thinking 事件。"""
+        events: list[dict] = []
+        rc = self._deduplicate_reasoning(rc)
+        if rc:
+            events.extend(self._begin_thinking_block())
+        self.accumulated_thinking += rc
+        self._thinking_step_content += rc
+        step_content = self._thinking_step_content
+        for blk in reversed(self.blocks):
+            if blk.get("type") == "thinking":
+                blk["content"] = step_content
+                break
+        events.append(self._thinking_event(rc, step_content))
+        return events
+
+    def _process_content(self, content: str) -> list[dict]:
+        """处理一包正文：结束思考 → 推进 step → 累积并下发 content 事件。"""
+        events = self._end_thinking()
+        # 正文也按 step 计入 blocks（与思考/工具一致），持久化后历史会话能按
+        # order 还原"思考->正文->工具"的真实顺序，而非把所有正文合并到最后。
+        _prev_step = self.current_step
+        self._advance_step_for_turn()
+        if self.current_step != _prev_step:
+            # 上一个 step（思考/工具）在本轮正文开始时结束：先打印其汇总，再清空本步统计。
+            self._log_step_end(_prev_step)
+            self._reset_step_stats()
+        # accumulated_response 始终累积原文（含空白），保证 DB 持久化正文完整、
+        # 代码块缩进/换行不丢失。
+        self.accumulated_response += content
+        self._step_content_len += len(content)
+        cblk = None
+        for b in reversed(self.blocks):
+            if b.get("type") == "content" and b.get("step") == self.current_step:
+                cblk = b
+                break
+        if cblk is None:
+            cblk = {"type": "content", "order": len(self.blocks),
+                    "content": "", "step": self.current_step}
+            self.blocks.append(cblk)
+        # 累积原文（含空白），保持正文/代码格式完整
+        cblk["content"] += content
+        # 空白 token（换行/缩进）同样下发事件：前端按 token 累积正文，
+        # 若丢弃纯空白 chunk，标题/表格/代码块之间的换行会缺失，
+        # 导致 markdown 实时渲染成原始文本（历史记录用的是完整文本所以正常）。
+        events.append({"type": SSEEvent.CONTENT, "content": content, "step": self.current_step})
+        return events
+
+
+    def _handle_messages(self, data) -> list[dict]:
+        chunk, metadata = data
+        events = []
+        if not isinstance(chunk, AIMessageChunk):
+            return events
+        if self._should_skip_internal_call(metadata):
+            return events
+        rc = extract_reasoning(getattr(chunk, "additional_kwargs", {}))
+        content = chunk.content or ""
+        tcc = getattr(chunk, "tool_call_chunks", None) or []
+        if rc:
+            events.extend(self._process_reasoning(rc))
+        if content and not tcc:
+            # chunk.content 的静态类型是 str | list[block]；流式 token 实际只可能是 str，
+            # 非 str 内容沿用原行为（交给 _process_content，不做类型分支改写）。
+            events.extend(self._process_content(cast(str, content)))
+        # 大参数工具（write_file/edit_file）的 arguments 分片：边收边解析出当前
+        # 快照，下发 tool_call_delta 供前端实时渲染正在写入的内容。
+        if tcc:
+            events.extend(self._handle_tool_call_chunks(tcc))
+        return events
+
+    def _handle_tool_call_chunks(self, tcc) -> list[dict]:
+        """累积 tool_call_chunks 的裸参数串，为大参数工具下发参数快照。
+
+        OpenAI 兼容流把 tool_calls 的 arguments 按 token 分片下发（首个分片带
+        id/name，后续分片只有 args 片段）。这里按 ``index`` 累积原始 JSON 串，
+        用 parse_partial_json 解析出「当前最优快照」（允许截断），只对
+        STREAM_ARG_TOOLS 名单内的工具下发 ``tool_call_delta``。完整参数随后仍由
+        updates 模式的 ``tool_call`` 事件权威覆盖，二者不冲突。
+
+        为控制超大文件的开销，按 40ms 节流解析与下发；最后一次快照由最终
+        ``tool_call`` 事件补齐，不会丢内容。
+        """
+        events = []
+        now = time.time()
+        for tc in tcc:
+            idx = tc.get("index")
+            if idx is None:
+                idx = 0
+            state = self._arg_stream.get(idx)
+            if state is None:
+                state = {"id": "", "name": "", "raw": "", "last_emit": 0.0}
+                self._arg_stream[idx] = state
+            tid = tc.get("id") or ""
+            name = tc.get("name") or ""
+            if tid and not state["id"]:
+                state["id"] = tid
+            if name and not state["name"]:
+                state["name"] = name
+            frag = tc.get("args")
+            if frag:
+                state["raw"] += frag if isinstance(frag, str) else json.dumps(frag)
+            if state["name"] not in STREAM_ARG_TOOLS or not state["raw"]:
+                continue
+            # 节流：常规文件 40ms 一次；参数越大解析越贵（每次都是全量部分解析），
+            # 按体积自适应放宽到最多 ~0.4s 一次，避免超大文件出现 O(n^2) 解析开销。
+            raw_len = len(state["raw"])
+            min_interval = 0.04 if raw_len < 20000 else min(0.4, 0.04 + raw_len / 2_000_000)
+            if now - state["last_emit"] < min_interval:
+                continue
+            state["last_emit"] = now
+            parsed = self._parse_partial_args(state["raw"])
+            if not parsed:
+                continue
+            events.append({
+                "type": SSEEvent.TOOL_CALL_DELTA,
+                "tool_name": state["name"],
+                "tool_call_id": state["id"] or f"tool-{state['name']}",
+                "arguments": parsed,
+                "step": self.current_step,
+            })
+        return events
+
+    @staticmethod
+    def _parse_partial_args(raw: str):
+        """尽力解析可能被截断的 arguments JSON 串，失败返回 None。"""
+        try:
+            parsed = parse_partial_json(raw)
+        except Exception:  # noqa: BLE001 - 任意解析异常都不应中断流式输出
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    def _usage_payload(self, elapsed_time: float) -> dict:
+        """统一的用量负载（``token_usage`` 事件与 ``done`` 事件共用）。"""
+        last = self.last_usage
+        inp = last["input_tokens"]
+        return {
+            "input_tokens": inp,
+            "output_tokens": last["output_tokens"],
+            # 思考 token（output 的子集），前端据此展示拆分
+            "reasoning_tokens": last["reasoning_tokens"],
+            "context_tokens": self.last_context_tokens if self.last_context_tokens > 0 else inp,
+            "context_length": self.context_length,
+            "auto_compress_tokens": self.auto_compress_tokens,
+            "elapsed_time": round(elapsed_time, 2),
+            "step_count": self.current_step,
+        }
+
+    def _emit_token_usage(self) -> list[dict]:
+        now = time.time()
+        step = self.current_step
+        # 节流只用于同一步内的重复下发；step 边界一律下发，保证「会话信息」每个 step 都刷新一次。
+        if step == self._last_token_usage_step and now - self._last_token_usage_time < 0.3:
+            return []
+        self._last_token_usage_time = now
+        self._last_token_usage_step = step
+        # 下发"最近一次模型调用"的用量（不累加）
+        return [{"type": SSEEvent.TOKEN_USAGE, **self._usage_payload(now - self.start_time)}]
+
+    def _maybe_todo_from_args(self, name: str, tid: str, args) -> list[dict]:
+        if name != "write_todos" or tid in self._todo_emitted_for:
+            return []
+        todos = args.get("todos", []) if isinstance(args, dict) else []
+        if not todos:
+            return []
+        self._todo_emitted_for.add(tid)
+        return [{"type": SSEEvent.TODO_LIST, "todos": todos, "step": self.current_step}]
+
+    def _maybe_todo_from_result(self, name: str, tid: str, result: str) -> list[dict]:
+        if name != "write_todos" or tid in self._todo_emitted_for:
+            return []
+        todos = []
+        if result:
+            match = re.search(r"\[.*?\]", result, re.DOTALL)
+            if match:
+                try:
+                    parsed = json.loads(match.group(0))
+                    if isinstance(parsed, list):
+                        todos = parsed
+                except (json.JSONDecodeError, ValueError):
+                    pass
+        if not todos:
+            return []
+        self._todo_emitted_for.add(tid)
+        return [{"type": SSEEvent.TODO_LIST, "todos": todos, "step": self.current_step}]
+
+    def consume_usage_metadata(self, m: AIMessage) -> None:
+        um = getattr(m, "usage_metadata", None) or {}
+        if not um:
+            return
+        self._step_usage["input_tokens"] += um.get("input_tokens", 0)
+        self._step_usage["output_tokens"] += um.get("output_tokens", 0)
+        # 思考 token 拆分：LangChain 把服务端的 completion_tokens_details.reasoning_tokens
+        # 映射到 output_token_details.reasoning。它是 output_tokens 的子集，
+        # 单独累计用于展示（不重复计数）。
+        reasoning = (um.get("output_token_details") or {}).get("reasoning", 0) or 0
+        self._step_usage["reasoning_tokens"] += reasoning
+        # 命中前缀缓存的输入 token：LangChain 把 prompt_tokens_details.cached_tokens 映射到
+        # input_token_details.cache_read（DeepSeek 原生字段见 agent/model.py）。只记日志，
+        # 不进 token_usage 事件与落库字段。
+        cached = (um.get("input_token_details") or {}).get("cache_read", 0) or 0
+        self._step_usage["cached_tokens"] += cached
+        if um.get("input_tokens", 0) > 0:
+            self.cache_usage.append((um["input_tokens"], cached))
+        # 覆盖式记录"最近一次调用"，前端与持久化按类型展示用的就是它
+        self.last_usage = {
+            "input_tokens": um.get("input_tokens", 0),
+            "output_tokens": um.get("output_tokens", 0),
+            "reasoning_tokens": reasoning,
+        }
+        if um.get("input_tokens", 0) > 0:
+            self.last_context_tokens = um["input_tokens"]
+
+    def _reset_step_stats(self) -> None:
+        """清空本步累计统计，供下一个 step 重新开始累计。"""
+        self._step_thinking_len = 0
+        self._step_content_len = 0
+        self._step_tool_count = 0
+        self._step_usage = {
+            "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0, "cached_tokens": 0}
+
+    def _log_step_end(self, step: int) -> None:
+        """打印某一步的汇总日志（思考/正文/工具/token），每行以 step 开头。
+
+        通过 _step_end_logged 去重，确保只打印一次。触发点均为「step 真正结束之后」：
+        下一个思考开始（_handle_messages 的 else 分支）、本轮正文开始（content 分支）、
+        下一个 model turn 开始（_on_ai_message）、以及 finalize（最终步）。
+        这样「结束」汇总一定排在该 step 的全部工具执行之后。
+        """
+        if step <= 0 or step in self._step_end_logged:
+            return
+        self._step_end_logged.add(step)
+        # 正文预览：该 step 全部 content 块拼接后的前 100 字。放在 step 结束时打印，
+        # 此时内容已完整（首 chunk 可能只有一个字，中途截不出 100 字预览）。
+        if self._step_content_len > 0:
+            _preview = ""
+            for b in self.blocks:
+                if b.get("type") == "content" and b.get("step") == step:
+                    _preview += b.get("content", "") or ""
+            logger.info(
+                "[%s] step%d 📝 | 正文: %s",
+                self.sid, step, _truncate(_preview, 100),
+            )
+        inp = self._step_usage["input_tokens"]
+        out = self._step_usage["output_tokens"]
+        tot = inp + out
+        rea = self._step_usage.get("reasoning_tokens", 0)
+        ctx = self.last_context_tokens or inp
+        # 上下文占用率：本步上下文 token / 模型上下文窗口长度（context_length）。
+        if self.context_length:
+            _ctx_pct = ctx / self.context_length * 100
+            _ctx_str = f"{ctx}/{self.context_length:,} ({_ctx_pct:.1f}%)"
+        else:
+            _ctx_str = f"{ctx}"
+        cached = self._step_usage.get("cached_tokens", 0)
+        logger.info(
+            "[%s] step%d 结束 | 思考:%d字符 | 正文:%d字符 | 工具:%d | "
+            "Token(in/out/total):%d/%d/%d | 缓存命中:%d(%.0f%%) | 思考Token:%d | 上下文:%s",
+            self.sid, step, self._step_thinking_len, self._step_content_len,
+            self._step_tool_count, inp, out, tot, cached,
+            (cached / inp * 100) if inp else 0.0, rea, _ctx_str,
+        )
+
+    def _sse_blocks(self) -> list[dict]:
+        out = []
+        for b in self.blocks:
+            bt = b.get("type", "")
+            item = {"type": bt, "order": b.get("order", 0), "step": b.get("step", 0)}
+            if bt == "thinking":
+                item["content"] = (b.get("content", "") or "")[:3000]
+                item["duration"] = b.get("duration")
+            elif bt == "tool_call":
+                item["tool_name"] = b.get("tool_name", "")
+                item["tool_call_id"] = b.get("tool_call_id", "")
+                item["id"] = b.get("tool_call_id", "") or b.get("id", "")
+                item["arguments"] = b.get("arguments", {})
+                item["result"] = str(b.get("result", ""))[:3000]
+                item["success"] = b.get("success", True)
+                item["duration"] = b.get("duration")
+                if b.get("approval_status"):
+                    item["approval_status"] = b["approval_status"]
+            elif bt == "content":
+                _c = (b.get("content", "") or "")
+                # 过滤空/纯空白的 content block，避免 done 事件下发空正文
+                if not _c.strip():
+                    continue
+                item["content"] = _c[:8000]
+            out.append(item)
+        return out
+
+    def start(self) -> list[dict]:
+        return [{"type": SSEEvent.START, "session_id": self.session_id}]
+
+    def finalize(self, *, session_id, elapsed_time) -> list[dict]:
+        # 确保最后一步（如纯正文收尾、无工具边界）的汇总日志被打印。
+        self._log_step_end(self.current_step)
+        return [{
+            "type": SSEEvent.DONE, "session_id": session_id,
+            "elapsed_time": round(elapsed_time, 2),
+            "usage": self._usage_payload(elapsed_time),
+            "blocks": self._sse_blocks(),
+        }]

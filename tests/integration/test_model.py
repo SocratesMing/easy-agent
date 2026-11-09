@@ -1,4 +1,4 @@
-"""Characterization tests for easy_agent.model.
+"""Characterization tests for easy_agent.agent.model.
 
 Pin current behavior of model creation, reasoning extraction and image
 stripping so the Phase 1 structural refactor can be verified to preserve
@@ -12,11 +12,10 @@ project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
 
 import pytest
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 
-from easy_agent.config import (
+from easy_agent.bootstrap.config import (
     AgentConfig,
     Config,
     LLMConfig,
@@ -24,7 +23,7 @@ from easy_agent.config import (
     RetryConfig,
     ToolsConfig,
 )
-from easy_agent.model import (
+from easy_agent.agent.model import (
     ReasoningChatOpenAI,
     create_model,
     drop_incomplete_media_blocks,
@@ -69,16 +68,9 @@ class TestCreateModel:
         assert not hasattr(model, "supports_vision")
         assert model.max_retries == 2
 
-    def test_anthropic_protocol_returns_chat_anthropic(self):
-        model = create_model(_make_config(protocol="anthropic"))
-        assert isinstance(model, ChatAnthropic)
-        assert model.model == "mod"
-        assert model.max_retries == 2
-
-    def test_anthropic_thinking_budget_and_max_tokens(self):
-        model = create_model(_make_config(protocol="anthropic"))
-        assert model.thinking == {"type": "enabled", "budget_tokens": 10000}
-        assert model.max_tokens == 16000
+    def test_anthropic_protocol_is_no_longer_supported(self):
+        with pytest.raises(ValueError, match="Only 'openai'"):
+            create_model(_make_config(protocol="anthropic"))
 
     def test_missing_api_key_raises(self):
         provider = ProviderConfig(provider="p", api_key="", model="mod", protocol="openai")
@@ -187,32 +179,22 @@ class TestMediaBlockFiltering:
         assert content[0]["type"] == "image_url"
 
 
-class TestAnthropicConstants:
-    def test_constants_exist_and_match_previous_values(self):
-        from easy_agent.model import (
-            ANTHROPIC_MAX_TOKENS,
-            ANTHROPIC_THINKING_BUDGET_TOKENS,
-        )
-        assert ANTHROPIC_THINKING_BUDGET_TOKENS == 10000
-        assert ANTHROPIC_MAX_TOKENS == 16000
-
-
 class TestResolveLlmConfig:
     def test_resolves_named_model(self):
-        from easy_agent.model import resolve_llm_config
-        config = _make_config(protocol="anthropic")
+        from easy_agent.agent.model import resolve_llm_config
+        config = _make_config(protocol="openai")
         cfg = resolve_llm_config(config, "m")
         assert cfg.provider == "p"
         assert cfg.model == "mod"
-        assert cfg.protocol == "anthropic"
+        assert cfg.protocol == "openai"
         assert cfg.context_length == 128000
 
     def test_none_falls_back_to_active(self):
-        from easy_agent.model import resolve_llm_config
+        from easy_agent.agent.model import resolve_llm_config
         config = _make_config(protocol="openai")
         assert resolve_llm_config(config, None) is config.llm
 
     def test_unknown_model_falls_back_to_active(self):
-        from easy_agent.model import resolve_llm_config
+        from easy_agent.agent.model import resolve_llm_config
         config = _make_config(protocol="openai")
         assert resolve_llm_config(config, "nope") is config.llm

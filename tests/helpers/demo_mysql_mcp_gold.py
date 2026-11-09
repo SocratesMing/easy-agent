@@ -100,7 +100,6 @@ def _pick_sql_tool(tools: list) -> object:
 
 async def run_sql(sql_tool: object, statement: str) -> str:
     """调用 MCP SQL 工具，兼容不同参数名（query/sql/command/statement）。"""
-    import inspect
 
     schema = {}
     try:

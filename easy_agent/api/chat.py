@@ -2,29 +2,71 @@
 
 import asyncio
 import logging
-import uuid
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Request
 
-from ..db import Database, get_database
-from ..models.db import SessionModel
-from ..models.api import ChatRequest, ResumeRequest
-from ..middleware import get_current_username
-from ..services import (
-    chat_stream_generator,
-    resume_stream_generator,
-    get_or_create_agent_for_session,
-    remove_session_agent,
-    register_stream_task,
-    unregister_stream_task,
-    cancel_stream_task,
+from easy_agent.api.sse_response import sse_response
+from easy_agent.db.repositories.chat_repository import ChatRepository
+from easy_agent.db.repositories.stream_events import clear_stream_events
+from easy_agent.models.api import ChatRequest, ResumeRequest
+from easy_agent.middleware import get_current_username
+from easy_agent.services.agents.chat_turn import (
+    RefusalPlan,
+    prepare_resume,
+    prepare_turn,
+    require_turn_content,
 )
-from ..services.streaming import format_sse
-from ..utils import parse_file_content, SessionLogger, get_owned_session
-from .sessions import generate_workspace_name
+from easy_agent.services.agents.manager import (
+    aregister_stream_task,
+    aunregister_stream_task,
+    cancel_stream_task,
+    get_agent_config as _get_agent_config,
+    is_session_streaming,
+    remove_session_agent,
+)
+from easy_agent.services.streaming.emitter import SSEEmitter
+from easy_agent.services.streaming.sse import (
+    SSE_HEARTBEAT_FRAME,
+    heartbeat_interval_seconds,
+)
+from easy_agent.services.sessions.runtime import SessionBusyError
+from easy_agent.services.streaming.runs import finish_run, renew_run
+from easy_agent.services.streaming.hub import (  # noqa: F401 - 兼容旧导入路径
+    _HUB_HISTORY_MAX_CHARS,
+    _STREAM_HUB_TTL_SECONDS,
+    _SUBSCRIBER_QUEUE_SLACK,
+    _StreamHub,
+    _session_stream_hubs,
+    _stream_hub_for,
+    get_stream_hub,
+    pop_stream_hub,
+    session_stream_hubs,
+    stream_hub_for,
+)
+from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
+    as_chat_repository as _as_chat_repository,
+    get_chat_repository,
+)
+from easy_agent.api.chat_live import (  # noqa: F401 - 兼容旧导入路径
+    _LIVE_IDLE_ROUNDS,
+    _LIVE_PAGE_LIMIT,
+    _LIVE_POLL_SECONDS,
+    _frame_is_terminal,
+    chat_stream_live,
+    chat_stream_status,
+    router as chat_live_router,
+)
+from easy_agent.knowledges.chat.host_port import (
+    register_host_capabilities,
+)
+from easy_agent.services.streaming.orchestrator import (
+    chat_stream_generator as _host_chat_stream_generator,
+)
+from easy_agent.services.streaming.orchestrator import (
+    friendly_error_message as _friendly_error_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,230 +76,217 @@ router = APIRouter(
 )
 
 
-def generate_session_title(message: str, files: list | None) -> str:
-    """根据首条消息或首个上传文件生成会话标题。"""
-    if message and message.strip():
-        title = message.strip()
-        return title[:15] + "..." if len(title) > 15 else title
-    elif files and len(files) > 0:
-        filename = files[0].get("filename", "文件")
-        return filename[:15] + "..." if len(filename) > 15 else filename
-    return "未命名会话"
-
-
-def create_new_session(
-    db: Database,
-    session_id: str,
-    username: str,
-    message: str,
-    files: list | None,
-) -> str:
-    """创建新会话记录并返回其 workspace_name。"""
-    now = datetime.now().isoformat()
-    session_title = generate_session_title(message, files)
-    workspace_name = generate_workspace_name(session_id)
-    session_data = SessionModel(
-        session_id=session_id,
-        title=session_title,
-        messages=[],
-        created_at=now,
-        updated_at=now,
-        username=username,
-        workspace_name=workspace_name,
-    )
-    db.create_session(session_data)
-    db.update_session_workspace_name(session_id, workspace_name)
-    return workspace_name
+# 批次 4：repository provider 统一在 ``api.deps``；``get_chat_repository`` /
+# ``_as_chat_repository`` 由上方导入在模块级 re-export，旧导入路径不变。
+#
+# T4：本轮的准备逻辑（鉴权 / 技能解析 / 找会话 / 专家预检 / 知识检索 / 文件上下文 /
+# 用户消息落库 / 建 Agent / 登记 run）已下沉到 ``services/chat_turn``，路由只做
+# 「参数校验 → prepare_turn / prepare_resume → 构造 SSE 响应」。流的中枢驱动
+# （后台任务 + 事件 hub + run/流锁续约）仍留在本模块，因为它只决定「怎么回」而不是
+# 「准备什么」。
 
 
 _detached_bg_tasks: "set[asyncio.Task]" = set()
 
-# 会话级流式事件中枢：客户端刷新/重连后可通过 /stream/live 重新订阅，
-# 先回放本流已产生的全部事件，再持续接收后续事件（页面刷新不中断流式展示）。
-_session_stream_hubs: "dict[str, _StreamHub]" = {}
-_STREAM_HUB_TTL_SECONDS = 120.0
+# 流锁续约间隔：默认 TTL 30 分钟，5 分钟续一次，避免长任务被其它副本误判过期。
+_STREAM_HEARTBEAT_SECONDS = 300.0
 
 
-class _StreamHub:
-    """一个会话当前流式任务的事件广播器。
+async def _record_run_end(runs, run_id: str, status: str, error: str, sid: str) -> None:
+    """落 run 终态（Phase 2B）；写库失败只告警，不改变本轮流的结束方式。"""
+    try:
+        await asyncio.to_thread(finish_run, runs, run_id, status, error)
+    except Exception as exc:  # noqa: BLE001 - 收尾失败不改变错误流
+        logger.warning(f"[{sid}] 写入 run 终态失败（忽略）: {exc}")
 
-    后台任务把每个 SSE 分片广播给所有订阅者（原始客户端 + 刷新后重连的客户端），
-    并保留完整事件历史供新订阅者回放。任务结束后保留 TTL 秒，让迟到重连的
-    客户端仍能拿到 done/error 收尾事件。
-    """
 
-    def __init__(self, session_id: str):
-        self.session_id = session_id
-        self.history: list[str] = []
-        self.done = False
-        self._subscribers: list[asyncio.Queue] = []
-        self._cleanup_handle: asyncio.TimerHandle | None = None
+async def _renew_run_lease(runs, run_id: str, sid: str) -> None:
+    """续约 run 租约：失败只告警（可能已被启动恢复标记 interrupted），不打断正在执行的流。"""
+    try:
+        renewed = await asyncio.to_thread(renew_run, runs, run_id)
+        if not renewed:
+            logger.warning(
+                f"[{sid}] run 租约续约失败"
+                f"（可能已被恢复标记 interrupted）: {run_id}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[{sid}] run 租约续约异常（忽略本次）: {exc}")
 
-    def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=1000)
-        for item in self.history:
-            try:
-                q.put_nowait(item)
-            except asyncio.QueueFull:
-                break
-        if self.done:
-            q.put_nowait(None)
-        else:
-            self._subscribers.append(q)
-        return q
 
-    def unsubscribe(self, q: asyncio.Queue) -> None:
-        try:
-            self._subscribers.remove(q)
-        except ValueError:
-            pass
+async def _renew_stream_lock(renew_stream, session_id: str, sid: str) -> bool:
+    """续约跨副本流锁；返回 False 表示锁已被其它实例接管，应停止续约。"""
+    try:
+        renewed = await asyncio.to_thread(renew_stream, session_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[{sid}] 流锁续约异常（忽略本次）: {exc}")
+        return True
+    if not renewed:
+        logger.warning(f"[{sid}] 流锁续约失败（可能已被其它实例接管），停止续约")
+    return bool(renewed)
 
-    def broadcast(self, item: str | None) -> None:
-        if item is not None:
-            self.history.append(item)
-            if len(self.history) > 10000:
-                del self.history[: len(self.history) - 10000]
-        for q in list(self._subscribers):
-            try:
-                q.put_nowait(item)
-            except asyncio.QueueFull:
-                # 慢消费者：直接断开，避免阻塞后台流式任务
-                self.unsubscribe(q)
 
-    def close(self) -> None:
-        if self.done:
+async def _stream_heartbeat(session_id: str, sid: str, renew_stream, runs, run_id) -> None:
+    """每隔 ``_STREAM_HEARTBEAT_SECONDS`` 续约一次：run 租约与流锁同频。"""
+    while True:
+        await asyncio.sleep(_STREAM_HEARTBEAT_SECONDS)
+        if run_id is not None and runs is not None:
+            await _renew_run_lease(runs, run_id, sid)
+        if renew_stream is not None and not await _renew_stream_lock(
+            renew_stream, session_id, sid
+        ):
             return
-        self.done = True
-        self.broadcast(None)
-        self._subscribers.clear()
-        self._cleanup_handle = asyncio.get_running_loop().call_later(
-            _STREAM_HUB_TTL_SECONDS,
-            lambda: (
-                _session_stream_hubs.pop(self.session_id, None)
-                if _session_stream_hubs.get(self.session_id) is self
-                else None
-            ),
-        )
 
 
-async def _detached_event_stream(gen, session_id: str, sid: str):
+async def _stop_heartbeat(heartbeat: "asyncio.Task | None") -> None:
+    if heartbeat is None:
+        return
+    heartbeat.cancel()
+    try:
+        await heartbeat
+    except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110 - 心跳任务收尾噪声，无需处理
+        pass
+
+
+async def _clear_previous_events(stream_events, db, session_id: str, sid: str) -> None:
+    # 拿到跨副本流锁后再清旧轮次事件：避免把另一个 Pod 正在写的流删掉。
+    store = stream_events if stream_events is not None else db
+    if store is None:
+        return
+    try:
+        clear = getattr(store, "clear_stream_events", None)
+        if callable(clear):
+            await asyncio.to_thread(clear, session_id)
+        else:
+            await asyncio.to_thread(clear_stream_events, store, session_id)
+    except Exception as exc:  # noqa: BLE001 - 清理失败不影响本轮流
+        logger.warning(f"[{sid}] 清理旧 stream_events 失败: {exc}")
+
+
+async def _drive_stream(
+    gen, hub, queue: asyncio.Queue, emitter: SSEEmitter,
+    session_id: str, sid: str, renew_stream, db, runs, stream_events, run_id,
+) -> None:
+    """后台任务：推进生成器，把每个 SSE 分片广播给 hub 的全部订阅者（原始客户端队列也是其一）。
+
+    run 终态默认 failed（任何未预期退出都不能留下 running 假象），只有生成器正常耗尽才改为
+    completed；CancelledError（/cancel）标记 cancelled。
+    """
+    bg = asyncio.current_task()
+    registered = False
+    heartbeat = None
+    run_status = "failed"
+    run_error = ""
+    try:
+        await aregister_stream_task(session_id, bg)
+        registered = True
+        if db is not None or stream_events is not None:
+            await _clear_previous_events(stream_events, db, session_id, sid)
+        if renew_stream is not None or (run_id is not None and runs is not None):
+            heartbeat = asyncio.create_task(
+                _stream_heartbeat(session_id, sid, renew_stream, runs, run_id)
+            )
+        async for chunk in gen:
+            hub.broadcast(chunk)
+        run_status = "completed"
+    except SessionBusyError as e:
+        # 进程内兜底：不向共享 hub 广播（会污染正在运行的流），只结束本请求队列。
+        logger.warning(f"[{sid}] 会话已被占用，拒绝并发流: {e}")
+        run_error = f"SessionBusyError: {e}"
+        try:
+            queue.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
+    except asyncio.CancelledError:
+        logger.info(f"[{sid}] 后台流式任务被取消（/cancel）")
+        run_status = "cancelled"
+        raise
+    except Exception as e:
+        logger.error(f"[{sid}] 后台流式任务异常: {type(e).__name__}: {e}")
+        run_status = "failed"
+        run_error = f"{type(e).__name__}: {e}"
+        hub.broadcast(emitter.error(f"处理失败: {_friendly_error_message(e)}"))
+    finally:
+        await _stop_heartbeat(heartbeat)
+        if run_id is not None and runs is not None:
+            # 先落 run 终态再关闭 hub：即使随后进程崩溃，恢复扫描也不会把它
+            # 当成“仍在运行”（最坏情况是重复写一次 error，前端幂等展示）。
+            try:
+                await _record_run_end(runs, run_id, run_status, run_error, sid)
+            except asyncio.CancelledError:
+                logger.warning(f"[{sid}] 写入 run 终态被取消（忽略）: {run_id}")
+        if registered:
+            # 先关闭 hub（把终态交给持久化写入器），再释放 DB 流锁：
+            # /stream/live 在别的 Pod 上看到 owner 失效时，终态事件已经入队。
+            hub.close()
+            await aunregister_stream_task(session_id, bg)
+
+
+async def _detached_event_stream(
+    gen, session_id: str, sid: str, renew_stream=None, db=None, runs=None,
+    stream_events=None, run_id=None,
+):
     """以「后台任务 + 事件中枢」驱动流式生成器，与客户端断开解耦。
 
     后台任务推进 astream 并把 SSE 分片入队；客户端断开（登出/超时/关页）时仅停止
     向前端推送，后台任务继续运行至完成（含 DB 持久化），长任务因此不会被中断。
     /cancel 仍生效：后台任务已 register_stream_task 注册，可被 task.cancel() 取消。
     刷新页面后，新客户端可通过 /stream/live 订阅同一中枢继续接收事件。
+
+    ``run_id``（Phase 2B）：传入时后台任务与流锁心跳同频续约 run 租约，
+    并在正常结束/取消/异常时落 ``completed`` / ``cancelled`` / ``failed`` 终态；
+    不传（专家拒答流等非 run 生命周期）行为与改造前一致。``runs`` 是 run 记录域
+    repository（``ChatRepository.runs``）；迁移期传 ``db`` 也兼容（内部会适配）。
     """
+    emitter = SSEEmitter(session_id)
+    # run 生命周期优先用领域 repository（``runs``）；迁移期仍允许只传 ``db`` 的旧调用方
+    # （测试 / 尚未迁移的入口），由 run_registry 的适配层恢复成 AgentRunRepository。
+    run_store = runs if runs is not None else db
+    # 兜底：同会话已有运行中的流时，返回独立错误流（绝不加入对方 hub，
+    # 否则新订阅者会收到旧流的 EOF/事件）。端点层通常已返回 409。
+    if is_session_streaming(session_id):
+        # 端点已登记 run；这条竞态路径不进入后台任务，需在这里落 failed 终态，
+        # 否则只能等租约过期由启动恢复标记 interrupted。
+        if run_id is not None and run_store is not None:
+            await _record_run_end(run_store, run_id, "failed", "会话已被占用", sid)
+        yield emitter.error("本会话正在生成回复，请等待完成或先取消当前生成")
+        return
+
     hub = _session_stream_hubs.get(session_id)
     if hub is None or hub.done:
-        hub = _StreamHub(session_id)
+        hub = _StreamHub(session_id, db=db, stream_events=stream_events)
         _session_stream_hubs[session_id] = hub
     queue: asyncio.Queue = hub.subscribe()
-    state = {"disconnected": False}
 
-    async def _drive():
-        bg = asyncio.current_task()
-        try:
-            register_stream_task(session_id, bg)
-            async for chunk in gen:
-                # 广播给所有订阅者（原始客户端队列也是订阅者之一）
-                hub.broadcast(chunk)
-        except asyncio.CancelledError:
-            logger.info(f"[{sid}] 后台流式任务被取消（/cancel）")
-            raise
-        except Exception as e:
-            logger.error(f"[{sid}] 后台流式任务异常: {type(e).__name__}: {e}")
-            hub.broadcast(
-                format_sse({"type": "error", "content": f"处理失败: {e}"})
-            )
-        finally:
-            unregister_stream_task(session_id, bg)
-            hub.close()
-
-    bg_task = asyncio.create_task(_drive())
+    bg_task = asyncio.create_task(
+        _drive_stream(
+            gen, hub, queue, emitter, session_id, sid, renew_stream, db,
+            run_store, stream_events, run_id,
+        )
+    )
     _detached_bg_tasks.add(bg_task)
     bg_task.add_done_callback(_detached_bg_tasks.discard)
+    # 空闲心跳：模型长思考/长工具调用期间流上可能几十秒没有事件，反向代理
+    # （nginx 默认 proxy_read_timeout 60s）会掐断连接，浏览器报
+    # ERR_INCOMPLETE_CHUNKED_ENCODING。心跳只发给本订阅者，不进 hub 历史、不落库。
+    heartbeat_seconds = heartbeat_interval_seconds()
     try:
         while True:
-            item = await queue.get()
+            if heartbeat_seconds > 0:
+                try:
+                    item = await asyncio.wait_for(
+                        queue.get(), timeout=heartbeat_seconds
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    yield SSE_HEARTBEAT_FRAME
+                    continue
+            else:
+                item = await queue.get()
             if item is None:
                 break
             yield item
     except asyncio.CancelledError:
-        state["disconnected"] = True
         hub.unsubscribe(queue)
         logger.info(f"[{sid}] 客户端断开连接，后台流式任务继续执行（不取消）")
-
-
-def _stream_hub_for(session_id: str) -> _StreamHub | None:
-    hub = _session_stream_hubs.get(session_id)
-    return hub if hub is not None and not hub.done else None
-
-
-@router.get(
-    "/stream/status",
-    summary="查询会话是否正在流式输出",
-    description="刷新页面后用于判断是否需要重新挂载到进行中的流式任务。",
-)
-async def chat_stream_status(
-    session_id: str,
-    db: Annotated[Database, Depends(get_database)],
-    username: Annotated[str, Depends(get_current_username)],
-):
-    # 校验会话归属（不存在的会话同样 404，避免泄露会话是否存在）
-    get_owned_session(db, session_id, username)
-    return {
-        "session_id": session_id,
-        "active": _stream_hub_for(session_id) is not None,
-    }
-
-
-@router.get(
-    "/stream/live",
-    summary="挂载到进行中的流式输出",
-    description=(
-        "回放当前流式任务已产生的事件（thinking/tool_call/content 等），"
-        "然后持续接收后续事件直到 done/error。若任务已结束，回放完整历史后立即结束。"
-    ),
-)
-async def chat_stream_live(
-    session_id: str,
-    db: Annotated[Database, Depends(get_database)],
-    username: Annotated[str, Depends(get_current_username)],
-):
-    # 校验会话归属
-    get_owned_session(db, session_id, username)
-    hub = _session_stream_hubs.get(session_id)
-
-    async def event_source():
-        if hub is None:
-            yield format_sse(
-                {
-                    "type": "done",
-                    "session_id": session_id,
-                    "already_completed": True,
-                }
-            )
-            return
-        q = hub.subscribe()
-        try:
-            while True:
-                item = await q.get()
-                if item is None:
-                    break
-                yield item
-        finally:
-            hub.unsubscribe(q)
-
-    return StreamingResponse(
-        event_source(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
 
 
 @router.post(
@@ -267,135 +296,42 @@ async def chat_stream_live(
 )
 async def chat_stream(
     request: ChatRequest,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[ChatRepository, Depends(get_chat_repository)],
     http_request: Request,
     username: Annotated[str, Depends(get_current_username)],
 ):
+    repo = _as_chat_repository(db)
+    # 参数校验留在路由：prepare_turn 只处理业务准备
+    require_turn_content(request.message, request.files, request.skills)
 
-    if not request.message:
-        raise HTTPException(status_code=400, detail="消息内容不能为空")
-
-    session_id = request.session_id
-    message_id = request.message_id or str(uuid.uuid4())
-
-    sid = session_id[-5:] if session_id else "new"
-
-    logger.info(
-        f"[{sid}] 聊天请求 | message: {request.message[:50]}{'...' if len(request.message) > 50 else ''} | "
-        f"deep_think: {request.enable_deep_think} | model: {request.model or '(active)'}"
-    )
-
-    if session_id is None:
-        session_id = str(uuid.uuid4())
-        workspace_name = create_new_session(
-            db, session_id, username, request.message, request.files
-        )
-    else:
-        session = db.get_session(session_id)
-        if not session:
-            session_id = str(uuid.uuid4())
-            workspace_name = create_new_session(
-                db, session_id, username, request.message, request.files
-            )
-        elif (session.username or "") != (username or ""):
-            # 会话属于其他用户 -> 拒绝访问，不泄露会话是否存在
-            raise HTTPException(status_code=404, detail="会话不存在")
-        else:
-            workspace_name = session.workspace_name or ""
-            if len(session.messages) == 0:
-                session.title = generate_session_title(request.message, request.files)
-                session.updated_at = datetime.now().isoformat()
-                db.update_session(session)
-
-    parsed_content = request.message
-    # 判断是否为新建会话（首次消息）：新建会话的上传文件内容注入系统提示词，
-    # 非首次会话则拼接到用户消息（保持原有行为）。
-    _existing = db.get_session(session_id)
-    is_new_session = (not _existing) or (len(_existing.messages) == 0)
-
-    # 依次解析上传文件内容（支持 docx/excel/pdf/txt/md 等）
-    file_context_parts = []
-    if request.files:
-        for file_info in request.files:
-            file_path = file_info.get("file_path", "")
-            if not file_path:
-                continue
-            filename = file_info.get("filename", "")
-            content = parse_file_content(file_path)
-            if content:
-                file_context_parts.append((filename, content))
-                logger.info(
-                    f"[{session_id[-5:]}] 📎 文件已解析 | {filename} | "
-                    f"内容长度: {len(content)} 字符"
-                )
-            else:
-                logger.warning(f"[{session_id[-5:]}] 文件解析为空: {filename}")
-
-    system_prompt_extra = ""
-    if file_context_parts:
-        if is_new_session:
-            sections = [
-                f"### 文件: {fn}\n{c}" for fn, c in file_context_parts
-            ]
-            system_prompt_extra = (
-                "## 用户上传的文件内容（已为你解析，请基于这些内容回应用户）\n\n"
-                + "\n\n".join(sections)
-            )
-        else:
-            file_contents = [
-                f"[文件: {fn}]\n{c}" for fn, c in file_context_parts
-            ]
-            parsed_content = "\n\n".join(file_contents) + "\n\n" + request.message
-
-    user_message = {
-        "role": "user",
-        "content": request.message,
-        "timestamp": datetime.now().isoformat(),
-    }
-    if request.files:
-        user_message["files"] = request.files
-    db.add_message(session_id, user_message)
-    db.add_message_row(session_id, user_message)
-
-    session_logger = SessionLogger(
-        session_id=session_id,
+    plan = await prepare_turn(
+        request=request,
+        http_request=http_request,
+        repo=repo,
         username=username,
-        workspace="",
-        system_prompt="",
     )
-    session_logger.log_user_message(
-        message=request.message,
-        files=request.files,
-        message_id=message_id,
-    )
-
-    agent = await get_or_create_agent_for_session(
-        session_id, username, workspace_name, model_name=request.model,
-        system_prompt_extra=system_prompt_extra,
-    )
-
-    return StreamingResponse(
+    if isinstance(plan, RefusalPlan):
+        # 专家相关性预检短路：不建 Agent、不登记 run，只推一条极简拒答流
+        return sse_response(
+            _detached_event_stream(
+                plan.event_stream,
+                plan.session_id,
+                plan.sid,
+                renew_stream=repo.renew_stream,
+                stream_events=repo.stream_events,
+                runs=repo.runs,
+            )
+        )
+    return sse_response(
         _detached_event_stream(
-            chat_stream_generator(
-                request=request,
-                db=db,
-                agent=agent,
-                session_id=session_id,
-                message_id=message_id,
-                username=username,
-                http_request=http_request,
-                parsed_content=parsed_content,
-                session_logger=session_logger,
-            ),
-            session_id,
-            sid,
-        ),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+            plan.event_stream,
+            plan.session_id,
+            plan.sid,
+            renew_stream=repo.renew_stream,
+            stream_events=repo.stream_events,
+            runs=repo.runs,
+            run_id=plan.run_id,
+        )
     )
 
 
@@ -406,7 +342,6 @@ async def chat_stream(
 )
 async def cancel_chat(
     session_id: str,
-    db: Annotated[Database, Depends(get_database)],
     username: Annotated[str, Depends(get_current_username)],
 ):
     sid = session_id[-5:] if session_id else "unknown"
@@ -437,44 +372,42 @@ async def cancel_chat(
 )
 async def chat_resume(
     request: ResumeRequest,
-    db: Annotated[Database, Depends(get_database)],
+    db: Annotated[ChatRepository, Depends(get_chat_repository)],
     http_request: Request,
     username: Annotated[str, Depends(get_current_username)],
 ):
-    session_id = request.session_id
-    thread_id = request.thread_id
-    sid = session_id[-5:] if session_id else "resume"
-
-    logger.info(
-        f"[{sid}] 🔔 HITL 恢复请求 | thread_id={thread_id} | "
-        f"decisions={request.decisions}"
+    repo = _as_chat_repository(db)
+    plan = await prepare_resume(
+        request=request,
+        repo=repo,
+        username=username,
     )
-
-    # 获取会话的 workspace_name（校验归属，防止跨用户恢复他人会话）
-    session = get_owned_session(db, session_id, username)
-    workspace_name = session.workspace_name or ""
-
-    # 复用缓存的 Agent 实例（保留 checkpointer 中的 interrupt 状态）
-    agent = await get_or_create_agent_for_session(session_id, username, workspace_name)
-
-    return StreamingResponse(
+    return sse_response(
         _detached_event_stream(
-            resume_stream_generator(
-                db=db,
-                agent=agent,
-                session_id=session_id,
-                thread_id=thread_id,
-                decisions=request.decisions,
-                username=username,
-                message_id=request.message_id,
-            ),
-            session_id,
-            sid,
-        ),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+            plan.event_stream,
+            plan.session_id,
+            plan.sid,
+            renew_stream=repo.renew_stream,
+            stream_events=repo.stream_events,
+            runs=repo.runs,
+            run_id=plan.run_id,
+        )
     )
+
+
+# chat_live.router 自带 /agent/chat 前缀；本模块 router 也带同一前缀。
+# FastAPI 的 include_router 会再次叠加父前缀（/agent/chat/agent/chat/...），
+# 因此先挂到无前缀 router 上再并入，公开 URL 仍为 /agent/chat/stream/*。
+_chat_live_mount = APIRouter()
+_chat_live_mount.include_router(chat_live_router)
+router.routes.extend(_chat_live_mount.routes)
+
+
+# A1：知识域通过端口取宿主能力；api.chat 是应用启动必经路径，负责注册真实实现。
+register_host_capabilities(
+    chat_stream=chat_stream,
+    host_chat_stream_generator=_host_chat_stream_generator,
+    cancel_stream_task=cancel_stream_task,
+    remove_session_agent=remove_session_agent,
+    get_agent_config=_get_agent_config,
+)

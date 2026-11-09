@@ -8,6 +8,7 @@
 本测试用「两个独立 Database 实例指向同一 SQLite 文件」模拟两个 worker 进程。
 """
 
+import time
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -15,6 +16,8 @@ import pytest
 from fastapi import HTTPException
 
 from easy_agent.db import Database, init_database
+from easy_agent.db import login_state
+from easy_agent.db.repositories.user_repository import UserRepository
 from easy_agent.middleware import auth as auth_middleware
 from easy_agent.utils import auth as auth_utils
 from easy_agent.utils.auth import create_access_token
@@ -45,9 +48,9 @@ def two_workers(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _clear_throttle():
-    auth_middleware._activity_write_throttle.clear()
+    login_state._activity_write_throttle.clear()
     yield
-    auth_middleware._activity_write_throttle.clear()
+    login_state._activity_write_throttle.clear()
 
 
 def _register_and_login(db, username="alice"):
@@ -59,49 +62,54 @@ def _register_and_login(db, username="alice"):
     )
 
 
-@pytest.mark.asyncio
-async def test_login_activity_visible_to_other_worker(two_workers, monkeypatch):
+def test_login_activity_visible_to_other_worker(two_workers, monkeypatch):
     """worker A 登录并 touch 活跃时间后，worker B 应能读到活跃状态，不能立刻踢下线。"""
     db_a, db_b = two_workers
-    monkeypatch.setattr(auth_middleware, "get_agent_config", lambda: _config(5))
+    monkeypatch.setattr(login_state, "get_runtime_agent_config", lambda: _config(5))
     token = _register_and_login(db_a)
 
-    auth_middleware.touch_user_activity(db_a, "alice")
-    auth_middleware._activity_write_throttle.clear()
+    login_state.touch_user_activity(UserRepository(db_a), "alice")
+    login_state._activity_write_throttle.clear()
 
-    username = await auth_middleware.get_current_username(_Request(token), db_b)
+    username = auth_middleware.get_current_username(
+        _Request(token), UserRepository(db_b)
+    )
 
     assert username == "alice"
 
 
-@pytest.mark.asyncio
-async def test_idle_timeout_still_enforced_across_workers(two_workers, monkeypatch):
+def test_idle_timeout_still_enforced_across_workers(two_workers, monkeypatch):
     """空闲超时在跨 worker 后依然生效：共享 DB 里活跃时间超过阈值即返回 401。"""
     db_a, db_b = two_workers
-    monkeypatch.setattr(auth_middleware, "get_agent_config", lambda: _config(1))
+    monkeypatch.setattr(login_state, "get_runtime_agent_config", lambda: _config(1))
     token = _register_and_login(db_a)
 
-    db_a.clear_user_activity("alice")
-    db_a.touch_user_activity("alice", auth_middleware.time.time() - 61)
-    auth_middleware._activity_write_throttle.clear()
+    UserRepository(db_a).clear_user_activity("alice")
+    UserRepository(db_a).touch_user_activity(
+        "alice", time.time() - 61
+    )
+    login_state._activity_write_throttle.clear()
 
     with pytest.raises(HTTPException) as exc_info:
-        await auth_middleware.get_current_username(_Request(token), db_b)
+        auth_middleware.get_current_username(_Request(token), db_b)
 
     assert exc_info.value.status_code == 401
 
 
-@pytest.mark.asyncio
-async def test_active_user_on_other_worker_passes_idle_check(two_workers, monkeypatch):
+def test_active_user_on_other_worker_passes_idle_check(two_workers, monkeypatch):
     """worker A 刚 touch（60 秒内），worker B 校验同一用户应通过。"""
     db_a, db_b = two_workers
-    monkeypatch.setattr(auth_middleware, "get_agent_config", lambda: _config(1))
+    monkeypatch.setattr(login_state, "get_runtime_agent_config", lambda: _config(1))
     token = _register_and_login(db_a)
 
-    db_a.touch_user_activity("alice", auth_middleware.time.time())
-    auth_middleware._activity_write_throttle.clear()
+    UserRepository(db_a).touch_user_activity(
+        "alice", time.time()
+    )
+    login_state._activity_write_throttle.clear()
 
-    username = await auth_middleware.get_current_username(_Request(token), db_b)
+    username = auth_middleware.get_current_username(
+        _Request(token), UserRepository(db_b)
+    )
 
     assert username == "alice"
 

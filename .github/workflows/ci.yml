@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Action 主版本基于 Node 24 运行时（Node 20 运行时已弃用）；setup-uv 不发布浮动主版本标签，钉到具体版本。
+# runner 固定 ubuntu-24.04，避免 ubuntu-latest 迁移到新系统时悄悄改变沙箱（bwrap）等行为。
+jobs:
+  backend-fatal-lint:
+    name: Backend fatal lint (ruff)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - name: Ruff (fatal errors + unused imports/variables/redefinitions; rules in pyproject.toml)
+        run: uvx ruff check --output-format=github .
+
+  architecture-gate:
+    name: Architecture gate (import SCC + double-write freeze)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # 阶段 0.1：import 图 SCC 白名单；新回边/环模块集合变化/白名单过期即失败。
+      # 分层方向（services 分层设计 §6.1）：下层导入上层即失败，例外登记在 import_layers.json。
+      # 包入口（§6.2）：__init__.py 导入项目内模块即失败，例外登记在 import_layers.json 的 init_allow。
+      - name: Import graph SCC, layer direction and package entries
+        run: python scripts/quality/import_graph.py --check-scc --check-layers --check-inits
+      # A3 技能单一安装源：根 skills/ 为 canonical，包内副本必须逐字节一致。
+      - name: Skills single source (canonical → packaged)
+        run: python scripts/skills/sync_skills.py --check
+      # 阶段 0.2：冻结 sessions.messages 双写与 Database 新业务方法。
+      - name: Double-write freeze (sessions.messages / Database facade)
+        run: python scripts/quality/check_double_write.py
+      # async def 里的同步数据库调用会占住事件循环（并发 SSE 流跟着停）：基线只减不增。
+      - name: Blocking database calls in async code
+        run: python scripts/quality/check_async_blocking.py --check
+
+  backend-tests:
+    name: Backend tests (pytest)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --frozen --group dev --extra docs
+      # 类型检查按目录接入（T12）：pyright basic 模式只覆盖 pyproject 里 include 的三个目录
+      # （db/repositories、utils、services/streaming），暂不扩大到全仓。
+      # 用 uvx 调起 pyright：不写入 uv.lock、不改本 job 的依赖步骤语义；必须放在
+      # ``uv sync`` 之后——pyright 通过 [tool.pyright] 的 venvPath=.venv 解析第三方依赖。
+      - name: Type check (pyright, selected dirs)
+        run: uvx pyright
+      - name: Config schema + bare getenv gates
+        run: |
+          uv run python scripts/quality/check_config_schema.py --check
+          uv run python scripts/quality/check_env_usage.py --check
+      - name: Multi-replica capability gate (Phase 0)
+        run: uv run python scripts/quality/check_multi_replica.py
+      - name: API docs generator smoke check
+        run: uv run python scripts/docs/generate_api_docs.py --check
+      - name: Collection gate (must be 0 errors)
+        run: uv run pytest --collect-only -q
+      - name: Run tests
+        run: uv run pytest -q
+
+  frontend-vue2:
+    name: Frontend Vue2 build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend-vue2
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend-vue2/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:unit
+
+  frontend-vue3:
+    name: Frontend Vue3 build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:unit

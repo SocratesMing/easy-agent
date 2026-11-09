@@ -1,3 +1,8 @@
+"""虚拟根目录 Agent 测试（tests/helpers/virtual_root_agent.py）：后端只允许访问会话根内的路径
+（拒绝路径穿越和符号链接逃逸）、workspace 与 skills 路由分离、shell 在工作区执行、
+技能解析，以及流式打印器的输出。
+"""
+
 from types import SimpleNamespace
 from pathlib import Path
 

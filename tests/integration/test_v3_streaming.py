@@ -1,7 +1,7 @@
 """
 LangChain 流式消息输出测试脚本（基于 DeepAgents 框架）
 
-使用 deepagents.create_deep_agent + easy_agent.model.create_model
+使用 deepagents.create_deep_agent + easy_agent.agent.model.create_model
 通过 agent.astream(stream_mode='messages') 获取流式消息，
 输出思考内容、正式内容、工具调用信息（名称、参数、结果）。
 
@@ -27,8 +27,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-from easy_agent.config import Config
-from easy_agent.model import create_model
+from easy_agent.bootstrap.config import Config
+from easy_agent.agent.model import create_model
 from deepagents import create_deep_agent
 from langchain_core.tools import tool
 

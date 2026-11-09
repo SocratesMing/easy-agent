@@ -1,24 +1,40 @@
-"""接口 /agent/settings 的测试：模型列表、MCP 服务器查询与增删。"""
+"""接口 /agent/settings 的测试：模型列表、系统提示词、联网搜索状态。
 
-import asyncio
+MCP（连接器）接口已迁到 ``/agent/connectors``，用例见 tests/api/test_connectors.py。
+"""
+
 import json
 from pathlib import Path
 
-import pytest
-from fastapi import HTTPException
-
-from easy_agent.api.settings import (
-    AddMarketMcpRequest,
-    add_mcp_from_market,
-    generate_mcp_api_key,
-    get_mcp_market,
-    get_mcp_servers,
-    router,
-)
 import easy_agent.api.settings as settings_api
 
-from easy_agent.config import Config
-from easy_agent.services import mcp as mcp_mod
+from easy_agent.services.mcp import tools as mcp_mod
+
+
+def test_memory_put_uses_the_shared_write_path_and_long_term_budget(client):
+    """设置页保存与后台更新同一套写入（锁 + 原子写 + sidecar），上限与后台一致。"""
+    from easy_agent.services.memory.locks import store_path_for
+    from easy_agent.services.memory.manager import MAX_LONG_TERM_MEMORY_CHARS
+    from easy_agent.services.memory.store import structured_memory_enabled
+
+    long_text = "# 用户长期记忆\n\n## 工作背景\n" + "".join(
+        f"- 第 {i} 条：{'很长的背景说明' * 10}\n" for i in range(40)
+    )
+    assert len(long_text) > MAX_LONG_TERM_MEMORY_CHARS
+
+    resp = client.put("/agent/settings/memory", json={"content": long_text})
+    saved = client.get("/agent/settings/memory").json()
+    path = Path(saved["path"])
+    try:
+        assert resp.status_code == 200
+        assert resp.json()["chars"] <= MAX_LONG_TERM_MEMORY_CHARS
+        assert saved["content"].startswith("# 用户长期记忆")
+        assert len(saved["content"]) <= MAX_LONG_TERM_MEMORY_CHARS
+        if structured_memory_enabled():
+            assert store_path_for(path).exists()
+    finally:
+        for leftover in (path, store_path_for(path)):
+            leftover.unlink(missing_ok=True)
 
 
 def test_models(client):
@@ -69,160 +85,62 @@ def test_models_hides_models_without_api_key(client, monkeypatch):
     assert data["active_model"] == "with-key"
 
 
-def test_mcp_list(client):
-    resp = client.get("/agent/settings/mcp")
+def test_web_search_status_not_configured(client):
+    """未配置 api_key（测试配置默认）时 configured=false，前端按钮置灰。"""
+    resp = client.get("/agent/settings/web-search")
     assert resp.status_code == 200
     data = resp.json()
-    assert "servers" in data
-    assert "source" in data
-    assert "user_mcp_path" in data
-    assert isinstance(data["servers"], list)
+    assert data["enabled"] is True
+    assert data["configured"] is False
+    assert data["reason"] == "not_configured"
+    assert "NoLimit" in data["time_ranges"]
+    # 不泄露 api_url / api_key
+    assert "api_key" not in data and "api_url" not in data
 
 
-def test_mcp_update_and_server_crud(client):
-    # 1) 清空所有 MCP server（servers 为 dict，不是 list）
-    r = client.put("/agent/settings/mcp", json={"servers": {}})
-    assert r.status_code == 200
+def test_web_search_status_configured(client, monkeypatch):
+    from types import SimpleNamespace
 
-    # 2) 新增一个本地 stdio 测试服务（body 字段为 config）
-    add = client.post(
-        "/agent/settings/mcp/server",
-        json={
-            "config": {
-                "name": "unit-test-server",
-                "transport": "stdio",
-                "command": "echo",
-                "args": [],
-            }
-        },
-    )
-    assert add.status_code == 200
-    body = add.json()
-    assert "unit-test-server" in body["added"]
-
-    # 3) 删除该服务
-    d = client.delete("/agent/settings/mcp/server/unit-test-server")
-    assert d.status_code == 200
-
-
-def test_mcp_market_adds_global_server_to_user_config(tmp_path, monkeypatch):
-    global_path = tmp_path / "market-mcp.json"
-    user_path = tmp_path / "user-mcp.json"
-    global_path.write_text(
-        json.dumps(
-            {
-                "servers": {
-                    "market-server": {
-                        "type": "sse",
-                        "url": "https://mcp.example.com/sse",
-                        "env": {"MCP_TOKEN": "secret-token"},
-                    }
-                }
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        Config,
-        "get_user_mcp_path",
-        classmethod(lambda cls, username, config=None: user_path),
-    )
-    monkeypatch.setattr(mcp_mod, "_find_mcp_config", lambda: global_path)
-
-    market_data = asyncio.run(get_mcp_market("testuser"))
-    assert market_data["source"] == "global"
-    assert len(market_data["servers"]) == 1
-    server = market_data["servers"][0]
-    assert server["name"] == "market-server"
-    assert server["transport"] == "sse"
-    assert server["added"] is False
-    assert server["env_keys"] == ["MCP_TOKEN"]
-    assert server["_raw"]["env"] == {"MCP_TOKEN": "***"}
-
-    added = asyncio.run(
-        add_mcp_from_market(AddMarketMcpRequest(name="market-server"), "testuser")
-    )
-    assert added["added"] == ["market-server"]
-
-    market_data = asyncio.run(get_mcp_market("testuser"))
-    assert market_data["servers"][0]["added"] is True
-
-    current = asyncio.run(get_mcp_servers("testuser"))
-    assert current["source"] == "user"
-    assert current["servers"][0]["origin"] == "user"
-    assert current["servers"][0]["_raw"]["env"] == {"MCP_TOKEN": "***"}
-
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(
-            add_mcp_from_market(AddMarketMcpRequest(name="market-server"), "testuser")
+    cfg = SimpleNamespace(
+        web_search=SimpleNamespace(
+            enabled=True,
+            provider="tavily",
+            api_url="http://search.example/api/v1/webSearch",
+            api_key="ws-key",
+            default_time_range="OneWeek",
         )
-    assert exc_info.value.status_code == 409
-
-    saved = json.loads(user_path.read_text(encoding="utf-8"))
-    assert saved["servers"]["market-server"]["env"]["MCP_TOKEN"] == "secret-token"
-
-    market_routes = {route.path: getattr(route, "methods", set()) for route in router.routes}
-    assert "/agent/settings/mcp/market" in market_routes
-    assert "/agent/settings/mcp/market/add" in market_routes
-
-
-def test_mcp_api_key_generation_uses_current_user(monkeypatch):
-    import easy_agent.services.mcp_api_keys as keys_service
-    from easy_agent.api.settings import IssueMcpApiKeyRequest
-
-    captured = {}
-
-    def fake_issue(username, business):
-        captured["username"] = username
-        captured["business"] = business
-        return "generated-api-key"
-
-    monkeypatch.setattr(keys_service, "issue_api_key", fake_issue)
-
-    result = asyncio.run(
-        generate_mcp_api_key(IssueMcpApiKeyRequest(business="market"), "testuser")
     )
+    monkeypatch.setattr(settings_api, "get_agent_config", lambda: {"config": cfg})
 
-    assert result == {"status": "ok", "api_key": "generated-api-key", "business": "market"}
-    assert captured["username"] == "testuser"
-    assert captured["business"] == "market"
+    resp = client.get("/agent/settings/web-search")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["configured"] is True
+    assert data["reason"] == ""
+    assert data["provider"] == "tavily"
+    assert data["default_time_range"] == "OneWeek"
 
 
-def test_mcp_api_key_rejects_unknown_business():
-    from easy_agent.api.settings import IssueMcpApiKeyRequest
+def test_web_search_status_disabled(client, monkeypatch):
+    from types import SimpleNamespace
 
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(
-            generate_mcp_api_key(IssueMcpApiKeyRequest(business="nope"), "testuser")
+    cfg = SimpleNamespace(
+        web_search=SimpleNamespace(
+            enabled=False,
+            provider="tavily",
+            api_url="http://search.example/api/v1/webSearch",
+            api_key="ws-key",
+            default_time_range="NoLimit",
         )
+    )
+    monkeypatch.setattr(settings_api, "get_agent_config", lambda: {"config": cfg})
 
-    assert exc_info.value.status_code == 400
-
-
-def test_mcp_api_key_generation_maps_database_failure(monkeypatch):
-    import easy_agent.services.mcp_api_keys as keys_service
-    from easy_agent.api.settings import IssueMcpApiKeyRequest
-
-    def fake_issue(username, business):
-        raise RuntimeError("database unavailable")
-
-    monkeypatch.setattr(keys_service, "issue_api_key", fake_issue)
-
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(
-            generate_mcp_api_key(IssueMcpApiKeyRequest(business="market"), "testuser")
-        )
-
-    assert exc_info.value.status_code == 503
-    assert "数据库" in exc_info.value.detail
-
-
-def test_mcp_api_key_routes_are_registered():
-    paths = {route.path for route in router.routes}
-
-    assert "/agent/settings/mcp/api-key" in paths
-    assert "/agent/settings/mcp/api-keys" in paths
+    resp = client.get("/agent/settings/web-search")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["enabled"] is False
+    assert data["configured"] is False
+    assert data["reason"] == "disabled"
 
 
 def test_main_app_never_imports_mcp_server_subproject():
@@ -243,7 +161,7 @@ def test_main_app_never_imports_mcp_server_subproject():
     assert offenders == [], f"主应用 import 了 MCP 子项目: {offenders}"
 
 
-def test_mcp_config_preserves_environment_placeholders(tmp_path, monkeypatch):
+def test_mcp_config_expands_environment_placeholders(tmp_path, monkeypatch):
     global_path = tmp_path / "mcp.json"
     global_path.write_text(
         json.dumps(
@@ -269,6 +187,31 @@ def test_mcp_config_preserves_environment_placeholders(tmp_path, monkeypatch):
     config = mcp_mod.load_mcp_config(None)
 
     assert config["env-server"]["env"] == {
-        "MCP_PASSWORD": "${MCP_TEST_PASSWORD}",
-        "MCP_HOST": "${MCP_TEST_HOST:-127.0.0.1}",
+        "MCP_PASSWORD": "test-password",
+        "MCP_HOST": "127.0.0.1",
     }
+
+
+def test_knowledge_status_reports_enabled_flag(client):
+    """侧边栏只看 enabled，不带 Ragflow 地址或密钥。"""
+    from easy_agent.app import app
+
+    from easy_agent.knowledges.core.config import KnowledgeConfig
+
+    previous = getattr(app.state, "knowledge_config", None)
+    try:
+        app.state.knowledge_config = KnowledgeConfig(
+            enabled=True, base_url="http://ragflow.local", api_key="test-key"
+        )
+        enabled = client.get("/agent/settings/knowledge")
+        assert enabled.status_code == 200
+        assert enabled.json() == {"enabled": True}
+
+        app.state.knowledge_config = KnowledgeConfig(enabled=False)
+        disabled = client.get("/agent/settings/knowledge")
+        assert disabled.json() == {"enabled": False}
+    finally:
+        if previous is None:
+            delattr(app.state, "knowledge_config")
+        else:
+            app.state.knowledge_config = previous

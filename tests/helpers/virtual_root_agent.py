@@ -21,8 +21,8 @@ from langchain_core.messages import AIMessageChunk
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 
-from easy_agent.config import Config
-from easy_agent.model import create_model, extract_reasoning
+from easy_agent.bootstrap.config import Config
+from easy_agent.agent.model import create_model, extract_reasoning
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

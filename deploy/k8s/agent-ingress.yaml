@@ -1,0 +1,45 @@
+# Sticky-session Ingress for agent-deployment.yaml (ingress-nginx).
+#
+# HITL checkpoints live in one SQLite file per pod, so a pending approval can only be
+# resumed on the pod that recorded it. Cookie affinity pins each browser to one pod;
+# "persistent" mode keeps existing users where they are when the deployment scales up.
+# The frontend must call the API on the same origin (default: relative /agent/... paths),
+# otherwise the browser does not send the cookie. Do not rely on Service
+# sessionAffinity: ClientIP, behind the Ingress every request comes from the controller.
+#
+# Other ingress controllers (Traefik, cloud load balancers) need their own cookie-based
+# session affinity instead of these annotations.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: easy-agent
+  annotations:
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/affinity-mode: "persistent"
+    nginx.ingress.kubernetes.io/session-cookie-name: "EASY_AGENT_ROUTE"
+    nginx.ingress.kubernetes.io/session-cookie-path: "/"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "604800"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: "Lax"
+    nginx.ingress.kubernetes.io/session-cookie-change-on-failure: "true"
+    # Chat replies stream over SSE: no response buffering, long read timeouts.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # File uploads: the ingress-nginx default is 1m; match upload_limits in config.yaml.
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+spec:
+  ingressClassName: nginx
+  # tls:
+  #   - hosts: ["easy-agent.example.com"]
+  #     secretName: easy-agent-tls
+  rules:
+    - host: easy-agent.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: easy-agent
+                port:
+                  number: 80

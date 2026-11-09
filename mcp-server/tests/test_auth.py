@@ -9,8 +9,6 @@ from mcp.client.streamable_http import streamablehttp_client
 import easy_mcp_server.keys as keys_module
 from easy_mcp_server.keys import create_mysql_verifier, hash_api_key
 
-from support import FakeKeyStore, build_hello
-
 
 async def _call(server: str, tool: str, args: dict, api_key: str | None):
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}

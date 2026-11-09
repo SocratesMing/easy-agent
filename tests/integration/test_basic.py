@@ -9,7 +9,7 @@ class TestConfig:
 
     def test_config_from_yaml_missing_file(self):
         """Test that Config.from_yaml raises FileNotFoundError when file doesn't exist"""
-        from easy_agent.config import Config
+        from easy_agent.bootstrap.config import Config
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with pytest.raises(FileNotFoundError):
@@ -17,7 +17,7 @@ class TestConfig:
 
     def test_config_from_yaml_missing_fields(self):
         """Test that from_yaml raises ValueError for missing required fields"""
-        from easy_agent.config import Config
+        from easy_agent.bootstrap.config import Config
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
             f.write("model: test-model\n")
@@ -36,7 +36,7 @@ class TestLogger:
 
     def test_logger_initialization(self):
         """Test that logger initializes correctly"""
-        from easy_agent.logger import AgentLogger
+        from easy_agent.bootstrap.logger import AgentLogger
 
         logger = AgentLogger()
 
@@ -46,7 +46,7 @@ class TestLogger:
 
     def test_logger_start_new_run(self):
         """Test that logger creates new log file"""
-        from easy_agent.logger import AgentLogger
+        from easy_agent.bootstrap.logger import AgentLogger
 
         logger = AgentLogger()
         logger.start_new_run()
@@ -57,7 +57,7 @@ class TestLogger:
 
     def test_logger_log_request(self):
         """Test logging requests"""
-        from easy_agent.logger import AgentLogger
+        from easy_agent.bootstrap.logger import AgentLogger
 
         logger = AgentLogger()
         logger.start_new_run()
@@ -69,7 +69,7 @@ class TestLogger:
 
     def test_logger_log_response(self):
         """Test logging responses"""
-        from easy_agent.logger import AgentLogger
+        from easy_agent.bootstrap.logger import AgentLogger
 
         logger = AgentLogger()
         logger.start_new_run()
@@ -85,11 +85,11 @@ def test_project_structure():
 
     # Core modules
     assert (base_path / "easy_agent" / "__init__.py").exists()
-    assert (base_path / "easy_agent" / "config.py").exists()
-    assert (base_path / "easy_agent" / "agent.py").exists()
-    assert (base_path / "easy_agent" / "model.py").exists()
-    assert (base_path / "easy_agent" / "logger.py").exists()
-    assert (base_path / "easy_agent" / "skills.py").exists()
+    assert (base_path / "easy_agent" / "bootstrap" / "config.py").exists()
+    assert (base_path / "easy_agent" / "agent" / "core.py").exists()
+    assert (base_path / "easy_agent" / "agent" / "model.py").exists()
+    assert (base_path / "easy_agent" / "bootstrap" / "logger.py").exists()
+    assert (base_path / "easy_agent" / "agent" / "skills.py").exists()
 
     # Config（示例配置与提示词目录）
     assert (base_path / "easy_agent" / "config" / "config-example.yaml").exists()
@@ -98,19 +98,28 @@ def test_project_structure():
     # 各功能包结构
     assert (base_path / "easy_agent" / "api" / "__init__.py").exists()
     assert (base_path / "easy_agent" / "api" / "chat.py").exists()
-    assert (base_path / "easy_agent" / "services" / "prompt_loader.py").exists()
-    assert (base_path / "easy_agent" / "initialization" / "runtime.py").exists()
+    assert (base_path / "easy_agent" / "services" / "agents" / "prompts.py").exists()
+    assert (base_path / "easy_agent" / "services" / "streaming" / "orchestrator.py").exists()
+    assert (base_path / "easy_agent" / "bootstrap" / "initialization" / "runtime.py").exists()
     assert (base_path / "easy_agent" / "db" / "database.py").exists()
 
-    assert (base_path / "frontend" / "package.json").exists()
+    assert (base_path / "frontend-vue2" / "package.json").exists()
     assert (base_path / "pyproject.toml").exists()
 
 
 class TestImports:
     """Test that all public imports work correctly"""
 
-    def test_top_level_imports(self):
-        from easy_agent import EasyAgent, Config, create_model, discover_skills
+    def test_top_level_package_only_holds_the_version(self):
+        """导入任何 easy_agent.* 都会先执行根包，所以它不转出符号，类和函数从定义它们的模块导入。"""
+        import easy_agent
+        from easy_agent.agent import EasyAgent
+        from easy_agent.agent.model import create_model
+        from easy_agent.agent.skills import discover_skills
+        from easy_agent.bootstrap.config import Config
+
+        assert easy_agent.__version__
+        assert not hasattr(easy_agent, "EasyAgent")
         assert EasyAgent is not None
         assert Config is not None
         assert create_model is not None
@@ -124,15 +133,14 @@ class TestImports:
         assert UserModel is not None
 
     def test_service_imports(self):
-        from easy_agent.services import (
-            chat_stream_generator,
-            init_agent_config,
-        )
+        from easy_agent.services.agents.manager import init_agent_config
+        from easy_agent.services.streaming.orchestrator import chat_stream_generator
+
         assert chat_stream_generator is not None
         assert init_agent_config is not None
 
     def test_skills_module(self):
-        from easy_agent.skills import discover_skills
+        from easy_agent.agent.skills import discover_skills
         assert callable(discover_skills)
 
 

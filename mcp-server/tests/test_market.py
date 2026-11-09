@@ -1,4 +1,4 @@
-"""Market 业务测试：意图解析、SQL 参数化、用户数据隔离。"""
+"""Market 业务测试：意图解析、SQL 参数化、用户隔离、错误语义与结构化输出。"""
 
 from __future__ import annotations
 
@@ -128,15 +128,17 @@ def test_demo_position_rows_are_user_scoped():
     assert usernames == {"szm", "zr6"}
 
 
-# ── 端到端：通过 MCP 客户端验证工具与用户隔离 ──────────────────────────
+# ── 端到端：通过 MCP 客户端验证工具、用户隔离与错误语义 ────────────────
 
 
 @pytest.fixture
 async def market_env(monkeypatch):
-    """挂载真实 market 业务，数据库查询替换为内存行。"""
-    rows: dict[str, list[dict]] = {"positions": [], "quotes": []}
+    """挂载真实 market 业务，数据库查询替换为内存行（可注入失败）。"""
+    rows: dict[str, object] = {"positions": [], "quotes": [], "error": None}
 
     def fake_fetch_all(sql, params=()):
+        if rows["error"]:
+            raise RuntimeError(str(rows["error"]))
         if "market_positions" in sql:
             username = params[0]
             return [r for r in rows["positions"] if r["username"] == username]
@@ -173,12 +175,34 @@ async def _call_tool(base: str, key: str, tool: str, args: dict | None = None):
             return await session.call_tool(tool, args or {})
 
 
+def _quote(symbol: str = "XAUUSD", name: str = "黄金") -> dict:
+    return {
+        "symbol": symbol,
+        "name": name,
+        "category": "precious_metals",
+        "price": 2010.5,
+        "change_percent": 0.5,
+        "updated_at": "2026-09-04 10:00:00",
+    }
+
+
+def _position(username: str = "alice") -> dict:
+    return {
+        "username": username,
+        "symbol": "XAUUSD",
+        "side": "long",
+        "quantity": 1,
+        "entry_price": 2000,
+        "mark_price": 2010,
+        "unrealized_pnl": 10,
+        "updated_at": "2026-09-04",
+    }
+
+
 async def test_get_my_positions_scoped_to_api_key_owner(market_env):
     market_env.rows["positions"] = [
-        {"username": "alice", "symbol": "XAUUSD", "side": "long", "quantity": 1,
-         "entry_price": 2000, "mark_price": 2010, "unrealized_pnl": 10, "updated_at": "2026-09-04"},
-        {"username": "bob", "symbol": "EURUSD", "side": "short", "quantity": 2,
-         "entry_price": 1.1, "mark_price": 1.08, "unrealized_pnl": 4, "updated_at": "2026-09-04"},
+        _position("alice"),
+        {**_position("bob"), "symbol": "EURUSD"},
     ]
     result = await _call_tool(market_env.base, "mk-alice", "get_my_positions")
     text = result.content[0].text
@@ -187,11 +211,95 @@ async def test_get_my_positions_scoped_to_api_key_owner(market_env):
 
 
 async def test_ask_market_returns_quotes(market_env):
-    market_env.rows["quotes"] = [
-        {"symbol": "XAUUSD", "name": "黄金", "category": "precious_metals",
-         "price": 2010.5, "change_percent": 0.5, "updated_at": "2026-09-04 10:00:00"}
-    ]
+    market_env.rows["quotes"] = [_quote()]
     result = await _call_tool(market_env.base, "mk-alice", "ask_market",
                               {"question": "现在黄金多少钱"})
     text = result.content[0].text
     assert "XAUUSD" in text
+
+
+# ── 结构化输出（structuredContent） ────────────────────────────────────
+
+
+async def test_ask_market_exposes_structured_content(market_env):
+    market_env.rows["quotes"] = [_quote()]
+    result = await _call_tool(market_env.base, "mk-alice", "ask_market",
+                              {"question": "现在黄金多少钱"})
+
+    assert result.isError is False
+    structured = result.structuredContent
+    assert structured["category"] == "precious_metals"
+    assert structured["quotes"][0]["symbol"] == "XAUUSD"
+    assert "XAUUSD" in structured["answer"]
+    # 旧文本字段仍保留：content 是完整 JSON 文本
+    assert "XAUUSD" in result.content[0].text
+
+
+async def test_get_latest_quotes_exposes_structured_content(market_env):
+    market_env.rows["quotes"] = [_quote()]
+    result = await _call_tool(market_env.base, "mk-alice", "get_latest_quotes")
+
+    assert result.isError is False
+    # FastMCP 1.x 对 list 返回值统一包在 result 字段下
+    assert result.structuredContent == {"result": [_quote()]}
+    # 旧文本行为不变：list 的每一项各自成为一个 TextContent 块
+    assert len(result.content) == 1
+    assert '"symbol": "XAUUSD"' in result.content[0].text
+
+
+async def test_get_my_positions_exposes_structured_content(market_env):
+    market_env.rows["positions"] = [_position("alice")]
+    result = await _call_tool(market_env.base, "mk-alice", "get_my_positions")
+
+    assert result.isError is False
+    assert result.structuredContent == {"result": [_position("alice")]}
+
+
+async def test_ask_market_empty_result_is_success_not_error(market_env):
+    """空结果是合法成功：isError=false 且显式返回空 quotes，不伪装成错误。"""
+    market_env.rows["quotes"] = []
+    result = await _call_tool(market_env.base, "mk-alice", "ask_market",
+                              {"question": "现在黄金多少钱"})
+
+    assert result.isError is False
+    assert result.structuredContent["quotes"] == []
+    assert "暂无匹配的行情数据" in result.content[0].text
+
+
+# ── 错误语义（FW-14）：失败必须是 isError=true，且不泄露内部信息 ──────
+
+
+def _assert_tool_error(result, code: str, secret: str = "hunter2"):
+    assert result.isError is True
+    text = result.content[0].text
+    assert code in text
+    assert secret not in text
+    assert "Traceback" not in text
+    assert "RuntimeError" not in text
+    assert result.structuredContent is None
+
+
+async def test_quote_query_failure_is_tool_error(market_env):
+    market_env.rows["error"] = "db down password=hunter2"
+    result = await _call_tool(market_env.base, "mk-alice", "get_latest_quotes")
+    _assert_tool_error(result, "market_quotes_unavailable")
+
+
+async def test_position_query_failure_is_tool_error(market_env):
+    market_env.rows["error"] = "db down password=hunter2"
+    result = await _call_tool(market_env.base, "mk-alice", "get_my_positions")
+    _assert_tool_error(result, "market_positions_unavailable")
+
+
+async def test_ask_market_quote_failure_is_tool_error(market_env):
+    market_env.rows["error"] = "db down password=hunter2"
+    result = await _call_tool(market_env.base, "mk-alice", "ask_market",
+                              {"question": "现在黄金多少钱"})
+    _assert_tool_error(result, "market_quotes_unavailable")
+
+
+async def test_ask_market_position_failure_is_tool_error(market_env):
+    market_env.rows["error"] = "db down password=hunter2"
+    result = await _call_tool(market_env.base, "mk-alice", "ask_market",
+                              {"question": "查看我的持仓"})
+    _assert_tool_error(result, "market_positions_unavailable")

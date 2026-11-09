@@ -1,0 +1,120 @@
+/* ⚠️ 自动生成，请勿直接编辑：scripts/easy-agent/generate-styles.mjs（npm run styles:easy-agent）
+   来源：highlight.js/styles/github-dark.css（highlight.js 11.12.0，BSD-3-Clause），选择器限定在 .easy-agent-root 内 */
+:where(.easy-agent-root) pre code.hljs {
+  display: block;
+  overflow-x: auto;
+  padding: 1em
+}
+:where(.easy-agent-root) code.hljs {
+  padding: 3px 5px
+}
+/*!
+  Theme: GitHub Dark
+  Description: Dark theme as seen on github.com
+  Author: github.com
+  Maintainer: @Hirse
+  Updated: 2021-05-15
+
+  Outdated base version: https://github.com/primer/github-syntax-dark
+  Current colors taken from GitHub's CSS
+*/
+:where(.easy-agent-root) .hljs {
+  color: #c9d1d9;
+  background: #0d1117
+}
+:where(.easy-agent-root) .hljs-doctag,
+:where(.easy-agent-root) .hljs-keyword,
+:where(.easy-agent-root) .hljs-meta .hljs-keyword,
+:where(.easy-agent-root) .hljs-template-tag,
+:where(.easy-agent-root) .hljs-template-variable,
+:where(.easy-agent-root) .hljs-type,
+:where(.easy-agent-root) .hljs-variable.language_ {
+  /* prettylights-syntax-keyword */
+  color: #ff7b72
+}
+:where(.easy-agent-root) .hljs-title,
+:where(.easy-agent-root) .hljs-title.class_,
+:where(.easy-agent-root) .hljs-title.class_.inherited__,
+:where(.easy-agent-root) .hljs-title.function_ {
+  /* prettylights-syntax-entity */
+  color: #d2a8ff
+}
+:where(.easy-agent-root) .hljs-attr,
+:where(.easy-agent-root) .hljs-attribute,
+:where(.easy-agent-root) .hljs-literal,
+:where(.easy-agent-root) .hljs-meta,
+:where(.easy-agent-root) .hljs-number,
+:where(.easy-agent-root) .hljs-operator,
+:where(.easy-agent-root) .hljs-variable,
+:where(.easy-agent-root) .hljs-selector-attr,
+:where(.easy-agent-root) .hljs-selector-class,
+:where(.easy-agent-root) .hljs-selector-id {
+  /* prettylights-syntax-constant */
+  color: #79c0ff
+}
+:where(.easy-agent-root) .hljs-regexp,
+:where(.easy-agent-root) .hljs-string,
+:where(.easy-agent-root) .hljs-meta .hljs-string {
+  /* prettylights-syntax-string */
+  color: #a5d6ff
+}
+:where(.easy-agent-root) .hljs-built_in,
+:where(.easy-agent-root) .hljs-symbol {
+  /* prettylights-syntax-variable */
+  color: #ffa657
+}
+:where(.easy-agent-root) .hljs-comment,
+:where(.easy-agent-root) .hljs-code,
+:where(.easy-agent-root) .hljs-formula {
+  /* prettylights-syntax-comment */
+  color: #8b949e
+}
+:where(.easy-agent-root) .hljs-name,
+:where(.easy-agent-root) .hljs-quote,
+:where(.easy-agent-root) .hljs-selector-tag,
+:where(.easy-agent-root) .hljs-selector-pseudo {
+  /* prettylights-syntax-entity-tag */
+  color: #7ee787
+}
+:where(.easy-agent-root) .hljs-subst {
+  /* prettylights-syntax-storage-modifier-import */
+  color: #c9d1d9
+}
+:where(.easy-agent-root) .hljs-section {
+  /* prettylights-syntax-markup-heading */
+  color: #1f6feb;
+  font-weight: bold
+}
+:where(.easy-agent-root) .hljs-bullet {
+  /* prettylights-syntax-markup-list */
+  color: #f2cc60
+}
+:where(.easy-agent-root) .hljs-emphasis {
+  /* prettylights-syntax-markup-italic */
+  color: #c9d1d9;
+  font-style: italic
+}
+:where(.easy-agent-root) .hljs-strong {
+  /* prettylights-syntax-markup-bold */
+  color: #c9d1d9;
+  font-weight: bold
+}
+:where(.easy-agent-root) .hljs-addition {
+  /* prettylights-syntax-markup-inserted */
+  color: #aff5b4;
+  background-color: #033a16
+}
+:where(.easy-agent-root) .hljs-deletion {
+  /* prettylights-syntax-markup-deleted */
+  color: #ffdcd7;
+  background-color: #67060c
+}
+:where(.easy-agent-root) .hljs-char.escape_,
+:where(.easy-agent-root) .hljs-link,
+:where(.easy-agent-root) .hljs-params,
+:where(.easy-agent-root) .hljs-property,
+:where(.easy-agent-root) .hljs-punctuation,
+:where(.easy-agent-root) .hljs-tag {
+  /* purposely ignored */
+  
+}

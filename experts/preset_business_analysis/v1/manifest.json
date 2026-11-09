@@ -1,0 +1,10 @@
+{
+  "expert_agent_id": "preset_business_analysis",
+  "name_cn": "经营分析专家",
+  "name_en": "business-analysis",
+  "version": 1,
+  "prompt_file": "business-analysis.md",
+  "generated_at": "2026-10-22T14:20:00",
+  "model": "preset",
+  "raw_llm_output": null
+}

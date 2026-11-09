@@ -10,6 +10,19 @@
 from fastapi.testclient import TestClient
 
 
+def _scheduled(db):
+    """T3c：定时任务/执行记录走领域 repository（Database 转发方法已删除）。"""
+    from easy_agent.db.repositories.scheduled_task_repository import (
+        ScheduledTaskRepository,
+    )
+
+    if isinstance(db, ScheduledTaskRepository):
+        return db
+    if hasattr(db, "create_scheduled_task") and not hasattr(db, "get_connection"):
+        return db
+    return ScheduledTaskRepository(db)
+
+
 def test_scenario_auth_session_flow(auth_client: TestClient):
     client = auth_client
     # 注册并登录
@@ -70,7 +83,7 @@ def test_scenario_scheduled_task_lifecycle(client: TestClient):
 
     tid = "scenario-task"
     db = get_database()
-    db.create_scheduled_task(
+    _scheduled(db).create_scheduled_task(
         ScheduledTaskModel(
             task_id=tid,
             username="testuser",
