@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import io
 import logging
 import re
@@ -148,9 +147,9 @@ SHARED_DATASET_NAME = "EA_SHARED"
 # 进程级缓存（KnowledgeService 每请求实例化，共享数据集 ID 必须跨实例复用）
 _shared_dataset_id: str | None = None
 _shared_dataset_lock: asyncio.Lock | None = None
-# 共享数据集模型校验缓存：(dataset_id, configured_model)。配置只在进程启动时
-# 变化，同一进程内无需对每次上传/检索都重复查数据集详情。
-_validated_dataset_model: tuple[str, str] | None = None
+# 进程级缓存：共享数据集绑定的实际 embedding 模型。由 RAGFlow 数据集直接
+# 解析得到，不再从配置显式指定。空字符串极端情况表示上游数据集尚未绑定模型。
+_effective_embedding_model: str | None = None
 
 
 def _get_shared_dataset_lock() -> asyncio.Lock:
@@ -162,10 +161,10 @@ def _get_shared_dataset_lock() -> asyncio.Lock:
 
 
 def reset_shared_dataset_cache() -> None:
-    """清空共享数据集 ID/模型校验进程级缓存（测试用）。"""
-    global _shared_dataset_id, _validated_dataset_model
+    """清空共享数据集 ID / embedding 模型进程级缓存（测试用）。"""
+    global _shared_dataset_id, _effective_embedding_model
     _shared_dataset_id = None
-    _validated_dataset_model = None
+    _effective_embedding_model = None
 
 
 # ---------------------------------------------------------------------------
@@ -257,212 +256,89 @@ class KnowledgeService:
         )
 
     async def _ensure_shared_dataset(self) -> str:
-        """返回共享数据集 ID：配置指定库时按 ID 校验，否则查找/创建（进程级缓存）。
+        """返回共享数据集 ID，并顺带解析出实际生效的 embedding 模型。
 
-        配置了 shared_dataset_id 时不按名称查找、不创建——适合共享/托管
-        RAGFlow 环境（仅授权使用某个既有数据集，不允许随意建库），但会按 ID
-        做一次存在性与 embedding 模型校验。未配置时按名称查找共享数据集，
-        没有则创建。创建参数：embedding 模型取知识库配置，缺省用 Ragflow
-        租户默认模型。校验规则见 ``_validate_shared_dataset_model``。
+        规则（模型一律从上游 RAGFlow 数据集解析，不再通过配置显式指定）：
 
-        模型变化时：
-        - 指定库为空：原地更新模型；
-        - 指定库已有 chunk：明确报错（显式指定 ID 时不擅自换库）；
-        - 未指定 ID、旧 ``EA_SHARED`` 已有 chunk 且模型不一致：自动创建
-          ``EA_SHARED_<模型哈希>`` 新库并使用，旧库文档保留但不再接收新上传。
-          这样只改 ``RAGFLOW_EMBEDDING_MODEL`` 就能让新文档用新模型解析。
+        1. 配了 ``RAGFLOW_SHARED_DATASET_ID`` → 校验存在，直接用其
+           ``embedding_model``；
+        2. 未配置 → 查找/创建 ``EA_SHARED`` 共享数据集，从拿到的
+           数据集读取 ``embedding_model``；创建时不指定模型，让 RAGFlow
+           用租户默认（数据集创建好后自然会带上模型）。
 
-        多进程并发创建的竞态由"失败后重查"兜底：Ragflow 数据集名称全局唯一，
-        后创建方会收到错误，重查即可复用。
+        模型缓存于模块级 ``_effective_embedding_model``，同一进程内
+        后续调用不再重复查数据集。
         """
+        global _shared_dataset_id, _effective_embedding_model
+
+        # 1) 显式指定数据集 ID：直接用
         configured = self.config.shared_dataset_id.strip()
-        configured_model = self.config.embedding.model.strip()
         if configured:
-            return await self._ensure_configured_dataset(
-                configured, configured_model
+            if _shared_dataset_id == configured and _effective_embedding_model is not None:
+                return configured
+            dataset = await self._get_dataset(configured)
+            if dataset is None:
+                raise KnowledgeServiceError(
+                    "KNOWLEDGE_SHARED_DATASET_NOT_FOUND",
+                    f"共享数据集 {configured} 不存在或当前 API Key 无权访问；"
+                    "请确认 RAGFLOW_BASE_URL / RAGFLOW_API_KEY / "
+                    "RAGFLOW_SHARED_DATASET_ID 指向同一套 RAGFlow",
+                    status_code=409,
+                )
+            _shared_dataset_id = configured
+            _effective_embedding_model = str(
+                dataset.get("embedding_model") or ""
+            ).strip()
+            logger.info(
+                "共享数据集就绪（显式指定） | id=%s model=%s",
+                configured,
+                _effective_embedding_model,
             )
-        global _shared_dataset_id
-        if _shared_dataset_id:
+            return configured
+
+        # 2) 未指定：按名称查找 / 创建 EA_SHARED（进程级缓存）
+        if _shared_dataset_id is not None and _effective_embedding_model is not None:
             return _shared_dataset_id
         async with _get_shared_dataset_lock():
-            if _shared_dataset_id:
+            if _shared_dataset_id is not None and _effective_embedding_model is not None:
                 return _shared_dataset_id
-
-            preferred_name = self._shared_dataset_name_for_model(configured_model)
-            if preferred_name != SHARED_DATASET_NAME:
-                found_preferred = await self._find_shared_dataset(name=preferred_name)
-                if found_preferred is not None:
-                    await self._validate_shared_dataset_model(found_preferred)
-                    _shared_dataset_id = found_preferred
-                    logger.info(
-                        "共享数据集就绪（模型专用） | id=%s model=%s",
-                        _shared_dataset_id,
-                        configured_model,
-                    )
-                    return _shared_dataset_id
 
             found = await self._find_shared_dataset()
             if found is None:
-                _shared_dataset_id = await self._create_shared_dataset(
-                    SHARED_DATASET_NAME, configured_model
-                )
+                _shared_dataset_id = await self._create_shared_dataset()
             else:
-                old_model = await self._stale_dataset_model(found, configured_model)
-                if old_model:
-                    # 旧共享库已有 chunk 且模型不一致：新建模型专用库，
-                    # 避免 RAGFlow 继续用旧模型解析新文档。
-                    _shared_dataset_id = await self._create_shared_dataset(
-                        preferred_name, configured_model
-                    )
-                    logger.warning(
-                        "检测到共享数据集模型变化，已切换到新数据集 | old_dataset=%s "
-                        "new_dataset=%s old_model=%s new_model=%s | 旧库文档不会自动"
-                        "迁移，需要重新上传才能用新模型解析",
-                        found,
-                        _shared_dataset_id,
-                        old_model,
-                        configured_model,
-                    )
-                else:
-                    await self._validate_shared_dataset_model(found)
-                    _shared_dataset_id = found
+                _shared_dataset_id = found
 
-            logger.info("共享数据集就绪 | id=%s", _shared_dataset_id)
+            # 从最终确定的数据集读模型
+            dataset = await self._get_dataset(_shared_dataset_id)
+            _effective_embedding_model = str(
+                (dataset or {}).get("embedding_model") or ""
+            ).strip()
+            logger.info(
+                "共享数据集就绪 | id=%s model=%s",
+                _shared_dataset_id,
+                _effective_embedding_model,
+            )
             return _shared_dataset_id
 
-    async def _ensure_configured_dataset(
-        self, dataset_id: str, configured_model: str
-    ) -> str:
-        """处理显式 ``RAGFLOW_SHARED_DATASET_ID`` 的模型一致性。
+    async def _resolve_embedding_model(self) -> str:
+        """返回共享数据集绑定的 embedding 模型；必要时先触发数据集就绪。
 
-        - 数据集不存在：明确报错；
-        - 模型一致或未配置：直接使用；
-        - 空库且模型不一致：原地更新模型；
-        - 有 chunk 且模型不一致：尝试创建/复用模型专用数据集
-          ``EA_SHARED_<模型哈希>``；创建失败（如托管环境不允许建库）时
-          回退到原来的明确不一致错误。
+        模型从上游 RAGFlow 数据集解析得到，不再通过配置显式指定。
+        空字符串是合法情况（数据集存在但上游暂未分配模型），调用方应
+        让上游在首次解析时自行决定。
         """
+        if _effective_embedding_model is None:
+            await self._ensure_shared_dataset()
+        return _effective_embedding_model or ""
 
-        global _validated_dataset_model
-        if configured_model and _validated_dataset_model == (
-            dataset_id,
-            configured_model,
-        ):
-            return dataset_id
-        dataset = await self._get_dataset(dataset_id)
-        if dataset is None:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_SHARED_DATASET_NOT_FOUND",
-                f"共享数据集 {dataset_id} 不存在或当前 API Key 无权访问；"
-                "请确认 RAGFLOW_BASE_URL / RAGFLOW_API_KEY / "
-                "RAGFLOW_SHARED_DATASET_ID 指向同一套 RAGFlow",
-                status_code=409,
-            )
-        actual = str(dataset.get("embedding_model") or "").strip()
-        if not configured_model:
-            return dataset_id
-        if not actual or actual == configured_model:
-            _validated_dataset_model = (dataset_id, configured_model)
-            return dataset_id
-        if self._dataset_chunk_count(dataset) == 0:
-            await self._update_dataset_model(dataset_id, configured_model)
-            return dataset_id
-
-        preferred_name = self._shared_dataset_name_for_model(configured_model)
-        found = await self._find_shared_dataset(name=preferred_name)
-        if found is not None:
-            await self._validate_shared_dataset_model(found)
-            logger.warning(
-                "指定共享数据集模型不一致，改用模型专用数据集 | dataset=%s "
-                "actual_model=%s new_dataset=%s new_model=%s",
-                dataset_id,
-                actual,
-                found,
-                configured_model,
-            )
-            return found
-        try:
-            new_id = await self._create_shared_dataset(
-                preferred_name, configured_model
-            )
-        except RagflowError:
-            self._raise_model_mismatch(dataset_id, actual, configured_model)
-            raise  # pragma: no cover - _raise_model_mismatch 必定抛出
-        logger.warning(
-            "指定共享数据集模型不一致，已创建模型专用数据集 | configured=%s "
-            "actual_model=%s new_dataset=%s new_model=%s | 旧库文档不会自动迁移，"
-            "需要重新上传",
-            dataset_id,
-            actual,
-            new_id,
-            configured_model,
-        )
-        return new_id
-
-    async def _update_dataset_model(self, dataset_id: str, model: str) -> None:
-        try:
-            await self.ragflow.update_dataset(dataset_id, embedding_model=model)
-        except RagflowError as exc:
-            raise self._upstream_error(exc) from exc
-        global _validated_dataset_model
-        _validated_dataset_model = (dataset_id, model)
-        logger.info(
-            "共享数据集为空，已按配置切换 embedding 模型 | dataset=%s new=%s",
-            dataset_id,
-            model,
-        )
-
-    def _raise_model_mismatch(
-        self, dataset_id: str, actual: str, configured: str
-    ) -> None:
-        raise KnowledgeServiceError(
-            "KNOWLEDGE_EMBEDDING_MODEL_MISMATCH",
-            f"共享数据集 {dataset_id} 绑定模型 {actual}，与配置 "
-            f"RAGFLOW_EMBEDDING_MODEL={configured} 不一致；RAGFlow 不支持在有 "
-            "chunk 的数据集上原地换模型。请新建一个使用新模型的数据集，把 "
-            "RAGFLOW_SHARED_DATASET_ID 指向它后重新解析文档；或清空 "
-            "RAGFLOW_SHARED_DATASET_ID，让程序按新模型自动创建专用数据集；"
-            "或把 RAGFLOW_EMBEDDING_MODEL 改回该数据集实际模型",
-            status_code=409,
-        )
-
-    @staticmethod
-    def _shared_dataset_name_for_model(model: str) -> str:
-        """模型变化时使用的稳定数据集名；未配置模型时沿用 ``EA_SHARED``。"""
-
-        if not model:
-            return SHARED_DATASET_NAME
-        digest = hashlib.sha1(model.encode("utf-8")).hexdigest()[:8]
-        return f"{SHARED_DATASET_NAME}_{digest}"
-
-    async def _stale_dataset_model(
-        self, dataset_id: str, configured_model: str
-    ) -> str | None:
-        """旧库因“有 chunk + 模型不一致”需要切换时，返回其实际模型。
-
-        返回非空即调用方应新建模型专用数据集；None 表示无需切换。
-        """
-
-        if not configured_model:
-            return None
-        dataset = await self._get_dataset(dataset_id)
-        if dataset is None:
-            return None
-        actual = str(dataset.get("embedding_model") or "").strip()
-        if (
-            actual
-            and actual != configured_model
-            and self._dataset_chunk_count(dataset) > 0
-        ):
-            return actual
-        return None
-
-    async def _create_shared_dataset(self, name: str, model: str) -> str:
+    async def _create_shared_dataset(self) -> str:
+        """创建共享数据集：不指定 embedding_model，让 RAGFlow 用租户默认。"""
         try:
             remote = await self.ragflow.create_dataset(
-                name=name,
+                name=SHARED_DATASET_NAME,
                 description="EasyAgent 共享知识库（个人/公共库共用）",
-                embedding_model=model or None,
+                # 不指定模型，RAGFlow 会用租户默认
                 permission=DATASET_PERMISSION,
                 chunk_method=CHUNK_METHOD,
                 parser_config=PARSER_CONFIG,
@@ -470,10 +346,9 @@ class KnowledgeService:
             return str(remote["id"])
         except RagflowError:
             # 并发竞态：其他进程/实例刚创建了同名数据集 → 重查复用
-            found = await self._find_shared_dataset(name=name)
+            found = await self._find_shared_dataset(name=SHARED_DATASET_NAME)
             if found is None:
                 raise
-            await self._validate_shared_dataset_model(found)
             return found
 
     async def _get_dataset(self, dataset_id: str) -> dict[str, Any] | None:
@@ -490,47 +365,6 @@ class KnowledgeService:
             if isinstance(item, dict) and str(item.get("id")) == dataset_id:
                 return item
         return None
-
-    @staticmethod
-    def _dataset_chunk_count(dataset: Mapping[str, Any]) -> int:
-        try:
-            return int(dataset.get("chunk_count") or 0)
-        except (TypeError, ValueError):
-            return 0
-
-    async def _validate_shared_dataset_model(self, dataset_id: str) -> None:
-        """校验共享数据集与配置的 embedding 模型是否一致。
-
-        - 未配置 ``RAGFLOW_EMBEDDING_MODEL``：不校验，沿用数据集既有模型；
-        - 数据集为空：自动按配置更新模型（RAGFlow 允许空库改模型）；
-        - 数据集已有 chunk：明确报错，提示新建数据集并重新解析，避免
-          RAGFlow 在解析/检索时才抛"找不到模型"这类难以定位的上游错误。
-        """
-
-        configured = self.config.embedding.model.strip()
-        if not configured:
-            return
-        global _validated_dataset_model
-        cache_key = (dataset_id, configured)
-        if _validated_dataset_model == cache_key:
-            return
-        dataset = await self._get_dataset(dataset_id)
-        if dataset is None:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_SHARED_DATASET_NOT_FOUND",
-                f"共享数据集 {dataset_id} 不存在或当前 API Key 无权访问；"
-                "请确认 RAGFLOW_BASE_URL / RAGFLOW_API_KEY / "
-                "RAGFLOW_SHARED_DATASET_ID 指向同一套 RAGFlow",
-                status_code=409,
-            )
-        actual = str(dataset.get("embedding_model") or "").strip()
-        if not actual or actual == configured:
-            _validated_dataset_model = cache_key
-            return
-        if self._dataset_chunk_count(dataset) == 0:
-            await self._update_dataset_model(dataset_id, configured)
-            return
-        self._raise_model_mismatch(dataset_id, actual, configured)
 
     async def _find_shared_dataset(
         self, *, name: str = SHARED_DATASET_NAME
@@ -1013,6 +847,9 @@ class KnowledgeService:
                         status_code=403,
                     )
                 target_department_id = principal.department_id
+        # create_base 是纯本地操作，不在此处触发 RAGFlow 调用；
+        # 知识库表的 embedding_model 字段留空——真实模型由共享数据集统一决定。
+        # 如果未来支持"每个知识库独立 RAGFlow 数据集"，再回填此处。
         base = await self._repo(
             self.repository.create_base,
             name=name,
@@ -1020,7 +857,7 @@ class KnowledgeService:
             space_type=visibility.value,
             owner_user_id=principal.user_id,
             department_id=target_department_id,
-            embedding_model=self.config.embedding.model,
+            embedding_model="",
         )
         # 纯本地创建（同建文件夹）：不再调用 Ragflow 建数据集，
         # remote_dataset_id 保持 NULL 表示走共享数据集。
