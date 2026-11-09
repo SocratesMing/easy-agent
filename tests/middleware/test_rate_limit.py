@@ -217,3 +217,42 @@ def test_multiworker_does_not_warn_for_shared_counter(monkeypatch, caplog):
         )
 
     assert not [r for r in caplog.records if "worker/副本" in r.getMessage()]
+
+
+def test_readonly_stream_probes_bypass_stream_budget(monkeypatch):
+    """``/chat/stream/status`` 与 ``/stream/live`` 不占 ``/chat/stream`` 的配额。
+
+    回归「刷新后再也接不回来」：它们与「发起流」共用前缀，按前缀匹配会被一起计数，
+    而刷新续接每 1.5s 探一次状态，45 秒就把 30 次/分 的额度耗光，之后 /live 全 429。
+    """
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(client_ip_mod, "get_client_ip", lambda request: "203.0.113.12")
+
+    app = FastAPI()
+
+    @app.post("/agent/chat/stream")
+    async def create_stream():
+        return {"ok": True}
+
+    @app.get("/agent/chat/stream/status")
+    async def stream_status():
+        return {"active": True}
+
+    @app.get("/agent/chat/stream/live")
+    async def stream_live():
+        return {"ok": True}
+
+    app.add_middleware(
+        RateLimitMiddleware,
+        rules=[("/agent/chat/stream", 1, 60.0)],
+        counter=InMemorySlidingWindowCounter(),
+    )
+    client = TestClient(app, client=("testclient", 50000))
+
+    assert client.post("/agent/chat/stream").status_code == 200
+    # 写接口的额度确实已用尽
+    assert client.post("/agent/chat/stream").status_code == 429
+    # 只读探测与回放不受影响
+    for _ in range(5):
+        assert client.get("/agent/chat/stream/status").status_code == 200
+        assert client.get("/agent/chat/stream/live").status_code == 200

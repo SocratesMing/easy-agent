@@ -329,11 +329,9 @@ def test_list_keyword_and_status_filter(db):
     assert items[0]["export_agent_id"] == "e3"
 
 
-def test_list_keyword_searches_description_and_skills(db):
-    """关键字范围：中英文名 + 功能描述 + 技能标签 + 绑定技能包。
-
-    「+」面板改服务端搜索后，本地原来那套「名称 / 描述 / 技能名」的过滤口径必须
-    在接口这一侧也成立，否则会出现「以前能搜到、换成接口后搜不到」。
+def test_list_keyword_searches_name_and_description_only(db):
+    """关键字范围：中英文名 + 功能描述。「+」面板的专家行只显示名称与描述，按技能命中时用户
+    看不到关键词，反而觉得搜索结果跟搜索词无关，因此把技能两列从口径里去掉。
     """
     store = ExpertStore(db)
     _make(
@@ -358,9 +356,9 @@ def test_list_keyword_searches_description_and_skills(db):
     total, items = store.list_by_user("u1", keyword="信用利差")
     assert total == 1 and items[0]["export_agent_id"] == "e1"
 
-    # 命中技能名（export_skills_names / export_required_skills 存的是 JSON 文本）
+    # 技能名不再命中（export_skills_names / export_required_skills 都不参与匹配）
     total, items = store.list_by_user("u1", keyword="precious-metals")
-    assert total == 1 and items[0]["export_agent_id"] == "e2"
+    assert total == 0 and items == []
 
     # 命中英文名
     total, _ = store.list_by_user("u1", keyword="lianghua")

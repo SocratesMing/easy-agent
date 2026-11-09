@@ -41,6 +41,18 @@ logger = logging.getLogger(__name__)
 RATE_LIMIT_DETAIL = "请求过于频繁，请稍后再试"
 RATE_LIMIT_CODE = "RATE_LIMITED"
 
+#: 只读的流式端点：与「发起流」共用同一路径前缀，但**必须**单独放行。
+#:
+#: 限流规则按前缀匹配（``path == prefix or path.startswith(prefix + "/")``），于是
+#: ``/chat/stream/status`` 与 ``/chat/stream/live`` 也被算进了 ``/chat/stream`` 的
+#: 30 次/分 配额。刷新续接每 1.5 秒探一次状态，45 秒就能把额度耗光；此后
+#: ``/stream/live`` 挂载被 429 拒绝，表现正是「刷新后再也接不回来、只能等回答落库」。
+#: 这两个端点是幂等只读（不触发模型、不写库），放行不会带来刷额度风险。
+_READ_ONLY_STREAM_PATHS = (
+    "/chat/stream/status",
+    "/chat/stream/live",
+)
+
 _DEFAULT_RULES: list[tuple[str, int, float]] = [
     ("/agent/auth/login", 20, 60.0),
     ("/api/auth/login", 20, 60.0),
@@ -197,6 +209,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if env_str("PYTEST_CURRENT_TEST"):
             return await call_next(request)
         path = request.url.path
+        # 只读的流探测 / 回放不吃「发起流」的配额（见 _READ_ONLY_STREAM_PATHS 注释）。
+        if request.method in ("GET", "HEAD") and path.endswith(_READ_ONLY_STREAM_PATHS):
+            return await call_next(request)
         # 延迟 import：utils 包会导入 auth（bcrypt/jose），放在模块顶层会拖慢
         # app 启动早期 import，也更容易形成 middleware <-> utils 的环。
         from easy_agent.utils.client_ip import get_client_ip  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象

@@ -51,6 +51,8 @@ const MAX_NEW_FILE_LINES = 800
  * chatSession 1277 → 1321。
  * 2026-11-07 「挂上实时流就收手」导致永久空白（attach 成功但事件没渲染）后改为
  * 历史轮询兜底 + force 回填，按实测值更新：chatSession 1321 → 1364。
+ * 2026-11-09 普通异常也落 fallback_note，awaitingAnswer 据此判定「本轮已收尾」
+ * （+4 行注释与判据），按实测值更新：chatSession 1364 → 1368。
  */
 const LINE_BUDGET = {
   // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
@@ -60,7 +62,7 @@ const LINE_BUDGET = {
   [`${MOD}features/chat/components/ChatMessage.vue`]: 2644,
   [`${MOD}features/chat/components/AiSidebar.vue`]: 1726,
   [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2253,
-  [`${MOD}features/chat/mixins/chatSession.js`]: 1364,
+  [`${MOD}features/chat/mixins/chatSession.js`]: 1368,
   [`${MOD}features/connectors/components/ConnectorListPanel.vue`]: 1504,
   [`${MOD}features/skills/components/SkillListPanel.vue`]: 1260,
   [`${MOD}shared/preview/FilePreview.vue`]: 1164,

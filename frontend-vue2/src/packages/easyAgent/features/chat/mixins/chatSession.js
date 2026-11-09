@@ -393,6 +393,9 @@ export default {
     },
     /**
      * 界面是不是仍停在「只有提问、还没答复」的状态。
+     *
+     * 带 fallback_note 的 assistant 不算：那是后端在「这一轮没跑完」时落的中性说明
+     * （超时 / 上游断连等），有它就说明这一轮已经收尾，再盯下去只是空转。
      */
     awaitingAnswer() {
       const last = this.messages[this.messages.length - 1]
@@ -401,6 +404,7 @@ export default {
       return last.role === 'assistant'
         && !last.content && !last.thinking
         && !last.pending_approval
+        && !last.fallback_note
         && !(Array.isArray(last.blocks) && last.blocks.length)
     },
     /**
