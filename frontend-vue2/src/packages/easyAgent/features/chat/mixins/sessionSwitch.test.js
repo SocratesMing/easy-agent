@@ -150,3 +150,27 @@ test('A 的恢复流在后台结束时，不清掉当前展示的 B 的审批', 
   assert.equal(vm.pendingApproval.threadId, 'B-1')
   assert.equal(vm.pendingApprovalOf('A'), null)
 })
+
+test('停在审批的进行中会话：切回走缓存，不再懒挂载（此前每次切换都整段重放）', () => {
+  const vm = makeVm()
+  vm.loadedSessionId = 'A'
+  vm.markStreaming('B')
+  assert.equal(vm.needsLazyAttach('B'), true, '进行中且本页没挂载：需要懒挂载')
+  vm.sessionStates.B = { messages: [], pendingApproval: { threadId: 'B-m1' } }
+  assert.equal(vm.needsLazyAttach('B'), false, '停在审批时流已结束，不能再挂载')
+  vm.sessionStates.B.pendingApproval = null
+  vm.attachedStreamingSessions.B = 'displayed'
+  assert.equal(vm.needsLazyAttach('B'), false, '本页已有展示挂载：走缓存')
+})
+
+test('挂载拉历史期间切走：不把上一个会话的界面数据存到正在挂载的会话名下', () => {
+  const vm = makeVm()
+  vm.messages = [{ id: 'a1', role: 'user', content: '会话A' }]
+  vm.loadedSessionId = 'B' // 挂载已把归属指向 B，历史还没回来
+  vm._attachLoadingSid = 'B'
+  vm.saveCurrentSessionState()
+  assert.equal(vm.sessionStates.B, undefined)
+  vm._attachLoadingSid = null
+  vm.saveCurrentSessionState()
+  assert.equal(vm.sessionStates.B.messages[0].content, '会话A', '加载结束后照常保存')
+})

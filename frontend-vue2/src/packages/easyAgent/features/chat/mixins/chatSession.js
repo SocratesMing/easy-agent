@@ -312,45 +312,52 @@ export default {
 
       if (displayed) {
         this.sessionLoading = true;
+        // 历史返回前 loadedSessionId 已指向本会话、界面仍是上一个会话的数据：期间切走不得存缓存
+        this._attachLoadingSid = sessionId;
         try {
           const history = await getChatHistory(sessionId);
           if (this.currentSessionId !== sessionId) {
-            // 加载期间用户已切换到其他会话：放弃本次挂载，避免覆盖当前展示
-            if (this.attachedStreamingSessions[sessionId] === mode) {
-              delete this.attachedStreamingSessions[sessionId];
+            // 加载期间用户已切走：不放弃挂载（放弃会留下「进行中却无人接收」，每次切回都重挂载、
+            // 整段重放），改为把历史写进该会话缓存，后续事件经 runInSession 进缓存，切回直接恢复
+            const st = this.ensureSessionState(sessionId);
+            Object.assign(st, { messages: history.messages || [], todos: history.todos || [], pendingApproval: null });
+            const u = history.usage;
+            if (u) Object.assign(st, { sessionDuration: u.elapsed_time || 0, iterationCount: u.step_count || 0,
+              sessionUsage: { ...st.sessionUsage, input_tokens: u.input_tokens || 0, output_tokens: u.output_tokens || 0,
+                reasoning_tokens: u.reasoning_tokens || 0, context_tokens: u.context_tokens || 0 } });
+          } else {
+            // 服务端历史可能还没落本轮提问（刷新落在准备期）：此时整表替换会把刚发的
+            // 提问抹掉，界面只剩回答。本地最后一条是本轮提问、服务端最后一条不是，则
+            // 以本地为准，随后占位照常由回放重建。
+            const serverMsgs = history.messages || [];
+            const localMsgs = this.messages || [];
+            const localLast = localMsgs[localMsgs.length - 1];
+            const serverLast = serverMsgs[serverMsgs.length - 1];
+            const keepLocalTail =
+              localLast &&
+              localLast.role === "user" &&
+              (!serverLast || serverLast.role !== "user");
+            this.messages = keepLocalTail ? localMsgs : serverMsgs;
+            this.currentTodos = history.todos || [];
+            this.syncExpertChipFromMessages();
+            if (history.usage) {
+              this.sessionUsage.input_tokens = history.usage.input_tokens || 0;
+              this.sessionUsage.output_tokens = history.usage.output_tokens || 0;
+              this.sessionUsage.reasoning_tokens =
+                history.usage.reasoning_tokens || 0;
+              this.sessionUsage.context_tokens =
+                history.usage.context_tokens || 0;
+              this.sessionDuration = history.usage.elapsed_time || 0;
+              this.iterationCount = history.usage.step_count || 0;
             }
-            return;
-          }
-          // 服务端历史可能还没落本轮提问（刷新落在准备期）：此时整表替换会把刚发的
-          // 提问抹掉，界面只剩回答。本地最后一条是本轮提问、服务端最后一条不是，则
-          // 以本地为准，随后占位照常由回放重建。
-          const serverMsgs = history.messages || [];
-          const localMsgs = this.messages || [];
-          const localLast = localMsgs[localMsgs.length - 1];
-          const serverLast = serverMsgs[serverMsgs.length - 1];
-          const keepLocalTail =
-            localLast &&
-            localLast.role === "user" &&
-            (!serverLast || serverLast.role !== "user");
-          this.messages = keepLocalTail ? localMsgs : serverMsgs;
-          this.currentTodos = history.todos || [];
-          this.syncExpertChipFromMessages();
-          if (history.usage) {
-            this.sessionUsage.input_tokens = history.usage.input_tokens || 0;
-            this.sessionUsage.output_tokens = history.usage.output_tokens || 0;
-            this.sessionUsage.reasoning_tokens =
-              history.usage.reasoning_tokens || 0;
-            this.sessionUsage.context_tokens =
-              history.usage.context_tokens || 0;
-            this.sessionDuration = history.usage.elapsed_time || 0;
-            this.iterationCount = history.usage.step_count || 0;
-          }
-          if (history.context_length) {
-            this.sessionUsage.context_length = history.context_length;
+            if (history.context_length) {
+              this.sessionUsage.context_length = history.context_length;
+            }
           }
         } catch (e) {
           console.error("加载聊天历史失败:", e);
         } finally {
+          if (this._attachLoadingSid === sessionId) this._attachLoadingSid = null;
           this.sessionLoading = false;
         }
       }
@@ -362,11 +369,13 @@ export default {
       const attachId = `assistant-attach-${Date.now()}-${String(
         sessionId,
       ).slice(-5)}`;
+      const shownNow = this.currentSessionId === sessionId;
+      const target = displayed && !shownNow ? this.ensureSessionState(sessionId) : this;
       if (displayed) {
-        const lastMsg = this.messages[this.messages.length - 1];
+        const lastMsg = target.messages[target.messages.length - 1];
         const lastAssistantIdx =
           lastMsg && lastMsg.role === "assistant"
-            ? this.messages.length - 1
+            ? target.messages.length - 1
             : -1;
         const placeholder = {
           id: attachId,
@@ -379,11 +388,11 @@ export default {
           loading: true,
         };
         if (lastAssistantIdx === -1) {
-          this.messages.push(placeholder);
+          target.messages.push(placeholder);
         } else {
-          setReactive(this.messages, lastAssistantIdx, placeholder);
+          setReactive(target.messages, lastAssistantIdx, placeholder);
         }
-        this.streamingAssistantId = attachId;
+        target.streamingAssistantId = attachId;
       }
 
       const { onChunk } = this.createStreamChunkHandler({
@@ -432,7 +441,8 @@ export default {
       });
 
       const controller = this.trackStream(new AbortController());
-      if (displayed) this.currentAbortController = controller;
+      if (displayed && shownNow) this.currentAbortController = controller;
+      else if (displayed) target.abortController = controller;
       if (!displayed && !this.sessionStates[sessionId]) {
         // 后台挂载：确保会话缓存存在，供 token 用量回放写入
         this.sessionStates[sessionId] = {
@@ -611,7 +621,7 @@ export default {
     },
     // 保存当前会话状态到缓存（以界面数据实际所属的会话为 key，避免异步加载期间保存错位）
     saveCurrentSessionState() {
-      if (!this.loadedSessionId) return;
+      if (!this.loadedSessionId || this._attachLoadingSid === this.loadedSessionId) return;
       this.sessionStates[this.loadedSessionId] = {
         messages: this.messages.slice(),
         isStreaming: this.isStreaming,
@@ -696,6 +706,11 @@ export default {
       return st;
     },
     // 某会话的待审批（展示中读组件字段，后台读缓存）；流收尾按「流所属会话」判断，不能看当前展示的
+    // 切到进行中的会话是否需要懒挂载：本页没有展示挂载、且没停在审批（停在审批时流已结束，
+    // 内容在缓存/服务端历史里；再挂载只会整段重放、每次切换都重新渲染）
+    needsLazyAttach(sid) {
+      return this.isSessionStreaming(sid) && this.attachedStreamingSessions[sid] !== "displayed" && !this.pendingApprovalOf(sid);
+    },
     pendingApprovalOf(sid) {
       if (!sid || sid === this.loadedSessionId) return this.pendingApproval;
       return (
@@ -974,10 +989,7 @@ export default {
 
       // 切换到进行中的会话：若本页尚未挂载其流式任务，懒挂载以继续接收事件
       // （刷新后恢复出的多个进行中会话，除当前展示外都走这里）
-      if (
-        this.isSessionStreaming(sessionId) &&
-        this.attachedStreamingSessions[sessionId] !== "displayed"
-      ) {
+      if (this.needsLazyAttach(sessionId)) {
         this.attachToStreamingSession(sessionId, {
           switchTo: false,
           displayed: true,
