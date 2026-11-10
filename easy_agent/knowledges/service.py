@@ -76,14 +76,13 @@ from easy_agent.knowledges.core.original_store import (
     OriginalStorageError,
 )
 from easy_agent.knowledges.core.permissions import (
-    _ROLE_RANK,
     _base_access_restricted,
-    _matching_permission_roles,
     allowed_actions,
     effective_role,
 )
 from easy_agent.knowledges.core.repository import KnowledgeRepository
 from easy_agent.knowledges.ragflow import RagflowClient, RagflowError, RagflowNotFoundError
+from easy_agent.utils.auth import is_super_admin
 
 if TYPE_CHECKING:  # 仅供类型注解（api 与 service 相互引用，运行时无循环导入）
     from easy_agent.knowledges.core.models import KnowledgePrincipal
@@ -229,7 +228,6 @@ class KnowledgeService:
         self.ragflow = ragflow
         self.config = config
         self.operations_repository = KnowledgeOperationsRepository(repository.db)
-        self._team_manager_cache: dict[str, bool] = {}
         self.original_store = (
             original_store if original_store is not None else LocalOriginalStore()
         )
@@ -507,16 +505,31 @@ class KnowledgeService:
             )
         return base, role
 
-    async def _has_team_management_grant(self, principal: KnowledgePrincipal) -> bool:
-        """判断用户是否在公共空间管理白名单（admin 直通，结果按用户缓存）。"""
+    async def _has_department_management_grant(
+        self, principal: KnowledgePrincipal, department_id: str
+    ) -> bool:
+        """判断用户是否是指定部门的知识库管理员。"""
 
-        if principal.username == "admin":
+        if not department_id:
+            return False
+        return await self._repo(
+            self.repository.is_department_manager, principal.user_id, department_id
+        )
+
+    async def _can_create_team_base(self, principal: KnowledgePrincipal) -> bool:
+        """判断用户是否可以创建公共空间（TEAM）知识库。
+
+        两种情况返回 True：
+        1. 超级管理员（admin / liufengbao，全局直通）
+        2. 知识库管理员（在自己所属部门）
+        """
+        if is_super_admin(principal.username):
             return True
-        if principal.user_id not in self._team_manager_cache:
-            self._team_manager_cache[principal.user_id] = await self._repo(
-                self.repository.is_team_space_manager, principal.user_id
-            )
-        return self._team_manager_cache[principal.user_id]
+        if principal.department_id and await self._has_department_management_grant(
+            principal, principal.department_id
+        ):
+            return True
+        return False
 
     async def _effective_role(
         self,
@@ -524,17 +537,16 @@ class KnowledgeService:
         principal: KnowledgePrincipal,
         permissions: Iterable[Mapping[str, object]],
     ) -> KnowledgeBaseRole | None:
-        """在单库授权之上叠加公共空间管理白名单。
+        """在单库授权之上叠加超级管理员全局权限。
 
-        admin 与公共空间管理员（白名单账号）对所有公共库直通 MANAGER（同权）；
+        超级管理员（admin / liufengbao）对所有公共库直通 MANAGER；owner 由
+        effective_role 直接判 MANAGER（owner 权限不落 knowledge_permissions）；
         其余账号维持本部门默认只读、勾选名单与单库授权逻辑。
         """
         permission_rows = list(permissions)
         if str(base.get("space_type")) != KnowledgeBaseVisibility.TEAM.value:
             return effective_role(base, principal, permission_rows)
-        if principal.username == "admin":
-            return KnowledgeBaseRole.MANAGER
-        if await self._has_team_management_grant(principal):
+        if is_super_admin(principal.username):
             return KnowledgeBaseRole.MANAGER
         same_department = bool(principal.department_id) and (
             principal.department_id == str(base.get("department_id") or "").strip()
@@ -542,11 +554,7 @@ class KnowledgeService:
         # 公共空间默认对本部门账号只读可见；勾选名单（access_restricted）
         # 模式下默认可见让位于勾选人员。
         team_viewer = same_department and not _base_access_restricted(base)
-        role = effective_role(base, principal, permission_rows, team_viewer=team_viewer)
-        if str(base.get("owner_user_id", "")) == principal.user_id:
-            explicit_roles = _matching_permission_roles(principal, permission_rows)
-            return max([KnowledgeBaseRole.VIEWER, *explicit_roles], key=_ROLE_RANK.__getitem__)
-        return role
+        return effective_role(base, principal, permission_rows, team_viewer=team_viewer)
 
     # ---------------- 摘要构造 ----------------
 
@@ -704,8 +712,11 @@ class KnowledgeService:
     ) -> KnowledgeBaseListResponse:
         """分页列出用户可见的知识库，附带公共空间管理能力信息。"""
 
-        is_admin = principal.username == "admin"
-        has_team_management_grant = await self._has_team_management_grant(principal)
+        is_admin = is_super_admin(principal.username)
+        has_dept_grant = bool(principal.department_id) and await self._has_department_management_grant(
+            principal, principal.department_id
+        )
+        can_manage_all = is_admin  # 仅超级管理员全局管理
         departments: list[TeamSpaceDepartmentSummary] = []
         if is_admin:
             department_rows = await self._repo(self.repository.list_active_departments)
@@ -717,11 +728,13 @@ class KnowledgeService:
                 for row in department_rows
                 if str(row.get("department_id") or "").strip()
             ]
+        # 超级管理员需要有可选的在职部门才能建公共空间；知识库管理员固定在本部门创建
+        can_create_team = has_dept_grant or (is_admin and bool(departments))
         candidates = await self._repo(
             self.repository.list_candidate_bases,
             user_id=principal.user_id,
             department_id=principal.department_id,
-            include_all_team_spaces=has_team_management_grant,
+            include_all_team_spaces=can_manage_all,
         )
         # 权限行一次批量取回，避免逐库查询（列表页 N+1）
         permissions_by_base: dict[str, list[dict[str, Any]]] = {}
@@ -751,12 +764,8 @@ class KnowledgeService:
             items=items,
             page=PageInfo(page=page, page_size=page_size, total=len(visible)),
             team_space_management=TeamSpaceManagementCapability(
-                can_create=(
-                    bool(departments)
-                    if is_admin
-                    else (bool(principal.department_id) and has_team_management_grant)
-                ),
-                can_manage=has_team_management_grant,
+                can_create=can_create_team,
+                can_manage=can_manage_all,
                 department_id=principal.department_id,
                 is_admin=is_admin,
                 departments=departments,
@@ -783,7 +792,7 @@ class KnowledgeService:
         restrict_access: bool = False,
         permission_user_ids: list[str] | None = None,
     ) -> KnowledgeBaseSummary:
-        """创建知识库：公共空间需管理白名单且归属本部门；纯本地建库，走共享数据集。
+        """创建知识库：公共空间需知识库管理员授权，且只能归属本部门；纯本地建库，走共享数据集。
 
         创建即配置可见性（仅公共空间）：勾选名单模式下仅勾选人员可见，
         语义与创建后的权限管理（replace_permissions）完全一致。
@@ -806,13 +815,13 @@ class KnowledgeService:
         target_department_id: str | None = None
         requested_department_id = (department_id or "").strip() or None
         if visibility == KnowledgeBaseVisibility.TEAM:
-            if not await self._has_team_management_grant(principal):
+            if not await self._can_create_team_base(principal):
                 raise KnowledgeServiceError(
                     "KNOWLEDGE_TEAM_SPACE_MANAGER_REQUIRED",
-                    "当前账号未获得公共空间创建与管理权限，请联系 admin 配置",
+                    "当前账号未获得公共空间创建与管理权限，请联系 admin 或部门管理员配置",
                     status_code=403,
                 )
-            if principal.username == "admin":
+            if is_super_admin(principal.username):
                 target_department_id = requested_department_id or principal.department_id
                 if not target_department_id:
                     raise KnowledgeServiceError(
@@ -1344,7 +1353,7 @@ class KnowledgeService:
 
         权限管理新语义：仅支持按人员授权，角色一律为查看者（viewer）；
         restrict_access=True 时该库进入勾选名单模式，公共空间默认的
-        同部门可见让位于勾选人员（owner、admin、部门管理白名单不受影响）。
+        同部门可见让位于勾选人员（owner、admin 不受影响）。
         """
 
         base, _ = await self._authorized_base(
@@ -1430,14 +1439,14 @@ class KnowledgeService:
     ) -> PermissionDirectoryListResponse:
         """创建知识库时的可选人员目录（在职账号，剔除本人与 admin）。
 
-        与库权限管理目录同一数据源；门槛对齐公共空间创建：需管理白名单授权，
+        与库权限管理目录同一数据源；门槛对齐公共空间创建：需知识库管理员授权，
         避免任意账号拉取全员通讯目录。
         """
 
-        if not await self._has_team_management_grant(principal):
+        if not await self._can_create_team_base(principal):
             raise KnowledgeServiceError(
                 "KNOWLEDGE_TEAM_SPACE_MANAGER_REQUIRED",
-                "当前账号未获得公共空间创建与管理权限，请联系 admin 配置",
+                "当前账号未获得公共空间创建与管理权限，请联系 admin 或部门管理员配置",
                 status_code=403,
             )
         rows = await self._repo(
@@ -2907,6 +2916,41 @@ class KnowledgeService:
             base_ids=base_ids,
         )
         return SessionKnowledgeScopeResponse(session_id=session_id, base_ids=saved)
+
+    # ---------------- 知识库管理员 ----------------
+
+    async def list_department_managers(
+        self, *, department_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """列出知识库管理员（可选按部门过滤）。"""
+        return await self._repo(
+            self.repository.list_department_managers, department_id
+        )
+
+    async def grant_department_manager(
+        self,
+        *,
+        user_id: str,
+        department_id: str,
+        granted_by: str,
+    ) -> dict[str, Any]:
+        """授予知识库管理员权限。"""
+        return await self._repo(
+            self.repository.grant_department_manager,
+            user_id=user_id,
+            department_id=department_id,
+            granted_by=granted_by,
+        )
+
+    async def revoke_department_manager(
+        self, *, user_id: str, department_id: str
+    ) -> bool:
+        """撤销知识库管理员权限。"""
+        return await self._repo(
+            self.repository.revoke_department_manager,
+            user_id=user_id,
+            department_id=department_id,
+        )
 
 
 __all__ = [

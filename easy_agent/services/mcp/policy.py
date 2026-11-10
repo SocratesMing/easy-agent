@@ -28,10 +28,9 @@ from typing import Any
 from easy_agent.bootstrap.config import Config
 from easy_agent.services.mcp import connectors as _connectors
 from easy_agent.services.mcp.tools import load_mcp_config
+from easy_agent.utils.auth import is_super_admin
 
 logger = logging.getLogger(__name__)
-
-ADMIN_USERNAME = "admin"
 
 # 不参与一致性比较的键：传输类型写法（type / transport）与连接器开关
 _IGNORED_KEYS = frozenset({"type", "transport", "enabled"})
@@ -139,7 +138,7 @@ CUSTOM_STDIO_REASON = (
 
 def stdio_violation(cfg: Any, username: str | None) -> str:
     """违规原因；允许运行时返回空串。"""
-    if not isinstance(cfg, dict) or not is_stdio(cfg) or username == ADMIN_USERNAME:
+    if not isinstance(cfg, dict) or not is_stdio(cfg) or is_super_admin(username):
         return ""
     entry = _catalog_stdio_entry(cfg)
     if entry is None:
@@ -153,7 +152,7 @@ def stdio_violation(cfg: Any, username: str | None) -> str:
 
 def normalize_workspace_paths(servers: dict[str, Any], username: str) -> dict[str, Any]:
     """写入前把工作区路径字段的相对值换算成工作区内的绝对路径（返回新映射）。"""
-    if username == ADMIN_USERNAME:
+    if is_super_admin(username):
         return dict(servers or {})
     result: dict[str, Any] = {}
     for name, cfg in (servers or {}).items():

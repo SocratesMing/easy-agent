@@ -410,7 +410,7 @@
         <header>
           <div>
             <h3>权限管理</h3>
-            <p>按部门 &gt; 处室 &gt; 团队勾选可见人员，或直接搜索姓名/账号；勾选目录级即全选该级别下所有人员。保存后，仅勾选人员可查看「{{ selectedBase ? selectedBase.name : '' }}」。</p>
+            <p>按部门 &gt; 处室 &gt; 团队勾选可见人员，或直接搜索姓名/账号；勾选目录级即全选该级别下所有人员。保存后，仅勾选人员可查看「{{ selectedBase ? selectedBase.name : '' }}」。如需配置知识库管理员权限，请前往人员管理。</p>
           </div>
           <button aria-label="关闭" @click="showPermissionModal = false"><IconX /></button>
         </header>
@@ -479,7 +479,11 @@
             <template v-else>未勾选任何人员，保存后恢复默认可见范围（公共空间对本部门成员可见）。</template>
           </p>
         </template>
-        <footer><button class="ke-button quiet" @click="showPermissionModal = false">取消</button><button class="ke-button primary" :disabled="saving || permissionDirectoryLoading" @click="savePermissions">{{ saving ? '保存中…' : '保存权限' }}</button></footer>
+
+        <footer>
+          <button class="ke-button quiet" @click="showPermissionModal = false">关闭</button>
+          <button class="ke-button primary" :disabled="saving || permissionDirectoryLoading" @click="savePermissions">{{ saving ? '保存中…' : '保存权限' }}</button>
+        </footer>
       </div>
     </div>
 
@@ -577,8 +581,8 @@ import {
   createFolder, createKnowledgeBase, createKnowledgeChatRound, deleteDocument, deleteFolder,
   deleteKnowledgeBase, ensureFolders, getDocumentBlob, getKnowledgeCapabilities, getKnowledgeStatus,
   listCreationPermissionDirectory, listDocuments, listFolders, listKnowledgeBases, listKnowledgeOperations, listPermissionDirectory, listPermissions,
-  moveDocument, pauseDocument, prepareKnowledgeChatSession, replacePermissions, resumeDocument, retryDocument, updateFolder,
-  updateKnowledgeBase, uploadDocument,
+  moveDocument, pauseDocument, prepareKnowledgeChatSession, replacePermissions, resumeDocument, retryDocument,
+  updateFolder, updateKnowledgeBase, uploadDocument,
 } from './api.js'
 
 export default {
@@ -802,6 +806,7 @@ const permissionRestricted = ref(false)
 const permissionCollapsed = ref({})
 const permissionQuery = ref(''); const permissionSearchResults = computed(() => filterPermissionUsers(permissionDirectory.value, permissionQuery.value))
 let permissionLoadSeq = 0
+
 // 创建知识库时的可见人员配置（与权限管理同款三级树，独立状态避免串扰）
 const createPermDirectory = ref([])
 const createPermTree = ref([])

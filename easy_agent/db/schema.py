@@ -37,7 +37,8 @@ logger = logging.getLogger("easy_agent.db.schema")
 # 13：再退役 8 张代码不再读写的表（旧 market key、行情数据、旧版知识库模块）。
 # 14：合并 rag-1018 与 audit-improvements：两侧都用过 13，统一再 +1，
 # 否则任一侧的旧库会命中快速路径、跳过另一侧的变更。
-SCHEMA_VERSION = 14
+# 15：知识库管理员表 knowledge_department_managers；退役公共空间管理员白名单表。
+SCHEMA_VERSION = 15
 # utf8mb4 复合主键必须 ≤ 3072 字节：(512 + 191) * 4 = 2812。
 LANGGRAPH_STORE_NS_LEN = 512
 LANGGRAPH_STORE_KEY_LEN = 191
@@ -66,6 +67,7 @@ EXPECTED_TABLES = (
     "knowledge_document_objects",
     "knowledge_operations",
     "knowledge_audit_events",
+    "knowledge_department_managers",
     "knowledge_source_sync_items",
     "expert_agents",
     "rate_limit_counters",

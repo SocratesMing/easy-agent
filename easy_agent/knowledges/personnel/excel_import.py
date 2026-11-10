@@ -9,6 +9,7 @@ from zipfile import BadZipFile, ZipFile
 from openpyxl import load_workbook
 
 from easy_agent.knowledges.personnel.models import PersonnelCreateRequest
+from easy_agent.utils.auth import is_super_admin
 
 # 旧版列式模板：一行一个人员，部门为单级编号/名称。
 LEGACY_EXCEL_COLUMNS = {
@@ -154,8 +155,8 @@ def parse_personnel_excel(content: bytes, source: str) -> list[PersonnelCreateRe
             if item.username in seen_usernames:
                 errors.append(f"第 {excel_row} 行：账号 {item.username} 在文件中重复")
                 continue
-            if item.username == "admin":
-                errors.append(f"第 {excel_row} 行：admin 账号不可通过导入修改")
+            if is_super_admin(item.username):
+                errors.append(f"第 {excel_row} 行：超级管理员账号不可通过导入修改")
                 continue
             seen_usernames.add(item.username)
             items.append(item)

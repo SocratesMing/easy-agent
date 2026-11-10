@@ -3,7 +3,6 @@ import { buildPersonnelFilters, filenameFromContentDisposition } from './model.j
 
 const ROOT = '/agent/personnel'
 export const getLoginPolicy = () => request({ url: `${ROOT}/login-policy`, method: 'get' })
-const KNOWLEDGE_ADMIN_ROOT = '/agent/knowledge/v1/admin'
 
 export function listPersonnelUsers(filters = {}) {
   return request({
@@ -62,19 +61,4 @@ export async function getPersonnelImportTemplate() {
     error.message = '下载导入模板失败'
     throw error
   }
-}
-
-export function listTeamSpaceManagers() {
-  return request({
-    url: `${KNOWLEDGE_ADMIN_ROOT}/team-space-managers`,
-    method: 'get',
-  }, '获取公共空间权限失败')
-}
-
-export function setTeamSpaceManager(userId, enabled) {
-  return request({
-    url: `${KNOWLEDGE_ADMIN_ROOT}/team-space-managers/${encodeURIComponent(userId)}`,
-    method: 'put',
-    data: { enabled: Boolean(enabled) },
-  }, '设置公共空间权限失败')
 }

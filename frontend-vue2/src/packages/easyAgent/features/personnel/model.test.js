@@ -8,19 +8,8 @@ import {
   formatPersonnelValidationDetail,
   normalizePersonnelPage,
   summarizeImportResult,
-  updateTeamManagerIds,
   validatePersonnelForm,
 } from './model.js'
-
-test('updates team-space manager selection without mutating current state', () => {
-  const current = new Set(['user-a'])
-  const granted = updateTeamManagerIds(current, 'user-b', true)
-  const revoked = updateTeamManagerIds(granted, 'user-a', false)
-
-  assert.deepEqual([...current], ['user-a'])
-  assert.deepEqual([...granted].sort(), ['user-a', 'user-b'])
-  assert.deepEqual([...revoked], ['user-b'])
-})
 
 test('normalizes list responses without coupling the UI to a response envelope', () => {
   const page = normalizePersonnelPage({
@@ -112,10 +101,15 @@ test('builds only non-empty server-side filters', () => {
   assert.deepEqual(buildPersonnelFilters({
     keyword: ' 张三 ',
     accountStatus: 'active',
-    departmentId: ' ',
+    departmentName: ' 金融市场部 ',
   }), {
     keyword: '张三',
     account_status: 'active',
+    department_name: '金融市场部',
+    page: 1,
+    page_size: 50,
+  })
+  assert.deepEqual(buildPersonnelFilters({ departmentName: ' ' }), {
     page: 1,
     page_size: 50,
   })

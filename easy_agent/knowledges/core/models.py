@@ -222,9 +222,13 @@ class TeamSpaceManagementCapability(ContractModel):
     departments: list[TeamSpaceDepartmentSummary] = Field(default_factory=list)
 
 
-class TeamSpaceManagerSummary(ContractModel):
+# ---------------------------------------------------------------------------
+# 知识库管理员
+# ---------------------------------------------------------------------------
+class DepartmentManagerSummary(ContractModel):
+    id: str
     user_id: str
-    username: str
+    username: str = ""
     display_name: str = ""
     department_id: str
     department_name: str = ""
@@ -234,18 +238,30 @@ class TeamSpaceManagerSummary(ContractModel):
     updated_at: datetime
 
 
-class TeamSpaceManagerListResponse(ContractModel):
-    items: list[TeamSpaceManagerSummary] = Field(default_factory=list)
+class DepartmentManagerListResponse(ContractModel):
+    items: list[DepartmentManagerSummary] = Field(default_factory=list)
 
 
-class TeamSpaceManagerUpdateRequest(ContractModel):
-    enabled: StrictBool
+class DepartmentManagerGrantRequest(ContractModel):
+    user_id: str = Field(min_length=1, max_length=255)
+
+    @field_validator("user_id")
+    @classmethod
+    def user_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("user_id 不能为空")
+        return stripped
 
 
-class TeamSpaceManagerUpdateResponse(ContractModel):
+class DepartmentManagerGrantResponse(ContractModel):
+    manager: DepartmentManagerSummary
+
+
+class DepartmentManagerRevokeResponse(ContractModel):
     user_id: str
-    enabled: StrictBool
-    manager: TeamSpaceManagerSummary | None = None
+    department_id: str
+    revoked: StrictBool
 
 
 class KnowledgeBaseListResponse(ContractModel):
@@ -584,6 +600,11 @@ __all__ = [
     "AskRequest",
     "AskResponse",
     "ConversationTurn",
+    "DepartmentManagerGrantRequest",
+    "DepartmentManagerGrantResponse",
+    "DepartmentManagerListResponse",
+    "DepartmentManagerRevokeResponse",
+    "DepartmentManagerSummary",
     "DocumentListResponse",
     "DocumentMoveRequest",
     "DocumentStatus",
@@ -622,10 +643,6 @@ __all__ = [
     "SessionKnowledgeScopeResponse",
     "TeamSpaceDepartmentSummary",
     "TeamSpaceManagementCapability",
-    "TeamSpaceManagerListResponse",
-    "TeamSpaceManagerSummary",
-    "TeamSpaceManagerUpdateRequest",
-    "TeamSpaceManagerUpdateResponse",
 ]
 
 

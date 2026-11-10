@@ -92,7 +92,7 @@ from easy_agent.services.sessions.upload_storage import preflight_upload_store
 from easy_agent.persistence.stores import reset_store
 from easy_agent.sandboxing.sandbox import log_sandbox_startup_report
 from easy_agent.bootstrap.runtime_features import check_multi_replica_startup
-from easy_agent.utils.auth import SECRET_FINGERPRINT, validate_production_jwt_secret
+from easy_agent.utils.auth import SECRET_FINGERPRINT, is_super_admin, validate_production_jwt_secret
 from easy_agent.persistence.checkpoints import shutdown_checkpointers
 from easy_agent.services.mcp.sessions import aclose_mcp_sessions
 from easy_agent.services.streaming.runs import stop_run_recovery
@@ -779,11 +779,11 @@ async def readiness():
 async def runtime_metrics(
     username: str = Depends(get_current_username),
 ):
-    """进程内 RED 指标 JSON 快照；仅 admin 可读。
+    """进程内 RED 指标 JSON 快照；仅超级管理员可读。
 
     指标是进程内聚合的，多 worker/多副本需逐实例抓取后由外部汇总。
     """
-    if username != "admin":
+    if not is_super_admin(username):
         raise HTTPException(status_code=403, detail="仅管理员可以查看运行指标")
 
     return JSONResponse(content=snapshot_metrics())

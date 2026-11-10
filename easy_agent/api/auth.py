@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from easy_agent.bootstrap.config import Config, DEFAULT_APP_WELCOME_TITLE
 from easy_agent.db.repositories.user_repository import UserRepository
-from easy_agent.knowledges.core.repository import KnowledgeRepository
 from easy_agent.db.login_state import (
     clear_user_activity,
     get_user_activity_time,
@@ -35,7 +34,7 @@ from easy_agent.models.api import (
     AuthResponse,
 )
 from easy_agent.services.agents.manager import get_agent_config
-from easy_agent.utils.auth import create_access_token, hash_password
+from easy_agent.utils.auth import create_access_token, hash_password, is_super_admin
 from easy_agent.utils.auth import decode_access_token
 from easy_agent.utils.auth import ACCESS_TOKEN_EXPIRE_MINUTES
 
@@ -245,7 +244,8 @@ def login_passwordless(
     policy = getattr(cfg.get("config"), "personnel", None) if cfg else None
     if not getattr(policy, "passwordless_login_enabled", False):
         raise HTTPException(status_code=403, detail="当前环境未开启门户免密登录，请使用账号密码登录")
-    # admin 拥有用户管理权限，禁止免密登录，防止仅凭用户名冒充管理员
+    # 内置 admin 拥有用户管理权限，禁止免密登录，防止仅凭用户名冒充管理员；
+    # liufengbao 作为免密门户部署的总管理员，允许免密登录。
     if request.username == "admin":
         raise HTTPException(status_code=403, detail="admin 用户不支持免密登录")
 
@@ -426,11 +426,11 @@ def reset_password(
     db: Annotated[UserRepository, Depends(get_user_repository)],
 ):
     repo = _as_user_repository(db)
-    if username != "admin":
+    if not is_super_admin(username):
         raise HTTPException(status_code=403, detail="仅管理员可以重置密码")
 
-    if request.username == "admin":
-        raise HTTPException(status_code=400, detail="admin 用户不支持默认密码重置，请使用正常修改密码流程")
+    if is_super_admin(request.username):
+        raise HTTPException(status_code=400, detail="管理员账号不支持默认密码重置，请使用正常修改密码流程")
     user = repo.get_user_by_username(request.username)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -460,7 +460,7 @@ def list_users(
     username: Annotated[str, Depends(get_current_username)],
 ):
     repo = _as_user_repository(db)
-    if username != "admin":
+    if not is_super_admin(username):
         raise HTTPException(status_code=403, detail="仅管理员可以查看用户列表")
 
     total = repo.count_users()
@@ -489,15 +489,12 @@ def admin_reset_password(
     admin_username: Annotated[str, Depends(get_current_username)],
     db: Annotated[UserRepository, Depends(get_user_repository)],
 ):
-    repo = _as_user_repository(db)
-    operator = repo.get_user_by_username(admin_username)
-    if admin_username != "admin" and (
-        not operator or not KnowledgeRepository(repo.database).is_team_space_manager(operator.user_id)
-    ):
-        raise HTTPException(status_code=403, detail="仅 admin 或公共空间管理员可以重置密码")
-    if username == "admin":
+    if not is_super_admin(admin_username):
+        raise HTTPException(status_code=403, detail="仅管理员可以重置密码")
+    if is_super_admin(username):
         raise HTTPException(status_code=400, detail="管理员密码不能重置为默认密码")
 
+    repo = _as_user_repository(db)
     user = repo.get_user_by_username(username)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")

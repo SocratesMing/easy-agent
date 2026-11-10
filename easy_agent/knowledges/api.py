@@ -1,7 +1,7 @@
 """知识工程 BFF 端点（/agent/knowledge/v1，按前端实际调用面裁剪）。
 
 端点只保留前端工作台与聊天链路用到的能力；身份解析（KnowledgePrincipal）
-内联本文件；管理员运维端点只保留公共空间管理/查看白名单（/admin/*）；
+内联本文件；管理员运维端点只保留知识库管理员配置（/department-managers）；
 原文存储固定为本地落盘（``app.state.knowledge_original_store``）；
 问答质量基线（无证据文案/提示词版本/引用校验）内联本文件。
 """
@@ -44,6 +44,11 @@ from easy_agent.knowledges.core.models import (
     KnowledgePrincipal,
     AskRequest,
     AskResponse,
+    DepartmentManagerGrantRequest,
+    DepartmentManagerGrantResponse,
+    DepartmentManagerListResponse,
+    DepartmentManagerRevokeResponse,
+    DepartmentManagerSummary,
     DocumentListResponse,
     DocumentMoveRequest,
     DocumentStatus,
@@ -70,15 +75,12 @@ from easy_agent.knowledges.core.models import (
     PermissionDirectoryListResponse,
     SessionKnowledgeScopeRequest,
     SessionKnowledgeScopeResponse,
-    TeamSpaceManagerListResponse,
-    TeamSpaceManagerSummary,
-    TeamSpaceManagerUpdateRequest,
-    TeamSpaceManagerUpdateResponse,
 )
 from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
 from easy_agent.knowledges.ragflow import RagflowError
 from easy_agent.knowledges.core.repository import KnowledgeRepository
 from easy_agent.knowledges.service import KnowledgeService, KnowledgeServiceError
+from easy_agent.utils.auth import is_super_admin
 
 
 logger = logging.getLogger("easy_agent.knowledge.upload")
@@ -404,7 +406,7 @@ async def create_base(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> KnowledgeBaseSummary:
-    """创建知识库（个人空间/公共空间），公共空间需管理白名单授权。"""
+    """创建知识库（个人空间/公共空间），公共空间需知识库管理员授权。"""
 
     return await _call(
         service.create_base,
@@ -918,7 +920,7 @@ async def get_creation_permission_directory(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> PermissionDirectoryListResponse:
-    """创建知识库时的可选人员目录（不依赖具体库，需公共空间管理白名单）。"""
+    """创建知识库时的可选人员目录（不依赖具体库，需知识库管理员授权）。"""
 
     return await _call(service.get_creation_permission_directory, principal)
 
@@ -1195,18 +1197,15 @@ async def replace_session_scope(
 
 
 # ---------------------------------------------------------------------------
-# 管理员：公共空间管理/查看白名单
+# 管理员守卫
 # ---------------------------------------------------------------------------
 def _admin(
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
-    db: Annotated[Database, Depends(get_database)],
 ):
-    """白名单守卫依赖：admin 与公共空间管理员（白名单账号）均可访问。"""
+    """仅超级管理员账号（admin / liufengbao）可访问。"""
 
-    if principal.username != "admin":
-        repo = KnowledgeRepository(db)
-        if not repo.is_team_space_manager(principal.user_id):
-            raise HTTPException(status_code=403, detail="仅 admin 或公共空间管理员可访问")
+    if not is_super_admin(principal.username):
+        raise HTTPException(status_code=403, detail="仅超级管理员可访问")
     return principal
 
 
@@ -1220,12 +1219,16 @@ def _scope_response(
     )
 
 
-def _team_manager_summary(item: dict) -> TeamSpaceManagerSummary:
-    """将数据库行转换为公共空间管理员摘要模型。"""
+# ---------------------------------------------------------------------------
+# 知识库管理员（admin 可配置）
+# ---------------------------------------------------------------------------
+def _dept_manager_summary(item: dict) -> DepartmentManagerSummary:
+    """将数据库行转换为知识库管理员摘要模型。"""
 
-    return TeamSpaceManagerSummary(
+    return DepartmentManagerSummary(
+        id=str(item["id"]),
         user_id=str(item["user_id"]),
-        username=str(item["username"]),
+        username=str(item.get("username") or ""),
         display_name=str(item.get("display_name") or ""),
         department_id=str(item.get("department_id") or ""),
         department_name=str(item.get("department_name") or ""),
@@ -1237,53 +1240,49 @@ def _team_manager_summary(item: dict) -> TeamSpaceManagerSummary:
 
 
 @router.get(
-    "/admin/team-space-managers",
-    response_model=TeamSpaceManagerListResponse,
-    summary="查询公共空间管理员白名单",
+    "/department-managers",
+    response_model=DepartmentManagerListResponse,
+    summary="查询知识库管理员列表",
 )
-async def list_team_space_managers(
+async def list_department_managers(
     _: Annotated[KnowledgePrincipal, Depends(_admin)],
     db: Annotated[Database, Depends(get_database)],
-) -> TeamSpaceManagerListResponse:
-    """查询公共空间管理员白名单。"""
+    department_id: str = Query(default="", max_length=255),
+) -> DepartmentManagerListResponse:
+    """查询知识库管理员列表（可选按部门过滤）。"""
 
-    rows = await run_in_threadpool(KnowledgeRepository(db).list_team_space_managers)
-    return TeamSpaceManagerListResponse(
-        items=[_team_manager_summary(item) for item in rows]
+    dept_filter = department_id.strip() or None
+    rows = await run_in_threadpool(
+        KnowledgeRepository(db).list_department_managers, dept_filter
+    )
+    return DepartmentManagerListResponse(
+        items=[_dept_manager_summary(item) for item in rows]
     )
 
 
-@router.put(
-    "/admin/team-space-managers/{user_id}",
-    response_model=TeamSpaceManagerUpdateResponse,
-    summary="设置单个账号的公共空间管理权限",
+@router.post(
+    "/department-managers",
+    response_model=DepartmentManagerGrantResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="授予知识库管理员权限",
 )
-async def set_team_space_manager(
-    user_id: str,
-    payload: TeamSpaceManagerUpdateRequest,
+async def grant_department_manager(
     request: Request,
     principal: Annotated[KnowledgePrincipal, Depends(_admin)],
     db: Annotated[Database, Depends(get_database)],
-) -> TeamSpaceManagerUpdateResponse:
-    """授予或撤销账号的公共空间管理权限。"""
+    payload: DepartmentManagerGrantRequest,
+    department_id: str = Query(..., min_length=1, max_length=255),
+) -> DepartmentManagerGrantResponse:
+    """授予指定用户在指定部门的知识库管理员权限。"""
 
     repository = KnowledgeRepository(db)
-    manager = None
     try:
-        if payload.enabled:
-            row = await run_in_threadpool(
-                repository.grant_team_space_manager,
-                user_id=user_id,
-                granted_by=principal.user_id,
-            )
-            manager = _team_manager_summary(row)
-        else:
-            target = await run_in_threadpool(db.get_user_by_id, user_id)
-            if target is None:
-                raise LookupError("用户不存在")
-            if target.username == "admin":
-                raise ValueError("admin 的全局权限不可取消")
-            await run_in_threadpool(repository.revoke_team_space_manager, user_id)
+        row = await run_in_threadpool(
+            repository.grant_department_manager,
+            user_id=payload.user_id,
+            department_id=department_id,
+            granted_by=principal.user_id,
+        )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1296,20 +1295,50 @@ async def set_team_space_manager(
             request_id=str(getattr(request.state, "request_id", "unknown")),
             actor_user_id=principal.user_id,
             actor_username=principal.username,
-            action=(
-                "team_space_manager.grant"
-                if payload.enabled
-                else "team_space_manager.revoke"
-            ),
-            object_type="team_space_manager",
-            object_id=user_id,
-            details={"enabled": payload.enabled},
+            action="department_manager.grant",
+            object_type="department_manager",
+            object_id=f"{payload.user_id}@{department_id}",
+            details={"department_id": department_id},
             max_details_bytes=config.audit.max_details_bytes,
         )
-    return TeamSpaceManagerUpdateResponse(
+    return DepartmentManagerGrantResponse(manager=_dept_manager_summary(row))
+
+
+@router.delete(
+    "/department-managers/{user_id}",
+    response_model=DepartmentManagerRevokeResponse,
+    summary="撤销知识库管理员权限",
+)
+async def revoke_department_manager(
+    user_id: str,
+    request: Request,
+    principal: Annotated[KnowledgePrincipal, Depends(_admin)],
+    db: Annotated[Database, Depends(get_database)],
+    department_id: str = Query(..., min_length=1, max_length=255),
+) -> DepartmentManagerRevokeResponse:
+    """撤销指定用户在指定部门的知识库管理员权限。"""
+
+    ok = await run_in_threadpool(
+        KnowledgeRepository(db).revoke_department_manager,
         user_id=user_id,
-        enabled=payload.enabled,
-        manager=manager,
+        department_id=department_id,
+    )
+
+    config = _get_knowledge_config(request)
+    if config.audit.enabled:
+        await run_in_threadpool(
+            KnowledgeOperationsRepository(db).record_audit,
+            request_id=str(getattr(request.state, "request_id", "unknown")),
+            actor_user_id=principal.user_id,
+            actor_username=principal.username,
+            action="department_manager.revoke",
+            object_type="department_manager",
+            object_id=f"{user_id}@{department_id}",
+            details={"department_id": department_id},
+            max_details_bytes=config.audit.max_details_bytes,
+        )
+    return DepartmentManagerRevokeResponse(
+        user_id=user_id, department_id=department_id, revoked=ok
     )
 
 

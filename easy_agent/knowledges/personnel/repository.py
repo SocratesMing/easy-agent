@@ -9,7 +9,7 @@ from datetime import datetime
 import pymysql
 
 from easy_agent.db import Database
-from easy_agent.utils.auth import hash_password
+from easy_agent.utils.auth import hash_password, is_super_admin
 from easy_agent.knowledges.personnel.models import PersonnelCreateRequest, PersonnelUpdateRequest
 
 DEFAULT_PASSWORD = "123456"
@@ -70,7 +70,7 @@ def list_personnel(
     *,
     keyword: str = "",
     account_status: str = "",
-    department_id: str = "",
+    department_name: str = "",
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[int, list[dict]]:
@@ -86,9 +86,9 @@ def list_personnel(
     if account_status:
         clauses.append("account_status=?")
         params.append(account_status)
-    if department_id:
-        clauses.append("department_id=?")
-        params.append(department_id)
+    if department_name:
+        clauses.append("department_name LIKE ?")
+        params.append(f"%{department_name}%")
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     with db.get_connection() as connection:
         cursor = connection.cursor()
@@ -125,8 +125,8 @@ def _assert_employee_id_available(db: Database, employee_id: str, user_id: str =
 
 
 def create_personnel(db: Database, item: PersonnelCreateRequest) -> dict:
-    if item.username == "admin":
-        raise PersonnelConflictError("admin 账号为系统管理员，不可手动覆盖")
+    if is_super_admin(item.username):
+        raise PersonnelConflictError("超级管理员账号为系统账号，不可手动覆盖")
     if db.get_user_by_username(item.username):
         raise PersonnelConflictError("账号已存在")
     _assert_employee_id_available(db, item.employee_id)
@@ -156,8 +156,8 @@ def update_personnel(db: Database, user_id: str, item: PersonnelUpdateRequest) -
     current = db.get_user_by_id(user_id)
     if not current:
         raise PersonnelNotFoundError("用户不存在")
-    if current.username == "admin":
-        raise PersonnelConflictError("admin 账号不可在人员管理中修改")
+    if is_super_admin(current.username):
+        raise PersonnelConflictError("超级管理员账号不可在人员管理中修改")
     _assert_employee_id_available(db, item.employee_id, user_id)
     now = datetime.now().isoformat()
     try:
@@ -185,14 +185,14 @@ def delete_personnel(db: Database, user_id: str) -> dict:
 
     - admin 账号不可删除；
     - 名下仍有未删除知识库时阻断，避免产生无人管理的库；
-    - 一并移除：知识库成员授权、公共空间管理员/查看者白名单、会话知识范围。
+    - 一并移除：知识库成员授权、知识库管理员授权、会话知识范围。
     """
 
     current = db.get_user_by_id(user_id)
     if not current:
         raise PersonnelNotFoundError("用户不存在")
-    if current.username == "admin":
-        raise PersonnelConflictError("admin 账号不可删除")
+    if is_super_admin(current.username):
+        raise PersonnelConflictError("超级管理员账号不可删除")
     record = _row_to_dict(current.__dict__)
     with db.get_connection() as connection:
         cursor = connection.cursor()
@@ -213,7 +213,11 @@ def delete_personnel(db: Database, user_id: str) -> dict:
             "DELETE FROM knowledge_permissions WHERE subject_type='user' AND subject_id=?",
             (user_id,),
         )
-        db._execute(cursor, "DELETE FROM knowledge_team_space_managers WHERE user_id=?", (user_id,))
+        db._execute(
+            cursor,
+            "DELETE FROM knowledge_department_managers WHERE user_id=?",
+            (user_id,),
+        )
         db._execute(cursor, "DELETE FROM session_knowledge_scopes WHERE user_id=?", (user_id,))
         db._execute(cursor, "DELETE FROM users WHERE user_id=?", (user_id,))
     return record
