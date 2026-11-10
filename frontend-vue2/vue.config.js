@@ -103,11 +103,11 @@ module.exports = defineConfig({
   },
 
   chainWebpack: config => {
-    if (process.env.NODE_ENV === "development") {
-      // config.devtool("eval-source-map");
-      config.devtool("source-map");
-      config.optimization.minimize(false);
-    }
+    // if (process.env.NODE_ENV === "development") {
+    //   // config.devtool("eval-source-map");
+    //   config.devtool("source-map");
+    //   config.optimization.minimize(false);
+    // }
     // 字体一律输出成单独文件：默认 8 KB 以下会以 base64 内联进 CSS，KaTeX 数学字体的
     // woff2 / woff / ttf 三种格式都被内联（约 103 KB），每次首屏都要下载。单独文件只在页面
     // 真正用到该字体时才下载，而且浏览器只取 @font-face 里第一种支持的格式。
