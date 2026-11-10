@@ -48,7 +48,8 @@ DOMAINS = {
 # docs/archive/audit-reports/2026-10-18-increment61-c1b-report.md「仍保留边界」有登记，
 # Phase 2B 新增的 run 登记 ×2 见 docs/archive/audit-reports/2026-10-18-increment63-phase2b-report.md。
 RETAINED_DATABASE_BOUNDARIES = {
-    "auth.py": 1,  # KnowledgeRepository（知识域独立 bounded context）
+    # 2026-11-10：公共空间管理员白名单废弃后，auth.py 不再持有 repo.database。
+    "auth.py": 0,
     "files.py": 0,
     "scheduled_tasks.py": 0,
     # 2026-10-22 专家对话并入 /agent/chat/stream 后，/agent/stream_export_run 连同
