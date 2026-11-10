@@ -20,7 +20,7 @@ import json
 import logging
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from easy_agent.db.expert_store import STATUS_ACTIVE
 from easy_agent.db.repositories.expert_repository import ExpertRepository
@@ -327,7 +327,8 @@ def _persist_user_turn(
     名称，同一会话不同轮次各自对应自己那一轮的专家。
     """
     expert_meta = _expert_meta_for_message(repo, username, expert_id)
-    user_message = {
+    # 后续还会写入 expert / files / skills，值类型并不都是 str
+    user_message: dict[str, Any] = {
         "role": "user",
         "content": request.message,
         "timestamp": datetime.now().isoformat(),
