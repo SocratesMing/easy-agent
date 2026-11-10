@@ -44,10 +44,8 @@ CONVERTED = {
         "create_session",
         "list_sessions",
         "count_sessions",
-        "get_session",
         "update_title",
         "toggle_pin",
-        "get_chat_history",
         "add_message",
     ],
     "easy_agent.api.files": [
@@ -93,6 +91,17 @@ def test_converted_routes_stay_sync():
         module = importlib.import_module(module_name)
         for name in names:
             assert not inspect.iscoroutinefunction(getattr(module, name)), f"{module_name}.{name}"
+
+
+def test_checkpoint_projection_routes_offload_business_queries():
+    """历史投影异步读取 SQLite saver，同步业务查询必须放入工作线程。"""
+    from easy_agent.api import sessions
+
+    for route in (sessions.get_session, sessions.get_chat_history):
+        assert inspect.iscoroutinefunction(route)
+        source = inspect.getsource(route)
+        assert "await asyncio.to_thread(repo.get_owned_session" in source
+        assert "await compaction_service.records" in source
 
 
 def test_no_new_async_routes_that_block_on_the_database():

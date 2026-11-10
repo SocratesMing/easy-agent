@@ -13,44 +13,13 @@ deepagents 0.7 起，``middleware=`` 里 ``.name`` 与内置默认项相同的�
 from __future__ import annotations
 
 import logging
-import math
 
 logger = logging.getLogger(__name__)
 
 _logged_models: set[str] = set()
 
 
-#: 与 LangChain 默认近似计数器（OpenAI 兼容模型）同一口径。
-_CHARS_PER_TOKEN = 4.0
-
-
-def count_tokens_with_reasoning(messages, *, tools=None, use_usage_metadata_scaling=True, **kwargs):
-    """官方近似计数，再加上 ``additional_kwargs`` 里的思考。
-
-    历史思考随每次请求回传（``reasoning_content`` 字段），官方的
-    ``count_tokens_approximately`` 只数正文和工具调用，不数这部分，摘要会触发得偏晚。
-    口径与 LangChain 默认计数器一致：4 字符 / token，按上一次调用的实际用量缩放（最多 1.25 倍）。
-    """
-    from langchain_core.messages import AIMessage
-    from langchain_core.messages.utils import count_tokens_approximately
-
-    from easy_agent.agent.model import extract_reasoning  # 延迟导入：导入期重依赖：避免加载 langchain/deepagents 等重依赖
-
-    messages = list(messages)
-    base = count_tokens_approximately(
-        messages,
-        chars_per_token=_CHARS_PER_TOKEN,
-        use_usage_metadata_scaling=use_usage_metadata_scaling,
-        tools=tools,
-        **kwargs,
-    )
-    reasoning_chars = sum(
-        len(extract_reasoning(m.additional_kwargs)) for m in messages if isinstance(m, AIMessage)
-    )
-    return base + math.ceil(reasoning_chars / _CHARS_PER_TOKEN)
-
-
-def summarization_settings(config, model_key: str | None = None) -> dict:
+def summarization_settings(config, model_key: str | None = None, *, manual: bool = False) -> dict:
     """把 config 比例折成官方 ``SummarizationMiddleware`` 的 token 参数。
 
     窗口取 ``model_key`` 对应模型的 ``context_length``。``model_key`` 是 ``config.models``
@@ -66,7 +35,7 @@ def summarization_settings(config, model_key: str | None = None) -> dict:
     truncate_max_length = int(
         getattr(config.summarization, "truncate_arg_max_length", 0) or 2000
     )
-    if not bool(getattr(config.summarization, "enabled", True)):
+    if not manual and not bool(getattr(config.summarization, "enabled", True)):
         # 官方 create_deep_agent 的默认栈总会挂摘要中间件，无法靠"不传"关闭；
         # 这里把阈值抬到不可达，等价关闭压缩与参数截断（同名替换默认项仍在）。
         far = 1 << 40
@@ -110,6 +79,7 @@ def build_summarization_middleware(
     from deepagents.middleware.summarization import SummarizationMiddleware
 
     from easy_agent.agent.turn_context import TurnAwareSummarizationMiddleware  # 延迟导入：导入期重依赖：避免加载 langchain/deepagents 等重依赖
+    from easy_agent.agent.token_counting import count_context_tokens
 
     settings = summarization_settings(config, model_key)
     label = str(getattr(model, "model_name", None) or getattr(model, "model", None) or "model")
@@ -121,4 +91,4 @@ def build_summarization_middleware(
             "摘要阈值 | %s | trigger=%s keep=%s", label, settings["trigger"], settings["keep"]
         )
     cls = TurnAwareSummarizationMiddleware if render_turn else SummarizationMiddleware
-    return cls(model, backend=backend, token_counter=count_tokens_with_reasoning, **settings)
+    return cls(model, backend=backend, token_counter=count_context_tokens, **settings)

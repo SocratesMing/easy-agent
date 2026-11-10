@@ -22,6 +22,7 @@ from easy_agent.bootstrap.config_models import (
     MySQLPoolConfig,
     PersonnelConfig,
     ProviderConfig,
+    PromptEnhancementConfig,
     RetryConfig,
     SQLiteConfig,
     StreamingConfig,
@@ -55,6 +56,7 @@ KNOWN_TOP_LEVEL_KEYS = _fields(AgentConfig) | frozenset(
         "retry",
         "system_prompt_path",  # 旧键，兼容
         "summarization",
+        "prompt_enhancement",
         "tools",
         "web_search",
         "preset_questions",
@@ -96,6 +98,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
     "checkpoint": _fields(CheckpointConfig),
     "hitl": _fields(HitlConfig),
     "summarization": _fields(SummarizationConfig),
+    "prompt_enhancement": _fields(PromptEnhancementConfig),
     "web_search": _fields(WebSearchConfig),
     "distributed_lock": _fields(DistributedLockConfig),
     "personnel": _fields(PersonnelConfig),
@@ -173,20 +176,6 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
         }
     ),
 }
-
-# models.<provider> 下允许的键（provider 名本身是动态的）。
-KNOWN_PROVIDER_KEYS = frozenset(
-    {
-        "provider",
-        "api_key",
-        "model",
-        "api_base",
-        "context_length",
-        "max_input_tokens",  # 旧键，from_yaml 会映射为 context_length
-        "protocol",
-        "headers",
-    }
-)
 
 # 已废弃但仍兼容的键 -> 提示信息。不参与 unknown 判定，也不参与
 # config.yaml / config-example.yaml 的键集合漂移比较。

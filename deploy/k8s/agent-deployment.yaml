@@ -1,17 +1,9 @@
 # Multi-replica Easy Agent. Requires MySQL (application database), RWX workspace
 # storage, and the sticky-session Ingress in agent-ingress.yaml.
 #
-# HITL checkpoints use the official SQLite saver with one file per pod:
-# /qts/checkpoint/{pod}.db (the default of checkpoint.sqlite_path in config.yaml) on the
-# pod's local `checkpoint` volume, where {pod} becomes EASY_POD_NAME at startup.
-# A pending approval can only be resumed on the pod that
-# recorded it, so the Ingress pins each browser to one pod with a cookie; requests that
-# land on another pod get a 409 asking the user to resend. Deleting a session removes
-# its checkpoints on the pod that handles the request; the other pods clean up their
-# leftovers in a background pass (EASY_CHECKPOINT_GC_INTERVAL). The LangGraph Store
-# lives in MySQL (SqlStore). Never put the SQLite files on the NAS: SQLite's WAL mode
-# does not work on network filesystems.
-# See docs/design/2026-10-21-per-pod-sqlite-checkpoints.md.
+# HITL checkpoints use shared MySQL snapshots so approvals survive Pod replacement and
+# can resume on any replica. The schema migration creates agent_checkpoints.
+# The LangGraph Store also lives in MySQL (SqlStore).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -23,11 +15,8 @@ data:
   EASY_REPLICA_COUNT: "2"
   EASY_TRUST_PROXY: "1"
   EASY_SKIP_LLM_PROBE: "1"
-  # The checkpoint file path is checkpoint.sqlite_path in config.yaml; it defaults to
-  # /qts/checkpoint/{pod}.db, the pod-local `checkpoint` volume below.
-  EASY_CHECKPOINT_BACKEND: "auto"
-  # Confirms the Ingress pins each browser to one pod (agent-ingress.yaml). Without it,
-  # prod refuses to start with more than one replica.
+  # Shared MySQL snapshots preserve pending HITL approvals across Pod replacement.
+  EASY_CHECKPOINT_BACKEND: "mysql"
   EASY_STICKY_SESSIONS: "1"
   # Seconds between background passes that delete leftover checkpoints of deleted sessions.
   EASY_CHECKPOINT_GC_INTERVAL: "600"
@@ -109,8 +98,6 @@ spec:
               subPath: memories
             - name: data
               mountPath: /app/data
-            - name: checkpoint
-              mountPath: /qts/checkpoint
           livenessProbe:
             httpGet:
               path: /api/live
@@ -129,11 +116,6 @@ spec:
             claimName: easy-agent-workspace
         # Pod-local scratch space for the repo's data/ directory.
         - name: data
-          emptyDir: {}
-        # Pod-local, not the NAS: holds this pod's SQLite checkpoint file. emptyDir
-        # survives container restarts but is wiped when the pod is replaced; approvals
-        # still pending on that pod are then void and the user resends the message.
-        - name: checkpoint
           emptyDir: {}
 ---
 apiVersion: v1

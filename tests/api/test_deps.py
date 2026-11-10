@@ -61,6 +61,7 @@ EXPECTED_ROUTER_PATHS = {
         "/agent/chat/stream/status",
         "/agent/chat/stream/live",
     },
+    "prompt_enhancement": {"/agent/prompts/enhance"},
     "sessions": {
         "/agent/sessions",
         "/agent/sessions/count",
@@ -70,6 +71,9 @@ EXPECTED_ROUTER_PATHS = {
         "/agent/sessions/{session_id}/history",
         "/agent/sessions/{session_id}/messages",
         "/agent/sessions/{session_id}/upload",
+        "/agent/sessions/{session_id}/context",
+        "/agent/sessions/{session_id}/archive",
+        "/agent/sessions/{session_id}/context/compact",
     },
     "files": {
         "/agent/files/session/{session_id}",
@@ -117,7 +121,8 @@ EXPECTED_ROUTER_PATHS = {
 # /agent/expert/required-skills 新增，一删一增，路径总数仍是 121。
 # 2026-10-28：资产页下线删掉 /agent/files/list、新增 /agent/settings/knowledge（e59c5a6d），
 # 专家工作区新增 /agent/expert-md、/agent/session-experts（cc4b1e9d），121 - 1 + 3 = 123。
-EXPECTED_OPENAPI_PATH_COUNT = 123
+# 2026-11-06：提示词增强 + 手动压缩与状态查询，共新增 3 条路径。
+EXPECTED_OPENAPI_PATH_COUNT = 127
 
 
 def _module(name: str):
@@ -236,7 +241,7 @@ def test_legacy_module_provider_override_still_applies(client, db):
 
     assert response.status_code == 200
     assert response.json() == []
-    assert calls == [{"limit": 50, "offset": 0, "username": "testuser"}]
+    assert calls == [{"limit": 50, "offset": 0, "username": "testuser", "archived": False, "q": None}]
 
 
 def test_openapi_route_count_and_affected_paths_unchanged():

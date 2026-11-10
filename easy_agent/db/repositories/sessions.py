@@ -73,7 +73,7 @@ def get_session_owner(db, session_id: str) -> Optional[dict]:
         cursor = conn.cursor()
         db._execute(
             cursor,
-            "SELECT session_id, username, workspace_name, title "
+            "SELECT session_id, username, workspace_name, title, archived "
             "FROM sessions WHERE session_id = ?",
             (session_id,),
         )
@@ -149,7 +149,7 @@ def get_session(db, session_id: str) -> Optional[SessionModel]:
         db._execute(
             cursor,
             """
-            SELECT session_id, title, created_at, updated_at, username, workspace_name, todos
+            SELECT session_id, title, created_at, updated_at, username, workspace_name, todos, pinned, archived
             FROM sessions WHERE session_id = ?
             """,
             (session_id,),
@@ -187,53 +187,66 @@ def get_session(db, session_id: str) -> Optional[SessionModel]:
         username=row.get("username", ""),
         workspace_name=row.get("workspace_name", ""),
         todos=todos,
+        pinned=int(row.get("pinned", 0)),
+        archived=bool(row.get("archived", 0)),
     )
 
+def _session_filter(username=None, archived=None, q=None):
+    # INSTR performs literal substring matching on both SQLite and MySQL. Unlike
+    # LIKE, %, _ and backslashes in user input need no wildcard escaping.
+    clauses = ["title NOT LIKE ?"]
+    params = ["[定时任务]%"]
+    if username is not None:
+        clauses.append("username = ?")
+        params.append(username)
+    if archived is not None:
+        clauses.append("archived = ?")
+        params.append(int(archived))
+    if q and q.strip():
+        clauses.append("INSTR(title, ?) > 0")
+        params.append(q.strip())
+    return " AND ".join(clauses), params
+
+
 def list_sessions(
-    db, limit: int = 50, offset: int = 0, username: str | None = None
+    db, limit: int = 50, offset: int = 0, username: str | None = None,
+    archived: bool | None = None, q: str | None = None,
 ) -> list[SessionModel]:
+    where, params = _session_filter(username, archived, q)
+    order = "updated_at DESC, session_id ASC" if archived else "pinned DESC, updated_at DESC, session_id ASC"
     with db.get_connection() as conn:
         cursor = conn.cursor()
-        if username:
-            db._execute(
-                cursor,
-                """
-                SELECT s.session_id, s.title, s.created_at, s.updated_at, s.username,
-                       s.workspace_name, s.pinned, s.message_count
-                FROM sessions s WHERE s.username = ? AND s.title NOT LIKE ?
-                ORDER BY s.pinned DESC, s.updated_at DESC LIMIT ? OFFSET ?
-                """,
-                (username, "[定时任务]%", limit, offset),
-            )
-        else:
-            db._execute(
-                cursor,
-                """
-                SELECT s.session_id, s.title, s.created_at, s.updated_at, s.username,
-                       s.workspace_name, s.pinned, s.message_count
-                FROM sessions s WHERE s.title NOT LIKE ?
-                ORDER BY s.pinned DESC, s.updated_at DESC LIMIT ? OFFSET ?
-                """,
-                ("[定时任务]%", limit, offset),
-            )
-        rows = cursor.fetchall()
-
-    sessions = []
-    for row in rows:
-        row = dict(row) if not isinstance(row, dict) else row
-        sessions.append(
-            SessionModel(
-                session_id=row["session_id"],
-                title=row["title"],
-                messages=[{}] * int(row.get("message_count") or 0),
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-                username=row.get("username", ""),
-                workspace_name=row.get("workspace_name", ""),
-                pinned=int(row.get("pinned", 0)),
-            )
+        db._execute(
+            cursor,
+            "SELECT session_id, title, created_at, updated_at, username, "
+            "workspace_name, pinned, archived, message_count FROM sessions "
+            f"WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+            (*params, limit, offset),
         )
-    return sessions
+        rows = cursor.fetchall()
+    return [SessionModel(
+        session_id=row["session_id"], title=row["title"],
+        messages=[{}] * int(row["message_count"] or 0),
+        created_at=row["created_at"], updated_at=row["updated_at"],
+        username=row["username"], workspace_name=row["workspace_name"],
+        pinned=int(row["pinned"] or 0), archived=bool(row["archived"]),
+    ) for row in rows]
+
+
+def set_session_archived(db, session_id: str, username: str, archived: bool) -> None:
+    from easy_agent.models.exceptions import NotFoundError
+
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        db._execute(cursor, "UPDATE sessions SET archived=? WHERE session_id=? AND username=?",
+                    (int(archived), session_id, username))
+        if cursor.rowcount == 0:
+            # MySQL reports changed rows, so an idempotent update can return 0.
+            db._execute(cursor, "SELECT session_id FROM sessions WHERE session_id=? AND username=?",
+                        (session_id, username))
+            if cursor.fetchone() is None:
+                raise NotFoundError("会话不存在")
+
 
 def update_session(db, session_data: SessionModel):
     """更新会话元信息（标题/时间/用户名），不重写消息正文。
@@ -461,26 +474,15 @@ def get_messages(db, session_id: str) -> list[dict]:
     session = get_session(db, session_id)
     return session.messages if session else []
 
-def count_sessions(db, username: str | None = None) -> int:
+def count_sessions(db, username: str | None = None, archived: bool | None = None,
+                   q: str | None = None) -> int:
+    where, params = _session_filter(username, archived, q)
     with db.get_connection() as conn:
         cursor = conn.cursor()
-        if username:
-            db._execute(
-                cursor,
-                "SELECT COUNT(*) AS n FROM sessions WHERE username=? AND title NOT LIKE ?",
-                (username, "[定时任务]%"),
-            )
-        else:
-            db._execute(
-                cursor,
-                "SELECT COUNT(*) AS n FROM sessions WHERE title NOT LIKE ?",
-                ("[定时任务]%",),
-            )
+        db._execute(cursor, f"SELECT COUNT(*) AS n FROM sessions WHERE {where}", tuple(params))
         row = cursor.fetchone()
         if not row:
             return 0
-        # MySQL 连接使用 DictCursor（db/database.py），SQLite 返回 tuple：
-        # 两种游标都要兼容（回归 D2：MySQL 下 row[0] 会 KeyError: 0）。
         return int(row["n"]) if isinstance(row, dict) else int(row[0])
 
 def update_session_title(db, session_id: str, title: str):

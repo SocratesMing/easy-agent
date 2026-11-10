@@ -30,6 +30,8 @@ from easy_agent.services.streaming.emitter import SSEEmitter
 from easy_agent.services.streaming.sse import (
     SSE_HEARTBEAT_FRAME,
     heartbeat_interval_seconds,
+    parse_sse_frame,
+    SSEEvent,
 )
 from easy_agent.services.sessions.runtime import SessionBusyError
 from easy_agent.services.streaming.runs import finish_run, renew_run
@@ -168,8 +170,8 @@ async def _drive_stream(
 ) -> None:
     """后台任务：推进生成器，把每个 SSE 分片广播给 hub 的全部订阅者（原始客户端队列也是其一）。
 
-    run 终态默认 failed（任何未预期退出都不能留下 running 假象），只有生成器正常耗尽才改为
-    completed；CancelledError（/cancel）标记 cancelled。
+    run 终态默认 failed，生成器正常耗尽且没有 error 帧才改为 completed；
+    CancelledError（/cancel）标记 cancelled。
     """
     bg = asyncio.current_task()
     registered = False
@@ -187,7 +189,15 @@ async def _drive_stream(
             )
         async for chunk in gen:
             hub.broadcast(chunk)
-        run_status = "completed"
+            # 编排器会把模型异常转换成 error 帧后正常返回，不能据此记为成功。
+            event = parse_sse_frame(chunk)
+            if event.get("type") == SSEEvent.ERROR:
+                run_error = event.get("content") or "处理失败"
+        # 流编排器也可能捕获取消、保存部分内容后返回 error 帧。
+        if bg is not None and bg.cancelling():
+            run_status = "cancelled"
+        else:
+            run_status = "failed" if run_error else "completed"
     except SessionBusyError as e:
         # 进程内兜底：不向共享 hub 广播（会污染正在运行的流），只结束本请求队列。
         logger.warning(f"[{sid}] 会话已被占用，拒绝并发流: {e}")

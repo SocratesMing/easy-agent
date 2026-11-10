@@ -1,8 +1,4 @@
-"""生产多副本的 checkpointer 校验、逃生门与 K8s 清单（每个 pod 一个 SQLite 文件 + 粘性会话）。
-
-只放行一种多副本组合：官方 SQLite saver、路径含 ``{pod}``、``EASY_STICKY_SESSIONS=1``、
-每个 pod 一个 worker（``docs/design/2026-10-21-per-pod-sqlite-checkpoints.md`` §4.4）。
-"""
+"""生产多副本的 checkpointer 校验、逃生门与共享 MySQL 快照 K8s 清单。"""
 
 from pathlib import Path
 
@@ -27,6 +23,7 @@ def _per_pod(tmp_path=None, instance="easy-agent-0"):
 
 
 SHARED = ck.CheckpointSelection(ck.BACKEND_SQLITE, "shared", sqlite_path="data/checkpoints.db")
+MYSQL = ck.CheckpointSelection(ck.BACKEND_MYSQL, "shared mysql")
 LEGACY = ck.CheckpointSelection(ck.BACKEND_LEGACY, "legacy")
 
 
@@ -40,6 +37,8 @@ def _validate(selection, **kwargs):
 
 
 class TestDeploymentValidation:
+    def test_mysql_snapshots_are_accepted_without_sticky_sessions(self):
+        assert _validate(MYSQL, sticky=False) is False
     def test_per_pod_sqlite_with_sticky_sessions_is_accepted(self):
         assert _validate(_per_pod()) is True
 
@@ -55,8 +54,8 @@ class TestDeploymentValidation:
         with pytest.raises(ck.CheckpointDeploymentError) as err:
             _validate(LEGACY)
         assert "EASY_ALLOW_LEGACY_CHECKPOINTER=1" in str(err.value)
-        assert "checkpoint.sqlite_path" in str(err.value)
-        assert ck.DEFAULT_SQLITE_PATH in str(err.value)
+        assert "EASY_CHECKPOINT_BACKEND=mysql" in str(err.value)
+        assert "粘性会话" in str(err.value)
 
     def test_several_workers_in_one_pod_fail(self):
         with pytest.raises(ck.CheckpointDeploymentError, match="WEB_CONCURRENCY"):
@@ -164,7 +163,7 @@ def _load(name):
     return [doc for doc in yaml.safe_load_all((PROJECT_ROOT / "deploy" / "k8s" / name).read_text(encoding="utf-8")) if doc]
 
 
-def test_k8s_manifest_runs_one_sqlite_file_per_pod(monkeypatch):
+def test_k8s_manifest_uses_shared_mysql_checkpoints(monkeypatch):
     docs = _load("agent-deployment.yaml")
     config = next(doc for doc in docs if doc.get("kind") == "ConfigMap")["data"]
     deployment = next(doc for doc in docs if doc.get("kind") == "Deployment")
@@ -177,12 +176,9 @@ def test_k8s_manifest_runs_one_sqlite_file_per_pod(monkeypatch):
     assert replicas > 1
     assert config["EASY_REPLICA_COUNT"] == str(replicas)
     assert env["EASY_POD_NAME"]["valueFrom"]["fieldRef"]["fieldPath"] == "metadata.name"
-    # 路径用 config.yaml 的默认值 /qts/checkpoint/{pod}.db，目录挂 pod 本地的 emptyDir（不能是 NAS）
-    assert "EASY_CHECKPOINT_SQLITE_PATH" not in config
-    checkpoint_dir = str(Path(ck.DEFAULT_SQLITE_PATH).parent)
-    mount = next(m for m in container["volumeMounts"] if m["mountPath"] == checkpoint_dir)
-    volume = next(v for v in pod["volumes"] if v["name"] == mount["name"])
-    assert "emptyDir" in volume
+    assert config["EASY_CHECKPOINT_BACKEND"] == "mysql"
+    assert not any(m["mountPath"] == "/qts/checkpoint" for m in container["volumeMounts"])
+    assert not any(v["name"] == "checkpoint" for v in pod["volumes"])
     assert config["EASY_STICKY_SESSIONS"] == "1"
     assert config["EASY_ALLOW_LEGACY_CHECKPOINTER"] == "0"
     assert config["DISTRIBUTED_LOCK_ENABLED"] == "true"
@@ -196,8 +192,7 @@ def test_k8s_manifest_runs_one_sqlite_file_per_pod(monkeypatch):
         sqlite_path=None,
         db_type="mysql",
     )
-    assert selection.per_pod is True
-    assert selection.sqlite_path == f"{checkpoint_dir}/easy-agent-6d4b9c-x7k2p.db"
+    assert selection.kind == ck.BACKEND_MYSQL
     assert ck.validate_checkpoint_deployment(
         selection,
         agent_env=config["AGENT_ENV"],
@@ -205,7 +200,7 @@ def test_k8s_manifest_runs_one_sqlite_file_per_pod(monkeypatch):
         workers_per_pod=1,
         sticky=config["EASY_STICKY_SESSIONS"] == "1",
         allow_legacy=False,
-    ) is True
+    ) is False
 
     # 每个 pod 的文件放在 pod 本地卷，不放共享 NAS（WAL 不能用在网络文件系统上）
     data_mount = next(m for m in container["volumeMounts"] if m["mountPath"] == "/app/data")

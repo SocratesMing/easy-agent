@@ -1,3 +1,4 @@
+import { sessionGuard } from '../../../shared/sessionManagement/state.js'
 /**
  * SSE 流式事件 → 消息 blocks 的状态机（2026-10-20 从 App.vue 原样抽出，行为不变）。
  *
@@ -11,21 +12,11 @@
  * - 每个流创建一个 handler 实例，实例内部闭包保存 currentBlock 等中间状态。
  */
 
+import { createStreamCheckpoint, STREAM_RECONNECTING_MESSAGE } from '../../../shared/utils/chatStreamRecovery.js'
 import { setExpertLastSession } from '../../../shared/utils/expertSession.js'
 import { markStreamFlight } from '../services/streamResume.js'
 
-/**
- * 审批续跑前的会话用量基数：会话合计扣掉被中断这条消息已计入的耗时 / 步数。
- * 续跑下发的是这条消息的累计值（含中断前），基数 + 累计值即会话合计，中断前那段不会算两次。
- * message.usage 来自历史消息（刷新后），或流式过程中 rememberMessageUsage 记下的值。
- */
-export function resumeUsageBase(sessionDuration, iterationCount, message) {
-  const usage = (message && message.usage) || {}
-  return {
-    preStreamDuration: Math.max(0, (sessionDuration || 0) - (usage.elapsed_time || 0)),
-    preStreamIterationCount: Math.max(0, (iterationCount || 0) - (usage.step_count || 0)),
-  }
-}
+export { resumeUsageBase } from '../services/streamUsage.js'
 
 export function createStreamChunkHandler(messages, ctx) {
   // 页面级 refs 由调用方通过 ctx.state 注入（抽成模块后不再处于 App.vue 作用域）
@@ -45,6 +36,8 @@ export function createStreamChunkHandler(messages, ctx) {
     parseMCPResult,
     onStreamStarted,
   } = ctx.state || {}
+  const valid = sessionGuard(ctx.streamSessionId)
+  ctx._sessionValid = valid
   let currentBlock = null
   let currentThinking = ''
   let currentContent = ''
@@ -126,16 +119,26 @@ export function createStreamChunkHandler(messages, ctx) {
     return patch
   }
   // 记下这条消息自己的累计耗时 / 步数：审批续跑时据此从会话合计里扣掉中断前已计入的部分
-  function rememberMessageUsage(data) {
-    const idx = findIdx()
-    if (idx === -1 || typeof data.step_count !== 'number') return
-    const msg = messages.value[idx]
-    msg.usage = { ...msg.usage, step_count: data.step_count, elapsed_time: data.elapsed_time || 0 }
+  function rememberMessageUsage(data, rows) {
+    const idx = rows?.findIndex(m => m.id === ctx.assistantMsgId) ?? -1
+    if (idx === -1) return
+    const msg = rows[idx]
+    const usage = {
+      ...msg.usage,
+      input_tokens: data.input_tokens || 0,
+      output_tokens: data.output_tokens || 0,
+      reasoning_tokens: data.reasoning_tokens || 0,
+      context_tokens: data.context_tokens || data.input_tokens || 0,
+    }
+    if (typeof data.step_count === 'number') usage.step_count = data.step_count
+    if (typeof data.elapsed_time === 'number') usage.elapsed_time = data.elapsed_time
+    rows[idx] = { ...msg, usage }
   }
   function applyUsage(data, sid) {
     const patch = usagePatchFrom(data)
-    const match = !sid || currentSessionId.value === sid
-    rememberMessageUsage(data)
+    const match = !sid || ctx.stateSwapped || loadedSessionId.value === sid
+    const rows = match ? messages.value : sessionStates.value[sid]?.messages
+    rememberMessageUsage(data, rows)
     if (ctx.attachMode) {
       // 重挂载回放：token_usage/done 携带的 elapsed_time 是原始流从头开始的
       // 累计值，应 SET 而非累加（isResume 分支的累加语义只适用于 HITL 续跑）
@@ -171,7 +174,41 @@ export function createStreamChunkHandler(messages, ctx) {
     }
   }
 
+  let replaying = false
+  const checkpoint = createStreamCheckpoint(() => ({
+    message: messages.value.find(m => m.id === ctx.assistantMsgId) || null,
+    usage: sessionUsage.value, duration: sessionDuration.value, iterations: iterationCount.value,
+  }), base => {
+    const idx = findIdx()
+    if (idx !== -1) {
+      const message = base.message || { ...messages.value[idx], content: '', thinking: '', tool_calls: [], blocks: [] }
+      messages.value[idx] = { ...message, loading: true }
+    }
+    Object.assign(sessionUsage.value, base.usage)
+    sessionDuration.value = base.duration
+    iterationCount.value = base.iterations
+  })
+
   function onChunk(data) {
+    if (data.type === 'stream_connection') {
+      if (!ctx.streamSessionId || currentSessionId.value === ctx.streamSessionId) {
+        if (data.status === 'reconnecting') error.value = STREAM_RECONNECTING_MESSAGE
+        else if (error.value === STREAM_RECONNECTING_MESSAGE) error.value = null
+      }
+      return
+    }
+    if (data.type === 'stream_replay') {
+      checkpoint.restore()
+      currentBlock = null
+      currentThinking = ''
+      currentContent = ''
+      currentToolCalls = []
+      blockOrderCounter = ctx.initialBlockOrder || 0
+      totalThinkingDuration = 0
+      replaying = true
+      return
+    }
+    checkpoint.capture()
     const { type: eventType, content, duration, step, tool_name, tool_call_id: toolCallId, arguments: args, result, success } = data
     const sid = ctx.streamSessionId
 
@@ -197,9 +234,11 @@ export function createStreamChunkHandler(messages, ctx) {
           attachedStreamingSessions.value[data.session_id] = 'displayed'
         }
         markStreaming(ctx.streamSessionId || currentSessionId.value)
-        // 拿到 session_id 后补全在飞记录：刷新时若还没收到 start，只能靠发送时刻那条记录找回
-        markStreamFlight(ctx.streamSessionId || currentSessionId.value)
-        if (data.session_id && onStreamStarted) onStreamStarted(data.session_id)
+        // 回放的 start 不重新登记发送时间，也不重复广播新流。
+        if (!replaying) {
+          markStreamFlight(ctx.streamSessionId || currentSessionId.value)
+          if (data.session_id && onStreamStarted) onStreamStarted(data.session_id)
+        }
       }
     } else if (eventType === 'knowledge_evidence') {
       // 知识依据：写到本条消息上，由 ChatMessage 渲染（刷新后由历史接口带回同名字段）
@@ -436,21 +475,13 @@ export function createStreamChunkHandler(messages, ctx) {
           }
           if (data.usage) {
             const patch = usagePatchFrom(data.usage)
-            const match = !ctx.streamSessionId || currentSessionId.value === ctx.streamSessionId
             const finalDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
             const finalIterations = data.usage && typeof data.usage.step_count === 'number' ? ctx.preStreamIterationCount + data.usage.step_count : null
-            if (match) {
-              Object.assign(sessionUsage.value, patch)
-              if (finalDuration !== null) sessionDuration.value = finalDuration
-              if (finalIterations !== null) iterationCount.value = finalIterations
-            } else {
-              const cached = sessionStates.value[ctx.streamSessionId]
-              if (cached) {
-                cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-                if (finalDuration !== null) cached.sessionDuration = finalDuration
-                if (finalIterations !== null) cached.iterationCount = finalIterations
-              }
-            }
+
+            Object.assign(sessionUsage.value, patch)
+            if (finalDuration !== null) sessionDuration.value = finalDuration
+            if (finalIterations !== null) iterationCount.value = finalIterations
+
           }
         }
         messages.value[idx] = { ...messages.value[idx] }
@@ -490,6 +521,7 @@ export function createStreamChunkHandler(messages, ctx) {
   // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
   return {
     onChunk: (data) => {
+      if (!valid()) return
       const dispatch = () => onChunk(data)
       // runInSession 由调用方（App.vue）注入：它依赖页面级 refs（sessionStates 等），
       // 抽成模块后不能再直接引用，否则运行期报 runInSession is not defined。

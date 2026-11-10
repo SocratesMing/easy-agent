@@ -8,6 +8,7 @@ from easy_agent.api.completion import router as completion_router
 import platform
 
 from easy_agent.api.prompts import prompts_router
+from easy_agent.api.prompt_enhancement import router as prompt_enhancement_router
 from easy_agent.api.settings import router as settings_router
 from easy_agent.api.skill_center import router as skill_center_router
 from easy_agent.api.connectors import router as connectors_router
@@ -25,6 +26,7 @@ __all__ = [
     "auth_router",
     "completion_router",
     "prompts_router",
+    "prompt_enhancement_router",
     "settings_router",
     "skill_center_router",
     "connectors_router",

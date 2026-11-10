@@ -56,13 +56,7 @@ def renew_stream(
 
 def release_stream(db, session_id: str) -> None:
     owner = instance_owner()
-    row = db.get_session_runtime(session_id)
-    if not row:
-        return
-    if row.get("stream_owner") == owner:
-        db.upsert_session_runtime(
-            session_id, stream_owner="", stream_until="", cancel_requested=0
-        )
+    db.release_session_stream(session_id, owner, _iso(utc_now()))
 
 
 def is_stream_active(db, session_id: str, *, now: datetime | None = None) -> bool:

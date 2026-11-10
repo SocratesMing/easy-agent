@@ -155,11 +155,15 @@ function sleep(ms) {
 }
 
 /**
- * 这一轮的答复是否已经落地：正文 / 思考 / 工具卡片 / 审批载荷任一非空即算。
+ * 这一轮的答复是否已经落地：正文 / 思考 / 工具卡片 / 审批载荷 / 异常兜底文案任一非空
+ * 即算。
  *
  * 只认 assistant：最后一条是 user 说明模型还没回；最后一条是「空 assistant」
  * （占位或刚落库还没写入内容）同样不算答复。落库的进行中消息常常只有 blocks
  * 没有 content，因此不能只看正文。
+ *
+ * ``fallback_note`` 也算：那是后端在「这一轮没跑完」时落的中性说明（超时 / 上游断连
+ * 等），有它就说明这一轮已经收尾了，再等下去只是空转。
  */
 export function hasAssistantReply(message) {
   if (!message || message.role !== 'assistant') return false
@@ -167,6 +171,7 @@ export function hasAssistantReply(message) {
     message.content
     || message.thinking
     || message.pending_approval
+    || message.fallback_note
     || (Array.isArray(message.tool_calls) && message.tool_calls.length > 0)
     || (Array.isArray(message.blocks) && message.blocks.length > 0)
   )

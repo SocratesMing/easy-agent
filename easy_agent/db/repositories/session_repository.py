@@ -80,13 +80,19 @@ class SessionRepository:
         limit: int = 50,
         offset: int = 0,
         username: str | None = None,
+        archived: bool | None = None,
+        q: str | None = None,
     ) -> list[SessionModel]:
         return sessions_repo.list_sessions(
-            self._db, limit=limit, offset=offset, username=username
+            self._db, limit=limit, offset=offset, username=username, archived=archived, q=q
         )
 
-    def count_sessions(self, username: str | None = None) -> int:
-        return sessions_repo.count_sessions(self._db, username=username)
+    def count_sessions(self, username: str | None = None, archived: bool | None = None,
+                       q: str | None = None) -> int:
+        return sessions_repo.count_sessions(self._db, username=username, archived=archived, q=q)
+
+    def set_session_archived(self, session_id: str, username: str, archived: bool) -> None:
+        sessions_repo.set_session_archived(self._db, session_id, username, archived)
 
     def update_session_meta(
         self,

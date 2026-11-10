@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createStreamChunkHandler } from './useStreamChunks.js'
+import { markStreamFlight, readStreamFlight } from '../services/streamResume.js'
 
 const ref = (value) => ({ value })
 
@@ -44,7 +45,7 @@ function makeHarness() {
     runInSession: (_sid, _ctx, fn) => fn(),
   }
   const handler = createStreamChunkHandler(messages, ctx)
-  return { messages, state, handler }
+  return { messages, state, ctx, handler }
 }
 
 test('content 事件写入消息且不抛未定义标识符', () => {
@@ -71,9 +72,22 @@ test('meta/usage 事件更新会话用量', () => {
 })
 
 test('没有注入 runInSession 时也能派发（防御分支）', () => {
-  const { messages, handler } = makeHarness()
+  const { messages, ctx, handler } = makeHarness()
+  delete ctx.runInSession
   handler.onChunk({ type: 'content', content: 'ok' })
   assert.ok(messages.value[0])
+})
+
+test('主页面回放重建本轮内容，不重复正文和累计用量', () => {
+  const { messages, state, handler } = makeHarness()
+  const events = [{ type: 'content', content: '风险分析', step: 1 }, { type: 'token_usage', elapsed_time: 2, step_count: 1 }]
+  for (const event of events) handler.onChunk(event)
+  const expected = JSON.stringify(messages.value)
+  handler.onChunk({ type: 'stream_replay' })
+  for (const event of events) handler.onChunk(event)
+  assert.equal(JSON.stringify(messages.value), expected)
+  assert.equal(state.sessionDuration.value, 2)
+  assert.equal(state.iterationCount.value, 1)
 })
 
 test('knowledge_evidence 写入证据与告警，供 ChatMessage 渲染', () => {
@@ -97,4 +111,33 @@ test('done 不带 content/title：正文由各段 content 块拼回，未完成�
   assert.equal(msg.loading, false)
   assert.equal(msg.blocks.find(b => b.type === 'tool_call').streaming, false)
   assert.deepEqual(state.sessions.value, [], '会话标题由收尾时的 loadSessions() 回填，done 不改会话列表')
+})
+
+test('start 补全在飞记录；回放不覆盖其它新流的记录，也不重复广播', (t) => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
+  const storage = new Map()
+  Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+  } })
+  t.after(() => {
+    if (original) Object.defineProperty(globalThis, 'sessionStorage', original)
+    else delete globalThis.sessionStorage
+  })
+  let now = 1000
+  t.mock.method(Date, 'now', () => now)
+  const started = []
+  const { messages, ctx } = makeHarness()
+  ctx.state.onStreamStarted = sid => started.push(sid)
+  const stream = createStreamChunkHandler(messages, ctx)
+  markStreamFlight(null)
+  stream.onChunk({ type: 'start', session_id: 's1' })
+  assert.deepEqual(readStreamFlight(now), { sessionId: 's1', at: 1000 })
+
+  now = 2000
+  markStreamFlight('s2')
+  stream.onChunk({ type: 'stream_replay' })
+  stream.onChunk({ type: 'start', session_id: 's1' })
+  assert.deepEqual(readStreamFlight(now), { sessionId: 's2', at: 2000 })
+  assert.deepEqual(started, ['s1'])
 })

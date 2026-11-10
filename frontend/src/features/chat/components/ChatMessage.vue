@@ -177,9 +177,6 @@
 
         <MarkdownBody v-if="message.content" class="message-text" :content="message.content" :cite-map="citeNumberMap" />
 
-        <!-- 错误提示：显示 5 秒后自动消失 -->
-        <MessageError :error="message.error" />
-
         <!-- 生成的文件按钮 -->
         <div v-if="message.role === 'assistant' && message.generated_files && message.generated_files.length > 0" class="generated-files-btn-container">
           <button class="generated-files-btn" @click="emit('viewGeneratedFiles')" title="查看生成的文件">
@@ -194,6 +191,7 @@
           </button>
         </div>
       </template>
+      <MessageError :error="message.error" />
       <MessageFallbackNote v-if="message.role === 'assistant'" :note="message.fallback_note" />
       <KnowledgeEvidence
         v-if="message.role === 'assistant'"
@@ -1913,7 +1911,7 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 
 .message-text {
   background: transparent;
-  padding: 12px 16px;
+  padding: 12px var(--chat-message-content-inset, 16px);
   border-radius: 16px;
   font-size: 16px;
   line-height: 1.7;

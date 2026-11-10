@@ -41,7 +41,7 @@ DOMAINS = {
     "expert.py": ("get_expert_repository", "ExpertRepository", 6),
     "chat.py": ("get_chat_repository", "ChatRepository", 2),
     "chat_live.py": ("get_chat_repository", "ChatRepository", 2),
-    "sessions.py": ("get_session_repository", "SessionRepository", 10),
+    "sessions.py": ("get_session_repository", "SessionRepository", 13),
 }
 
 # C1b 之后每个 API 文件仍保留的 `repo.database` 调用点数；C1b 的每一条都在

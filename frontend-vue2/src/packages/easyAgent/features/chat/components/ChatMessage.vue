@@ -190,9 +190,6 @@
 
         <MarkdownBody v-if="displayContent" class="message-text" :content="displayContent" :cite-map="citeNumberMap" />
 
-        <!-- 错误提示：显示 5 秒后自动消失 -->
-        <MessageError :error="message.error" />
-
         <!-- 生成的文件按钮 -->
         <div v-if="message.role === 'assistant' && message.generated_files && message.generated_files.length > 0" class="generated-files-btn-container">
           <button class="generated-files-btn" @click="$emit('view-generated-files')" title="查看生成的文件">
@@ -207,8 +204,10 @@
           </button>
         </div>
       </template>
+
+      <MessageError :error="message.error" />
       
-      <!-- 超时兜底说明：这一轮没跑完（数据不全），常驻在正文之后，不弹框、不自动消失。
+      <!-- 异常兜底说明：这一轮没跑完（超时 / 上游断连等），常驻在正文之后，不弹框、不自动消失。
            fallback_note 由后端异常兜底写进消息并落库，刷新/切会话后仍在；
            历史消息没有该字段时 v-if 不成立，什么都不渲染。 -->
       <div
@@ -1961,7 +1960,7 @@ export default {
 
 .message-text {
   background: transparent;
-  padding: 12px 16px;
+  padding: 12px var(--chat-message-content-inset, 16px);
   border-radius: 16px;
   font-size: 16px;
   line-height: 1.7;

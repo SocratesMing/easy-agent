@@ -1,3 +1,4 @@
+import { resetSessions } from '../shared/sessionManagement/state.js'
 /**
  * 统一请求层（模块唯一的传输实现，axios + 原生 fetch）。
  *
@@ -117,12 +118,15 @@ export function getStoredUsername() {
 
 /** 保存登录态（token + 用户名） */
 export function storeAuth(token, username) {
+  if (getStoredUsername() !== username) { resetSessions(); emitRuntimeEvent('auth-changed') }
   localStorage.setItem(authConfig().tokenKey, token)
   localStorage.setItem(authConfig().usernameKey, username)
 }
 
 /** 清除登录态 */
 export function clearAuth() {
+  resetSessions()
+  emitRuntimeEvent('auth-changed')
   localStorage.removeItem(authConfig().tokenKey)
   localStorage.removeItem(authConfig().usernameKey)
 }
@@ -393,7 +397,9 @@ export async function fetchWithAuth(url, init = {}) {
  */
 export async function handleStreamResponse(response) {
   if (response.status === 401) {
-    throw new Error('登录已过期，请重新登录')
+    const error = new Error('登录已过期，请重新登录')
+    error.status = 401
+    throw error
   }
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}))

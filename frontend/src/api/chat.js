@@ -1,6 +1,8 @@
+import { rememberSession, sessionRevision, sessionGuard, sessionDeleted, staleSessionError } from '../shared/sessionManagement/state.js'
 import { API_BASE_URL } from '../config.js'
 import { getAuthHeaders, authFetch } from './auth.js'
 import { readSSE } from './sse.js'
+import { recoverChatStream } from '../shared/utils/chatStreamRecovery.js'
 
 export async function createSession(title, username = null) {
   const body = { title }
@@ -18,27 +20,47 @@ export async function createSession(title, username = null) {
   return response.json()
 }
 
-export async function listSessions(username = null) {
-  let url = `${API_BASE_URL}/agent/sessions`
-  if (username) {
-    url += `?username=${encodeURIComponent(username)}`
-  }
+export async function listSessions(username = null, filters = {}) {
+  const params = new URLSearchParams({ archived: false, ...(username ? { username } : {}), ...filters })
+  const url = `${API_BASE_URL}/agent/sessions?${params}`
   const response = await authFetch(url)
   if (!response.ok) throw new Error('获取会话列表失败')
   return response.json()
 }
 
 export async function getSession(sessionId) {
+  const readRevision = sessionRevision()
+  const valid = sessionGuard(sessionId)
   const response = await authFetch(`${API_BASE_URL}/agent/sessions/${sessionId}`)
   if (!response.ok) throw new Error('获取会话失败')
-  return response.json()
+  const data = await response.json()
+  if (!valid()) throw staleSessionError()
+  rememberSession(data, readRevision)
+  return data
 }
 
 export async function deleteSession(sessionId) {
+  const valid = sessionGuard(sessionId)
   const response = await authFetch(`${API_BASE_URL}/agent/sessions/${sessionId}`, {
     method: 'DELETE',
   })
   if (!response.ok) throw new Error('删除会话失败')
+  const data = await response.json()
+  if (!valid()) throw staleSessionError()
+  sessionDeleted(sessionId)
+  return data
+}
+
+export async function setSessionArchived(sessionId, archived) {
+  const response = await authFetch(`${API_BASE_URL}/agent/sessions/${sessionId}/archive`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived }),
+  })
+  if (!response.ok) throw new Error('归档操作失败')
+  return response.json()
+}
+export async function countSessions(filters = { archived: false }) {
+  const response = await authFetch(`${API_BASE_URL}/agent/sessions/count?${new URLSearchParams(filters)}`)
+  if (!response.ok) throw new Error('读取会话数量失败')
   return response.json()
 }
 
@@ -63,43 +85,53 @@ export async function togglePinSession(sessionId) {
 }
 
 export async function getChatHistory(sessionId) {
-  const response = await authFetch(`${API_BASE_URL}/agent/sessions/${sessionId}`)
-  if (!response.ok) throw new Error('获取聊天历史失败')
-  const data = await response.json()
+  const data = await getSession(sessionId)
   return {
+    session_id: data.session_id,
+    archived: data.archived,
     messages: data.messages || [],
     todos: data.todos || [],
+    compactions: data.compactions || [],
     usage: data.usage || null,
     context_length: data.context_length || null,
   }
 }
 
 // 查询会话当前是否仍有进行中的流式任务（页面刷新后判断是否需要重新挂载）
-export async function getStreamStatus(sessionId) {
+export async function getStreamStatus(sessionId, signal) {
   const response = await authFetch(
-    `${API_BASE_URL}/agent/chat/stream/status?session_id=${encodeURIComponent(sessionId)}`
+    `${API_BASE_URL}/agent/chat/stream/status?session_id=${encodeURIComponent(sessionId)}`,
+    { signal }
   )
   if (!response.ok) {
-    throw new Error('查询流式状态失败')
+    const error = new Error('查询流式状态失败')
+    error.status = response.status
+    throw error
   }
   return response.json()
 }
 
-// 挂载到进行中的流式任务：先回放已产生的全部事件，再持续接收后续事件
-export async function attachStream(sessionId, onChunk, signal) {
-  const controller = new AbortController()
-  const abortSignal = signal || controller.signal
-
+async function openLiveResponse(sessionId, signal) {
   const response = await authFetch(
     `${API_BASE_URL}/agent/chat/stream/live?session_id=${encodeURIComponent(sessionId)}`,
-    { signal: abortSignal }
+    { signal }
   )
   if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '挂载流式输出失败')
+    const payload = await response.json().catch(() => ({}))
+    const error = new Error(payload.detail || '挂载流式输出失败')
+    error.status = response.status
+    throw error
   }
+  return response
+}
 
-  await readSSE(response, onChunk, { signal: abortSignal })
+function readChatResponse(response, sessionId, onChunk, signal) {
+  return recoverChatStream({ response, sessionId, onChunk, signal, readSSE,
+    getStatus: getStreamStatus, openLive: openLiveResponse })
+}
+
+export async function attachStream(sessionId, onChunk, signal) {
+  await readChatResponse(null, sessionId, onChunk, signal)
 }
 
 export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, skills = [], pendingExpertId = '', expertAgentId = '', extra = null) {
@@ -152,16 +184,7 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
     throw new Error(error.detail || '发送消息失败')
   }
 
-  await readSSE(
-    response,
-    (data) => {
-      if (data.type === 'done') {
-        console.log('[SSE] Received done event:', JSON.stringify(data).substring(0, 500))
-      }
-      onChunk(data)
-    },
-    { signal: abortSignal }
-  )
+  await readChatResponse(response, sessionId, onChunk, abortSignal)
 }
 
 export async function resumeStream(sessionId, threadId, decisions, onChunk, signal, messageId) {
@@ -187,7 +210,7 @@ export async function resumeStream(sessionId, threadId, decisions, onChunk, sign
     throw new Error(error.detail || '恢复执行失败')
   }
 
-  await readSSE(response, onChunk, { signal: abortSignal })
+  await readChatResponse(response, sessionId, onChunk, abortSignal)
 }
 
 function generateMessageId() {
@@ -196,4 +219,19 @@ function generateMessageId() {
 
 export function createNewChat(sessionId, onChunk) {
   return sendMessage(sessionId, '', onChunk)
+}
+
+
+async function contextRequest(sessionId, suffix, init = {}) {
+  const response = await authFetch(`${API_BASE_URL}/agent/sessions/${encodeURIComponent(sessionId)}/context${suffix}`, {
+    ...init, signal: AbortSignal.timeout(130000),
+  })
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.detail || '压缩请求失败')
+  return data
+}
+export function getContextStatus(sessionId) { return contextRequest(sessionId, '') }
+export function compactContext(sessionId, model, requestId) {
+  return contextRequest(sessionId, '/compact', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, request_id: requestId }) })
 }

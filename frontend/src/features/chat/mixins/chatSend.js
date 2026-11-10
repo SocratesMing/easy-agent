@@ -4,6 +4,7 @@ import { sendMessage, resumeStream } from '../../../api/chat.js'
 import { deleteFile } from '../../../api/files.js'
 import { authFetch } from '../../../api/auth.js'
 import { createStreamChunkHandler as createChunkHandler } from '../services/chunkHandler.js'
+import { resumeUsageBase } from '../services/streamUsage.js'
 import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision } from '../../../utils/hitlApproval.js'
 
 /**
@@ -277,6 +278,7 @@ export default {
         isResume: true,
         assistantMsgId,
         streamSessionId: sessionId,
+        ...resumeUsageBase(this.sessionDuration, this.iterationCount, this.messages[msgIdx]),
         initialBlockOrder: (() => {
           const i = this.messages.findIndex(m => m.id === assistantMsgId)
           return i !== -1 ? this.messages[i].blocks.length : 0

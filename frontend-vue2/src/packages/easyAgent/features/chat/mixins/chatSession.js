@@ -1,3 +1,5 @@
+import { connectSessionView } from '../../../shared/sessionManagement/viewLifecycle.js'
+import { loadDailySessions, sessionGuard, isSessionDeleted, isStaleSessionError } from '../../../shared/sessionManagement/state.js'
 import { setReactive } from '../../../utils/reactiveSet.js'
 import { parseMCPResult } from '../../../utils/mcpResult.js'
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, attachStream, getStreamStatus } from '../../../api/chat.js'
@@ -10,7 +12,7 @@ import streamLifecycle from './streamLifecycle.js'
 import { applyApprovalRequests, buildResumeDecisions, derivePendingApproval, markApprovalDecision } from '../../../utils/hitlApproval.js'
 
 // 会话级界面字段 → sessionStates 缓存字段，后台流事件期间换入（runInSession）；含 pendingApproval：多会话同时待审批时各自持有
-const SESSION_FIELDS = [['messages', 'messages'], ['sessionUsage', 'sessionUsage'], ['sessionDuration', 'sessionDuration'], ['iterationCount', 'iterationCount'], ['currentTodos', 'todos'], ['streamingAssistantId', 'streamingAssistantId'], ['pendingApproval', 'pendingApproval']]
+const SESSION_FIELDS = [['messages', 'messages'], ['sessionUsage', 'sessionUsage'], ['sessionDuration', 'sessionDuration'], ['iterationCount', 'iterationCount'], ['currentTodos', 'todos'], ['streamingAssistantId', 'streamingAssistantId'], ['pendingApproval', 'pendingApproval'], ['error', 'error']]
 
 // MCP 工具结果解析：正常流与 HITL 恢复流共用（App.vue 经本模块引用）
 export { parseMCPResult }
@@ -108,9 +110,11 @@ export default {
   },
   created() {
     chatBus.$on('stream-started', this.onPeerStreamStarted)
+    this._offSessionState = connectSessionView(this)
     chatBus.$on('session-removed', this.onPeerSessionRemoved)
   },
   beforeDestroy() {
+    this._offSessionState?.()
     chatBus.$off('stream-started', this.onPeerStreamStarted)
     chatBus.$off('session-removed', this.onPeerSessionRemoved)
   },
@@ -158,6 +162,7 @@ export default {
       const doCheck = async () => {
         try {
           const files = await getSessionGeneratedFiles(targetId)
+          if (this.currentSessionId !== targetId) return
           this.currentSessionHasFiles = Array.isArray(files) && files.length > 0
           console.log('[Files] Session', targetId, 'has files:', this.currentSessionHasFiles, 'count:', files?.length)
         } catch (e) {
@@ -355,7 +360,7 @@ export default {
       } catch (e) {
         if (e.name !== 'AbortError') {
           console.error('挂载流式输出失败:', e)
-          if (displayed) this.error = e.message || '挂载流式输出失败'
+          if (displayed && this.currentSessionId === sessionId) this.error = e.message || '挂载流式输出失败'
         }
       } finally {
         this.untrackStream(controller)
@@ -363,7 +368,7 @@ export default {
           delete this.attachedStreamingSessions[sessionId]
         }
         if (!this._chatDisposed && (!displayed || !this.pendingApprovalOf(sessionId))) {
-          if (displayed) this.currentAbortController = null
+          if (displayed && this.currentSessionId === sessionId) this.currentAbortController = null
           this.unmarkStreaming(sessionId)
           if (this.sessionStates[sessionId]) {
             this.sessionStates[sessionId].isStreaming = false
@@ -373,7 +378,7 @@ export default {
           await this.syncSessionFromServer(sessionId)
           // 流结束回填后重算"待审批"标识（审批已被处理/失效则熄灭，仍 pending 则保持）
           this.recomputePendingApprovalFlag(sessionId)
-          if (displayed) {
+          if (displayed && this.currentSessionId === sessionId) {
             // 同上兜底：挂载流结束时确保占位消息不再标记 loading，避免页面残留"执行中"
             let idx = this.messages.findIndex(m => m.id === attachId)
             if (idx === -1) {
@@ -393,6 +398,9 @@ export default {
     },
     /**
      * 界面是不是仍停在「只有提问、还没答复」的状态。
+     *
+     * 带 fallback_note 的 assistant 不算：那是后端在「这一轮没跑完」时落的中性说明
+     * （超时 / 上游断连等），有它就说明这一轮已经收尾，再盯下去只是空转。
      */
     awaitingAnswer() {
       const last = this.messages[this.messages.length - 1]
@@ -401,6 +409,7 @@ export default {
       return last.role === 'assistant'
         && !last.content && !last.thinking
         && !last.pending_approval
+        && !last.fallback_note
         && !(Array.isArray(last.blocks) && last.blocks.length)
     },
     /**
@@ -474,7 +483,7 @@ export default {
     saveCurrentSessionState() {
       if (!this.loadedSessionId) return
       this.sessionStates[this.loadedSessionId] = {
-        messages: JSON.parse(JSON.stringify(this.messages)),
+        messages: this.messages.slice(),
         isStreaming: this.isStreaming,
         sessionUsage: { ...this.sessionUsage },
         sessionDuration: this.sessionDuration,
@@ -554,6 +563,7 @@ export default {
       else if (this.sessionStates[sid]) this.sessionStates[sid].pendingApproval = null
     },
     runInSession(sid, ctx, fn) {
+      if (ctx?._sessionValid && !ctx._sessionValid()) return
       if (!sid || sid === this.loadedSessionId) return fn() // 展示中：直接用组件数据
       const st = this.ensureSessionState(sid)
       const saved = SESSION_FIELDS.map(([vmKey, stKey]) => {
@@ -587,8 +597,10 @@ export default {
     // 本地增量流状态在后台收尾/事件未命中时可能不完整，history 接口返回的是后端
     // 完整落库消息，用它回填可保证"列表已完成"时页面渲染完整内容（无需刷新）。
     async syncSessionFromServer(sessionId, preloaded, opts) {
-      if (!sessionId) return
-      if (!this.sessions.some(s => s.session_id === sessionId)) return // 会话已删除/切换用户，跳过
+      if (!sessionId || isSessionDeleted(sessionId)) return
+      const valid = sessionGuard(sessionId)
+      this._historyVersions ||= {}
+      const version = this._historyVersions[sessionId] = (this._historyVersions[sessionId] || 0) + 1
       let history = preloaded
       if (!history) {
         try {
@@ -598,9 +610,8 @@ export default {
           return
         }
       }
-      // 拉取期间该会话若又开始了新一轮流式，别用旧历史覆盖。
-      // force：刷新后「已挂载但界面还空着」时由 syncIfServerAnswered 传入——那边已经
-      // 确认服务端有本轮答复、且界面还没有，此时不覆盖就永远补不回来了。
+      if (!valid() || version !== this._historyVersions[sessionId]) return
+      // force 只用于已确认服务端有本轮答复、但挂载后的界面仍为空的情况。
       if (!(opts && opts.force) && this.isSessionStreaming(sessionId)) return
 
       const usage = history.usage || null
@@ -637,26 +648,19 @@ export default {
         this.$set(this.sessionStates, sessionId, st)
       }
     },
-    /**
-     * 只在「服务端确实产出了本轮答复」时才用历史覆盖界面。
-     *
-     * 刷新常常落在「提问已经发出、模型还没回」的窗口：此时服务端历史里要么还没有这一轮
-     * 的提问，要么只有一个空 assistant。直接整表替换会把刚发的提问抹掉，界面看起来像
-     * 「刷新后什么都没有」；覆盖后拿到的最后一条还是上一轮的答复，还会被误判成
-     * 「这一轮已经答完」而放弃等待——刷新太早就不出流的另一半原因。
-     */
+    // 只有服务端已有本轮答复才回填，避免用旧答复覆盖刚发出、尚未落库的提问。
     async syncIfServerAnswered(sessionId) {
-      if (!sessionId) return false
-      if (!this.sessions.some(s => s.session_id === sessionId)) return false
+      if (!sessionId || isSessionDeleted(sessionId)) return false
+      const valid = sessionGuard(sessionId)
+      const version = this._historyVersions?.[sessionId] || 0
       let history
       try {
         history = await getChatHistory(sessionId)
       } catch (e) {
         return false
       }
-      // 本地这一轮还在流式、且界面已经渲染出内容：不覆盖（落库版本只在结束时才有，
-      // 这时候覆盖只会把正在滚动的正文换成静态版本）。反过来「已挂载但界面还空着」
-      // 必须放过——那正是刷新后 attach 成功却什么都没渲染的场景，只能靠历史回填。
+      if (!valid() || version !== (this._historyVersions?.[sessionId] || 0)) return false
+      // 流式正文已经渲染时不覆盖；挂载后仍为空时允许历史补回答复。
       if (this.isSessionStreaming(sessionId)
         && !(sessionId === this.loadedSessionId && this.awaitingAnswer())) return false
       const serverMsgs = (history && history.messages) || []
@@ -673,8 +677,7 @@ export default {
       }
       const repliedAt = Date.parse(last.timestamp || last.created_at || '')
       if (!isNaN(localAskedAt) && !isNaN(repliedAt) && repliedAt < localAskedAt) return false
-      // force：上面已确认「服务端有本轮答复、界面还没有」，此时必须落库到界面，
-      // 不能被 syncSessionFromServer 里的「正在流式不覆盖」拦下（那样会静默失败还返回成功）
+      // 已确认本轮答复存在，允许 force 越过流式保护补回空白界面。
       await this.syncSessionFromServer(sessionId, history, { force: true })
       // 只有界面真的不像「等答复」了才算成功，避免调用方误以为已经补上而提前收手
       return !(sessionId === this.loadedSessionId && this.awaitingAnswer())
@@ -718,15 +721,16 @@ export default {
     },
     async loadSessions() {
       try {
-        const data = await listSessions(chatStore.username || null)
-        this.sessions = Array.isArray(data) ? data : (data.sessions || [])
-        this.hydratePendingApprovalFromServer()
-        if (this.error === '加载会话列表失败') this.error = null
+        await loadDailySessions(
+          () => listSessions(chatStore.username || null, { archived: false }),
+          rows => {
+            this.sessions = rows
+            this.hydratePendingApprovalFromServer()
+            if (this.error === '加载会话列表失败') this.error = null
+          },
+        )
       } catch (e) {
-        console.error('加载会话列表失败:', e)
-        // 401 由登录失效流程接管（SDK 自动重登后会再次加载），不提示
-        if (e && e.response && e.response.status === 401) return
-        this.error = '加载会话列表失败'
+        if (!isStaleSessionError(e)) this.error = '加载会话列表失败'
       }
     },
     // 服务端列表已带 pending_approval（后端按「最后一条消息」判定）：刷新页面后

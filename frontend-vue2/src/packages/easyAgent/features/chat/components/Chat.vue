@@ -2,10 +2,7 @@
   <div class="chat-container" :class="{ 'is-sidebar': isSidebar }">
     <div class="chat-main">
     <div class="chat-content" :class="composerMode === 'center' ? 'is-center' : 'is-bottom'">
-      <!-- 顶部信息行：会话时间居中，操作区（任务规划 + 展开工作区）贴右。
-           这三者此前分散在视口/聊天区右上角，位置互不相干；现在统一到同一行。
-           空会话（无消息、无任务）时只有右侧一个工作区按钮，这一行改为浮层不占位，
-           否则会在欢迎页上方压出一条 44px 白带 + 分隔线，破坏垂直居中。 -->
+      <!-- 会话时间与操作区共用顶部信息行 -->
       <div v-if="showTopbar" class="chat-topbar" :class="{ 'is-float': topbarFloating }">
         <div v-if="showSessionTime" class="session-created-time">
           <span class="session-time-pill">
@@ -17,8 +14,6 @@
           </span>
         </div>
         <div class="chat-topbar-actions">
-          <!-- 任务规划：只由 todos 决定显隐，不再依赖 sidebarCollapsed
-               （那会让折叠会话列表时任务胶囊一起消失）。 -->
           <TodoListPanel :todos="todos" />
           <button
             v-if="showWorkspaceBtn"
@@ -35,9 +30,7 @@
       </div>
       <div class="chat-messages" ref="messagesRef" @scroll="handleScroll">
         <div v-if="messages.length === 0 && !sessionLoading" class="welcome-screen">
-          <slot name="welcome">
-            <h2>{{ welcomeTitle }}</h2>
-          </slot>
+          <slot name="welcome"><h2>{{ welcomeTitle }}</h2></slot>
         </div>
         <!-- 切换会话拉取历史期间：显示骨架，避免先闪出空欢迎页 -->
         <div
@@ -65,6 +58,10 @@
           @reject="handleReject"
           @edit="handleEdit"
         />
+        <div v-for="record in compactionsAt(index)" :key="record.id" class="compaction-notice" role="status" :title="record.message">
+          <svg class="compaction-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 5 6 6-6 6M12 19h8" /></svg>
+          <span>{{ compactionNoticeText(record) }}</span>
+        </div>
       </div>
       </div>
       <button v-if="canGoToNextUserMessage" @click="goToNextUserMessage" class="scroll-btn next" title="回到下一个用户问题">
@@ -78,11 +75,7 @@
         </svg>
       </button>
 
-      <!-- 预置问题卡片：仅在首页（居中模式）展示，位置在欢迎语与输入框之间。
-           一张卡片一条预置问题，问题内容直接展示在卡片里，不堆叠、不悬浮切换；
-           配置了多条时依次排列（最多 MAX_PRESET_CARDS 张）。
-           点击卡片把该问题填进输入框（不直接发送），用户可改完自己发。
-           侧边栏变体不展示预置问题。 -->
+      <!-- 空会话的预置问题卡片 -->
       <div
         class="preset-area"
         v-if="composerMode === 'center' && displayedPresetCards.length && !isSidebar"
@@ -122,10 +115,11 @@
         :consume-pending-skill="!isSidebar"
         @send="onSend"
         @web-search-change="$emit('web-search-change', $event)"
-        :disabled="isStreaming"
+        :disabled="isStreaming || compactBusy"
         :isStreaming="isStreaming"
         :session-id="currentSessionId"
-        :sessionUsage="sessionUsage"
+        :sessionUsage="compactUsage"
+        :compact-busy="compactBusy" :compact-reason="compactReason" @compact-context="runCompact"
         :sessionDuration="sessionDuration"
         :iterationCount="iterationCount"
         :models="models"
@@ -149,6 +143,7 @@
 </template>
 
 <script>
+import contextCompactionMixin from '../../../shared/compaction/mixin.js'
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
 import TodoListPanel from './TodoListPanel.vue'
@@ -156,6 +151,7 @@ import { getRuntime } from '../../../runtime/config.js'
 // 预置问题卡片最多展示几张（一张卡片一条问题，多配的部分按顺序截断）
 const MAX_PRESET_CARDS = 6
 export default {
+  mixins: [contextCompactionMixin],
   components: { ChatInput, ChatMessage, TodoListPanel },
   props: {
   messages: {
@@ -597,6 +593,8 @@ export default {
   overflow: visible;
 }
 
+/* 保留输入区完整高度，避免操作栏被裁剪；空间不足时由预置卡片区滚动。 */
+.composer { flex-shrink: 0; }
 /* 回车发送后，输入框平滑下移到底部 */
 .chat-content.is-bottom .composer {
   animation: composerDropIn 0.45s cubic-bezier(0.22, 1, 0.36, 1);
@@ -972,8 +970,6 @@ export default {
   bottom: 170px;
 }
 
-
-
 /* 不再需要按面板宽度做避让（原 260px 硬编码在可拖拽后必然错位）：
    按钮已改为相对 .chat-container 定位，聊天区收窄时自动跟随。 */
 .scroll-btn:hover {
@@ -1120,3 +1116,5 @@ export default {
   animation: none;
 }
 </style>
+
+<style scoped src="./compactionNotice.css"></style>

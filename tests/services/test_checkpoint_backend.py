@@ -96,7 +96,7 @@ class TestForced:
         selection = _resolve(backend="postgres", db_type="sqlite")
         assert selection.kind == ck.BACKEND_SQLITE
         assert "'postgres'" in selection.warning
-        assert "auto/sqlite/legacy" in selection.warning
+        assert "auto/sqlite/mysql/legacy" in selection.warning
 
     def test_unknown_backend_treated_as_auto(self):
         selection = _resolve(backend="bogus", db_type="sqlite")
@@ -209,6 +209,35 @@ class TestStartBackend:
             await ck.shutdown_checkpointers()
         assert ck.sqlite_checkpointer_active() is False
         assert ck.active_checkpoint_backend() == ck.BACKEND_LEGACY
+
+    def test_mysql_backend_requires_mysql_database(self):
+        with pytest.raises(ck.CheckpointDeploymentError, match="要求业务数据库为 MySQL"):
+            ck.resolve_checkpoint_backend(backend="mysql", db_type="sqlite")
+
+    @pytest.mark.asyncio
+    async def test_mysql_backend_uses_shared_per_session_savers(self, monkeypatch):
+        selection = ck.resolve_checkpoint_backend(backend="mysql", db_type="mysql")
+        assert await ck.start_checkpoint_backend(
+            selection, agent_env="prod", replicas=2, workers_per_pod=1
+        ) == ck.BACKEND_MYSQL
+
+        class _Repository:
+            def load_checkpoint(self, session_id):
+                return None
+
+            def save_checkpoint(self, session_id, blob):
+                pass
+
+        monkeypatch.setattr(
+            "easy_agent.db.providers.get_agent_state_repository",
+            lambda: _Repository(),
+        )
+        try:
+            assert ck.active_checkpoint_backend() == ck.BACKEND_MYSQL
+            assert ck.get_session_checkpointer("s1") is ck.get_session_checkpointer("s1")
+            assert ck.get_session_checkpointer("s1") is not ck.get_session_checkpointer("s2")
+        finally:
+            await ck.shutdown_checkpointers()
 
     @pytest.mark.asyncio
     async def test_sqlite_open_failure_falls_back_to_legacy(self, tmp_path, monkeypatch):

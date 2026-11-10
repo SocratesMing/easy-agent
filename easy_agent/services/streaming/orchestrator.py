@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass
 from typing import AsyncGenerator
 
+import httpx
 from langgraph.types import Command
 
 from easy_agent.agent import EasyAgent
@@ -100,6 +101,15 @@ LIMIT_EXCEEDED_MESSAGE = "执行步数用尽，请缩小分析范围或明确数
 #: 在回答下方挂一条中性说明，并在 error 帧带 ``code="timeout"`` 让前端据此分流。
 TIMEOUT_FALLBACK_NOTE = "agent服务出现异常情况，访问超时，数据返回不全，稍后请重试！"
 
+#: 非超时异常（上游断连、框架/工具异常等）的对外文案，与超时那条同样**常驻**在消息尾部。
+#:
+#: 为什么也要落库：普通异常此前只发 error 帧、不写 DB，而流一结束前端就用服务端
+#: 历史整表替换本地消息（``syncSessionFromServer``），那条更短的 DB 版本会把刚渲染
+#: 几秒的红色报错顶掉；用户当时不在这个会话时更是连一帧都没人渲染，切回来只剩半截
+#: 回答、没有任何说明。落库的只有这句中性文案，**原始异常仍只进日志与 error 帧**，
+#: 免得把内部错误细节写进聊天历史。
+ERROR_FALLBACK_NOTE = "agent服务出现异常情况，数据返回不全，稍后请重试！"
+
 #: ``error`` 事件的可选机器可读标识（见 ``sse.py`` 的 ``EVENT_SPECS[ERROR]``）。
 ERROR_CODE_TIMEOUT = "timeout"
 
@@ -131,12 +141,14 @@ except ImportError:  # pragma: no cover - 依赖版本兜底
 
 
 def friendly_error_message(exc: BaseException) -> str:
-    """超限异常换成可读文案，其余异常原样返回（保留类型与细节，便于排查）。"""
+    """超限和连接异常给出可读提示，空异常至少保留类型；原始堆栈仍记日志。"""
     if _ModelCallLimitExceededError is not None and isinstance(
         exc, _ModelCallLimitExceededError
     ):
         return LIMIT_EXCEEDED_MESSAGE
-    return str(exc)
+    if isinstance(exc, httpx.TransportError):
+        return "模型连接中断或超时，请稍后重试"
+    return str(exc).strip() or type(exc).__name__
 
 
 def is_timeout_error(exc: BaseException | None) -> bool:
@@ -737,11 +749,13 @@ async def _save_partial(
     *,
     with_approval: bool = False,
     raise_on_error: bool = False,
+    error: str = "",
     fallback_note: str | None = None,
 ) -> None:
     """在线程里保存「进行中」的 assistant 消息（取消 / 异常兜底共用）。
 
-    ``fallback_note`` 由异常兜底传入超时文案，随消息落库（前端整表刷新后仍能显示）。
+    ``fallback_note`` 由异常兜底传入兜底文案（超时 / 其他故障各一句），随消息落库
+    （前端整表刷新后仍能显示）。
     """
     await run_blocking(
         persist_partial,
@@ -752,6 +766,7 @@ async def _save_partial(
         start_time=run.start_time,
         with_approval=with_approval,
         raise_on_error=raise_on_error,
+        error=error,
         fallback_note=fallback_note,
     )
 
@@ -792,19 +807,19 @@ async def _stream_error_frames(
 ) -> AsyncGenerator[str, None]:
     """异常兜底：chat 修正思考 / 工具状态，resume 保存部分回复，最后统一 error 帧。
 
-    超时类异常（模型流式静默，见 :func:`is_timeout_error`）额外做三件事，三件事
-    **必须按此顺序**，否则前端看到的与落库的会不一致：
+    顺序**必须**是「先落库、后发帧」，否则前端 ``syncSessionFromServer`` 整表替换时
+    会把刚渲染的提示再抹掉：
 
     1. 修正 blocks（思考结束、未完成工具标记「执行中断」）；
-    2. ``_save_partial(fallback_note=...)``：把半成品**连同兜底文案**落库——前端刷新
-       走 ``syncSessionFromServer`` 整表替换，不落库就会被更短的 DB 版本覆盖；
-    3. 最后才发 ``error`` 帧（带 ``code="timeout"``），前端据此只渲染常驻灰条。
-
-    非超时异常完全走改动前的路径（文案、字段、是否落库的差异见下方注释）。
+    2. ``_save_partial(fallback_note=...)``：把半成品**连同兜底文案**落库。超时用
+        ``TIMEOUT_FALLBACK_NOTE``，其余异常用 ``ERROR_FALLBACK_NOTE``——文案
+       必须落库，否则提示只活到下一次回填，刷新 / 切会话后彻底消失；
+    3. 最后发 ``error`` 帧：超时带 ``code="timeout"``（前端渲染常驻灰条、不弹框），
+       其余异常保持原样（``处理失败: …`` 红色报错 + 全局提示）。
     """
     proc = run.proc
     timed_out = is_timeout_error(exc)
-    fallback_note = TIMEOUT_FALLBACK_NOTE if timed_out else None
+    fallback_note = TIMEOUT_FALLBACK_NOTE if timed_out else ERROR_FALLBACK_NOTE
     if timed_out:
         # 结构化 stall 日志：这三个属性由 StreamChunkTimeoutError 自带，便于统计
         # 「哪个模型 / 什么时段爱卡」。中文用 info 级不够——它是真故障，仍用 error。
@@ -858,10 +873,12 @@ async def _stream_error_frames(
             )
         except Exception as save_exc:  # noqa: BLE001 - 保存失败不能吃掉 error 帧
             logger.warning(f"[{run.sid}] 异常时保存部分回复失败: {save_exc}")
-    if fallback_note:
+    if timed_out:
         # 超时：文案即兜底说明，code 让前端走「常驻灰条」而不是红色报错。
         yield run.emitter.error(fallback_note, code=ERROR_CODE_TIMEOUT)
     else:
+        # 普通异常的分发保持原样（红色报错 + 全局提示）；落库那句中性文案不随帧下发，
+        # 免得同一条消息同时出现两种提示——它在流结束回填历史时自然出现。
         yield run.emitter.error(f"处理失败: {friendly_error_message(exc)}")
 
 
@@ -1010,6 +1027,8 @@ async def chat_stream_generator(
     parsed_content: str | None = None,
     session_logger=None,
     pinned_skills: list[str] | None = None,
+    system_context: str = "",
+    scope_approved: bool = False,
 ) -> AsyncGenerator[str, None]:
     start_time = time.time()
     sid = session_id[-5:] if session_id else "new"
@@ -1139,6 +1158,8 @@ async def chat_stream_generator(
                 message_id=message_id,
                 rendered=message_content,
                 pinned_skills=pinned_skills,
+                system_context=system_context,
+                scope_approved=scope_approved,
             ),
         ):
             yield frame

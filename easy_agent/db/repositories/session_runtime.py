@@ -88,8 +88,8 @@ def renew_session_stream(
         db._execute(
             cursor,
             "UPDATE session_runtime SET stream_until=?, updated_at=? "
-            "WHERE session_id=? AND stream_owner=?",
-            (until_iso, now_iso, session_id, owner),
+            "WHERE session_id=? AND stream_owner=? AND stream_until>?",
+            (until_iso, now_iso, session_id, owner, now_iso),
         )
         return cursor.rowcount > 0
 
@@ -135,61 +135,24 @@ def upsert_session_runtime(
     cancel_requested: Any = None,
     clear_connectors: bool = False,
 ) -> None:
-    now = datetime.now().isoformat()
-    current = get_session_runtime(db, session_id) or {}
+    # 只更新显式字段，避免先读整行再写回时覆盖新取得的租约。
+    fields: dict[str, Any] = {"updated_at": datetime.now(UTC).isoformat()}
+    for name, value in (("connectors", connectors), ("edit_target", edit_target),
+                        ("stream_owner", stream_owner), ("stream_until", stream_until),
+                        ("cancel_requested", cancel_requested)):
+        if value is not None:
+            fields[name] = int(value) if name == "cancel_requested" else value
     if clear_connectors:
-        connectors_val = None
-    elif connectors is not None:
-        connectors_val = connectors
-    else:
-        connectors_val = current.get("connectors")
-    values = (
-        session_id,
-        connectors_val,
-        edit_target if edit_target is not None else current.get("edit_target") or "",
-        stream_owner if stream_owner is not None else current.get("stream_owner") or "",
-        stream_until if stream_until is not None else current.get("stream_until") or "",
-        int(cancel_requested)
-        if cancel_requested is not None
-        else int(current.get("cancel_requested") or 0),
-        now,
-    )
+        fields["connectors"] = None
+    columns = ["session_id", *fields]
+    updates = ", ".join(f"{key}=VALUES({key})" if db.db_type == "mysql"
+                        else f"{key}=excluded.{key}" for key in fields)
+    suffix = "ON DUPLICATE KEY UPDATE" if db.db_type == "mysql" else "ON CONFLICT(session_id) DO UPDATE SET"
     with db.get_connection() as conn:
-        cursor = conn.cursor()
-        if db.db_type == "mysql":
-            db._execute(
-                cursor,
-                """
-                INSERT INTO session_runtime
-                (session_id, connectors, edit_target, stream_owner, stream_until, cancel_requested, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE
-                  connectors=VALUES(connectors),
-                  edit_target=VALUES(edit_target),
-                  stream_owner=VALUES(stream_owner),
-                  stream_until=VALUES(stream_until),
-                  cancel_requested=VALUES(cancel_requested),
-                  updated_at=VALUES(updated_at)
-                """,
-                values,
-            )
-        else:
-            db._execute(
-                cursor,
-                """
-                INSERT INTO session_runtime
-                (session_id, connectors, edit_target, stream_owner, stream_until, cancel_requested, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(session_id) DO UPDATE SET
-                  connectors=excluded.connectors,
-                  edit_target=excluded.edit_target,
-                  stream_owner=excluded.stream_owner,
-                  stream_until=excluded.stream_until,
-                  cancel_requested=excluded.cancel_requested,
-                  updated_at=excluded.updated_at
-                """,
-                values,
-            )
+        db._execute(conn.cursor(),
+                    f"INSERT INTO session_runtime ({', '.join(columns)}) "
+                    f"VALUES ({', '.join('?' for _ in columns)}) {suffix} {updates}",
+                    (session_id, *fields.values()))
 
 
 class SessionRuntimeRepository:
@@ -204,6 +167,25 @@ class SessionRuntimeRepository:
 
     def __init__(self, db: Any) -> None:
         self._db = db
+
+    def guarded_commit(self, session_id: str, owner: str, commit) -> Any:
+        """持有业务库行写锁直到 checkpoint 提交结束，堵住检查与写入间的接管窗口。
+
+        commit 必须只访问独立 checkpoint 库；本函数在线程运行，避免阻塞事件循环。
+        UPDATE 同时验证每次操作独立的 owner、未过期和未取消。
+        """
+        now = datetime.now(UTC).isoformat(timespec="microseconds")
+        with self._db.get_connection() as conn:
+            cursor = conn.cursor()
+            self._db._execute(
+                cursor,
+                "UPDATE session_runtime SET updated_at=? WHERE session_id=? "
+                "AND stream_owner=? AND stream_until>? AND cancel_requested=0",
+                (now, session_id, owner, now),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("压缩租约已丢失或操作已取消，未提交")
+            return commit()
 
     def get_session_runtime(self, session_id: str) -> dict | None:
         return get_session_runtime(self._db, session_id)
