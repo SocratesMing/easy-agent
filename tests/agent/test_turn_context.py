@@ -26,6 +26,7 @@ from easy_agent.agent.turn_context import (
     turn_input,
 )
 from easy_agent.services.streaming.messages import turn_message_text
+from easy_agent.agent.memory import SessionMemoryMiddleware
 
 RENDERED = "[KNOWLEDGE CONTEXT]\nquestion"
 
@@ -142,12 +143,68 @@ async def test_model_sees_rendered_turn_but_thread_stores_the_raw_message(tmp_pa
     assert [m.content for m in model.of("agent")[1] if m.type == "human"] == ["question", "next"]
 
 
+async def test_turn_system_context_stays_in_system_and_does_not_leak_to_next_turn(tmp_path):
+    """旧拒答记忆不再覆盖本轮准入；复用 thread 时不得把放行结论带入下一轮。"""
+    stale = "服务范围限于金融；生成 PPT 一律拒答。"
+    approval = "本轮请求已通过服务端意图检查，允许使用已启用技能生成 PPT。"
+    (tmp_path / "memory.md").write_text(stale)
+    model = Recorder()
+    agent = _agent(tmp_path, model, memory=["/memory.md"], extra=[SessionMemoryMiddleware(
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True), sources=["/memory.md"],
+        add_cache_control=True,
+    )])
+
+    await agent.ainvoke(turn_input(
+        [HumanMessage("生成ppt", id="t1")], message_id="t1", rendered="生成ppt",
+        system_context=approval,
+    ), CFG)
+    first = str(model.of("agent")[0][0].content)
+    assert stale not in first
+    assert stale in str(next(m for m in model.of("agent")[0] if m.type == "human").content)
+    assert first.index("<memory_guidelines>") < first.index(approval)
+    assert first.count(approval) == 1
+    stored = (await agent.aget_state(CFG)).values["messages"]
+    assert all(approval not in str(m.content) for m in stored)
+    assert next(m.content for m in stored if m.id == "t1") == "生成ppt"
+
+    await agent.ainvoke(turn_input(
+        [HumanMessage("下一轮", id="t2")], message_id="t2", rendered="下一轮",
+    ), CFG)
+    assert approval not in str(model.of("agent")[-1][0].content)
+
+
+async def test_approved_scope_ignores_obsolete_refusals_without_deleting_history(tmp_path):
+    old_refusal = "当前仅支持金融相关问题，不支持制作 PPT 等非金融任务。"
+    old_rule = "服务范围限于金融；非金融请求（如生成 PPT）一律拒答。"
+    valid_fact = "国债分析使用真实数据，不得编造点位。"
+    (tmp_path / "memory.md").write_text(f"# 会话记忆\n- {old_rule}\n- {valid_fact}")
+    model = Recorder()
+    agent = _agent(tmp_path, model, memory=["/memory.md"], extra=[SessionMemoryMiddleware(
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True), sources=["/memory.md"],
+    )])
+    await agent.ainvoke(turn_input(
+        [HumanMessage("分析国债", id="h0"), AIMessage(valid_fact, id="a0"),
+         HumanMessage("生成ppt", id="h1"), AIMessage(old_refusal, id="a1"),
+         HumanMessage("生成ppt", id="t2")],
+        message_id="t2", rendered="生成ppt", system_context="本轮已放行", scope_approved=True,
+    ), CFG)
+    actual = str(model.of("agent")[0])
+    assert old_rule not in actual and old_refusal not in actual
+    assert valid_fact in actual and "本轮已放行" in actual
+    saved = (await agent.aget_state(CFG)).values["messages"]
+    assert any(m.id == "a1" and m.content == old_refusal for m in saved)
+    assert old_rule in (tmp_path / "memory.md").read_text()
+
+
 async def test_resumed_run_still_renders_the_turn(tmp_path):
     model = Recorder()
     agent = _agent(tmp_path, model, interrupt_on={"write_file": True})
 
     first = await agent.ainvoke(
-        turn_input([HumanMessage("WRITE", id="t1")], message_id="t1", rendered="[CTX]\nWRITE"), CFG
+        turn_input(
+            [HumanMessage("WRITE", id="t1")], message_id="t1", rendered="[CTX]\nWRITE",
+            system_context="本轮服务端放行标记",
+        ), CFG
     )
     assert first.get("__interrupt__")
     await agent.ainvoke(Command(resume={"decisions": [{"type": "approve"}]}), CFG)
@@ -155,6 +212,7 @@ async def test_resumed_run_still_renders_the_turn(tmp_path):
     resumed = model.of("agent")[-1]
     assert isinstance(resumed[-1], ToolMessage)
     assert [m.content for m in resumed if m.id == "t1"] == ["[CTX]\nWRITE"]
+    assert "本轮服务端放行标记" in str(resumed[0].content)
     assert (tmp_path / "x.txt").exists()
 
 

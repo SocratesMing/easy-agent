@@ -6,6 +6,7 @@ T4 之后准备逻辑在 ``services/agents/chat_turn.py``（路由只剩「参�
 """
 
 from types import SimpleNamespace
+import json
 
 import pytest
 
@@ -18,6 +19,8 @@ from easy_agent.models.exceptions import BadRequestError, ConflictError, NotFoun
 from easy_agent.services.skills import provision as skill_provision
 from easy_agent.services.experts import runtime as expert_runtime
 from easy_agent.services.agents import manager as agent_manager
+
+pytestmark = pytest.mark.usefixtures("finance_classifier")
 
 
 @pytest.fixture(autouse=True)
@@ -419,3 +422,215 @@ async def test_prepare_turn_provisions_expert_skills_off_the_event_loop(db, monk
     assert provision_kwargs[0]["invalidate_cache"] is False
     # ……缓存驱逐（改进程内状态）回到事件循环上执行
     assert invalidate_threads == [loop_thread]
+
+
+@pytest.mark.parametrize("result, expected", [
+    ('{"is_finance": false}', "FINANCE_REFUSAL"),
+    ('{"is_finance": "true"}', "CLASSIFICATION_UNAVAILABLE"),
+])
+async def test_finance_gate_stops_before_skills_retrieval_uploads_and_agent(
+    db, monkeypatch, finance_classifier, result, expected
+):
+    from easy_agent.services.agents import domain_gate
+
+    finance_classifier.ainvoke.return_value = SimpleNamespace(content=result)
+    repo = ChatRepository(db)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("被拦截时不应准备技能、解析附件、检索或创建 Agent")
+
+    for name in ("prepare_knowledge_chat", "build_turn_uploads",
+                 "get_or_create_agent_for_session"):
+        monkeypatch.setattr(chat_turn, name, forbidden)
+    monkeypatch.setattr(skill_provision, "provision_expert_skills", forbidden)
+    monkeypatch.setattr(expert_runtime, "load_expert_prompt", forbidden)
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="帮我写一首诗", files=FILES),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert isinstance(plan, chat_turn.RefusalPlan)
+    assert plan.refusal == getattr(domain_gate, expected)
+    frames = [json.loads(frame.removeprefix("data: ")) async for frame in plan.event_stream]
+    assert [frame["type"] for frame in frames] == ["start", "content", "content_end", "done"]
+    assert frames[1]["content"] == plan.refusal
+    messages = repo.get_session(plan.session_id).messages
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[-1]["content"] == plan.refusal
+    finance_classifier.ainvoke.assert_awaited_once()
+
+
+@pytest.mark.parametrize("question", [
+    "分析国债收益率", "用 Python 计算股票收益率", "证券账户如何防诈骗", "继续分析",
+])
+async def test_finance_questions_enter_original_flow_once(
+    db, monkeypatch, finance_classifier, question
+):
+    repo = ChatRepository(db)
+    session_id = _session(repo)
+    repo.add_message(session_id, {"role": "user", "content": "分析国债收益率"})
+    _patch_collaborators(monkeypatch, {})
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message=question, session_id=session_id),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert isinstance(plan, chat_turn.TurnPlan)
+    finance_classifier.ainvoke.assert_awaited_once()
+    payload = json.loads(finance_classifier.ainvoke.await_args.args[0][1].content)
+    assert payload["question"] == question
+    assert payload["recent_context"] == [{"role": "user", "content": "分析国债收益率"}]
+    await plan.event_stream.aclose()
+
+
+@pytest.mark.parametrize("skills, message", [
+    (["pptx"], "用它生成ppt"), (None, "/pptx 用它生成ppt"),
+    (None, "生成一份项目进度汇报PPT"), (["pptx"], ""),
+])
+async def test_validated_skill_selection_is_visible_to_classifier(
+    db, monkeypatch, finance_classifier, skills, message
+):
+    repo = ChatRepository(db)
+    _patch_collaborators(monkeypatch, {})
+    monkeypatch.setattr(chat_turn.skill_library, "list_user_skill_dirs", lambda username: [
+        {"dir_name": "pptx", "name": "pptx", "path": "/tmp/skills/pptx", "enabled": True},
+        {"dir_name": "pdf", "name": "pdf", "path": "/tmp/skills/pdf", "enabled": False},
+    ])
+    monkeypatch.setattr(chat_turn.skill_library, "skill_metadata", lambda path: {
+        "name": str(path).split("/")[-1], "description": "文档生成与转换",
+    })
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message=message, skills=skills),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert isinstance(plan, chat_turn.TurnPlan)
+    payload = json.loads(finance_classifier.ainvoke.await_args.args[0][1].content)
+    assert payload["selected_skills"] == (["pptx"] if skills or message.startswith("/") else [])
+    assert payload["available_skills"] == [{"name": "pptx", "description": "文档生成与转换"}]
+    if not message:
+        assert repo.get_session(plan.session_id).title == "pptx"
+    await plan.event_stream.aclose()
+
+
+async def test_finance_gate_approval_reaches_the_business_model(db, monkeypatch):
+    """模拟截图的旧拒答历史：分类放行必须继续传入实际模型调用。"""
+    from easy_agent.services.agents import domain_gate
+
+    repo = ChatRepository(db)
+    session_id = _session(repo)
+    repo.add_message(session_id, {"role": "assistant", "content": "不支持制作 PPT 等非金融任务。"})
+    captured = _patch_collaborators(monkeypatch, {})
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="生成ppt", session_id=session_id),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert captured["stream_kwargs"]["system_context"] == domain_gate.APPROVED_TURN_PROMPT
+    assert captured["stream_kwargs"]["scope_approved"] is True
+    assert repo.get_session(session_id).messages[-1]["content"] == "生成ppt"
+    await plan.event_stream.aclose()
+
+
+@pytest.mark.parametrize("result, expected", [
+    ('{"is_finance": false}', "FINANCE_REFUSAL"),
+    ('{"is_finance": "true"}', "CLASSIFICATION_UNAVAILABLE"),
+])
+async def test_enabled_skill_selection_still_checks_the_actual_intent(
+    db, monkeypatch, finance_classifier, result, expected
+):
+    from easy_agent.services.agents import domain_gate
+
+    monkeypatch.setattr(chat_turn.skill_library, "list_user_skill_dirs", lambda username: [
+        {"dir_name": "pptx", "path": "/tmp/skills/pptx", "enabled": True},
+    ])
+    monkeypatch.setattr(chat_turn.skill_library, "skill_metadata", lambda path: {
+        "name": "pptx", "description": "创建演示文稿",
+    })
+    finance_classifier.ainvoke.return_value = SimpleNamespace(content=result)
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("意图不符或分类失败时不创建 Agent")
+
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", forbidden)
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="推荐旅游路线", skills=["pptx"]),
+        http_request=_http_request(), repo=ChatRepository(db), username="alice",
+    )
+    assert isinstance(plan, chat_turn.RefusalPlan)
+    assert plan.refusal == getattr(domain_gate, expected)
+    payload = json.loads(finance_classifier.ainvoke.await_args.args[0][1].content)
+    assert payload["selected_skills"] == ["pptx"]
+    await plan.event_stream.aclose()
+
+
+async def test_fake_or_disabled_skill_cannot_skip_classification(db, monkeypatch, finance_classifier):
+    from easy_agent.services.agents import domain_gate
+
+    monkeypatch.setattr(chat_turn.skill_library, "list_user_skill_dirs", lambda username: [
+        {"dir_name": "pptx", "path": "/tmp/skills/pptx", "enabled": False},
+    ])
+    monkeypatch.setattr(chat_turn.skill_library, "skill_metadata", lambda path: {"name": "pptx"})
+    finance_classifier.ainvoke.return_value = SimpleNamespace(content='{"is_finance": false}')
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="帮我写一首诗", skills=["pptx", "fake-skill"]),
+        http_request=_http_request(), repo=ChatRepository(db), username="alice",
+    )
+    assert isinstance(plan, chat_turn.RefusalPlan)
+    assert plan.refusal == domain_gate.FINANCE_REFUSAL
+    payload = json.loads(finance_classifier.ainvoke.await_args.args[0][1].content)
+    assert payload["selected_skills"] == []
+    assert payload["available_skills"] == []
+    await plan.event_stream.aclose()
+
+
+async def test_attachment_without_question_requests_finance_purpose(db, finance_classifier):
+    from easy_agent.services.agents import domain_gate
+
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="", files=FILES),
+        http_request=_http_request(), repo=ChatRepository(db), username="alice",
+    )
+    assert isinstance(plan, chat_turn.RefusalPlan)
+    assert plan.refusal == domain_gate.ATTACHMENT_QUESTION_REQUIRED
+    finance_classifier.ainvoke.assert_not_awaited()
+    await plan.event_stream.aclose()
+
+
+async def test_session_authorization_precedes_finance_classification(db, finance_classifier):
+    repo = ChatRepository(db)
+    session_id = _session(repo, username="bob")
+    with pytest.raises(NotFoundError):
+        await chat_turn.prepare_turn(
+            request=_turn_request(message="分析国债收益率", session_id=session_id),
+            http_request=_http_request(), repo=repo, username="alice",
+        )
+    finance_classifier.ainvoke.assert_not_awaited()
+
+
+@pytest.mark.parametrize("entry", ["expert", "knowledge_panel"])
+async def test_non_general_chat_skips_finance_gate(
+    db, monkeypatch, finance_classifier, entry
+):
+    repo = ChatRepository(db)
+    session_id = _session(repo)
+    captured = _patch_collaborators(monkeypatch, {})
+    finance_classifier.ainvoke.side_effect = AssertionError("仅普通聊天执行金融范围判断")
+    if entry == "knowledge_panel":
+        repo.update_session_meta(session_id, "[知识库问答] 制度库", "t1", "alice")
+
+    async def expert_gate(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(expert_runtime, "relevance_gate", expert_gate)
+    monkeypatch.setattr(
+        expert_runtime, "load_expert_prompt", lambda *a: ("preset_x", "专家提示词", "preset")
+    )
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(
+            message="帮我写一首诗", session_id=session_id,
+            expert_agent_id="preset_x" if entry == "expert" else None,
+        ),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert isinstance(plan, chat_turn.TurnPlan)
+    finance_classifier.ainvoke.assert_not_awaited()
+    assert captured["stream_kwargs"].get("system_context", "") == ""
+    assert captured["stream_kwargs"].get("scope_approved", False) is False
+    await plan.event_stream.aclose()

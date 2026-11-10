@@ -33,7 +33,7 @@ from easy_agent.persistence.checkpoints import (
     per_pod_checkpoints_active,
 )
 from easy_agent.services.streaming.approvals import pending_hitl_interrupts
-from easy_agent.services.streaming.messages import build_context_messages
+from easy_agent.services.streaming.messages import build_context_messages, stable_history
 from easy_agent.db.repositories.message_repository import MessageRepository
 
 logger = logging.getLogger(__name__)
@@ -77,6 +77,8 @@ def session_thread_active(agent) -> bool:
     if not session_thread_enabled(getattr(agent, "config", None)):
         return False
     checkpointer = getattr(getattr(agent, "agent", None), "checkpointer", None)
+    if checkpointer is None:
+        return False
     if isinstance(checkpointer, PersistentMemorySaver):
         if not _legacy_warned:
             _legacy_warned = True
@@ -172,8 +174,11 @@ async def plan_turn(
     history: list[dict],
     raw: str,
     provider: str = "",
+    dry_run: bool = False,
 ) -> TurnPlan:
     """决定本轮的 thread 与输入消息（最后一条都是 ``HumanMessage(raw, id=turn_id)``）。"""
+
+    history = stable_history(history)
 
     def rebuilt(rows: list[dict]) -> list:
         return build_context_messages(rows, raw, provider=provider, current_message_id=turn_id)
@@ -191,7 +196,8 @@ async def plan_turn(
         logger.warning(
             f"[{session_id[-5:]}] 会话 thread 的最后一轮在 DB 里找不到，删除 thread 后从 DB 重新水合"
         )
-        await delete_session_thread(agent, session_id)
+        if not dry_run:
+            await delete_session_thread(agent, session_id)
         return TurnPlan(session_id, rebuilt(history), "rehydrate")
 
     thread_index, row_index = known

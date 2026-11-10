@@ -1,3 +1,4 @@
+import { rememberSession, sessionRevision, sessionGuard, sessionDeleted, staleSessionError } from '../shared/sessionManagement/state.js'
 import request, {
   fetchWithAuth,
   handleStreamResponse,
@@ -5,6 +6,7 @@ import request, {
   streamUrl,
 } from '../utils/request.js'
 import { readSSE } from './sse.js'
+import { recoverChatStream } from '../shared/utils/chatStreamRecovery.js'
 
 export async function createSession(title, username = null) {
   const data = { title }
@@ -15,29 +17,39 @@ export async function createSession(title, username = null) {
   )
 }
 
-export async function listSessions(username = null) {
+export async function listSessions(username = null, filters = {}) {
   return request(
     {
       url: '/agent/sessions',
       method: 'get',
-      params: username ? { username } : undefined,
+      params: { archived: false, ...(username ? { username } : {}), ...filters },
     },
     '获取会话列表失败'
   )
 }
 
 export async function getSession(sessionId) {
-  return request(
-    { url: `/agent/sessions/${sessionId}`, method: 'get' },
-    '获取会话失败'
-  )
+  const readRevision = sessionRevision()
+  const valid = sessionGuard(sessionId)
+  const data = await request({ url: `/agent/sessions/${sessionId}`, method: 'get' }, '获取会话失败')
+  if (!valid()) throw staleSessionError()
+  rememberSession(data, readRevision)
+  return data
 }
 
 export async function deleteSession(sessionId) {
-  return request(
-    { url: `/agent/sessions/${sessionId}`, method: 'delete' },
-    '删除会话失败'
-  )
+  const valid = sessionGuard(sessionId)
+  const data = await request({ url: `/agent/sessions/${sessionId}`, method: 'delete' }, '删除会话失败')
+  if (!valid()) throw staleSessionError()
+  sessionDeleted(sessionId)
+  return data
+}
+
+export async function setSessionArchived(sessionId, archived) {
+  return request({ url: `/agent/sessions/${sessionId}/archive`, method: 'put', data: { archived } }, '归档操作失败')
+}
+export async function countSessions(filters = { archived: false }) {
+  return request({ url: '/agent/sessions/count', method: 'get', params: filters }, '读取会话数量失败')
 }
 
 export async function renameSession(sessionId, title) {
@@ -59,39 +71,44 @@ export async function togglePinSession(sessionId) {
 }
 
 export async function getChatHistory(sessionId) {
-  const data = await request(
-    { url: `/agent/sessions/${sessionId}`, method: 'get' },
-    '获取聊天历史失败'
-  )
+  const data = await getSession(sessionId)
   return {
+    session_id: data.session_id,
+    archived: data.archived,
     messages: data.messages || [],
     todos: data.todos || [],
+    compactions: data.compactions || [],
     usage: data.usage || null,
     context_length: data.context_length || null,
   }
 }
 
-export async function getStreamStatus(sessionId) {
+export async function getStreamStatus(sessionId, signal) {
   return request(
     {
       url: '/agent/chat/stream/status',
       method: 'get',
       params: { session_id: sessionId },
+      signal,
     },
     '查询流式状态失败'
   )
 }
 
+async function openLiveResponse(sessionId, signal) {
+  return handleStreamResponse(await fetchWithAuth(
+    streamUrl(`/agent/chat/stream/live?session_id=${encodeURIComponent(sessionId)}`),
+    { signal, headers: streamHeaders() }
+  ))
+}
+
+function readChatResponse(response, sessionId, onChunk, signal) {
+  return recoverChatStream({ response, sessionId, onChunk, signal, readSSE,
+    getStatus: getStreamStatus, openLive: openLiveResponse })
+}
+
 export async function attachStream(sessionId, onChunk, signal) {
-  const controller = new AbortController()
-  const abortSignal = signal || controller.signal
-  const response = await handleStreamResponse(
-    await fetchWithAuth(streamUrl(`/agent/chat/stream/live?session_id=${encodeURIComponent(sessionId)}`), {
-      signal: abortSignal,
-      headers: streamHeaders(),
-    })
-  )
-  await readSSE(response, onChunk, { signal: abortSignal })
+  await readChatResponse(null, sessionId, onChunk, signal)
 }
 
 export async function sendMessage(sessionId, message, onChunk, signal, enableDeepThink = true, files = [], model = null, enableWebSearch = false, pageContext = null, skills = [], pendingExpertId = '', expertAgentId = '', extra = null) {
@@ -136,7 +153,7 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
       signal: abortSignal,
     })
   )
-  await readSSE(response, onChunk, { signal: abortSignal })
+  await readChatResponse(response, sessionId, onChunk, abortSignal)
 }
 
 export async function resumeStream(
@@ -162,7 +179,7 @@ export async function resumeStream(
       signal: abortSignal,
     })
   )
-  await readSSE(response, onChunk, { signal: abortSignal })
+  await readChatResponse(response, sessionId, onChunk, abortSignal)
 }
 
 function generateMessageId() {
@@ -171,4 +188,13 @@ function generateMessageId() {
 
 export function createNewChat(sessionId, onChunk) {
   return sendMessage(sessionId, '', onChunk)
+}
+
+
+export function getContextStatus(sessionId) {
+  return request({ url: `/agent/sessions/${encodeURIComponent(sessionId)}/context`, method: 'get' }, '查询压缩状态失败')
+}
+export function compactContext(sessionId, model, requestId) {
+  return request({ url: `/agent/sessions/${encodeURIComponent(sessionId)}/context/compact`, method: 'post',
+    timeout: 130000, data: { model, request_id: requestId } }, '压缩请求失败')
 }

@@ -37,7 +37,8 @@ logger = logging.getLogger("easy_agent.db.schema")
 # 13：再退役 8 张代码不再读写的表（旧 market key、行情数据、旧版知识库模块）。
 # 14：合并 rag-1018 与 audit-improvements：两侧都用过 13，统一再 +1，
 # 否则任一侧的旧库会命中快速路径、跳过另一侧的变更。
-SCHEMA_VERSION = 14
+# 15：恢复 agent_checkpoints，用于共享 MySQL HITL 状态快照。
+SCHEMA_VERSION = 16
 # utf8mb4 复合主键必须 ≤ 3072 字节：(512 + 191) * 4 = 2812。
 LANGGRAPH_STORE_NS_LEN = 512
 LANGGRAPH_STORE_KEY_LEN = 191
@@ -71,6 +72,7 @@ EXPECTED_TABLES = (
     "rate_limit_counters",
     "stream_events",
     "agent_runs",
+    "agent_checkpoints",
 )
 
 
@@ -105,6 +107,7 @@ def _create_sessions_table(db, cursor, messages_type):
         cursor, "sessions", "workspace_name", "VARCHAR(255) DEFAULT ''"
     )
     _ensure_column(db, cursor, "sessions", "pinned", "INTEGER DEFAULT 0")
+    _ensure_column(db, cursor, "sessions", "archived", "INTEGER NOT NULL DEFAULT 0")
 
     if db.db_type == "mysql":
         # 只在实际类型不满足时改列：MODIFY 会重建整表，sessions 表较大时
@@ -417,6 +420,18 @@ def _create_agent_runs_table(db, cursor):
     )
 
 
+def _create_agent_checkpoints_table(db, cursor):
+    """Per-session LangGraph snapshots shared by all application replicas."""
+    blob_type = "BLOB" if db.db_type == "sqlite" else "LONGBLOB"
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS agent_checkpoints (
+            session_id VARCHAR(255) PRIMARY KEY,
+            snapshot {blob_type} NOT NULL,
+            updated_at VARCHAR(50) NOT NULL
+        )
+    """)
+
+
 def _create_langgraph_store_table(db, cursor):
     # InnoDB 索引上限 3072 字节。utf8mb4 下 VARCHAR(1024)+VARCHAR(255)
     # 的复合主键是 5116 字节，MySQL 报 1071。
@@ -444,7 +459,6 @@ _RETIRED_TABLES = (
     "fmqt_bloom_analysis",
     "tool_call_records",
     "thinking_records",
-    "agent_checkpoints",
     "uploaded_file",
     "user_ip",
     "tool_call_record",
@@ -611,6 +625,7 @@ def _init_tables_full(db, cursor):
     _create_session_runtime_table(db, cursor)
     _create_stream_events_table(db, cursor)
     _create_agent_runs_table(db, cursor)
+    _create_agent_checkpoints_table(db, cursor)
     _create_langgraph_store_table(db, cursor)
     _create_expert_tables(db, cursor)
 

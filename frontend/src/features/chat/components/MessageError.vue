@@ -1,5 +1,5 @@
 <template>
-  <div v-if="visible" class="message-error">
+  <div v-if="error" class="message-error">
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="error-icon">
       <circle cx="12" cy="12" r="10"></circle>
       <line x1="12" y1="8" x2="12" y2="12"></line>
@@ -10,34 +10,10 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, ref, watch } from 'vue'
-
-// 消息内的报错提示：显示 5 秒后自动消失（与页面 error-toast 一致）
-const TRANSIENT_ERROR_TTL_MS = 5000
-
-const props = defineProps({
+defineProps({
   error: { type: String, default: '' },
 })
 
-const visible = ref(false)
-let timer = null
-
-watch(
-  () => props.error,
-  (value) => {
-    clearTimeout(timer)
-    timer = null
-    visible.value = Boolean(value)
-    if (!visible.value) return
-    timer = setTimeout(() => {
-      timer = null
-      visible.value = false
-    }, TRANSIENT_ERROR_TTL_MS)
-  },
-  { immediate: true }
-)
-
-onBeforeUnmount(() => clearTimeout(timer))
 </script>
 
 <style scoped>

@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass
 from typing import AsyncGenerator
 
+import httpx
 from langgraph.types import Command
 
 from easy_agent.agent import EasyAgent
@@ -140,12 +141,14 @@ except ImportError:  # pragma: no cover - 依赖版本兜底
 
 
 def friendly_error_message(exc: BaseException) -> str:
-    """超限异常换成可读文案，其余异常原样返回（保留类型与细节，便于排查）。"""
+    """超限和连接异常给出可读提示，空异常至少保留类型；原始堆栈仍记日志。"""
     if _ModelCallLimitExceededError is not None and isinstance(
         exc, _ModelCallLimitExceededError
     ):
         return LIMIT_EXCEEDED_MESSAGE
-    return str(exc)
+    if isinstance(exc, httpx.TransportError):
+        return "模型连接中断或超时，请稍后重试"
+    return str(exc).strip() or type(exc).__name__
 
 
 def is_timeout_error(exc: BaseException | None) -> bool:
@@ -746,6 +749,7 @@ async def _save_partial(
     *,
     with_approval: bool = False,
     raise_on_error: bool = False,
+    error: str = "",
     fallback_note: str | None = None,
 ) -> None:
     """在线程里保存「进行中」的 assistant 消息（取消 / 异常兜底共用）。
@@ -762,6 +766,7 @@ async def _save_partial(
         start_time=run.start_time,
         with_approval=with_approval,
         raise_on_error=raise_on_error,
+        error=error,
         fallback_note=fallback_note,
     )
 
@@ -1022,6 +1027,8 @@ async def chat_stream_generator(
     parsed_content: str | None = None,
     session_logger=None,
     pinned_skills: list[str] | None = None,
+    system_context: str = "",
+    scope_approved: bool = False,
 ) -> AsyncGenerator[str, None]:
     start_time = time.time()
     sid = session_id[-5:] if session_id else "new"
@@ -1151,6 +1158,8 @@ async def chat_stream_generator(
                 message_id=message_id,
                 rendered=message_content,
                 pinned_skills=pinned_skills,
+                system_context=system_context,
+                scope_approved=scope_approved,
             ),
         ):
             yield frame

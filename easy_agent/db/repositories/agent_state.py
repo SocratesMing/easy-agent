@@ -1,12 +1,63 @@
-"""LangGraph store 的持久化 repository（ARCH-03 Phase 2）。
+"""LangGraph store 与共享 HITL checkpoint 的持久化 repository。
 
-业务库不再保存 HITL checkpoint：官方 AsyncSqliteSaver 写 SQLite 文件，legacy 回退只在进程内
-（``persistence/checkpoints.py``）。连接/事务仍由传入的 db 对象提供。
+连接/事务由传入的 db 对象提供；checkpoint snapshot 由同一 session 的所有 Pod 共享。
 """
 
 from __future__ import annotations
 
 from datetime import datetime
+
+
+def load_checkpoint(db, session_id: str) -> bytes | None:
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        db._execute(
+            cursor,
+            "SELECT snapshot FROM agent_checkpoints WHERE session_id=?",
+            (session_id,),
+        )
+        row = cursor.fetchone()
+    if not row:
+        return None
+    value = row["snapshot"] if isinstance(row, dict) else row[0]
+    return bytes(value) if value is not None else None
+
+
+def save_checkpoint(db, session_id: str, snapshot: bytes) -> None:
+    now = datetime.now().isoformat()
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        if db.db_type == "mysql":
+            db._execute(
+                cursor,
+                """
+                INSERT INTO agent_checkpoints (session_id, snapshot, updated_at)
+                VALUES (?, ?, ?)
+                ON DUPLICATE KEY UPDATE snapshot=VALUES(snapshot), updated_at=VALUES(updated_at)
+                """,
+                (session_id, snapshot, now),
+            )
+        else:
+            db._execute(
+                cursor,
+                """
+                INSERT INTO agent_checkpoints (session_id, snapshot, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE
+                SET snapshot=excluded.snapshot, updated_at=excluded.updated_at
+                """,
+                (session_id, snapshot, now),
+            )
+
+
+def delete_checkpoint(db, session_id: str) -> None:
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        db._execute(
+            cursor,
+            "DELETE FROM agent_checkpoints WHERE session_id=?",
+            (session_id,),
+        )
 
 
 # ── langgraph_store ────────────────────────────────────────────────
@@ -110,6 +161,15 @@ class AgentStateRepository:
 
     def store_get(self, namespace: str, item_key: str) -> dict | None:
         return store_get(self._db, namespace, item_key)
+
+    def load_checkpoint(self, session_id: str) -> bytes | None:
+        return load_checkpoint(self._db, session_id)
+
+    def save_checkpoint(self, session_id: str, snapshot: bytes) -> None:
+        save_checkpoint(self._db, session_id, snapshot)
+
+    def delete_checkpoint(self, session_id: str) -> None:
+        delete_checkpoint(self._db, session_id)
 
     def store_put(self, namespace: str, item_key: str, value: str) -> None:
         store_put(self._db, namespace, item_key, value)

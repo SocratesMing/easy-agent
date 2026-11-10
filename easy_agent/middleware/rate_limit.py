@@ -64,6 +64,7 @@ _DEFAULT_RULES: list[tuple[str, int, float]] = [
     ("/api/chat/resume", 30, 60.0),
     # SEC-09：公共对话补全直接透传大模型（可指定 system/模型），按 IP 限流避免被刷额度
     ("/agent/completion/chat", 30, 60.0),
+    ("/agent/prompts/enhance", 30, 60.0),
     ("/api/completion/chat", 30, 60.0),
 ]
 

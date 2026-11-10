@@ -22,10 +22,10 @@ class _RecordingStore:
     def __init__(self) -> None:
         self.writes: list[tuple[int, dict]] = []
 
-    def save_agent_checkpoint(self, session_id: str, blob: bytes) -> None:
+    def save_checkpoint(self, session_id: str, blob: bytes) -> None:
         self.writes.append((threading.get_ident(), pickle.loads(blob)))
 
-    def load_agent_checkpoint(self, session_id: str) -> None:
+    def load_checkpoint(self, session_id: str) -> None:
         return None
 
 
@@ -57,10 +57,10 @@ async def test_snapshot_is_taken_before_thread_write():
     release = threading.Event()
 
     class _BlockingStore(_RecordingStore):
-        def save_agent_checkpoint(self, session_id, blob):
+        def save_checkpoint(self, session_id, blob):
             started.set()
             assert release.wait(5), "写库线程等待超时"
-            super().save_agent_checkpoint(session_id, blob)
+            super().save_checkpoint(session_id, blob)
 
     store = _BlockingStore()
     saver = _make_saver(store)

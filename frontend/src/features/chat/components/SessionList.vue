@@ -86,7 +86,7 @@
               </svg>
             </button>
             <div v-if="activeMenu === session.session_id" class="menu-dropdown">
-              <button @click.stop="handleTogglePin(session.session_id)" class="menu-item">
+              <button :disabled="archiveBusy(session.session_id)" @click.stop="handleTogglePin(session.session_id)" class="menu-item">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px">
                   <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
                   <path d="M2 17l10 5 10-5"></path>
@@ -94,14 +94,15 @@
                 </svg>
                 {{ session.pinned ? '取消置顶' : '置顶' }}
               </button>
-              <button @click.stop="startRename(session)" class="menu-item">
+              <button @click.stop="archiveRow(session)" class="menu-item" :disabled="archiveBusy(session.session_id)"><svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h18v4H3zM5 7v14h14V7M10 11h4"></path></svg>归档</button>
+              <button :disabled="archiveBusy(session.session_id)" @click.stop="startRename(session)" class="menu-item">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
                   <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
                 </svg>
                 重命名
               </button>
-              <button @click.stop="handleDelete(session.session_id)" class="menu-item delete">
+              <button :disabled="archiveBusy(session.session_id)" @click.stop="handleDelete(session.session_id)" class="menu-item delete">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="3 6 5 6 21 6"></polyline>
                   <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -149,6 +150,7 @@
       </div>
     </div>
 
+    <ArchiveManager ref="archiveManager" />
     <div class="user-profile" @click="toggleUserMenu">
       <div class="user-avatar">
         <span class="user-initials">{{ userInitials }}</span>
@@ -209,6 +211,7 @@
 </template>
 
 <script setup>
+import ArchiveManager from './ArchiveManager.vue'
 import { ref, nextTick, onMounted, computed } from 'vue'
 import { APP_TITLE } from '../../../config.js'
 import { ensureSkillDirectoryLoaded, skillFreeTitle } from '../../skills/store/skillDirectoryStore.js'
@@ -253,8 +256,10 @@ const props = defineProps({
     default: false
   }
 })
-
 const activeMenu = ref(null)
+const archiveManager = ref(null)
+function archiveRow(session) { activeMenu.value = null; archiveManager.value.archive(session) }
+function archiveBusy(id) { return !!archiveManager.value?.busy[id] }
 const showRenameModal = ref(false)
 const newTitle = ref('')
 const renamingSession = ref(null)

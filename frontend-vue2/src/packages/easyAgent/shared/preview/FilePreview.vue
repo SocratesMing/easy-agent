@@ -34,10 +34,10 @@
             <p>{{ error }}</p>
           </div>
           <div v-else-if="isPdf" class="preview-pdf">
-            <iframe :src="resolveUrl(previewUrl)" class="pdf-iframe"></iframe>
+            <iframe :src="`${resolveUrl(previewUrl)}#navpanes=0&view=FitH`" class="pdf-iframe" title="PDF 预览"></iframe>
           </div>
           <div v-else-if="isPdfConverted" class="preview-pptx">
-            <iframe v-if="pptxPdfUrl" :src="pptxPdfUrl" class="pptx-iframe" title="PPTX 预览"></iframe>
+            <iframe v-if="pptxPdfUrl" :src="`${pptxPdfUrl}#navpanes=0&view=FitH`" class="pptx-iframe" title="PPTX 预览"></iframe>
           </div>
           <div v-else-if="isDocx" class="preview-docx">
             <DocxPreview v-if="docxUrl" :file-url="docxUrl" />

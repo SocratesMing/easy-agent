@@ -22,6 +22,8 @@ deepagents 的 ``MemoryMiddleware`` 在 ``before_agent`` 里只要 state 已有
 及时用 ``edit_file`` 写进记忆」，和本项目「记忆由系统自动整理、模型不改写记忆文件」正好相反
 （日志里模型多次自己改写 ``/memories/AGENTS.md``，还把「没有 uv」写进了长期记忆）。
 
+服务端已准入的本轮请求会过滤记忆视图中的过时拒答规则；原始记忆文件不变。
+
 ``name`` 与框架默认项相同，经 ``create_deep_agent(middleware=...)`` 原位替换默认实例。
 """
 
@@ -32,7 +34,11 @@ from typing import Any
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.memory import MemoryMiddleware
 
-from easy_agent.agent.turn_context import TURN_CONTEXT_KEY
+from easy_agent.agent.turn_context import (
+    TURN_CONTEXT_KEY,
+    _without_scope_memory,
+    render_turn_system_context,
+)
 
 _MEMORY_CONTENTS_KEY = "memory_contents"
 _NO_MEMORY = "(No memory loaded)"  # 框架 ``_format_agent_memory`` 在没有内容时填的占位
@@ -124,11 +130,24 @@ class SessionMemoryMiddleware(MemoryMiddleware):
             return super().modify_request(request)
         system_message = append_to_system_message(request.system_message, MEMORY_GUIDELINES)
         block = self._format_agent_memory(request.state.get(_MEMORY_CONTENTS_KEY) or {}, self.system_prompt)
+        turn = request.state.get(TURN_CONTEXT_KEY) or {}
+        if turn.get("scope_approved"):
+            block = _without_scope_memory({"type": "text", "text": block})["text"]
         if _NO_MEMORY in block:
             return request.override(system_message=system_message)
-        turn = request.state.get(TURN_CONTEXT_KEY) or {}
         messages = _prepend_to_current_turn(request.messages, block, turn.get("message_id"))
         if messages is None:
             # 没有用户消息可放（不应出现）：退回放在系统提示词里，记忆不能丢
             return request.override(system_message=append_to_system_message(system_message, block))
         return request.override(system_message=system_message, messages=messages)
+
+    def wrap_model_call(self, request, handler):
+        return super().wrap_model_call(
+            request, lambda with_memory: handler(render_turn_system_context(with_memory))
+        )
+
+    async def awrap_model_call(self, request, handler):
+        async def after_memory(with_memory):
+            return await handler(render_turn_system_context(with_memory))
+
+        return await super().awrap_model_call(request, after_memory)

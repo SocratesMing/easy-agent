@@ -15,6 +15,7 @@ import inspect
 import json
 import time
 
+import httpx
 import pytest
 
 from easy_agent.models.api import ChatRequest
@@ -149,6 +150,24 @@ async def test_chat_prep_error_emits_error_frame_and_writes_nothing():
     assert db.persisted == []
 
 
+async def test_chat_passes_server_system_context_to_the_turn_input(monkeypatch):
+    captured = {}
+
+    async def fake_run(run, payload):
+        captured.update(payload)
+        yield 'data: {"type":"done"}\n\n'
+
+    monkeypatch.setattr(orchestrator, "_run_stream", fake_run)
+    await _frames(orchestrator.chat_stream_generator(
+        ChatRequest(message="生成ppt"), FakeDB(), _agent(FakeGraph([])), "s1", "m1", "tester",
+        system_context="本轮已通过服务端意图检查",
+        scope_approved=True,
+    ))
+    assert captured["turn_context"]["system_context"] == "本轮已通过服务端意图检查"
+    assert captured["turn_context"]["scope_approved"] is True
+    assert captured["messages"][-1].content == "生成ppt"
+
+
 async def test_chat_prep_cancel_propagates_without_empty_partial():
     """准备阶段被取消：没有可保存的内容，不写空 assistant 消息，取消继续上抛。"""
     db = _CancelledDB()
@@ -184,6 +203,7 @@ async def test_chat_stream_error_uses_shared_fallback(monkeypatch):
     # FakeProc 默认 current_step=3；异常兜底沿用 proc 的当前步数（与合并前一致）
     assert events[-2]["step"] == 3
     assert events[-1]["content"] == "处理失败: boom"
+    assert "error" not in db.persisted[-1]
     # 其他异常不带 code：帧结构与改动前一致（validate 也不会因它报错）
     assert "code" not in events[-1]
     # chat 异常兜底也保存半成品（补齐「取消 / HITL 恢复都会存、普通对话不存」的历史
@@ -200,6 +220,24 @@ async def test_chat_stream_error_uses_shared_fallback(monkeypatch):
     assert tool_block["success"] is False
     assert tool_block["result"] == "执行中断: boom"
     assert tool_block["duration"] == 0
+    assert db.persisted[-1]["blocks"] == proc.blocks
+
+
+async def test_chat_read_error_preserves_generated_content():
+    class ReadErrorGraph(FakeGraph):
+        async def astream(self, *args, **kwargs):
+            yield ("messages", [{"type": "content", "content": "已完成部分分析"}])
+            raise httpx.ReadError("")
+
+    db = FakeDB()
+    events = _events(await _frames(orchestrator.chat_stream_generator(
+        ChatRequest(message="hi"), db, _agent(ReadErrorGraph([])), "s1", "m1", "tester"
+    )))
+    partial = db.persisted[-1]
+    assert partial["content"] == "已完成部分分析"
+    assert "模型连接中断" in events[-1]["content"]
+    assert partial["fallback_note"] == orchestrator.ERROR_FALLBACK_NOTE
+    assert "error" not in partial
 
 
 async def test_resume_cancel_saves_partial_reply_with_approval():
@@ -254,11 +292,13 @@ async def test_timeout_error_emits_timeout_code_and_persists_fallback_note():
     把刚显示的兜底文案又抹掉。
     """
     db = FakeDB()
-    frames = await _frames(
-        orchestrator.chat_stream_generator(
-            ChatRequest(message="hi"), db, _agent(_TimingOutGraph([])), "s1", "m1", "tester"
-        )
-    )
+    frames = []
+    async for frame in orchestrator.chat_stream_generator(
+        ChatRequest(message="hi"), db, _agent(_TimingOutGraph([])), "s1", "m1", "tester"
+    ):
+        if _events([frame])[0]["type"] == "error":
+            assert db.persisted[-1]["fallback_note"] == orchestrator.TIMEOUT_FALLBACK_NOTE
+        frames.append(frame)
     events = _events(frames)
 
     assert _types(events)[-1] == "error"
@@ -268,10 +308,12 @@ async def test_timeout_error_emits_timeout_code_and_persists_fallback_note():
     partial = db.persisted[-1]
     assert partial["content"] == "前半段"
     assert partial["fallback_note"] == orchestrator.TIMEOUT_FALLBACK_NOTE
+    assert "error" not in partial
 
 
-async def test_resume_timeout_keeps_approval_status_and_fallback_note():
-    """HITL 恢复流超时：仍按 with_approval=True 落库，同时带上兜底文案。"""
+@pytest.mark.parametrize("timed_out", [False, True])
+async def test_resume_error_keeps_approval_status_and_matching_message(timed_out):
+    """恢复流普通异常和超时都保留审批状态，并持久化各自的提示。"""
     graph = FakeGraph(
         [  # 先吐一段正文，随后抛超时
             [{"type": "content", "content": "续写", "step": 1}],
@@ -282,7 +324,9 @@ async def test_resume_timeout_keeps_approval_status_and_fallback_note():
     async def _astream(payload, stream_mode=None, config=None, **kwargs):
         async for batch in original_astream(payload, stream_mode, config, **kwargs):
             yield batch
-        raise asyncio.TimeoutError("silent")
+        if timed_out:
+            raise asyncio.TimeoutError("silent")
+        raise RuntimeError("boom")
 
     graph.astream = _astream
     graph.states = [_hitl_state()]
@@ -302,7 +346,46 @@ async def test_resume_timeout_keeps_approval_status_and_fallback_note():
     events = _events(frames)
 
     assert _types(events)[-1] == "error"
-    assert events[-1]["code"] == "timeout"
     partial = db.persisted[-1]
-    assert partial["fallback_note"] == orchestrator.TIMEOUT_FALLBACK_NOTE
+    if timed_out:
+        assert events[-1]["code"] == "timeout"
+        assert partial["fallback_note"] == events[-1]["content"] == orchestrator.TIMEOUT_FALLBACK_NOTE
+        assert "error" not in partial
+    else:
+        assert "code" not in events[-1]
+        assert events[-1]["content"] == "处理失败: boom"
+        assert partial["fallback_note"] == orchestrator.ERROR_FALLBACK_NOTE
+        assert "error" not in partial
     assert partial["tool_calls"][0]["approval_status"] == "approved"
+
+
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("timed_out", [False, True])
+async def test_error_frame_survives_partial_persistence_failure(resume, timed_out, caplog):
+    class BrokenDB(FakeDB):
+        def update_last_assistant_message(self, session_id, message):
+            raise RuntimeError("db write failed")
+
+    graph = _TimingOutGraph([]) if timed_out else _ExplodingGraph([])
+    db = BrokenDB(_resume_messages() if resume else None)
+    if resume:
+        graph.states = [_hitl_state()]
+        stream = orchestrator.resume_stream_generator(
+            db, _agent(graph), "s1", "s1-m1", [{"type": "approve"}],
+            session_logger=FakeLogger(), message_id="m1",
+        )
+    else:
+        stream = orchestrator.chat_stream_generator(
+            ChatRequest(message="hi"), db, _agent(graph), "s1", "m1", "tester"
+        )
+
+    events = _events(await _frames(stream))
+
+    assert events[-1]["type"] == "error"
+    if timed_out:
+        assert events[-1]["code"] == "timeout"
+        assert events[-1]["content"] == orchestrator.TIMEOUT_FALLBACK_NOTE
+    else:
+        assert "code" not in events[-1]
+        assert events[-1]["content"] == "处理失败: boom"
+    assert "保存部分回复失败: db write failed" in caplog.text

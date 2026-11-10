@@ -10,6 +10,8 @@ DA-06 起不再替换框架私有工厂：直接构造官方 ``SummarizationMidd
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from deepagents.middleware.summarization import SummarizationMiddleware
@@ -163,16 +165,37 @@ def test_token_counter_counts_reasoning_sent_back_with_history():
     from deepagents.backends import StateBackend
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
     from langchain_core.messages import AIMessage, HumanMessage
-    from langchain_core.messages.utils import count_tokens_approximately
-
-    from easy_agent.agent.summarization import count_tokens_with_reasoning
+    from easy_agent.agent.token_counting import count_context_tokens
 
     plain = [HumanMessage("q"), AIMessage("a")]
     thinking = [HumanMessage("q"), AIMessage("a", additional_kwargs={"reasoning_content": "想" * 4000})]
 
-    assert count_tokens_with_reasoning(plain) == count_tokens_approximately(plain)
-    assert count_tokens_with_reasoning(thinking) == count_tokens_approximately(thinking) + 1000
+    assert count_context_tokens(thinking) - count_context_tokens(plain) == 4000
 
     cfg = Config.from_yaml(Config.resolve_config_path())
     middleware = build_summarization_middleware(cfg, GenericFakeChatModel(messages=iter([])), StateBackend())
-    assert middleware.token_counter(thinking) - middleware.token_counter(plain) >= 1000
+    assert middleware.token_counter(thinking) - middleware.token_counter(plain) == 4000
+
+
+@pytest.mark.parametrize("reasoning_key", ["reasoning_content", "reasoning", "reason_content"])
+@pytest.mark.parametrize("with_tools", [False, True])
+@pytest.mark.parametrize("reasoning, expected", [("a" * 4000, 1000), ("想" * 4000, 4000)])
+def test_token_counter_counts_reasoning_with_and_without_tools(reasoning_key, with_tools, reasoning, expected):
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from easy_agent.agent.token_counting import count_context_tokens
+
+    calls = [{"name": "read_file", "args": {"path": "/x"}, "id": "c1"}] if with_tools else []
+    answer = AIMessage("answer", tool_calls=calls)
+    thinking = answer.model_copy(update={"additional_kwargs": {reasoning_key: reasoning}})
+    plain = [HumanMessage("question"), answer]
+
+    assert count_context_tokens([plain[0], thinking]) - count_context_tokens(plain) == expected
+
+
+def test_token_counter_keeps_chinese_body_estimate():
+    from langchain_core.messages import HumanMessage
+
+    from easy_agent.agent.token_counting import count_context_tokens
+
+    assert count_context_tokens([HumanMessage("中" * 4000)]) >= 4000

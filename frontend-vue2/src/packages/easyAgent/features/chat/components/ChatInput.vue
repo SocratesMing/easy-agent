@@ -60,6 +60,9 @@
             v-tip:hover="'输入消息，Enter 发送 · Shift+Enter 换行 · 输入 / 唤起技能选择'"
             @keydown="onKeydown"
             @beforeinput="onBeforeInput"
+            @paste="invalidateEnhancement"
+            @compositionstart="enhancementCompositionStart"
+            @compositionend="enhancementCompositionEnd"
             @input="onInput"
             @focus="updateCaretLine"
             @blur="hideCaretLine"
@@ -241,6 +244,7 @@
         </div>
         
         <div class="right-actions">
+          <PromptEnhancementActions :enabled="canEnhance" :state="enhancement" @enhance="enhancePrompt" />
           <div 
             v-if="showTokenRing" 
             ref="ringRef"
@@ -273,7 +277,7 @@
                 <div class="token-popup-divider"></div>
                 <div class="token-popup-section">
                 <div class="token-popup-row">
-                  <span class="token-popup-label">本轮上下文占用</span>
+                  <span class="token-popup-label">本轮上下文占用{{ sessionUsage.context_estimated ? '（估算）' : '' }}</span>
                 </div>
                 <div class="token-popup-context-row">
                   <span class="token-popup-context-value">{{ formatTokens(sessionUsage.context_tokens) }}/{{ formatTokens(sessionUsage.context_length) }}</span>
@@ -305,7 +309,7 @@
             @click="send" 
             class="action-btn send-btn"
             :class="{ active: canSend }"
-            :disabled="!canSend || disabled || preparingFiles"
+            :disabled="!canSend || disabled || preparingFiles || enhancement.pending"
             v-tip="'发送（Enter）'"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -337,35 +341,38 @@
       @click.stop
     >
       <div class="skill-picker-header">
-        <span>选择技能</span>
         <span class="skill-picker-hint">↑↓ 选择 · Enter 确认 · Esc 关闭</span>
       </div>
 
       <div v-if="skillPickerLoading" class="skill-picker-state">正在加载技能…</div>
-      <div v-else-if="filteredSkills.length === 0" class="skill-picker-state">
-        {{ skillOptions.length === 0 ? '还没有可用的技能，先到技能中心添加并启用' : '没有匹配的技能' }}
+      <div v-if="menuItems.length === 0 && !skillPickerLoading" class="skill-picker-state">
+        {{ skillOptions.length === 0 ? '没有匹配项，可到技能中心添加并启用技能' : '没有匹配的指令或技能' }}
       </div>
 
-      <ul v-else class="skill-picker-list" role="listbox" aria-label="可用技能">
-        <li
-          v-for="(row, index) in skillRows"
-          :key="row.skill.dir_name"
-          class="skill-picker-item"
-          :class="{ active: index === skillPickerIndex }"
-          role="option"
-          :aria-selected="index === skillPickerIndex ? 'true' : 'false'"
-          @mouseenter="skillPickerIndex = index"
-          @mousedown.prevent="selectSkill(row.skill)"
-          @click="selectSkill(row.skill)"
-        >
-          <SkillIcon :icon="row.skill.icon" :category="iconCategoryFor(row.skill.category_id)" size="xs" />
-          <span class="skill-picker-body">
-            <span class="skill-picker-name"><span v-for="(part, pi) in row.nameParts" :key="'n' + pi" :class="{ 'skill-picker-hit': part.hit }">{{ part.text }}</span></span>
-            <span class="skill-picker-desc"><span v-for="(part, pi) in row.descParts" :key="'d' + pi" :class="{ 'skill-picker-hit': part.hit }">{{ part.text }}</span></span>
-          </span>
-          <span class="skill-picker-slash">/{{ row.skill.dir_name }}</span>
-        </li>
-      </ul>
+      <div v-if="menuItems.length" class="skill-picker-list" role="listbox" aria-label="指令和技能">
+        <ul v-for="group in pickerGroups" :key="group.title" class="picker-group" role="group" :aria-label="group.title">
+          <li class="picker-group-title" role="presentation">{{ group.title }} ({{ group.rows.length }})</li>
+          <li
+            v-for="row in group.rows"
+            :key="(row.skill.command ? 'command:' : 'skill:') + row.skill.dir_name"
+            class="skill-picker-item"
+            :class="{ active: row.index === skillPickerIndex, unavailable: row.skill.disabled }"
+            :aria-disabled="row.skill.disabled ? 'true' : 'false'"
+            role="option"
+            :aria-selected="row.index === skillPickerIndex ? 'true' : 'false'"
+            @mouseenter="skillPickerIndex = row.index"
+            @mousedown.prevent="selectSkill(row.skill)"
+            @click="selectSkill(row.skill)"
+          >
+            <SkillIcon :icon="row.skill.icon" :category="iconCategoryFor(row.skill.category_id)" size="xs" />
+            <span class="skill-picker-body">
+              <span class="skill-picker-name"><span v-for="(part, pi) in row.nameParts" :key="'n' + pi" :class="{ 'skill-picker-hit': part.hit }">{{ part.text }}</span></span>
+              <span class="skill-picker-desc"><span v-for="(part, pi) in row.descParts" :key="'d' + pi" :class="{ 'skill-picker-hit': part.hit }">{{ part.text }}</span></span>
+            </span>
+            <span class="skill-picker-slash">/{{ row.skill.dir_name }}</span>
+          </li>
+        </ul>
+      </div>
     </div>
 
     <div v-if="showFooter" class="input-footer">
@@ -409,6 +416,7 @@ import PlusSubpanelHeader from './PlusSubpanelHeader.vue'
 import PlusList from './PlusList.vue'
 import PlusMenu from './PlusMenu.vue'
 import ModelPicker from './ModelPicker.vue'
+import PromptEnhancementActions from './PromptEnhancementActions.vue'
 import UploadTray from './UploadTray.vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
 import SkillIcon from '../../../shared/components/SkillIcon.vue'
@@ -446,6 +454,10 @@ const TEXTAREA_MAX_ROWS = 5
 const TEXTAREA_LINE_HEIGHT = 24
 const TEXTAREA_MAX_HEIGHT = TEXTAREA_MAX_ROWS * TEXTAREA_LINE_HEIGHT
 
+import promptEnhancementMixin from '../mixins/promptEnhancementMixin.js'
+import contextUsageMixin from '../mixins/contextUsageMixin.js'
+import { commandItems } from '../../../shared/compaction/state.js'
+
 // 「+」→ 专家：上区「我的专家」走服务端分页（后端 /agent/list 已支持 keyword/status/page），
 // 一页 5 条，首屏取第 1 页，之后点「点击加载更多」再取下一页。
 // 不再用「一次拉全量 + 本地 slice」：库里第 N 页的专家从来没被请求过，
@@ -459,9 +471,12 @@ const PUBLIC_EXPERTS_MORE_STEP = 3
 const EXPERT_SEARCH_DEBOUNCE_MS = 300
 
 export default {
-  components: { FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList, PlusList, PlusSubpanelHeader },
+  mixins: [promptEnhancementMixin, contextUsageMixin],
+  components: { PromptEnhancementActions, FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList, PlusList, PlusSubpanelHeader },
   directives: { tip },
   props: {
+    compactReason: { type: String, default: '请先开始对话' },
+    compactBusy: { type: Boolean, default: false },
     disabled: { type: Boolean, default: false },
     sessionId: { type: String, default: null },
     isStreaming: { type: Boolean, default: false },
@@ -755,65 +770,23 @@ export default {
      * 名称命中时描述里的同词也一并上色，方便一眼看出为什么这条被选中。
      * 右侧的 `/目录名` 与名称基本重复，不再单独上色，避免一行出现三处蓝。
      */
+    menuItems() {
+      return [...commandItems(this.skillQuery, this.compactReason, this.compactBusy), ...this.filteredSkills]
+    },
+    pickerGroups() {
+      return [
+        { title: '指令', rows: this.skillRows.filter(row => row.skill.command) },
+        { title: '技能', rows: this.skillRows.filter(row => !row.skill.command) },
+      ].filter(group => group.rows.length)
+    },
     skillRows() {
-      return this.filteredSkills.map(skill => ({
-        skill,
+      return this.menuItems.map((skill, index) => ({
+        skill, index,
         nameParts: splitByQuery(skill.name || skill.dir_name, this.skillQuery),
         descParts: splitByQuery(skill.description || '暂无描述', this.skillQuery),
       }))
     },
-    // 后台未返回耗时数据（sessionDuration<=0）且「会话信息」弹窗打开时，前端按 1s
-    // 间隔本地计时，让会话耗时实时更新；后台有数据时直接用后台值。
-    shouldCountLive() {
-      return this.showTokenPopup && (!this.sessionDuration || this.sessionDuration <= 0)
-    },
-    displayDuration() {
-      return this.shouldCountLive ? this.liveDuration : (this.sessionDuration || 0)
-    },
-    formattedDuration() {
-      const total = Math.floor(this.displayDuration)
-      const h = Math.floor(total / 3600)
-      const m = Math.floor((total % 3600) / 60)
-      const s = total % 60
-      if (h > 0) {
-        return `${h}小时${m}分${s}秒`
-      }
-      if (m > 0) {
-        return `${m}分${s}秒`
-      }
-      return `${s}秒`
-    },
-    // 首页（尚未进入任何会话）不展示会话级用量：登录/注册后会从全局配置把
-    // context_length 写进 sessionUsage，但此时没有任何实际用量，
-    // 不能凭这个就显示上下文占用环。
-    showTokenRing() {
-      if (!this.sessionId) return false
-      return this.sessionUsage.input_tokens > 0 || this.sessionUsage.output_tokens > 0 || this.sessionUsage.reasoning_tokens > 0 || this.sessionUsage.context_tokens > 0 || this.sessionDuration > 0 || this.iterationCount > 0
-    },
-    contextPercent() {
-      const u = this.sessionUsage
-      if (!u.context_length || u.context_length <= 0) return 0
-      // 分子使用「当前轮次的上下文窗口占用」(context_tokens)：即本轮喂给模型的输入 token 数，
-      // 与 context_length（上下文窗口上限）对比（已不再统计会话累计总量）。
-      const ctxTokens = u.context_tokens || 0
-      return Math.min(100, Math.round(ctxTokens / u.context_length * 100))
-    },
-    contextColor() {
-      const p = this.contextPercent
-      if (p >= 80) return '#ef4444'
-      if (p >= 50) return '#f59e0b'
-      return '#22c55e'
-    },
-    popupStyle() {
-      const ring = this.$refs.ringRef
-      if (!ring) return {}
-      const rect = ring.getBoundingClientRect()
-      return {
-        position: 'fixed',
-        bottom: `${window.innerHeight - rect.top + 10}px`,
-        right: `${window.innerWidth - rect.right - 8}px`,
-      }
-    },
+
   },
   watch: {
     // 联网开关的真身在本组件，但发送动作不止「输入框回车」一条：消息下方「重新发送」
@@ -2002,7 +1975,7 @@ export default {
       )
     },
     async send() {
-      if (!this.canSend || this.disabled || this.preparingFiles) return
+      if (!this.canSend || this.disabled || this.preparingFiles || this.enhancement.pending) return
       this.preparingFiles = true
       try {
         // 新对话的知识选择只存在本地：先取快照，再上传附件（上传会先创建会话）
@@ -2120,6 +2093,7 @@ export default {
       mirror.scrollTop = ta.scrollTop
     },
     onInput(event) {
+      this.invalidateEnhancement()
       const ta = (event && event.target) || this.$refs.textareaRef
       // 移动端兜底（见 utils/skillPillTokens.js 的 reconcileTokenDeletion）：Android Chrome 的
       // Backspace 不给 keydown、部分浏览器也没有 beforeinput，浏览器只啃掉标签的一两个字时，
@@ -2237,7 +2211,7 @@ export default {
       const picker = this.$refs.skillPickerRef
       if (!picker) return
       const list = picker.querySelector('.skill-picker-list')
-      const item = list && list.children[this.skillPickerIndex]
+      const item = list && list.querySelectorAll('.skill-picker-item')[this.skillPickerIndex]
       if (!list || !item) return
       const top = item.offsetTop
       const bottom = top + item.offsetHeight
@@ -2289,6 +2263,14 @@ export default {
       const slash = parseSlashQuery(base, caret)
       const start = slash ? slash.start : caret
       const cleared = base.slice(0, start) + base.slice(caret)
+
+      if (skill.command) {
+        if (this.compactReason || skill.disabled) return
+        this.closeSkillPicker()
+        this.replaceTextWithCaret({ text: cleared, caret: start })
+        this.$emit('compact-context')
+        return
+      }
 
       this.rememberSkills([skill])
       const existing = skillSegments(cleared, this.tokenMap)
@@ -2346,7 +2328,15 @@ export default {
           : (parsed ? [parsed] : [])
         for (const skill of list) {
           if (!skill || !skill.dir_name) continue
-          this.rememberSkills([skill])
+          if (skill.command) {
+        if (this.compactReason || skill.disabled) return
+        this.closeSkillPicker()
+        this.replaceTextWithCaret({ text: cleared, caret: start })
+        this.$emit('compact-context')
+        return
+      }
+
+      this.rememberSkills([skill])
           if (skill.insert_token === false) {
             if (!this.preselectedSkillDirs.includes(skill.dir_name)) {
               this.preselectedSkillDirs.push(skill.dir_name)
@@ -2389,6 +2379,7 @@ export default {
      * 拦截后自行整段删标签；拦不到的情况由 onInput 的差分自愈兜底（见 reconcileTokenDeletion）。
      */
     onBeforeInput(event) {
+      this.invalidateEnhancement()
       if (event.isComposing) return
       const deleteBackward = event.inputType === 'deleteContentBackward'
       const deleteForward = event.inputType === 'deleteContentForward'
@@ -2407,10 +2398,11 @@ export default {
 
     /** 键盘：面板打开时接管 ↑↓ / Enter / Esc，其余情况保持原有 Enter 发送 */
     onKeydown(event) {
+      if (event.isComposing || event.keyCode === 229) return
       if (this.handleTokenDeleteKey(event)) return
 
       if (this.skillPickerOpen) {
-        const count = this.filteredSkills.length
+        const count = this.menuItems.length
         if (event.key === 'ArrowDown' && count > 0) {
           event.preventDefault()
           this.skillPickerIndex = (this.skillPickerIndex + 1) % count
@@ -2429,7 +2421,7 @@ export default {
           return
         }
         if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
-          const skill = this.filteredSkills[this.skillPickerIndex]
+          const skill = this.menuItems[this.skillPickerIndex]
           if (skill) {
             event.preventDefault()
             this.selectSkill(skill)
@@ -3681,4 +3673,12 @@ export default {
    这里不再保留按序号取色的 av-c0..av-c7，避免两套色板并存。 */
 /* 默认与提示文字同色，悬停才变强调色（不做成显眼的链接） */
 /* 「还有 N 位」兜底行（内容未超高、无滚动条时的可达入口） */
+</style>
+
+<style scoped>
+.picker-group { margin: 0; padding: 0; list-style: none; }
+.picker-group + .picker-group { margin-top: 12px; }
+.picker-group-title { padding: 8px 10px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.skill-picker-header { justify-content: flex-end; }
+.skill-picker-item.unavailable { opacity: .55; cursor: not-allowed; }
 </style>

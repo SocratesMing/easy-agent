@@ -1,3 +1,4 @@
+import { subscribeSessions } from '../../../shared/sessionManagement/state.js'
 import Vue from 'vue'
 
 /**
@@ -45,3 +46,10 @@ export function syncPendingApprovalFlag(sessionId, hasPending) {
   if (!!sessions[i].pending_approval === marked) return
   sessions.splice(i, 1, { ...sessions[i], pending_approval: marked })
 }
+
+subscribeSessions(event => {
+  if (event.type === 'reset') {
+    chatStore.sessions = []; chatStore.streamingSessions = []; chatStore.pendingApprovalSessions = []
+    chatStore.lastStreamingSession = null
+  }
+})

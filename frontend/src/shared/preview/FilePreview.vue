@@ -36,13 +36,13 @@
             <p>{{ error }}</p>
           </div>
           <div v-else-if="isPdf" class="preview-pdf">
-            <iframe :src="previewUrl" class="pdf-iframe"></iframe>
+            <iframe :src="`${previewUrl}#navpanes=0&view=FitH`" class="pdf-iframe" title="PDF 预览"></iframe>
           </div>
           <div v-else-if="isPdfConverted" class="preview-pptx">
-            <iframe v-if="pptxPdfUrl" :src="pptxPdfUrl" class="pptx-iframe" title="PPTX 预览"></iframe>
+            <iframe v-if="pptxPdfUrl" :src="`${pptxPdfUrl}#navpanes=0&view=FitH`" class="pptx-iframe" title="PPTX 预览"></iframe>
           </div>
-          <div v-else-if="isDocx" ref="docxWrapRef" class="preview-docx">
-            <vue-office-docx :src="docxUrl" @rendered="neutralizeUnsafeLinks($refs.docxWrapRef)" @error="handleDocxError" />
+          <div v-else-if="isDocx" class="preview-docx">
+            <DocxPreview v-if="docxUrl" :array-buffer="docxUrl" @error="handleDocxError" />
           </div>
           <div v-else-if="isExcel" class="preview-excel">
             <vue-office-excel
@@ -121,7 +121,6 @@ import {
   installCodeCopyHandler,
   escapeHtml,
   sanitizeHtml,
-  neutralizeUnsafeLinks,
 } from '../../markdownSetup.js'
 import hljs from '../markdown/hljs.js'
 import 'highlight.js/styles/github.css'
@@ -130,13 +129,13 @@ import 'highlight.js/styles/github.css'
 setupMarkedExtensions()
 installCodeCopyHandler()
 // 预览库按需加载：只有打开对应类型文件时才拉取
-const VueOfficeDocx = defineAsyncComponent(() => import('@vue-office/docx/lib/v3/vue-office-docx.mjs'))
+const DocxPreview = defineAsyncComponent(() => import('./DocxPreview.vue'))
 const VueOfficeExcel = defineAsyncComponent(() => import('@vue-office/excel/lib/v3/vue-office-excel.mjs'))
 let xlsxPromise = null
 function loadXlsx() {
   if (!xlsxPromise) xlsxPromise = import('xlsx')
   return xlsxPromise
-}import '@vue-office/docx/lib/v3/index.css'
+}
 import '@vue-office/excel/lib/v3/index.css'
 import { getStoredToken } from '../../api/auth.js'
 import { getExpertMd } from '../../api/expert.js'

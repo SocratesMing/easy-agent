@@ -1,3 +1,4 @@
+import { sessionGuard } from '../../../shared/sessionManagement/state.js'
 /**
  * Vue2 侧的流式事件状态机（2026-10-20 从 mixins/chatSession.js 原样抽出，行为不变）。
  *
@@ -11,6 +12,7 @@ import { chatBus } from '../store/chatStore.js'
 import { setReactive } from '../../../utils/reactiveSet.js'
 import { applyStreamError } from '../../../utils/streamErrorFallback.js'
 import { parseMCPResult } from '../../../utils/mcpResult.js'
+import { createStreamCheckpoint, STREAM_RECONNECTING_MESSAGE } from '../../../shared/utils/chatStreamRecovery.js'
 import { setExpertLastSession } from '../../../shared/utils/expertSession.js'
 
 /**
@@ -27,6 +29,8 @@ export function resumeUsageBase(sessionDuration, iterationCount, message) {
 }
 
 export function createStreamChunkHandler(vm, ctx) {
+  const valid = sessionGuard(ctx.streamSessionId)
+  ctx._sessionValid = valid
   let currentBlock = null
   let currentThinking = ''
   let currentContent = ''
@@ -107,19 +111,29 @@ export function createStreamChunkHandler(vm, ctx) {
     return patch
   }
   // 记下这条消息自己的累计耗时 / 步数：审批续跑时据此从会话合计里扣掉中断前已计入的部分
-  const rememberMessageUsage = (data) => {
-    const idx = findIdx()
-    if (idx === -1 || typeof data.step_count !== 'number') return
-    const msg = vm.messages[idx]
-    msg.usage = { ...msg.usage, step_count: data.step_count, elapsed_time: data.elapsed_time || 0 }
+  const rememberMessageUsage = (data, rows) => {
+    const idx = rows?.findIndex(m => m.id === ctx.assistantMsgId) ?? -1
+    if (idx === -1) return
+    const msg = rows[idx]
+    const usage = {
+      ...msg.usage,
+      input_tokens: data.input_tokens || 0,
+      output_tokens: data.output_tokens || 0,
+      reasoning_tokens: data.reasoning_tokens || 0,
+      context_tokens: data.context_tokens || data.input_tokens || 0,
+    }
+    if (typeof data.step_count === 'number') usage.step_count = data.step_count
+    if (typeof data.elapsed_time === 'number') usage.elapsed_time = data.elapsed_time
+    setReactive(rows, idx, { ...msg, usage })
   }
   const applyUsage = (data, sid) => {
     const patch = usagePatchFrom(data)
     // 状态路由按 runInSession 的 loadedSessionId 判定：组件数据要么就是该会话本身
-    // （展示中），要么已被临时换成就该会话的状态（ctx.stateSwapped）。两种情况都应
+    // （展示中），要么已被临时换成该会话的状态（ctx.stateSwapped）。两种情况都应
     // 直接写组件数据；只有既不是展示中也没换状态时，才退回写 sessionStates 缓存。
     const match = !sid || ctx.stateSwapped || vm.loadedSessionId === sid
-    rememberMessageUsage(data)
+    const rows = match ? vm.messages : vm.sessionStates[sid]?.messages
+    rememberMessageUsage(data, rows)
     if (ctx.attachMode) {
       // 重挂载回放：token_usage/done 携带的 elapsed_time 是原始流从头开始的
       // 累计值，应 SET 而非累加（isResume 分支的累加语义只适用于 HITL 续跑）
@@ -138,7 +152,7 @@ export function createStreamChunkHandler(vm, ctx) {
       return
     }
     // elapsed_time / step_count 是这条消息的累计值（审批续跑也接着中断前往下算），
-    // 会话合计 = 流开始前其余消息的合计（续跑见 resumeUsageBase）+ 本条累计值
+    // 会话合计 = 流开始前其余消息的合计 + 本条累计值
     const newDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
     const newIterations = typeof data.step_count === 'number' ? ctx.preStreamIterationCount + data.step_count : null
     if (match) {
@@ -155,7 +169,40 @@ export function createStreamChunkHandler(vm, ctx) {
     }
   }
 
+  let replaying = false
+  const checkpoint = createStreamCheckpoint(() => ({
+    message: vm.messages.find(m => m.id === ctx.assistantMsgId) || null,
+    usage: vm.sessionUsage, duration: vm.sessionDuration, iterations: vm.iterationCount,
+  }), base => {
+    const idx = findIdx()
+    if (idx !== -1) {
+      const message = base.message || { ...vm.messages[idx], content: '', thinking: '', tool_calls: [], blocks: [] }
+      setReactive(vm.messages, idx, { ...message, loading: true })
+    }
+    Object.assign(vm.sessionUsage, base.usage)
+    vm.sessionDuration = base.duration
+    vm.iterationCount = base.iterations
+  })
+
   const onChunk = (data) => {
+    if (data.type === 'stream_connection') {
+      if (!ctx.streamSessionId || vm.currentSessionId === ctx.streamSessionId) {
+        if (data.status === 'reconnecting') vm.error = STREAM_RECONNECTING_MESSAGE
+        else if (vm.error === STREAM_RECONNECTING_MESSAGE) vm.error = null
+      }
+      return
+    }
+    if (data.type === 'stream_replay') {
+      checkpoint.restore()
+      currentBlock = null
+      currentThinking = ''
+      currentContent = ''
+      currentToolCalls = []
+      blockOrderCounter = ctx.initialBlockOrder || 0
+      replaying = true
+      return
+    }
+    checkpoint.capture()
     const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success } = data
 
     if (eventType === 'start') {
@@ -179,7 +226,7 @@ export function createStreamChunkHandler(vm, ctx) {
           vm.$set(vm.attachedStreamingSessions, data.session_id, 'displayed')
         }
         vm.markStreaming(ctx.streamSessionId || vm.currentSessionId)
-        if (data.session_id) chatBus.$emit('stream-started', { sessionId: data.session_id, origin: vm._uid })
+        if (data.session_id && !replaying) chatBus.$emit('stream-started', { sessionId: data.session_id, origin: vm._uid })
       }
     } else if (eventType === 'knowledge_evidence') {
       ensureMessage()
@@ -372,7 +419,6 @@ export function createStreamChunkHandler(vm, ctx) {
         if (ctx.isResume) {
           if (Array.isArray(data.blocks) && data.blocks.length > 0) vm.messages[idx].blocks = data.blocks.map(b => ({ ...b }))
           for (const b of vm.messages[idx].blocks) { if (b.type === 'thinking' && b.duration == null) b.duration = 0 }
-          if (data.usage) applyUsage(data.usage, ctx.streamSessionId)
         } else {
           // done 事件不下发 content 字段：从正文块拼回完整正文，供复制/引用等
           // 仍读 message.content 的路径使用（气泡渲染本身以 blocks 为准）。
@@ -387,28 +433,11 @@ export function createStreamChunkHandler(vm, ctx) {
             .map(b => b.content || '')
             .join('')
           vm.messages[idx].tool_calls = currentToolCalls
-          if (data.usage) {
-            vm.messages[idx].usage = { input_tokens: data.usage.input_tokens || 0, output_tokens: data.usage.output_tokens || 0, reasoning_tokens: data.usage.reasoning_tokens || 0 }
-          }
-          if (data.usage) {
-            const patch = usagePatchFrom(data.usage)
-            const match = !ctx.streamSessionId || ctx.stateSwapped || vm.loadedSessionId === ctx.streamSessionId
-            const finalDuration = typeof data.elapsed_time === 'number' ? Math.round((ctx.preStreamDuration + data.elapsed_time) * 10) / 10 : null
-            const finalIterations = data.usage && typeof data.usage.step_count === 'number' ? ctx.preStreamIterationCount + data.usage.step_count : null
-            if (match) {
-              Object.assign(vm.sessionUsage, patch)
-              if (finalDuration !== null) vm.sessionDuration = finalDuration
-              if (finalIterations !== null) vm.iterationCount = finalIterations
-            } else {
-              const cached = vm.sessionStates[ctx.streamSessionId]
-              if (cached) {
-                cached.sessionUsage = { ...cached.sessionUsage, ...patch }
-                if (finalDuration !== null) cached.sessionDuration = finalDuration
-                if (finalIterations !== null) cached.iterationCount = finalIterations
-              }
-            }
-          }
         }
+        if (data.usage) applyUsage({
+          ...data.usage,
+          elapsed_time: typeof data.elapsed_time === 'number' ? data.elapsed_time : data.usage.elapsed_time,
+        }, ctx.streamSessionId)
         // 兜底：未收到完整参数的 streaming 占位块在流结束时清除标记，
         // 避免工具卡片一直停留在「写入中…」。
         for (const blk of vm.messages[idx].blocks || []) {
@@ -420,7 +449,7 @@ export function createStreamChunkHandler(vm, ctx) {
       if (!ctx.isResume && typeof vm.loadSessions === 'function') vm.loadSessions()
     } else if (eventType === 'error') {
       // 超时兜底与普通报错的分流逻辑在 utils/streamErrorFallback.js，
-      // 与 EasyAgentPage 内的同名方法共用同一份实现。
+      // 与主页面的 pageChunkHandler.js 共用同一份实现。
       // 返回非空才写全局 error：超时在页内显示常驻灰条，不弹框。
       const globalError = applyStreamError({
         messages: vm.messages,
@@ -433,5 +462,5 @@ export function createStreamChunkHandler(vm, ctx) {
   }
 
   // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
-  return { onChunk: (data) => vm.runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
+  return { onChunk: (data) => valid() && vm.runInSession(ctx.streamSessionId, ctx, () => onChunk(data)) }
 }
