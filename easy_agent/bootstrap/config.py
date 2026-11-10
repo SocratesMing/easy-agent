@@ -465,6 +465,25 @@ class Config(BaseModel):
         """将用户名转换为安全的目录名"""
         return "".join(c for c in username if c.isalnum() or c in ("_", "-")) or "user"
 
+    @staticmethod
+    def _configured_base_dir(config: "Config | None", attr: str, fallback: str) -> Path:
+        """取 ``agent.<attr>`` 目录；未传入 config 时读运行期配置，失败回退到 fallback。
+
+        运行期配置是 ``{"config": Config, ...}``，目录在 ``["config"].agent`` 上，
+        不在顶层 ``"agent"`` 字典。``.get("config")`` 的类型是 ``Any | None``，
+        先排除 None 再读 ``.agent``，否则类型检查会把这次访问判成对 None 取属性。
+        """
+        if config is not None:
+            return Path(getattr(config.agent, attr))
+        try:
+            runtime = get_runtime_agent_config()
+            loaded = runtime.get("config") if runtime else None
+            if loaded is None:
+                return Path(fallback)
+            return Path(getattr(loaded.agent, attr))
+        except Exception:
+            return Path(fallback)
+
     @classmethod
     def get_user_workspace_dir(cls, username: str, config: "Config | None" = None) -> Path:
         """获取用户的工作空间目录路径
@@ -481,18 +500,7 @@ class Config(BaseModel):
             用户工作空间路径，如 {workspace_dir}/{username}/
         """
         safe_name = cls.sanitize_username(username)
-        if config is not None:
-            base = Path(config.agent.workspace_dir)
-        else:
-            try:
-                # 运行期配置结构为 {"config": Config, "win":..., "agent_env":...}，
-                # 真正的目录在 _cfg["config"].agent.workspace_dir（而非顶层 "agent" 字典）。
-                # 惰性导入避免与 agent_manager 形成循环依赖。
-                _cfg = get_runtime_agent_config()
-                agent_cfg = _cfg.get("config") if _cfg else None
-                base = Path(agent_cfg.agent.workspace_dir)
-            except Exception:
-                base = Path("./workspace")
+        base = cls._configured_base_dir(config, "workspace_dir", "./workspace")
         return base / safe_name
 
     @classmethod
@@ -502,15 +510,7 @@ class Config(BaseModel):
         文件可能不存在，由调用方判断后决定是否回退到全局 mcp.json。
         """
         safe_name = cls.sanitize_username(username)
-        if config is not None:
-            base = Path(config.agent.workspace_dir)
-        else:
-            try:
-                _cfg = get_runtime_agent_config()
-                agent_cfg = _cfg.get("config") if _cfg else None
-                base = Path(agent_cfg.agent.workspace_dir)
-            except Exception:
-                base = Path("./workspace")
+        base = cls._configured_base_dir(config, "workspace_dir", "./workspace")
         return base / safe_name / "mcp.json"
 
     @classmethod
@@ -529,16 +529,7 @@ class Config(BaseModel):
             用户会话日志目录路径，如 {sessions_dir}/{username}/
         """
         safe_name = cls.sanitize_username(username)
-        if config is not None:
-            base = Path(config.agent.sessions_dir)
-        else:
-            try:
-
-                _cfg = get_runtime_agent_config()
-                agent_cfg = _cfg.get("config") if _cfg else None
-                base = Path(agent_cfg.agent.sessions_dir)
-            except Exception:
-                base = Path("./sessions")
+        base = cls._configured_base_dir(config, "sessions_dir", "./sessions")
         return base / safe_name
 
     @classmethod
@@ -557,16 +548,7 @@ class Config(BaseModel):
             用户记忆目录路径，如 {memories_dir}/{username}/
         """
         safe_name = cls.sanitize_username(username)
-        if config is not None:
-            base = Path(config.agent.memories_dir)
-        else:
-            try:
-
-                _cfg = get_runtime_agent_config()
-                agent_cfg = _cfg.get("config") if _cfg else None
-                base = Path(agent_cfg.agent.memories_dir)
-            except Exception:
-                base = Path("./memories")
+        base = cls._configured_base_dir(config, "memories_dir", "./memories")
         return base / safe_name
 
     @staticmethod
