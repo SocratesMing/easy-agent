@@ -10,6 +10,7 @@ from typing import Any
 
 from easy_agent.db.database import Database
 from easy_agent.knowledges.core.models import REFRESHABLE_DOCUMENT_STATUSES
+from easy_agent.utils.auth import is_super_admin
 
 logger = logging.getLogger(__name__)
 
@@ -205,11 +206,10 @@ class KnowledgeRepository:
         """列出一个用户可见的知识库。
 
         公共（team）空间默认对本部门账号可见（只读）；跨部门访问需要
-        owner、空间管理白名单或单库权限行。access_restricted=1 的库进入
-        勾选名单模式：同部门默认可见与部门授权行均被屏蔽，仅勾选人员、
-        owner、空间管理白名单（含 admin）可见。
+        owner 或单库权限行。access_restricted=1 的库进入勾选名单模式：
+        同部门默认可见与部门授权行均被屏蔽，仅勾选人员、owner、admin 可见。
         """
-        parameters: list[object] = [user_id, user_id, user_id, user_id]
+        parameters: list[object] = [user_id, user_id, user_id]
         department_sql = ""
         if department_id:
             department_sql = (
@@ -230,11 +230,6 @@ class KnowledgeRepository:
                 LEFT JOIN knowledge_permissions p ON p.base_id=b.id
                 WHERE b.status!='deleted' AND (b.owner_user_id=?
                    OR (p.subject_type='user' AND p.subject_id=?)
-                   OR (b.space_type='team' AND EXISTS (
-                        SELECT 1 FROM knowledge_team_space_managers m
-                        JOIN users mu ON mu.user_id=m.user_id
-                        WHERE m.user_id=?
-                          AND COALESCE(NULLIF(mu.department_id, ''), mu.organization_id)=b.department_id))
                    OR (b.space_type='team' AND COALESCE(b.access_restricted, 0)=0 AND EXISTS (
                         SELECT 1 FROM users du
                         WHERE du.user_id=?
@@ -257,25 +252,7 @@ class KnowledgeRepository:
             (base_id,),
         )
 
-    # ---------------- 公共空间白名单（管理/查看） ----------------
-
-    def is_team_space_manager(self, user_id: str) -> bool:
-        """用户是否持有立即生效的公共空间管理授权。"""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                """
-                SELECT 1 FROM knowledge_team_space_managers m
-                JOIN users u ON u.user_id=m.user_id
-                WHERE m.user_id=?
-                  AND u.account_status='active'
-                  AND u.username<>'admin'
-                  AND COALESCE(u.department_id, u.organization_id, '')<>''
-                """,
-                (user_id,),
-            )
-            return cursor.fetchone() is not None
+    # ---------------- 部门 / 知识库管理员 ----------------
 
     def list_active_departments(self) -> list[dict[str, Any]]:
         """列出至少有一名在职账号的部门（人员表为第一阶段的权威来源）。"""
@@ -295,41 +272,39 @@ class KnowledgeRepository:
             )
             return [dict(row) for row in cursor.fetchall()]
 
-    # 公共空间 manager/viewer 白名单共用同一套 grant 表结构；
-    # 表名由代码内硬编码传入，不来自用户输入。
-    def _list_team_space_grants(self, table: str) -> list[dict[str, Any]]:
-        """列出全部授权（含已停用账号，便于管理员显式回收）。"""
+    # ---------------- 知识库管理员 ----------------
+
+    def is_department_manager(self, user_id: str, department_id: str) -> bool:
+        """用户是否是指定部门（且账号仍在该部门）的知识库管理员。"""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             self.db._execute(
                 cursor,
-                f"""
-                SELECT g.user_id, g.granted_by, g.granted_at, g.updated_at,
-                       u.username, u.display_name, u.account_status,
-                       COALESCE(NULLIF(u.department_id, ''), u.organization_id) AS department_id,
-                       u.department_name
-                FROM {table} g JOIN users u ON u.user_id=g.user_id
-                ORDER BY u.department_name, u.display_name, u.username
+                """
+                SELECT 1 FROM knowledge_department_managers m
+                JOIN users u ON u.user_id = m.user_id
+                WHERE m.user_id=? AND m.department_id=?
+                  AND u.account_status='active'
+                  AND COALESCE(u.department_id, u.organization_id, '') = m.department_id
                 """,
+                (user_id, department_id),
             )
-            return [dict(row) for row in cursor.fetchall()]
+            return cursor.fetchone() is not None
 
-    def _grant_team_space_permission(
-        self,
-        *,
-        table: str,
-        user_id: str,
-        granted_by: str,
-        label: str,
-        require_department: bool,
+    def grant_department_manager(
+        self, *, user_id: str, department_id: str, granted_by: str
     ) -> dict[str, Any]:
+        """授予知识库管理员权限，返回包含用户信息的完整行（用于构造 API 响应）。"""
         timestamp = _now()
+        department_id = department_id.strip()
+        if not department_id:
+            raise ValueError("department_id 不能为空")
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             self.db._execute(
                 cursor,
                 "SELECT user_id, username, account_status, "
-                "COALESCE(NULLIF(department_id, ''), organization_id) AS department_id "
+                "COALESCE(NULLIF(department_id, ''), organization_id) AS user_dept "
                 "FROM users WHERE user_id=?",
                 (user_id,),
             )
@@ -337,47 +312,122 @@ class KnowledgeRepository:
             if user is None:
                 raise LookupError("用户不存在")
             user = dict(user)
-            if user["username"] == "admin":
-                raise ValueError(f"admin 已具有全局公共空间{label}权限")
+            if is_super_admin(user["username"]):
+                raise ValueError("超级管理员已具有全局管理权限")
             if str(user.get("account_status") or "active") != "active":
-                raise ValueError(f"停用账号不能获得公共空间{label}权限")
-            if require_department and not str(user.get("department_id") or "").strip():
-                raise ValueError("账号缺少部门，不能获得公共空间管理权限")
-            self.db._execute(cursor, f"SELECT user_id FROM {table} WHERE user_id=?", (user_id,))
-            if cursor.fetchone() is None:
+                raise ValueError("停用账号不能获得知识库管理员权限")
+            if str(user.get("user_dept") or "").strip() != department_id:
+                raise ValueError(
+                    f"账号所属部门与授权部门不一致（账号部门: {user.get('user_dept')}）"
+                )
+            self.db._execute(
+                cursor,
+                "SELECT id FROM knowledge_department_managers WHERE user_id=? AND department_id=?",
+                (user_id, department_id),
+            )
+            existing = cursor.fetchone()
+            if existing is None:
                 self.db._execute(
                     cursor,
-                    f"INSERT INTO {table} (user_id, granted_by, granted_at, updated_at) VALUES (?, ?, ?, ?)",
-                    (user_id, granted_by, timestamp, timestamp),
+                    """INSERT INTO knowledge_department_managers
+                        (id, user_id, department_id, granted_by, granted_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (str(uuid.uuid4()), user_id, department_id, granted_by, timestamp, timestamp),
                 )
             else:
                 self.db._execute(
                     cursor,
-                    f"UPDATE {table} SET granted_by=?, updated_at=? WHERE user_id=?",
-                    (granted_by, timestamp, user_id),
+                    "UPDATE knowledge_department_managers SET granted_by=?, updated_at=? "
+                    "WHERE user_id=? AND department_id=?",
+                    (granted_by, timestamp, user_id, department_id),
                 )
-        for item in self._list_team_space_grants(table):
-            if str(item["user_id"]) == user_id:
-                return item
-        raise RuntimeError(f"公共空间{label}权限保存失败")
+            self.db._execute(
+                cursor,
+                """SELECT m.id,
+                          m.user_id,
+                          m.department_id,
+                          m.granted_by AS granted_by_user_id,
+                          m.granted_at,
+                          m.updated_at,
+                          u.username,
+                          u.display_name,
+                          u.account_status,
+                          u.department_name,
+                          g.username     AS granted_by_username,
+                          g.display_name AS granted_by_display_name
+                   FROM knowledge_department_managers m
+                   JOIN users u ON u.user_id = m.user_id
+                   LEFT JOIN users g ON g.user_id = m.granted_by
+                   WHERE m.user_id=? AND m.department_id=?""",
+                (user_id, department_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise RuntimeError("知识库管理员权限保存失败")
+            d = dict(row)
+            d["granted_by"] = (
+                d.get("granted_by_display_name")
+                or d.get("granted_by_username")
+                or d.get("granted_by_user_id", "")
+            )
+            if not d.get("department_name"):
+                d["department_name"] = d.get("department_id", "")
+            return d
 
-    def _revoke_team_space_grant(self, table: str, user_id: str) -> bool:
+    def revoke_department_manager(self, user_id: str, department_id: str) -> bool:
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
-            self.db._execute(cursor, f"DELETE FROM {table} WHERE user_id=?", (user_id,))
+            self.db._execute(
+                cursor,
+                "DELETE FROM knowledge_department_managers WHERE user_id=? AND department_id=?",
+                (user_id, department_id),
+            )
             return cursor.rowcount > 0
 
-    def list_team_space_managers(self) -> list[dict[str, Any]]:
-        return self._list_team_space_grants("knowledge_team_space_managers")
-
-    def grant_team_space_manager(self, *, user_id: str, granted_by: str) -> dict[str, Any]:
-        return self._grant_team_space_permission(
-            table="knowledge_team_space_managers",
-            user_id=user_id, granted_by=granted_by, label="管理", require_department=True,
-        )
-
-    def revoke_team_space_manager(self, user_id: str) -> bool:
-        return self._revoke_team_space_grant("knowledge_team_space_managers", user_id)
+    def list_department_managers(
+        self, department_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """列出知识库管理员；不传 department_id 时返回全部。"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            base_sql = """
+                SELECT m.id,
+                       m.user_id,
+                       m.department_id,
+                       m.granted_by AS granted_by_user_id,
+                       m.granted_at,
+                       m.updated_at,
+                       u.username,
+                       u.display_name,
+                       u.account_status,
+                       u.department_name,
+                       g.username   AS granted_by_username,
+                       g.display_name AS granted_by_display_name
+                  FROM knowledge_department_managers m
+                  JOIN users u ON u.user_id = m.user_id
+                  LEFT JOIN users g ON g.user_id = m.granted_by
+            """
+            if department_id:
+                base_sql += " WHERE m.department_id=? ORDER BY u.display_name, u.username"
+                self.db._execute(cursor, base_sql, (department_id,))
+            else:
+                base_sql += " ORDER BY m.department_id, u.display_name, u.username"
+                self.db._execute(cursor, base_sql)
+            rows = cursor.fetchall()
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                d = dict(row)
+                # 前端统一字段：department_name 兜底用 id
+                if not d.get("department_name"):
+                    d["department_name"] = d.get("department_id", "")
+                # granted_by 优先显示姓名，没有就显示账号
+                d["granted_by"] = (
+                    d.get("granted_by_display_name")
+                    or d.get("granted_by_username")
+                    or d.get("granted_by_user_id", "")
+                )
+                result.append(d)
+            return result
 
     # ---------------- 文件夹 ----------------
 

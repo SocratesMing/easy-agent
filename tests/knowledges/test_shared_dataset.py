@@ -135,7 +135,7 @@ def _make_service_with_dataset(
     tmp_path,
     *,
     dataset_id: str,
-    embedding_model: str,
+    embedding_model: str = "",
 ) -> KnowledgeService:
     return KnowledgeService(
         KnowledgeRepository(db),
@@ -215,7 +215,8 @@ async def test_ensure_shared_dataset_creates_when_missing_and_caches(db, tmp_pat
     # 进程级缓存：新的 service 实例不重复查找/创建
     another = _make_service(db, ragflow, tmp_path)
     assert await another._ensure_shared_dataset() == shared_id
-    assert len(ragflow.listed_datasets_calls) == 1
+    # 第一次 ensure：list_datasets 用于 find + create 后 _get_dataset 读模型 = 2 次；
+    # 第二次 ensure：命中进程级缓存，不再调用 Ragflow
     assert len(ragflow.datasets_created) == 1
 
 
@@ -266,116 +267,10 @@ async def test_configured_shared_dataset_id_is_used(db, tmp_path):
     assert await service._dataset_id_for(base) == "ds-designated"
 
 
-async def test_configured_dataset_model_mismatch_with_chunks_switches_dataset(
-    db, tmp_path
-):
-    """指定库已绑定旧模型且有 chunk：自动创建/改用模型专用数据集。"""
-
-    ragflow = _FakeRagflow(
-        existing_datasets=[
-            {
-                "id": "ds-designated",
-                "name": "Easy",
-                "embedding_model": "old-model",
-                "chunk_count": 411,
-            }
-        ]
-    )
-    service = _make_service_with_dataset(
-        db,
-        ragflow,
-        tmp_path,
-        dataset_id="ds-designated",
-        embedding_model="new-model",
-    )
-    expected_name = service._shared_dataset_name_for_model("new-model")
-
-    shared_id = await service._ensure_shared_dataset()
-
-    assert shared_id.startswith("ds-shared-")
-    assert ragflow.dataset_updates == []
-    assert len(ragflow.datasets_created) == 1
-    assert ragflow.datasets_created[0]["name"] == expected_name
-    assert ragflow.datasets_created[0]["embedding_model"] == "new-model"
-
-
-async def test_configured_dataset_mismatch_falls_back_when_create_forbidden(
-    db, tmp_path
-):
-    """托管环境不允许建库时，回退到明确的模型不一致错误。"""
-
-    ragflow = _FakeRagflow(
-        existing_datasets=[
-            {
-                "id": "ds-designated",
-                "name": "Easy",
-                "embedding_model": "old-model",
-                "chunk_count": 411,
-            }
-        ]
-    )
-
-    async def _forbidden(**kwargs):
-        raise RagflowError("no permission to create dataset")
-
-    ragflow.create_dataset = _forbidden  # type: ignore[method-assign]
-    service = _make_service_with_dataset(
-        db,
-        ragflow,
-        tmp_path,
-        dataset_id="ds-designated",
-        embedding_model="new-model",
-    )
-
-    with pytest.raises(KnowledgeServiceError) as exc_info:
-        await service._ensure_shared_dataset()
-
-    assert exc_info.value.code == "KNOWLEDGE_EMBEDDING_MODEL_MISMATCH"
-    assert "old-model" in exc_info.value.message
-    assert "new-model" in exc_info.value.message
-
-
-async def test_configured_empty_dataset_auto_switches_model(db, tmp_path):
-    """指定库为空（chunk_count=0）：按配置自动更新模型，一次进程只查一次。"""
-
-    ragflow = _FakeRagflow(
-        existing_datasets=[
-            {
-                "id": "ds-designated",
-                "name": "Easy",
-                "embedding_model": "old-model",
-                "chunk_count": 0,
-            }
-        ]
-    )
-    service = _make_service_with_dataset(
-        db,
-        ragflow,
-        tmp_path,
-        dataset_id="ds-designated",
-        embedding_model="new-model",
-    )
-
-    assert await service._ensure_shared_dataset() == "ds-designated"
-    assert ragflow.dataset_updates == [
-        {"dataset_id": "ds-designated", "embedding_model": "new-model"}
-    ]
-
-    # 校验结果进程级缓存：再次调用不再查数据集
-    assert await service._ensure_shared_dataset() == "ds-designated"
-    assert len(ragflow.listed_datasets_calls) == 1
-    assert len(ragflow.dataset_updates) == 1
-
-
 async def test_configured_missing_dataset_raises_actionable_error(db, tmp_path):
+    """配置指向不存在的共享数据集 ID：抛出带可操作提示的错误。"""
     ragflow = _FakeRagflow()
-    service = _make_service_with_dataset(
-        db,
-        ragflow,
-        tmp_path,
-        dataset_id="ds-missing",
-        embedding_model="new-model",
-    )
+    service = _make_service_with_dataset(db, ragflow, tmp_path, dataset_id="ds-missing")
 
     with pytest.raises(KnowledgeServiceError) as exc_info:
         await service._ensure_shared_dataset()
@@ -385,59 +280,7 @@ async def test_configured_missing_dataset_raises_actionable_error(db, tmp_path):
     assert "RAGFLOW_API_KEY" in exc_info.value.message
 
 
-async def test_found_shared_dataset_model_mismatch_with_chunks_switches_dataset(
-    db, tmp_path
-):
-    """未指定 ID、旧 EA_SHARED 有 chunk 且模型不一致：自动切到模型专用新库。"""
-
-    ragflow = _FakeRagflow(
-        existing_datasets=[
-            {
-                "id": "ds-existing",
-                "name": SHARED_DATASET_NAME,
-                "embedding_model": "old-model",
-                "chunk_count": 18,
-            }
-        ]
-    )
-    service = _make_service(db, ragflow, tmp_path, embedding_model="new-model")
-    expected_name = service._shared_dataset_name_for_model("new-model")
-
-    shared_id = await service._ensure_shared_dataset()
-
-    assert shared_id.startswith("ds-shared-")
-    assert ragflow.dataset_updates == []
-    assert len(ragflow.datasets_created) == 1
-    assert ragflow.datasets_created[0]["name"] == expected_name
-    assert ragflow.datasets_created[0]["embedding_model"] == "new-model"
-
-    # 进程级缓存：再次调用不再查库/建库
-    assert await service._ensure_shared_dataset() == shared_id
-    assert len(ragflow.datasets_created) == 1
-
-
-async def test_model_specific_dataset_is_reused(db, tmp_path):
-    """模型专用数据集已存在时直接复用，不重复创建。"""
-
-    expected_name = KnowledgeService._shared_dataset_name_for_model("new-model")
-    ragflow = _FakeRagflow(
-        existing_datasets=[
-            {
-                "id": "ds-model-new",
-                "name": expected_name,
-                "embedding_model": "new-model",
-                "chunk_count": 0,
-            }
-        ]
-    )
-    service = _make_service(db, ragflow, tmp_path, embedding_model="new-model")
-
-    assert await service._ensure_shared_dataset() == "ds-model-new"
-    assert ragflow.datasets_created == []
-    assert ragflow.dataset_updates == []
-
-
-def test_from_mapping_reads_shared_dataset_id(monkeypatch):
+async def test_from_mapping_reads_shared_dataset_id(monkeypatch):
     """配置解析：YAML 键 shared_dataset_id 生效；未提供时回退环境变量。"""
     config = KnowledgeConfig.from_mapping({"shared_dataset_id": "ds-yaml"})
     assert config.shared_dataset_id == "ds-yaml"
@@ -449,14 +292,16 @@ def test_from_mapping_reads_shared_dataset_id(monkeypatch):
     assert KnowledgeConfig.from_mapping({}).shared_dataset_id == ""
 
 
-def test_from_mapping_reads_embedding_model(monkeypatch):
-    """配置解析：embedding.model YAML 键生效；未提供时回退环境变量；
-    仍为空表示用 Ragflow 默认模型（create_dataset 传 None）。"""
+def test_from_mapping_ignores_embedding_model(monkeypatch):
+    """embedding 模型不再从 YAML / RAGFLOW_EMBEDDING_MODEL 环境变量读取——
+    一律静默忽略，让运行时从上游 RAGFlow 数据集解析。"""
+    # YAML 里写了 embedding.model
     config = KnowledgeConfig.from_mapping({"embedding": {"model": "bge-yaml"}})
-    assert config.embedding.model == "bge-yaml"
+    assert config.embedding.model == ""
 
+    # 环境变量写了 RAGFLOW_EMBEDDING_MODEL
     monkeypatch.setenv("RAGFLOW_EMBEDDING_MODEL", "bge-env")
-    assert KnowledgeConfig.from_mapping({}).embedding.model == "bge-env"
+    assert KnowledgeConfig.from_mapping({}).embedding.model == ""
 
     monkeypatch.delenv("RAGFLOW_EMBEDDING_MODEL")
     assert KnowledgeConfig.from_mapping({}).embedding.model == ""

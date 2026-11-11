@@ -7,9 +7,14 @@ fail-closed 路径报错并提示填写。
 
 只认这些 YAML 键：``implementation``（透传不校验）/ ``enabled`` /
 ``base_url`` / ``api_key`` / ``shared_dataset_id``（指定既有共享数据集，
-空则按名称查找、没有时自动创建）/ ``embedding.model``（未配置时回退
-``RAGFLOW_EMBEDDING_MODEL``，留空由 Ragflow 用其默认模型）/ ``audit`` /
-``limits`` / ``source_sync``（研报接入：文档 SQL 增量同步，含 enabled 总开关）。
+空则按名称查找、没有时自动创建）/ ``audit`` / ``limits`` /
+``source_sync``（研报接入：文档 SQL 增量同步，含 enabled 总开关）。
+
+embedding 模型**不再**通过 YAML 或 ``RAGFLOW_EMBEDDING_MODEL`` 环境变量
+显式配置——统一从上游 RAGFlow 实际读取：若指定了 ``shared_dataset_id``
+就用该数据集绑定的模型；否则在自动创建/查找共享库时拿到其模型；
+极端情况下 API Key 下一个数据集都没有则让 RAGFlow 使用其租户默认。
+
 解析策略、检索参数与上传安全开关为代码内固定值。
 """
 
@@ -166,7 +171,12 @@ class SourceSyncConfig(BaseModel):
 
 
 class KnowledgeConfig(BaseModel):
-    """校验后的知识库配置（应用启动时加载一次）。"""
+    """校验后的知识库配置（应用启动时加载一次）。
+
+    注意：embedding 模型不再从本配置读取，而是在首次需要共享数据集时
+    从上游 RAGFlow 的 ``shared_dataset_id``（或自动创建/查找的
+    ``EA_SHARED``）数据集上解析得到。
+    """
 
     enabled: bool = False
     base_url: str = ""
@@ -174,6 +184,7 @@ class KnowledgeConfig(BaseModel):
     # 指定既有共享数据集 ID（RAGFLOW_SHARED_DATASET_ID）：非空时共享库
     # 直接使用该数据集，不按名称查找、不自动创建；为空维持 find-or-create
     shared_dataset_id: str = ""
+    # 保留字段，始终为空字符串；真实模型由 KnowledgeService 在运行时解析
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
@@ -232,12 +243,10 @@ class KnowledgeConfig(BaseModel):
                 section.get("shared_dataset_id")
                 or _env_fallback("RAGFLOW_SHARED_DATASET_ID")
             ),
-            "embedding": {
-                "model": str(
-                    _as_mapping(section.get("embedding")).get("model")
-                    or _env_fallback("RAGFLOW_EMBEDDING_MODEL")
-                )
-            },
+            # embedding.model 始终为空：运行时由 KnowledgeService 从上游
+            # 数据集解析。兼容老配置里仍有写 embedding.model /
+            # RAGFLOW_EMBEDDING_MODEL 的情况——静默忽略，不报错。
+            "embedding": {"model": ""},
             "audit": _as_mapping(section.get("audit")),
             "limits": limits_section,
             "source_sync": source_section,

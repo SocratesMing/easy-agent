@@ -184,7 +184,7 @@
           设置
         </button>
         <button
-          v-if="username === 'admin'"
+          v-if="isSuperAdmin"
           class="user-dropdown-item"
           @click="showUserManagement"
         >
@@ -267,6 +267,10 @@ const renameInput = ref(null)
 const showUserMenu = ref(false)
 const showDeleteConfirm = ref(false)
 const deleteTarget = ref(null)
+
+// 与后端 is_super_admin 保持一致：admin 与免密门户总管理员 liufengbao 同权
+const SUPER_ADMIN_USERNAMES = ['admin', 'liufengbao']
+const isSuperAdmin = computed(() => SUPER_ADMIN_USERNAMES.includes(String(props.username || '')))
 
 // 删除会话前必须二次确认（D3）：误点删除会同时清空当前聊天视图且不可恢复。
 const deleteTargetTitle = computed(() => sessionTitle(deleteTarget.value))

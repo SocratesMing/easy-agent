@@ -5,7 +5,7 @@
 
 这是宿主机上的真实 shell（不经沙箱、继承服务进程环境），因此（SEC-01）：
 - 默认关闭，``EASY_WEB_TERMINAL_ENABLED=1`` 才挂出页面与 WebSocket；
-- 连接后首帧必须是 ``{"type": "auth", "token": "<JWT>"}``，且只允许 admin；
+- 连接后首帧必须是 ``{"type": "auth", "token": "<JWT>"}``，且只允许超级管理员；
   鉴权通过前不创建 pty / 子进程。
 """
 
@@ -27,13 +27,13 @@ from fastapi.websockets import WebSocketState
 from easy_agent.bootstrap.env import env_bool
 from easy_agent.db.repositories.user_repository import UserRepository
 from easy_agent.middleware.auth import get_user_repository, verify_token_sso
+from easy_agent.utils.auth import is_super_admin
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Terminal"])
 
 _ENABLED_ENV = "EASY_WEB_TERMINAL_ENABLED"
-_ADMIN_USERNAME = "admin"
 _AUTH_TIMEOUT_SECONDS = 10
 # 应用自定义关闭码（4000-4999）：未登录 / 非管理员
 _CLOSE_UNAUTHENTICATED = 4401
@@ -309,7 +309,7 @@ async def _authenticate_admin(websocket: WebSocket, users: UserRepository) -> st
     if username is None:
         await _reject(websocket, _CLOSE_UNAUTHENTICATED, "未登录或登录已过期")
         return None
-    if username != _ADMIN_USERNAME:
+    if not is_super_admin(username):
         await _reject(websocket, _CLOSE_FORBIDDEN, "仅管理员可使用 Web 终端")
         return None
     return username

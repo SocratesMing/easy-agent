@@ -39,7 +39,7 @@
         </label>
         <label class="pm-filter pm-department-filter">
           <span>部门</span>
-          <input v-model="departmentId" placeholder="部门编号" aria-label="按部门编号筛选" />
+          <input v-model="departmentName" placeholder="部门名称" aria-label="按部门名称筛选" />
         </label>
         <span class="pm-toolbar-spacer"></span>
         <button class="pm-btn pm-quiet" type="button" :disabled="downloadingTemplate" @click="downloadTemplate">
@@ -62,7 +62,7 @@
         </button>
       </div>
 
-      <section class="pm-team-access-guide" aria-label="公共空间权限说明">
+      <section class="pm-team-access-guide" aria-label="知识库管理员权限说明">
         <span aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
@@ -70,9 +70,14 @@
           </svg>
         </span>
         <div>
-          <strong>公共空间授权管理</strong>
-          <p>公共空间对<strong>本部门成员默认可见（只读）</strong>，无需单独授权；<strong>可创建/管理</strong>授权允许创建并管理所属部门的公共知识库。admin 默认拥有全局权限，无需给自己授权。</p>
-          <small>这是全局公共空间权限；单个知识库的可见人员，可在该知识库的「权限管理」中按部门、处室、团队勾选配置。</small>
+          <strong>知识库管理员权限说明</strong>
+          <p>授予后，该成员即成为其所属部门的知识库管理员，拥有以下权限：</p>
+          <ul class="pm-team-access-list">
+            <li><strong>①</strong> 仅可在本部门内部创建公共空间知识库</li>
+            <li><strong>②</strong> 仅可管理自己创建的知识库，无权管理他人创建的库</li>
+            <li><strong>③</strong> 管理权限包括知识库增删改查、知识库查看权限授予与调整</li>
+          </ul>
+          <small>公共空间对本部门成员默认只读可见；单个知识库的可见人员范围，可在该知识库的「权限管理」中按部门、处室、团队勾选限定。admin 默认拥有全局权限，无需在此授权。</small>
         </div>
       </section>
 
@@ -91,14 +96,6 @@
         <div><strong>{{ total }}</strong><span>人员总数</span></div>
         <i></i>
         <div><strong>{{ activeCount }}</strong><span>当前列表已启用</span></div>
-        <i></i>
-        <div><strong>{{ teamManagerCount }}</strong><span>公共空间管理员</span></div>
-        <span class="pm-summary-tip">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" /><path d="m9 12 2 2 4-4" />
-          </svg>
-          仅 admin 可配置，后端会再次校验权限
-        </span>
       </div>
 
       <main class="pm-content">
@@ -112,7 +109,7 @@
                 <th>处室</th>
                 <th>团队</th>
                 <th>信息来源</th>
-                <th class="pm-nowrap">公共空间权限</th>
+                <th class="pm-nowrap">知识库管理员</th>
                 <th>状态</th>
                 <th class="pm-actions-head">操作</th>
               </tr>
@@ -151,20 +148,20 @@
                   <td><span class="pm-cell-main">{{ user.team_name || '—' }}</span></td>
                   <td><span class="pm-source" :title="user.personnel_source || '未记录'">{{ user.personnel_source || '未记录' }}</span></td>
                   <td>
-                    <span v-if="user.username === 'admin'" class="pm-access-note global">全局管理</span>
+                    <span v-if="isSuperAdmin(user.username)" class="pm-access-note global">系统管理员</span>
                     <div v-else class="pm-permission-stack">
                       <button
                         class="pm-permission-switch"
-                        :class="{ active: isTeamManager(user), pending: teamPermissionUserId === user.user_id }"
+                        :class="{ active: isDeptManagerOf(user.user_id, user.department_id), pending: togglingDeptManagerUserId === user.user_id }"
                         type="button"
                         role="switch"
-                        :aria-checked="isTeamManager(user) ? 'true' : 'false'"
-                        :disabled="teamPermissionUserId === user.user_id || (!isTeamManager(user) && !canGrantTeamManager(user))"
-                        :title="teamPermissionTitle(user)"
-                        @click="toggleTeamPermission(user)"
+                        :aria-checked="isDeptManagerOf(user.user_id, user.department_id) ? 'true' : 'false'"
+                        :disabled="togglingDeptManagerUserId === user.user_id || !canToggleDeptManager(user)"
+                        :title="deptManagerToggleTitle(user)"
+                        @click="toggleDeptManager(user)"
                       >
                         <i><span></span></i>
-                        <strong>{{ isTeamManager(user) ? '可创建/管理' : '不可创建' }}</strong>
+                        <strong>{{ isDeptManagerOf(user.user_id, user.department_id) ? '知识库管理员' : '普通成员' }}</strong>
                       </button>
                     </div>
                   </td>
@@ -173,23 +170,23 @@
                     <div class="pm-row-actions">
                       <button
                         type="button"
-                        :disabled="user.username === 'admin'"
-                        :title="user.username === 'admin' ? '系统管理员账号不可在此修改' : '编辑人员'"
+                        :disabled="isSuperAdmin(user.username)"
+                        :title="isSuperAdmin(user.username) ? '系统管理员账号不可在此修改' : '编辑人员'"
                         @click="openEdit(user)"
                       >编辑</button>
                       <button
                         type="button"
-                        :disabled="user.username === 'admin' || resettingUsername === user.username"
-                        :title="user.username === 'admin' ? '系统管理员账号不可在此重置密码' : '重置后密码为 123456'"
+                        :disabled="isSuperAdmin(user.username) || resettingUsername === user.username"
+                        :title="isSuperAdmin(user.username) ? '系统管理员账号不可在此重置密码' : '重置后密码为 123456'"
                         @click="resetPassword(user)"
                       >
-                        {{ user.username === 'admin' ? '不可重置' : (resettingUsername === user.username ? '重置中…' : '重置密码') }}
+                        {{ isSuperAdmin(user.username) ? '不可重置' : (resettingUsername === user.username ? '重置中…' : '重置密码') }}
                       </button>
                       <button
                         type="button"
                         class="danger"
-                        :disabled="user.username === 'admin' || deletingUserId === user.user_id"
-                        :title="user.username === 'admin' ? '系统管理员账号不可删除' : '删除该人员账号'"
+                        :disabled="isSuperAdmin(user.username) || deletingUserId === user.user_id"
+                        :title="isSuperAdmin(user.username) ? '系统管理员账号不可删除' : '删除该人员账号'"
                         @click="removeUser(user)"
                       >
                         {{ deletingUserId === user.user_id ? '删除中…' : '删除' }}
@@ -240,7 +237,7 @@
             </label>
             <label>
               <span>账号状态 <b>*</b></span>
-              <select v-model="form.account_status" :disabled="form.username === 'admin'">
+              <select v-model="form.account_status" :disabled="isSuperAdmin(form.username)">
                 <option value="active">启用</option>
                 <option value="disabled">停用</option>
               </select>
@@ -374,8 +371,6 @@ import {
   getPersonnelImportTemplate,
   importPersonnelUsers,
   listPersonnelUsers,
-  listTeamSpaceManagers,
-  setTeamSpaceManager,
   updatePersonnelUser,
 } from './api.js'
 import {
@@ -384,9 +379,9 @@ import {
   formatPersonnelValidationDetail,
   normalizePersonnelPage,
   summarizeImportResult,
-  updateTeamManagerIds,
   validatePersonnelForm,
 } from './model.js'
+import { grantDepartmentManager, listDepartmentManagers, revokeDepartmentManager } from '../knowledge/api.js'
 
 export default {
   name: 'PersonnelManagement',
@@ -396,17 +391,21 @@ export default {
     const loading = ref(false)
     const keyword = ref('')
     const accountStatus = ref('')
-    const departmentId = ref('')
+    const departmentName = ref('')
     const page = ref(1)
     const pageSize = 50
+    // 与后端 is_super_admin 保持一致：liufengbao 是免密门户的总管理员
+    const SUPER_ADMIN_USERNAMES = ['admin', 'liufengbao']
+    function isSuperAdmin(username) {
+      return SUPER_ADMIN_USERNAMES.includes(String(username || ''))
+    }
     const noticeText = ref('')
     const noticeType = ref('success')
     const resettingUsername = ref('')
     const deletingUserId = ref('')
+    const deptManagerMap = ref(new Map())  // Map<userId, Set<departmentId>> 谁在哪些部门是知识库管理员
+    const togglingDeptManagerUserId = ref('')  // 当前正在 toggle 的 user_id
     const downloadingTemplate = ref(false)
-    const teamManagerIds = ref(new Set())
-    const teamPermissionUserId = ref('')
-
     const showEditor = ref(false)
     const editingUserId = ref('')
     const form = reactive(emptyPersonnelForm())
@@ -426,8 +425,7 @@ export default {
     let noticeTimer = null
 
     const activeCount = computed(() => users.value.filter(user => user.account_status === 'active').length)
-    const teamManagerCount = computed(() => teamManagerIds.value.size)
-    const hasFilters = computed(() => Boolean(keyword.value.trim() || accountStatus.value || departmentId.value.trim()))
+    const hasFilters = computed(() => Boolean(keyword.value.trim() || accountStatus.value || departmentName.value.trim()))
     const canImport = computed(() => Boolean(importFile.value && importSource.value.trim()))
     const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
     const pageStart = computed(() => total.value ? (page.value - 1) * pageSize + 1 : 0)
@@ -459,7 +457,7 @@ export default {
         const payload = await listPersonnelUsers({
           keyword: keyword.value,
           accountStatus: accountStatus.value,
-          departmentId: departmentId.value,
+          departmentName: departmentName.value,
           page: page.value,
           pageSize,
         })
@@ -478,60 +476,81 @@ export default {
       }
     }
 
-    async function loadTeamManagers() {
-      try {
-        const payload = await listTeamSpaceManagers()
-        teamManagerIds.value = new Set(
-          (payload && Array.isArray(payload.items) ? payload.items : [])
-            .map(item => String(item.user_id || ''))
-            .filter(Boolean)
-        )
-      } catch (error) {
-        notify(resolveError(error, '获取公共空间权限失败'), 'error')
-      }
-    }
-
-    function isTeamManager(user) {
-      return teamManagerIds.value.has(String(user.user_id || ''))
-    }
-
-    function canGrantTeamManager(user) {
-      return user.account_status === 'active' && Boolean(String(user.department_id || '').trim())
-    }
-
-    function teamPermissionTitle(user) {
-      if (teamPermissionUserId.value === user.user_id) return '正在保存权限'
-      if (isTeamManager(user) && user.account_status === 'disabled') return '权限已暂停；可点击移除授权'
-      if (!isTeamManager(user) && user.account_status === 'disabled') return '停用账号不能获得公共空间权限'
-      if (!isTeamManager(user) && !String(user.department_id || '').trim()) return '账号缺少部门，不能获得公共空间权限'
-      return isTeamManager(user)
-        ? '点击取消其所属部门公共空间的创建与管理权限'
-        : '点击授予其所属部门公共空间的创建与管理权限'
-    }
-
-    async function toggleTeamPermission(user) {
-      const userId = String(user.user_id || '')
-      if (!userId || teamPermissionUserId.value) return
-      const enabled = !isTeamManager(user)
-      teamPermissionUserId.value = userId
-      try {
-        await setTeamSpaceManager(userId, enabled)
-        teamManagerIds.value = updateTeamManagerIds(teamManagerIds.value, userId, enabled)
-        notify(enabled
-          ? `已授权 ${user.display_name || user.username} 管理本部门公共空间`
-          : `已取消 ${user.display_name || user.username} 的公共空间管理权限`)
-      } catch (error) {
-        notify(resolveError(error, '设置公共空间权限失败'), 'error')
-      } finally {
-        teamPermissionUserId.value = ''
-      }
-    }
-
     function scheduleLoad() {
       page.value = 1
       if (filterTimer) clearTimeout(filterTimer)
-      filterTimer = setTimeout(loadUsers, 280)
+      filterTimer = setTimeout(() => { loadUsers(); loadDeptManagers() }, 280)
     }
+
+    async function loadDeptManagers() {
+      try {
+        const payload = await listDepartmentManagers('')  // 全量
+        const map = new Map()
+        for (const item of (payload && Array.isArray(payload.items) ? payload.items : [])) {
+          const uid = String(item.user_id || '')
+          const did = String(item.department_id || '')
+          if (!uid || !did) continue
+          if (!map.has(uid)) map.set(uid, new Set())
+          map.get(uid).add(did)
+        }
+        deptManagerMap.value = map
+      } catch (error) {
+        notify(resolveError(error, '加载知识库管理员失败'), 'error')
+      }
+    }
+
+    function isDeptManagerOf(userId, departmentId) {
+      const set = deptManagerMap.value.get(String(userId || ''))
+      if (!set) return false
+      return set.has(String(departmentId || ''))
+    }
+
+    function canToggleDeptManager(user) {
+      if (isSuperAdmin(user.username)) return false
+      // 已授权的停用账号仍允许撤销（授权本身在停用期间不生效）
+      if (isDeptManagerOf(user.user_id, user.department_id)) return true
+      if (user.account_status !== 'active') return false
+      return Boolean(String(user.department_id || '').trim())
+    }
+
+    function deptManagerToggleTitle(user) {
+      if (isSuperAdmin(user.username)) return '系统管理员账号已自带全权限'
+      if (isDeptManagerOf(user.user_id, user.department_id)) {
+        return `点击撤销 ${user.department_name || user.department_id} 的知识库管理员权限`
+      }
+      if (user.account_status !== 'active') return '停用账号不能成为知识库管理员'
+      if (!String(user.department_id || '').trim()) return '该账号未关联部门，不能成为知识库管理员'
+      return `点击授予 ${user.department_name || user.department_id} 的知识库管理员权限`
+    }
+
+    async function toggleDeptManager(user) {
+      const userId = String(user.user_id || '')
+      const deptId = String(user.department_id || '')
+      if (!userId || !deptId) return
+      const enabled = !isDeptManagerOf(userId, deptId)
+      togglingDeptManagerUserId.value = userId
+      try {
+        if (enabled) {
+          await grantDepartmentManager(userId, deptId)
+        } else {
+          await revokeDepartmentManager(userId, deptId)
+        }
+        // 本地乐观更新：整体替换 Map，Vue 2.7 不会追踪 Map 的原地变更
+        const nextMap = new Map(deptManagerMap.value)
+        const set = new Set(nextMap.get(userId) || [])
+        if (enabled) set.add(deptId); else set.delete(deptId)
+        nextMap.set(userId, set)
+        deptManagerMap.value = nextMap
+        notify(enabled
+          ? `已授予 ${user.display_name || user.username} 在 ${user.department_name || deptId} 的知识库管理员权限`
+          : `已撤销 ${user.display_name || user.username} 在 ${user.department_name || deptId} 的权限`)
+      } catch (error) {
+        notify(resolveError(error, '设置知识库管理员失败'), 'error')
+      } finally {
+        togglingDeptManagerUserId.value = ''
+      }
+    }
+
 
     function changePage(nextPage) {
       const normalized = Math.min(totalPages.value, Math.max(1, Number(nextPage) || 1))
@@ -543,7 +562,7 @@ export default {
     function clearFilters() {
       keyword.value = ''
       accountStatus.value = ''
-      departmentId.value = ''
+      departmentName.value = ''
     }
 
     function resetForm() {
@@ -572,7 +591,7 @@ export default {
         email: user.email,
         position: user.position,
         mobile: user.mobile,
-        account_status: user.username === 'admin' ? 'active' : user.account_status,
+        account_status: isSuperAdmin(user.username) ? 'active' : user.account_status,
         personnel_source: user.personnel_source,
       })
       showEditor.value = true
@@ -611,7 +630,7 @@ export default {
     }
 
     async function resetPassword(user) {
-      if (user.username === 'admin') {
+      if (isSuperAdmin(user.username)) {
         notify('系统管理员账号不可在人员管理中重置密码', 'error')
         return
       }
@@ -628,11 +647,11 @@ export default {
     }
 
     async function removeUser(user) {
-      if (user.username === 'admin') return
+      if (isSuperAdmin(user.username)) return
       const label = user.display_name || user.username
       const confirmed = window.confirm(
         `确认删除人员 ${label}（${user.username}）？\n` +
-        '删除后该账号无法登录，其公共空间授权与知识库可见授权将一并移除；' +
+        '删除后该账号无法登录，其知识库管理员授权与知识库可见授权将一并移除；' +
         '名下仍有知识库时会被阻止，请先处理其知识库。'
       )
       if (!confirmed) return
@@ -642,7 +661,7 @@ export default {
         notify(`已删除 ${label}（${user.username}）`)
         // 删除的是当前页最后一条时回退一页，避免停留在空页
         if (users.value.length === 1 && page.value > 1) page.value -= 1
-        await Promise.all([loadUsers(), loadTeamManagers()])
+        await loadUsers()
       } catch (error) {
         notify(resolveError(error, '删除人员失败'), 'error')
       } finally {
@@ -741,10 +760,10 @@ export default {
       return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
     }
 
-    watch([keyword, accountStatus, departmentId], scheduleLoad)
+    watch([keyword, accountStatus, departmentName], scheduleLoad)
     onMounted(() => {
       loadUsers()
-      loadTeamManagers()
+      loadDeptManagers()
     })
     onBeforeUnmount(() => {
       if (filterTimer) clearTimeout(filterTimer)
@@ -763,7 +782,7 @@ export default {
       closeImport,
       contactText,
       deletingUserId,
-      departmentId,
+      departmentName,
       downloadTemplate,
       downloadingTemplate,
       editingUserId,
@@ -776,7 +795,6 @@ export default {
       importFile,
       importFileInput,
       importSource,
-      isTeamManager,
       importing,
       keyword,
       loadUsers,
@@ -798,11 +816,12 @@ export default {
       showImport,
       statusLabel,
       submitImport,
-      teamManagerCount,
-      teamPermissionTitle,
-      teamPermissionUserId,
-      toggleTeamPermission,
-      canGrantTeamManager,
+      togglingDeptManagerUserId,
+      toggleDeptManager,
+      canToggleDeptManager,
+      deptManagerToggleTitle,
+      isDeptManagerOf,
+      isSuperAdmin,
       total,
       totalPages,
       users,
@@ -967,9 +986,12 @@ export default {
 }
 .pm-team-access-guide svg { width: 18px; height: 18px; }
 .pm-team-access-guide div { min-width: 0; }
-.pm-team-access-guide strong { display: block; font-size: 12px; }
+.pm-team-access-guide > div > strong { display: block; font-size: 12px; }
 .pm-team-access-guide p { margin: 3px 0 0; color: var(--text-secondary); font-size: 11px; line-height: 1.55; }
 .pm-team-access-guide small { display: block; margin-top: 3px; color: var(--text-secondary); font-size: 10px; line-height: 1.5; opacity: .86; }
+.pm-team-access-list { margin: 4px 0 0; padding: 0; list-style: none; }
+.pm-team-access-list li { display: block; margin: 2px 0 0; color: var(--text-secondary); font-size: 11px; line-height: 1.6; white-space: nowrap; }
+.pm-team-access-list li strong { display: inline; margin-right: 4px; font-weight: 600; }
 
 .pm-notice {
   display: flex;
@@ -1002,8 +1024,6 @@ export default {
 .pm-summary strong { color: var(--text-primary); font-size: 19px; line-height: 1; }
 .pm-summary span { color: var(--text-secondary); font-size: 11px; }
 .pm-summary > i { width: 1px; height: 22px; background: var(--border-color); }
-.pm-summary .pm-summary-tip { display: flex; align-items: center; gap: 6px; margin-left: auto; }
-.pm-summary-tip svg { width: 15px; height: 15px; color: #10b981; }
 
 .pm-content { flex: 1 1 auto; min-height: 0; padding: 14px 24px 0; }
 .pm-table-wrap { height: 100%; overflow: auto; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 12px; }
@@ -1128,13 +1148,13 @@ export default {
   .pm-toolbar { flex-wrap: wrap; }
   .pm-search { width: 100%; }
   .pm-toolbar-spacer { display: none; }
-  .pm-summary-tip { display: none !important; }
 }
 
 @media (max-width: 620px) {
   .pm-heading p, .pm-footer span { display: none; }
   .pm-header, .pm-toolbar { padding-left: 14px; padding-right: 14px; }
   .pm-team-access-guide { margin-left: 14px; margin-right: 14px; }
+  .pm-team-access-list li { white-space: normal; }
   .pm-summary { margin-left: 14px; margin-right: 14px; }
   .pm-content { padding-left: 14px; padding-right: 14px; }
   .pm-form { grid-template-columns: 1fr; }

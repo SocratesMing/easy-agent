@@ -1,11 +1,11 @@
 """公共空间默认可见性回归测试。
 
-取消「可查看」白名单后：公共（team）空间对同部门账号默认只读可见；
-跨部门 / 无部门访问仍需 owner、管理白名单或单库权限行。
-权限管理勾选名单模式（access_restricted=1）下，同部门默认可见与
-部门授权行被屏蔽，仅勾选人员、owner、管理白名单与 admin 可见。
+公共（team）空间对同部门账号默认只读可见；跨部门 / 无部门访问仍需
+owner 或单库权限行。权限管理勾选名单模式（access_restricted=1）下，
+同部门默认可见与部门授权行被屏蔽，仅勾选人员、owner 与 admin 可见。
 """
 
+import uuid
 from datetime import datetime
 
 from easy_agent.knowledges.api import KnowledgePrincipal
@@ -44,14 +44,15 @@ def _insert_team_base(db, base_id: str, department_id: str, owner_user_id: str) 
         )
 
 
-def _grant_team_space_manager(db, user_id: str) -> None:
-    """公共空间管理白名单：team 库的 owner 需持白名单才可管理权限。"""
+def _grant_department_manager(db, user_id: str, department_id: str) -> None:
+    """知识库管理员：在本部门内可创建公共空间、管理自己创建的库。"""
     with db.get_connection() as conn:
         db._execute(
             conn.cursor(),
-            "INSERT INTO knowledge_team_space_managers (user_id, granted_by, granted_at, updated_at) "
-            "VALUES (?, 'admin', ?, ?)",
-            (user_id, _now(), _now()),
+            "INSERT INTO knowledge_department_managers "
+            "(id, user_id, department_id, granted_by, granted_at, updated_at) "
+            "VALUES (?, ?, ?, 'admin', ?, ?)",
+            (str(uuid.uuid4()), user_id, department_id, _now(), _now()),
         )
 
 
@@ -105,16 +106,17 @@ async def test_same_department_user_gets_default_viewer_role(db, tmp_path):
     assert await service._effective_role(base, other, []) is None
 
 
-async def test_team_space_manager_gets_manager_role_across_departments(db, tmp_path):
-    """白名单账号同权：对所有公共库（含跨部门）直通 MANAGER，列表全量可见。"""
+async def test_department_manager_only_manages_own_bases_in_own_department(db, tmp_path):
+    """知识库管理员：本部门他人创建的库只读；仅自己创建的库为 MANAGER；跨部门不可见。"""
     _insert_user(db, "u-owner", "owner", "dept-a")
     _insert_user(db, "u-mgr", "mgr", "dept-a")
     # other 为 base-b 本部门普通账号（默认 VIEWER）；out 为跨部门普通账号（不可见）
     _insert_user(db, "u-other", "other", "dept-b")
     _insert_user(db, "u-out", "out", "dept-c")
-    _insert_team_base(db, "base-a", "dept-a", owner_user_id="u-owner")
+    _insert_team_base(db, "base-others", "dept-a", owner_user_id="u-owner")
+    _insert_team_base(db, "base-mine", "dept-a", owner_user_id="u-mgr")
     _insert_team_base(db, "base-b", "dept-b", owner_user_id="u-owner")
-    _grant_team_space_manager(db, "u-mgr")
+    _grant_department_manager(db, "u-mgr", "dept-a")
 
     repository = KnowledgeRepository(db)
     service = _service(db, tmp_path)
@@ -122,16 +124,64 @@ async def test_team_space_manager_gets_manager_role_across_departments(db, tmp_p
     other = KnowledgePrincipal(user_id="u-other", username="other", department_id="dept-b")
     out = KnowledgePrincipal(user_id="u-out", username="out", department_id="dept-c")
 
+    base_others = repository.get_base("base-others")
+    base_mine = repository.get_base("base-mine")
     base_b = repository.get_base("base-b")
-    assert await service._effective_role(base_b, mgr, []) == KnowledgeBaseRole.MANAGER
+    assert await service._effective_role(base_others, mgr, []) == KnowledgeBaseRole.VIEWER
+    assert await service._effective_role(base_mine, mgr, []) == KnowledgeBaseRole.MANAGER
+    assert await service._effective_role(base_b, mgr, []) is None
     # 普通账号行为不变：本部门默认 VIEWER，跨部门不可见
     assert await service._effective_role(base_b, other, []) == KnowledgeBaseRole.VIEWER
     assert await service._effective_role(base_b, out, []) is None
 
     response = await service.list_bases(mgr, page=1, page_size=20)
-    assert {item.id for item in response.items} == {"base-a", "base-b"}
-    assert all(item.role == KnowledgeBaseRole.MANAGER for item in response.items)
-    assert all("manage_permissions" in item.allowed_actions for item in response.items)
+    assert {item.id for item in response.items} == {"base-others", "base-mine"}
+    roles = {item.id: item.role for item in response.items}
+    assert roles == {
+        "base-others": KnowledgeBaseRole.VIEWER,
+        "base-mine": KnowledgeBaseRole.MANAGER,
+    }
+    assert response.team_space_management.can_create is True
+    assert response.team_space_management.can_manage is False
+    actions = {item.id: item.allowed_actions for item in response.items}
+    assert "manage_permissions" in actions["base-mine"]
+    assert "manage_permissions" not in actions["base-others"]
+
+    # 只能在本部门创建：显式指定其他部门直接拒绝
+    from types import SimpleNamespace
+
+    from easy_agent.knowledges.core.models import KnowledgeBaseVisibility
+    from easy_agent.knowledges.service import KnowledgeServiceError
+
+    service.config = SimpleNamespace(embedding=SimpleNamespace(model="test-model"))
+    try:
+        await service.create_base(
+            principal=mgr,
+            name="跨部门库",
+            description="",
+            visibility=KnowledgeBaseVisibility.TEAM,
+            request_id="req-test",
+            department_id="dept-b",
+        )
+        raise AssertionError("应当抛出 KNOWLEDGE_DEPARTMENT_FORBIDDEN")
+    except KnowledgeServiceError as exc:
+        assert exc.code == "KNOWLEDGE_DEPARTMENT_FORBIDDEN"
+
+
+async def test_liufengbao_is_super_admin_for_team_spaces(db, tmp_path):
+    """liufengbao 与 admin 同权：公共空间全量可见、MANAGER、可全局管理。"""
+    _insert_user(db, "u-owner", "owner", "dept-a")
+    _insert_team_base(db, "base-a", "dept-a", owner_user_id="u-owner")
+
+    service = _service(db, tmp_path)
+    super_admin = KnowledgePrincipal(user_id="u-lfb", username="liufengbao", department_id=None)
+    base = KnowledgeRepository(db).get_base("base-a")
+
+    assert await service._effective_role(base, super_admin, []) == KnowledgeBaseRole.MANAGER
+    response = await service.list_bases(super_admin, page=1, page_size=20)
+    assert {item.id for item in response.items} == {"base-a"}
+    assert response.team_space_management.is_admin is True
+    assert response.team_space_management.can_manage is True
 
 
 async def test_restricted_team_base_only_visible_to_selected_users(db, tmp_path):
@@ -141,7 +191,6 @@ async def test_restricted_team_base_only_visible_to_selected_users(db, tmp_path)
     # bob 为跨部门账号：仅能通过勾选名单获得可见性
     _insert_user(db, "u-bob", "bob", "dept-b")
     _insert_team_base(db, "base-a", "dept-a", owner_user_id="u-owner")
-    _grant_team_space_manager(db, "u-owner")
 
     repository = KnowledgeRepository(db)
     service = _service(db, tmp_path)
@@ -196,7 +245,6 @@ async def test_permission_directory_lists_active_users_without_owner_and_admin(
             "division_name='研究处', team_name='宏观团队' WHERE user_id='u-alice'",
         )
     _insert_team_base(db, "base-a", "dept-a", owner_user_id="u-owner")
-    _grant_team_space_manager(db, "u-owner")
 
     service = _service(db, tmp_path)
     owner = KnowledgePrincipal(user_id="u-owner", username="owner", department_id="dept-a")
@@ -218,7 +266,6 @@ async def test_replace_permissions_rejects_department_subjects(db, tmp_path):
 
     _insert_user(db, "u-owner", "owner", "dept-a")
     _insert_team_base(db, "base-a", "dept-a", owner_user_id="u-owner")
-    _grant_team_space_manager(db, "u-owner")
 
     service = _service(db, tmp_path)
     owner = KnowledgePrincipal(user_id="u-owner", username="owner", department_id="dept-a")
@@ -243,7 +290,7 @@ async def test_create_team_base_with_initial_permission_list(db, tmp_path):
     _insert_user(db, "u-owner", "owner", "dept-a")
     _insert_user(db, "u-picked", "picked", "dept-a")
     _insert_user(db, "u-same", "same", "dept-a")
-    _grant_team_space_manager(db, "u-owner")
+    _grant_department_manager(db, "u-owner", "dept-a")
 
     service = _service(db, tmp_path)
     service.config = SimpleNamespace(embedding=SimpleNamespace(model="test-model"))

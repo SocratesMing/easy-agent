@@ -658,7 +658,8 @@ async def prepare_turn(
             + parsed_content
         )
 
-    user_message = {
+    # 后续还会写入 files / expert / skills，值类型并不都是 str
+    user_message: dict[str, Any] = {
         "role": "user",
         "content": request.message,
         "timestamp": datetime.now().isoformat(),

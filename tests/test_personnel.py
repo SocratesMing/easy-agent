@@ -64,8 +64,8 @@ def _as_user(username):
     return username
 
 
-def _create_team_space_manager(db, username):
-    """建一个公共空间管理员（白名单）账号，返回其 user_id。"""
+def _create_department_manager(db, username):
+    """建一个知识库管理员账号（部门 dept-market），返回其 user_id。"""
     now = "2026-10-14T00:00:00"
     db.create_user(
         UserModel(
@@ -81,129 +81,32 @@ def _create_team_space_manager(db, username):
         )
     )
     with db.get_connection() as connection:
-        cursor = connection.cursor()
         db._execute(
-            cursor,
-            "INSERT INTO knowledge_team_space_managers (user_id, granted_by, granted_at, updated_at) "
-            "VALUES (?, 'admin', ?, ?)",
-            (f"uid-{username}", now, now),
+            connection.cursor(),
+            "INSERT INTO knowledge_department_managers "
+            "(id, user_id, department_id, granted_by, granted_at, updated_at) "
+            "VALUES (?, ?, 'dept-market', 'admin', ?, ?)",
+            (f"dm-{username}", f"uid-{username}", now, now),
         )
     return f"uid-{username}"
 
 
-def test_team_space_manager_has_full_personnel_access(client, db):
-    """白名单账号与 admin 同权：全量列表、增改删任意部门人员、可下模板。"""
-    client = _as_admin(client)
-    client.post("/agent/personnel/users", json=_payload(username="alice_a"))
-    client.post(
-        "/agent/personnel/users",
-        json=_payload(username="bob_b", department_id="dept-treasury", department_name="司库部", employee_id="E0002"),
-    )
-
-    _create_team_space_manager(db, "dept_mgr")
+def test_knowledge_manager_has_no_personnel_access(client, db):
+    """知识库管理员只影响知识库创建/管理，不获得人员管理权限。"""
+    _create_department_manager(db, "dept_mgr")
     _as_user("dept_mgr")
 
-    # 列表全量：可看到其他部门人员
-    listed = client.get("/agent/personnel/users")
-    assert listed.status_code == 200
-    usernames = {item["username"] for item in listed.json()["items"]}
-    assert {"alice_a", "bob_b", "dept_mgr"} <= usernames
-
-    # 新增其他部门人员
-    created = client.post(
-        "/agent/personnel/users",
-        json=_payload(username="new_t", department_id="dept-treasury", department_name="司库部", employee_id="E0003"),
-    )
-    assert created.status_code == 201, created.text
-
-    # 编辑/删除其他部门人员
-    bob_id = db.get_user_by_username("bob_b").user_id
-    update = _payload(
-        username=None,
-        department_id="dept-treasury",
-        department_name="司库部",
-        employee_id="E0002",
-        position="副总裁",
-        source="白名单维护",
-    )
-    update.pop("username")
-    assert client.put(f"/agent/personnel/users/{bob_id}", json=update).status_code == 200
-    new_t = db.get_user_by_username("new_t")
-    assert client.delete(f"/agent/personnel/users/{new_t.user_id}").status_code == 204
-
-    # 模板下载
-    assert client.get("/agent/personnel/import-template").status_code == 200
+    assert client.get("/agent/personnel/users").status_code == 403
+    assert client.post("/agent/personnel/users", json=_payload(username="alice_a")).status_code == 403
+    assert client.get("/agent/personnel/import-template").status_code == 403
 
 
-def test_team_space_manager_import_allows_all_departments(client, db):
-    _create_team_space_manager(db, "dept_mgr")
-    _as_user("dept_mgr")
+def test_liufengbao_has_personnel_access(client, db):
+    """免密门户总管理员 liufengbao 与 admin 同权。"""
+    db.register_user("liufengbao", "secret123")
+    _as_user("liufengbao")
 
-    headers = ["账号", "姓名", "部门编号", "部门名称"]
-    content = _xlsx(
-        headers,
-        [
-            ["alice_m", "爱丽丝", "dept-market", "金融市场部"],
-            ["bob_t", "鲍勃", "dept-treasury", "司库部"],
-        ],
-    )
-    response = client.post(
-        "/agent/personnel/import",
-        data={"source": "白名单导入"},
-        files={"file": ("人员.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-    )
-    assert response.status_code == 200, response.text
-    assert response.json()["created"] == 2
-    assert db.get_user_by_username("bob_t").department_id == "dept-treasury"
-
-
-def test_team_space_manager_can_manage_team_space_whitelist(client, db):
-    """白名单账号可查看并配置公共空间管理员白名单（权限管理）。"""
-    from datetime import timedelta
-
-    from easy_agent.utils.auth import create_access_token
-
-    _create_team_space_manager(db, "dept_mgr")
-    _as_user("dept_mgr")
-    client.post("/agent/personnel/users", json=_payload(username="alice_a"))
-
-    # knowledge 路由走 Bearer token 鉴权（不吃 get_current_username 覆盖）
-    def _auth_headers(username):
-        version = db.increment_user_token_version(username)
-        token = create_access_token(
-            data={"sub": username, "v": version},
-            expires_delta=timedelta(minutes=30),
-        )
-        return {"Authorization": f"Bearer {token}"}
-
-    headers = _auth_headers("dept_mgr")
-    listed = client.get("/agent/knowledge/v1/admin/team-space-managers", headers=headers)
-    assert listed.status_code == 200, listed.text
-    items = listed.json()["items"]
-    assert any(item["username"] == "dept_mgr" for item in items)
-
-    alice_id = db.get_user_by_username("alice_a").user_id
-    granted = client.put(
-        f"/agent/knowledge/v1/admin/team-space-managers/{alice_id}",
-        json={"enabled": True},
-        headers=headers,
-    )
-    assert granted.status_code == 200, granted.text
-    revoked = client.put(
-        f"/agent/knowledge/v1/admin/team-space-managers/{alice_id}",
-        json={"enabled": False},
-        headers=headers,
-    )
-    assert revoked.status_code == 200, revoked.text
-
-    # 非白名单普通账号仍 403
-    client.post("/agent/personnel/users", json=_payload(username="plain_user", employee_id="E0009"))
-    plain_headers = _auth_headers("plain_user")
-    response = client.get(
-        "/agent/knowledge/v1/admin/team-space-managers",
-        headers=plain_headers,
-    )
-    assert response.status_code == 403
+    assert client.get("/agent/personnel/users").status_code == 200
 
 
 def test_admin_can_create_filter_and_edit_personnel(client, db):
@@ -219,6 +122,11 @@ def test_admin_can_create_filter_and_edit_personnel(client, db):
     listed = client.get("/agent/personnel/users", params={"keyword": "张三"})
     assert listed.status_code == 200
     assert listed.json()["total"] == 1
+
+    # 部门筛选按部门名称模糊匹配（不是部门编号）
+    by_department = client.get("/agent/personnel/users", params={"department_name": "金融"})
+    assert by_department.status_code == 200
+    assert by_department.json()["total"] == 1
 
     update = _payload(
         username=None,
@@ -572,8 +480,9 @@ def test_delete_personnel_blocked_while_owning_bases_and_cleans_grants(client, d
         )
         db._execute(
             cursor,
-            "INSERT INTO knowledge_team_space_managers (user_id, granted_by, granted_at, updated_at) "
-            "VALUES (?, 'admin', ?, ?)",
+            "INSERT INTO knowledge_department_managers "
+            "(id, user_id, department_id, granted_by, granted_at, updated_at) "
+            "VALUES ('dm-x', ?, 'dept-market', 'admin', ?, ?)",
             (user_id, now, now),
         )
 
@@ -592,4 +501,4 @@ def test_delete_personnel_blocked_while_owning_bases_and_cleans_grants(client, d
 
     assert db.get_user_by_id(user_id) is None
     assert _count_rows(db, "SELECT COUNT(*) AS n FROM knowledge_permissions WHERE subject_id=?", (user_id,)) == 0
-    assert _count_rows(db, "SELECT COUNT(*) AS n FROM knowledge_team_space_managers WHERE user_id=?", (user_id,)) == 0
+    assert _count_rows(db, "SELECT COUNT(*) AS n FROM knowledge_department_managers WHERE user_id=?", (user_id,)) == 0

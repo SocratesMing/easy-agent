@@ -112,14 +112,14 @@ export function validatePersonnelForm(form) {
 export function buildPersonnelFilters({
   keyword = '',
   accountStatus = '',
-  departmentId = '',
+  departmentName = '',
   page = 1,
   pageSize = 50,
 } = {}) {
   const filters = {}
   if (trimmed(keyword)) filters.keyword = trimmed(keyword)
   if (trimmed(accountStatus)) filters.account_status = trimmed(accountStatus)
-  if (trimmed(departmentId)) filters.department_id = trimmed(departmentId)
+  if (trimmed(departmentName)) filters.department_name = trimmed(departmentName)
   filters.page = Math.max(1, Number(page) || 1)
   filters.page_size = Math.min(200, Math.max(1, Number(pageSize) || 50))
   return filters
@@ -147,15 +147,6 @@ export function summarizeImportResult(result = {}) {
   const safeUpdated = Number.isFinite(updated) ? updated : 0
   const safeSkipped = Number.isFinite(skipped) ? skipped : 0
   return `导入完成：新增 ${safeCreated} 人，更新 ${safeUpdated} 人，跳过 ${safeSkipped} 人`
-}
-
-export function updateTeamManagerIds(currentIds, userId, enabled) {
-  const next = new Set(currentIds || [])
-  const normalizedId = String(userId || '')
-  if (!normalizedId) return next
-  if (enabled) next.add(normalizedId)
-  else next.delete(normalizedId)
-  return next
 }
 
 export function formatPersonnelValidationDetail(detail, maxErrors = 8) {

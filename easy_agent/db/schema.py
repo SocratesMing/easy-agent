@@ -68,6 +68,7 @@ EXPECTED_TABLES = (
     "knowledge_document_objects",
     "knowledge_operations",
     "knowledge_audit_events",
+    "knowledge_department_managers",
     "knowledge_source_sync_items",
     "expert_agents",
     "rate_limit_counters",

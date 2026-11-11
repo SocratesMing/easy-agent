@@ -18,6 +18,17 @@ logger = logging.getLogger(__name__)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
+# 超级管理员账号（与内置 admin 同权）。
+# admin 禁止免密登录；启用免密登录的门户部署用 liufengbao 作为总管理员。
+SUPER_ADMIN_USERNAMES = frozenset({"admin", "liufengbao"})
+
+
+def is_super_admin(username: str | None) -> bool:
+    """是否为超级管理员账号（与 admin 同权）。"""
+
+    return (username or "").strip() in SUPER_ADMIN_USERNAMES
+
+
 # 默认的 JWT 密钥持久化路径（data/ 运行时目录，已被 gitignore）。
 _DEFAULT_SECRET_FILE = Path("./data/.jwt_secret")
 

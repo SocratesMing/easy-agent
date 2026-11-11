@@ -189,6 +189,8 @@ def tool_fingerprint(tool: Any) -> dict[str, Any]:
             if not callable(value):
                 payload[name] = value
     # 知识库原文工具：只取非敏感的配置身份，避免把 api_key 写进键材料。
+    # embedding_model 不再出现在 config 里（运行时从共享数据集解析），
+    # 指纹里留 shared_dataset_id 即可——同一个数据集绑定同一个模型。
     knowledge_config = getattr(tool, "knowledge_config", None)
     if knowledge_config is not None:
         payload["knowledge_config"] = {
@@ -196,9 +198,6 @@ def tool_fingerprint(tool: Any) -> dict[str, Any]:
             "base_url": str(getattr(knowledge_config, "base_url", "") or ""),
             "shared_dataset_id": str(
                 getattr(knowledge_config, "shared_dataset_id", "") or ""
-            ),
-            "embedding_model": str(
-                getattr(getattr(knowledge_config, "embedding", None), "model", "") or ""
             ),
         }
     if hasattr(tool, "agent_id"):

@@ -15,18 +15,18 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from easy_agent.bootstrap.config import Config
 from easy_agent.middleware import get_current_username
+from easy_agent.utils.auth import is_super_admin
 
 logger = logging.getLogger("easy_agent.prompts")
 
 prompts_router = APIRouter(prefix="/agent/prompts", tags=["Prompts"])
 
-# 与 api/terminal.py 同口径：提示词管理是全局配置，只放行内置 admin 账号。
-_ADMIN_USERNAME = "admin"
+# 提示词管理是全局配置，只放行超级管理员账号（admin / liufengbao）。
 
 
 def _require_admin(username: str) -> None:
-    """提示词管理仅限管理员（未登录的情况由 get_current_username 返回 401）。"""
-    if username != _ADMIN_USERNAME:
+    """提示词管理仅限超级管理员（未登录的情况由 get_current_username 返回 401）。"""
+    if not is_super_admin(username):
         raise HTTPException(status_code=403, detail="仅管理员可以操作提示词")
 
 

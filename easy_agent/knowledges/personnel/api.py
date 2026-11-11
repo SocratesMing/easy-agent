@@ -1,5 +1,7 @@
-"""Personnel management API: admin and team-space managers (whitelisted
-department editors) share the same full access; everyone else gets 403."""
+"""Personnel management API: admin only; everyone else gets 403.
+
+知识库管理员只授予知识库侧的创建/管理能力，不涉及人员管理。
+"""
 
 from __future__ import annotations
 
@@ -14,7 +16,6 @@ from openpyxl.styles import Font, PatternFill
 
 from easy_agent.db import Database, get_database
 from easy_agent.middleware import get_current_username
-from easy_agent.knowledges.core.repository import KnowledgeRepository
 from easy_agent.knowledges.personnel.excel_import import PersonnelExcelError, parse_personnel_excel
 from easy_agent.knowledges.personnel.models import (
     PersonnelCreateRequest,
@@ -33,6 +34,7 @@ from easy_agent.knowledges.personnel.repository import (
     update_personnel,
 )
 from easy_agent.knowledges.facade import KnowledgeOperationsRepository
+from easy_agent.utils.auth import is_super_admin
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/agent/personnel", tags=["Personnel"])
@@ -73,14 +75,14 @@ def require_personnel_editor(
     username: Annotated[str, Depends(get_current_username)],
     db: Annotated[Database, Depends(get_database)],
 ) -> str:
-    """人员管理守卫：admin 与公共空间管理员（白名单）同权全量访问，其余 403。"""
+    """人员管理守卫：仅超级管理员（admin / liufengbao）访问，其余 403。"""
     user = db.get_user_by_username(username)
     if not user:
         raise HTTPException(status_code=403, detail="账号不存在或已被删除")
     request.state.actor_user_id = user.user_id
     request.state.actor_username = username
-    if username != "admin" and not KnowledgeRepository(db).is_team_space_manager(user.user_id):
-        raise HTTPException(status_code=403, detail="仅 admin 或公共空间管理员可以配置人员信息")
+    if not is_super_admin(username):
+        raise HTTPException(status_code=403, detail="仅超级管理员可以配置人员信息")
     return username
 
 
@@ -90,7 +92,7 @@ def get_personnel_users(
     db: Annotated[Database, Depends(get_database)],
     keyword: str = Query(default="", max_length=100),
     account_status: str = Query(default="", pattern="^(|active|disabled)$"),
-    department_id: str = Query(default="", max_length=255),
+    department_name: str = Query(default="", max_length=255),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ):
@@ -98,7 +100,7 @@ def get_personnel_users(
         db,
         keyword=keyword.strip(),
         account_status=account_status,
-        department_id=department_id.strip(),
+        department_name=department_name.strip(),
         limit=page_size,
         offset=(page - 1) * page_size,
     )

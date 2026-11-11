@@ -713,6 +713,8 @@ class SourceSyncEngine:
         if base is not None:
             return str(base["id"])
         # 情况 3：没有就新建一个团队公共库
+        # embedding_model 留空——真实模型由共享数据集统一决定；
+        # create_base 不触发 RAGFlow 调用（纯本地建库）
         created = await self._repo(
             self.repository.create_base,
             name=sync_config.base_name,
@@ -721,7 +723,7 @@ class SourceSyncEngine:
             space_type=KnowledgeBaseVisibility.TEAM.value,
             owner_user_id=self.principal.user_id,
             department_id=self.principal.department_id,
-            embedding_model=self.config.embedding.model,
+            embedding_model="",
         )
         # 新建的库默认不是 ACTIVE，这里显式激活，后面才能往里传文档
         await self._repo(
