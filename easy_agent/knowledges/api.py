@@ -34,6 +34,7 @@ from starlette.responses import StreamingResponse
 
 from easy_agent.db import Database, get_database
 from easy_agent.db.login_state import LoginRejected, bearer_token, verify_login_token
+from easy_agent.utils.usage_context import usage_scope
 from easy_agent.db.repositories.user_repository import UserRepository
 from easy_agent.agent.model import create_model
 from easy_agent.models.db import SessionModel
@@ -1012,7 +1013,8 @@ async def ask(
         request_id=request_id,
         metadata_filter=payload.metadata_filter,
     )
-    answer, quality_warnings = await _call(_answer, payload.question, retrieved.evidence)
+    with usage_scope(principal.user_id):
+        answer, quality_warnings = await _call(_answer, payload.question, retrieved.evidence)
     response = AskResponse(
         answer=answer,
         evidence=retrieved.evidence,

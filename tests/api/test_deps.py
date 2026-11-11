@@ -122,7 +122,7 @@ EXPECTED_ROUTER_PATHS = {
 # 2026-10-28：资产页下线删掉 /agent/files/list、新增 /agent/settings/knowledge（e59c5a6d），
 # 专家工作区新增 /agent/expert-md、/agent/session-experts（cc4b1e9d），121 - 1 + 3 = 123。
 # 2026-11-06：提示词增强 + 手动压缩与状态查询，共新增 3 条路径。
-EXPECTED_OPENAPI_PATH_COUNT = 127
+EXPECTED_OPENAPI_PATH_COUNT = 128
 
 
 def _module(name: str):

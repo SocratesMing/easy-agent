@@ -17,6 +17,8 @@ from easy_agent.persistence.checkpoints import get_session_checkpointer, sqlite_
 from easy_agent.services.agents.manager import get_or_create_agent_for_session, is_session_streaming
 from easy_agent.services.sessions.thread import plan_turn, session_thread_active
 from easy_agent.utils.deployment import detect_worker_count, instance_owner
+from easy_agent.services.usage import resolve_usage_identity
+from easy_agent.utils.usage_context import usage_scope
 from easy_agent.utils.blocking import run_blocking
 
 logger = logging.getLogger(__name__)
@@ -68,7 +70,14 @@ async def compact(repo, session_id: str, username: str, model: str | None, reque
     key = (session_id, request_id)
     task = _operations.get(key)
     if task is None:
-        task = asyncio.create_task(_execute(repo, session, username, model, request_id))
+        async def execute_owned():
+            # Register work before awaiting identity IO. A duplicate request must
+            # join this task even while its identity is being resolved, and must
+            # not miss it if the first waiter disconnects as work completes.
+            identity = await resolve_usage_identity(username, session.session_id)
+            return await _execute(repo, session, username, model, request_id, identity)
+
+        task = asyncio.create_task(execute_owned())
         _operations[key] = task
         def finished(done):
             _operations.pop(key, None)
@@ -106,67 +115,68 @@ def _unfinished_work(state) -> bool:
     return not (stopped_model and set(state.next) == {"model"})
 
 
-async def _execute(repo, session, username, model, request_id):
-    from easy_agent.services.agents.manager import get_agent_config
+async def _execute(repo, session, username, model, request_id, identity):
+    with usage_scope(identity.user_id if identity else None, identity.session_id if identity else None):
+        from easy_agent.services.agents.manager import get_agent_config
 
-    config = (get_agent_config() or {}).get("config")
-    if not supported(config):
-        raise HTTPException(409, "当前运行模式不支持手动压缩（需要单实例、单 worker 的持久会话 checkpoint）")
-    if model and model not in config.models:
-        raise HTTPException(422, "所选模型不可用")
-    sid = session.session_id
-    runtime = get_session_runtime_repository()
-    owner = f"{instance_owner()}:compact:{uuid.uuid4()}"
-    now = datetime.now(UTC)
-    until = (now + timedelta(seconds=30)).isoformat(timespec="seconds")
-    acquired, _ = await run_blocking(runtime.try_acquire_session_stream, sid, owner, until, now.isoformat(timespec="seconds"))
-    if not acquired:
-        raise HTTPException(409, "会话正在生成或压缩，请稍后重试")
-    heartbeat = None
-    try:
-        if is_session_streaming(sid):
-            raise HTTPException(409, "会话仍在生成，请稍后重试")
-        async def heartbeat_loop():
-            while True:
-                await asyncio.sleep(8)
-                if not await run_blocking(runtime.renew_stream_lease, sid, owner, ttl_seconds=30):
-                    raise RuntimeError("压缩租约续约失败")
-
-        heartbeat = asyncio.create_task(heartbeat_loop())
-        async def prepare():
-            if await run_blocking(get_agent_run_repository().has_other_live_run, sid, "", datetime.now(UTC).isoformat(timespec="seconds")):
-                raise HTTPException(409, "会话仍有运行任务，请稍后重试")
-            agent = await get_or_create_agent_for_session(
-                sid, username=username, workspace_name=session.workspace_name, model_name=model,
-            )
-            if not session_thread_active(agent) or agent.agent.checkpointer is not get_session_checkpointer(sid):
-                raise HTTPException(409, "当前实际 checkpointer 不支持手动压缩")
-            return await _prepare_and_commit(repo, runtime, agent, session, owner, request_id)
-
-        work = asyncio.create_task(prepare())
+        config = (get_agent_config() or {}).get("config")
+        if not supported(config):
+            raise HTTPException(409, "当前运行模式不支持手动压缩（需要单实例、单 worker 的持久会话 checkpoint）")
+        if model and model not in config.models:
+            raise HTTPException(422, "所选模型不可用")
+        sid = session.session_id
+        runtime = get_session_runtime_repository()
+        owner = f"{instance_owner()}:compact:{uuid.uuid4()}"
+        now = datetime.now(UTC)
+        until = (now + timedelta(seconds=30)).isoformat(timespec="seconds")
+        acquired, _ = await run_blocking(runtime.try_acquire_session_stream, sid, owner, until, now.isoformat(timespec="seconds"))
+        if not acquired:
+            raise HTTPException(409, "会话正在生成或压缩，请稍后重试")
+        heartbeat = None
         try:
-            done, _ = await asyncio.wait([work, heartbeat], timeout=TIMEOUT_SECONDS, return_when=asyncio.FIRST_COMPLETED)
-            if work in done:
-                return await work
-            work.cancel()
-            await asyncio.gather(work, return_exceptions=True)
-            if heartbeat in done:
-                await heartbeat
-            raise HTTPException(504, "压缩超时；请使用原请求标识查询结果")
-        finally:
-            if not work.done():
+            if is_session_streaming(sid):
+                raise HTTPException(409, "会话仍在生成，请稍后重试")
+            async def heartbeat_loop():
+                while True:
+                    await asyncio.sleep(8)
+                    if not await run_blocking(runtime.renew_stream_lease, sid, owner, ttl_seconds=30):
+                        raise RuntimeError("压缩租约续约失败")
+
+            heartbeat = asyncio.create_task(heartbeat_loop())
+            async def prepare():
+                if await run_blocking(get_agent_run_repository().has_other_live_run, sid, "", datetime.now(UTC).isoformat(timespec="seconds")):
+                    raise HTTPException(409, "会话仍有运行任务，请稍后重试")
+                agent = await get_or_create_agent_for_session(
+                    sid, username=username, workspace_name=session.workspace_name, model_name=model,
+                )
+                if not session_thread_active(agent) or agent.agent.checkpointer is not get_session_checkpointer(sid):
+                    raise HTTPException(409, "当前实际 checkpointer 不支持手动压缩")
+                return await _prepare_and_commit(repo, runtime, agent, session, owner, request_id)
+
+            work = asyncio.create_task(prepare())
+            try:
+                done, _ = await asyncio.wait([work, heartbeat], timeout=TIMEOUT_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+                if work in done:
+                    return await work
                 work.cancel()
                 await asyncio.gather(work, return_exceptions=True)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception("手动压缩失败 session=%s request=%s", sid, request_id)
-        raise HTTPException(502, "压缩失败，请查询原请求结果后重试") from exc
-    finally:
-        if heartbeat:
-            heartbeat.cancel()
-            await asyncio.gather(heartbeat, return_exceptions=True)
-        await run_blocking(runtime.release_session_stream, sid, owner, datetime.now(UTC).isoformat(timespec="seconds"))
+                if heartbeat in done:
+                    await heartbeat
+                raise HTTPException(504, "压缩超时；请使用原请求标识查询结果")
+            finally:
+                if not work.done():
+                    work.cancel()
+                    await asyncio.gather(work, return_exceptions=True)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("手动压缩失败 session=%s request=%s", sid, request_id)
+            raise HTTPException(502, "压缩失败，请查询原请求结果后重试") from exc
+        finally:
+            if heartbeat:
+                heartbeat.cancel()
+                await asyncio.gather(heartbeat, return_exceptions=True)
+            await run_blocking(runtime.release_session_stream, sid, owner, datetime.now(UTC).isoformat(timespec="seconds"))
 
 
 async def _prepare_and_commit(repo, runtime, agent, session, owner, request_id):

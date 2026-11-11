@@ -64,6 +64,61 @@ async def test_sdk_contract_and_cleanup(sdk, caplog):
     assert original not in caplog.text and "secret-test" not in caplog.text
 
 
+@pytest.mark.parametrize("invalid", [False, True])
+async def test_usage_flush_is_outside_business_timeout_even_after_parse_failure(sdk, monkeypatch, invalid):
+    import time
+
+    from openai.types.chat import ChatCompletion
+    from easy_agent.utils.usage_context import usage_scope
+
+    call, _ = sdk
+    call.return_value = ChatCompletion.model_validate({
+        "id": "response", "object": "chat.completion", "created": 1, "model": "provider-alias",
+        "choices": [{"index": 0, "finish_reason": "stop", "message": {
+            "role": "assistant", "content": "invalid JSON" if invalid else '{"enhanced_prompt":"valid"}',
+        }}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+    })
+    written = []
+
+    def delayed_write(event):
+        time.sleep(.03)
+        written.append(event)
+
+    monkeypatch.setattr(service, "write_usage_event", delayed_write)
+    with usage_scope("real-id"):
+        if invalid:
+            with pytest.raises(service.EnhancementError) as exc:
+                await service.enhance_prompt("prompt", configuration(timeout_seconds=.01))
+            assert exc.value.status_code == 502
+        else:
+            result = await service.enhance_prompt("prompt", configuration(timeout_seconds=.01))
+            assert result.enhanced_prompt == "valid"
+    assert len(written) == 1
+    event = written[0]
+    assert (event.user_id, event.session_id) == ("real-id", None)
+    assert (event.model_key, event.model_name) == ("deepseek", "configured-model")
+    assert (event.input_tokens, event.output_tokens) == (100, 50)
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+async def test_usage_write_error_preserves_business_result_or_original_error(sdk, monkeypatch, invalid):
+    call, _ = sdk
+    call.return_value = completion("invalid" if invalid else '{"enhanced_prompt":"valid"}')
+    monkeypatch.setattr(service, "capture_sdk_usage", lambda *args, **kwargs: object())
+
+    def unavailable(event):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(service, "write_usage_event", unavailable)
+    if invalid:
+        with pytest.raises(service.EnhancementError) as exc:
+            await service.enhance_prompt("prompt", configuration())
+        assert exc.value.status_code == 502
+    else:
+        assert (await service.enhance_prompt("prompt", configuration())).enhanced_prompt == "valid"
+
+
 @pytest.mark.parametrize("content,reason,refusal", [
     ('{"enhanced_prompt":""}', "stop", None),
     ('{"enhanced_prompt":4}', "stop", None),

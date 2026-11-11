@@ -51,6 +51,7 @@ MODULE_LABELS = [
     ("/agent/sessions", "会话"),
     ("/agent/files", "文件"),
     ("/agent/settings", "设置"),
+    ("/agent/usage", "Token统计"),
     ("/agent/skill-center", "技能中心"),
     ("/agent/scheduled-tasks", "定时任务"),
     ("/agent/prompts", "提示词"),

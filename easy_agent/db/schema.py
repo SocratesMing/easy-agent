@@ -38,7 +38,8 @@ logger = logging.getLogger("easy_agent.db.schema")
 # 14：合并 rag-1018 与 audit-improvements：两侧都用过 13，统一再 +1，
 # 否则任一侧的旧库会命中快速路径、跳过另一侧的变更。
 # 15：恢复 agent_checkpoints，用于共享 MySQL HITL 状态快照。
-SCHEMA_VERSION = 16
+# 17：逐模型调用 Token 账本（独立于会话生命周期）。
+SCHEMA_VERSION = 17
 # utf8mb4 复合主键必须 ≤ 3072 字节：(512 + 191) * 4 = 2812。
 LANGGRAPH_STORE_NS_LEN = 512
 LANGGRAPH_STORE_KEY_LEN = 191
@@ -73,6 +74,7 @@ EXPECTED_TABLES = (
     "stream_events",
     "agent_runs",
     "agent_checkpoints",
+    "token_usage",
 )
 
 
@@ -626,8 +628,30 @@ def _init_tables_full(db, cursor):
     _create_stream_events_table(db, cursor)
     _create_agent_runs_table(db, cursor)
     _create_agent_checkpoints_table(db, cursor)
+    _create_token_usage_table(db, cursor)
     _create_langgraph_store_table(db, cursor)
     _create_expert_tables(db, cursor)
+
+
+def _create_token_usage_table(db, cursor):
+    """核心账本建表失败须中断升级，不经领域 schema 注册器吞掉异常。"""
+    binary = " CHARACTER SET utf8mb4 COLLATE utf8mb4_bin" if db.db_type == "mysql" else ""
+    engine = " ENGINE=InnoDB" if db.db_type == "mysql" else ""
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS token_usage (
+            event_id VARCHAR(64){binary} NOT NULL PRIMARY KEY,
+            user_id VARCHAR(255){binary} NOT NULL,
+            session_id VARCHAR(255) NULL,
+            model_key VARCHAR(128){binary} NOT NULL,
+            model_name VARCHAR(255){binary} NOT NULL,
+            completed_at_ms BIGINT NOT NULL,
+            usage_date VARCHAR(10) NOT NULL,
+            input_tokens BIGINT NOT NULL,
+            output_tokens BIGINT NOT NULL
+        ){engine}
+    """)
+    _create_index(db, cursor, "idx_token_usage_user_completed", "token_usage", "user_id, completed_at_ms")
+    _create_index(db, cursor, "idx_token_usage_user_date", "token_usage", "user_id, usage_date")
 
 def _create_expert_tables(db, cursor):
     """专家 Agent 表 expert_agents（见 docs/expert-agent-solution.md §3.1）。

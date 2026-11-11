@@ -111,6 +111,9 @@
             <ArchiveManager ref="archiveManager" :open="true" @close="$emit('close')" />
           </div>
 
+          <div v-if="activeTab === 'usage'" class="content-panel" role="tabpanel" id="panel-usage" aria-labelledby="tab-usage">
+            <TokenUsagePanel />
+          </div>
         </div>
       </div>
     </div>
@@ -120,6 +123,7 @@
 <script>
 import MessageBox from 'element-ui/lib/message-box'
 import ArchiveManager from '../../chat/components/ArchiveManager.vue'
+import TokenUsagePanel from './TokenUsagePanel.vue'
 import {
   getMemory,
   updateMemory,
@@ -140,7 +144,7 @@ const renderer = createMarkdownRenderer({ highlight: (code) => `<pre class="hljs
 installCodeCopyHandler()
 
 export default {
-  components: { ArchiveManager },
+  components: { ArchiveManager, TokenUsagePanel },
   data() {
     return {
       // 侧边导航：普通 <script> 的模块级常量不会暴露给模板，必须挂到 data
@@ -155,6 +159,7 @@ export default {
           label: '提示词',
           icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
         },
+        { key: 'usage', label: 'Token统计', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 3v18h17M8 16v-5m5 5V7m5 9V4"/></svg>' },
         { key: 'archive', label: '归档管理', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h18v4H3zM5 7v14h14V7M10 11h4"/></svg>' },
       ],
       activeTab: 'memory',
@@ -243,6 +248,7 @@ export default {
     },
 
     async loadTabData() {
+      if (!['memory', 'prompt'].includes(this.activeTab)) return
       this.loading = true
       try {
         if (this.activeTab === 'memory') {

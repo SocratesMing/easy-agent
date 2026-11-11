@@ -32,6 +32,7 @@ from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.db.repositories.session_runtime import SessionRuntimeRepository
 from easy_agent.db.repositories.stream_events import StreamEventRepository
 from easy_agent.db.repositories.user_repository import UserRepository
+from easy_agent.db.repositories.token_usage import TokenUsageRepository
 
 __all__ = [
     "get_agent_run_repository",
@@ -45,6 +46,7 @@ __all__ = [
     "get_scheduled_task_repository",
     "get_stream_event_repository",
     "get_user_repository",
+    "get_token_usage_repository",
 ]
 
 
@@ -100,3 +102,8 @@ def get_agent_state_repository() -> AgentStateRepository:
 def get_rate_limit_repository() -> RateLimitRepository:
     """进程级 ``Database`` 上的限流共享计数 repository。"""
     return RateLimitRepository(get_database())
+
+
+def get_token_usage_repository() -> TokenUsageRepository:
+    """进程级 Token 账本 repository（模型采集器使用）。"""
+    return TokenUsageRepository(get_database())

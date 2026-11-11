@@ -70,7 +70,7 @@ from easy_agent.agent.model import (
 )
 from easy_agent.security.prompt_guard import assemble_system_prompt
 from easy_agent.utils.prompt_probe import describe_prompt, prompt_fingerprint
-from easy_agent.agent.model import resolve_llm_config
+from easy_agent.agent.model import resolve_llm_config, resolve_model_key
 from easy_agent.agent.tool_errors import build_tool_error_middleware
 
 
@@ -772,6 +772,7 @@ class EasyAgent(AgentWorkspaceMixin):
         )
         return build_graph_key(
             model=model_fingerprint(actual_llm_cfg),
+            model_key=resolve_model_key(self.config, self.model_name),
             tools=inputs.raw_tools,
             system_prompt=self.system_prompt,
             middleware=inputs.middleware,

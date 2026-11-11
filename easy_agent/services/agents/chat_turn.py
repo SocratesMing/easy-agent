@@ -68,6 +68,8 @@ from easy_agent.services.streaming.orchestrator import (
     resume_stream_generator,
     validate_resume_decisions,
 )
+from easy_agent.services.usage import resolve_usage_identity
+from easy_agent.utils.usage_context import usage_scope
 from easy_agent.utils.blocking import run_blocking
 from easy_agent.utils.file_parser import parse_file_content
 from easy_agent.utils.prompt_probe import describe_prompt
@@ -491,6 +493,8 @@ async def prepare_turn(
     # 并发互斥：同一会话同一时刻只允许一条流式生成（必须在用户消息落库之前）
     reject_concurrent_stream(session_id)
 
+    identity = await resolve_usage_identity(username, session_id)
+
     # 先验证技能归属与启用状态，让意图分类能识别技能调用；这里不执行技能。
     turn = await asyncio.to_thread(
         resolve_request_skills, request.skills, request.message, username, sid
@@ -500,15 +504,16 @@ async def prepare_turn(
     session = await asyncio.to_thread(repo.get_session, session_id)
     turn_system_context = ""
     if not request.expert_agent_id and not is_knowledge_panel_title(session.title):
-        refusal = await domain_gate.finance_refusal(
-            request.message,
-            getattr(session, "messages", None) or [],
-            model_name=request.model,
-            session_id=session_id,
-            has_attachments=bool(request.files),
-            available_skills=await asyncio.to_thread(_intent_skill_catalog, username),
-            selected_skills=turn.pinned,
-        )
+        with usage_scope(identity.user_id if identity else None, identity.session_id if identity else None):
+            refusal = await domain_gate.finance_refusal(
+                request.message,
+                getattr(session, "messages", None) or [],
+                model_name=request.model,
+                session_id=session_id,
+                has_attachments=bool(request.files),
+                available_skills=await asyncio.to_thread(_intent_skill_catalog, username),
+                selected_skills=turn.pinned,
+            )
         if refusal is not None:
             await asyncio.to_thread(
                 expert_runtime.persist_user_turn,
@@ -604,16 +609,17 @@ async def prepare_turn(
             f"会话暂存={cached_turn_skills}"
         )
 
-    gate = await expert_runtime.relevance_gate(
-        expert_repo,
-        session_id,
-        username,
-        expert_id,
-        request.message,
-        sid,
-        files=request.files,
-        prompt_text=expert_prompt,
-    )
+    with usage_scope(identity.user_id if identity else None, identity.session_id if identity else None):
+        gate = await expert_runtime.relevance_gate(
+            expert_repo,
+            session_id,
+            username,
+            expert_id,
+            request.message,
+            sid,
+            files=request.files,
+            prompt_text=expert_prompt,
+        )
     if gate is not None:
         classification, refusal = gate
         # 拒答也要落用户消息：否则会话列表里只剩一条 assistant 拒答，上下文断裂

@@ -57,7 +57,7 @@ from easy_agent.bootstrap.env import env_str
 logger = logging.getLogger("easy-agent.graph_cache")
 
 # 改动编译图结构/键语义时递增，旧进程内缓存自然失效。
-GRAPH_CACHE_VERSION = 1
+GRAPH_CACHE_VERSION = 2
 
 _DEFAULT_MAX_ENTRIES = 32
 _MAX_ENTRIES_ENV = "EASY_AGENT_GRAPH_CACHE_SIZE"
@@ -344,6 +344,7 @@ class GraphKey:
 def build_graph_key(
     *,
     model: Mapping[str, Any],
+    model_key: str,
     tools: Iterable[Any] | None,
     system_prompt: str,
     middleware: Iterable[Any] | None,
@@ -362,6 +363,7 @@ def build_graph_key(
     parts: dict[str, Any] = {
         "version": GRAPH_CACHE_VERSION,
         "model": dict(model),
+        "model_key": model_key,
         "tools": tools_fingerprint(tools),
         "system_prompt": system_prompt,
         "middleware": middleware_fingerprint(middleware),

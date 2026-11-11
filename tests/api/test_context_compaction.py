@@ -62,6 +62,7 @@ def test_api_rejects_busy_approval_empty_invalid_and_unsupported(client, db, set
     now = datetime.now(UTC)
     assert rt.try_acquire_session_stream(sid, "another-operation", (now + timedelta(minutes=1)).isoformat(), now.isoformat())[0]
     assert client.post(url, json=body).status_code == 409
+
     rt.release_session_stream(sid, "another-operation", now.isoformat())
     MessageRepository(db).add_message(sid, {"role": "assistant", "content": "", "pending_approval": {"thread_id": "pending"}})
     assert client.post(url, json=body).status_code == 409
@@ -73,3 +74,55 @@ def test_api_rejects_busy_approval_empty_invalid_and_unsupported(client, db, set
     monkeypatch.setenv("EASY_REPLICA_COUNT", "2")
     assert not client.get(f"/agent/sessions/{sid}/context").json()["supported"]
     assert client.post(url, json=body).status_code == 409
+
+
+@pytest.mark.parametrize("double_summary", [False, True])
+def test_summary_usage_survives_commit_failure_and_only_new_calls_bill(client, db, setup_compaction, monkeypatch, double_summary):
+    from easy_agent.agent.token_usage import TokenUsageCallback, complete_usage_snapshot
+    from tests.services.test_manual_compaction import Model
+
+    owner = db.register_user("testuser", "password")
+    sid, agents, _ = setup_compaction
+    original_create = compaction.get_or_create_agent_for_session
+    original_generate = Model._generate
+
+    async def create(*args, **kwargs):
+        result = await original_create(*args, **kwargs)
+        result.model.callbacks = [TokenUsageCallback("small", "test")]
+        return result
+
+    def generate(self, *args, **kwargs):
+        result = original_generate(self, *args, **kwargs)
+        if double_summary and len(self.inputs) % 2:
+            result.generations[0].message.content = "Previous conversation was too long to summarize."
+        result.generations[0].generation_info = {
+            "easy_agent_usage": [complete_usage_snapshot({"prompt_tokens": 20, "completion_tokens": 5})],
+        }
+        return result
+
+    monkeypatch.setattr(compaction, "get_or_create_agent_for_session", create)
+    monkeypatch.setattr(Model, "_generate", generate)
+    runtime = get_session_runtime_repository()
+    original_commit = runtime.guarded_commit
+    attempts = []
+
+    def commit(*args, **kwargs):
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise RuntimeError("checkpoint commit unavailable")
+        return original_commit(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, "guarded_commit", commit)
+    monkeypatch.setattr(compaction, "get_session_runtime_repository", lambda: runtime)
+    url = f"/agent/sessions/{sid}/context/compact"
+    body = {"model": "small", "request_id": "usage-request"}
+    assert client.post(url, json=body).status_code == 502
+    assert client.post(url, json=body).status_code == 200
+    assert client.post(url, json=body).status_code == 200
+    expected_calls = 4 if double_summary else 2
+    assert len(agents[sid].model.inputs) == expected_calls
+    with db.get_connection() as conn:
+        rows = conn.execute("SELECT user_id, session_id, input_tokens, output_tokens FROM token_usage").fetchall()
+    assert len(rows) == expected_calls
+    assert all(row["user_id"] == owner.user_id and row["session_id"] == sid for row in rows)
+    assert all((row["input_tokens"], row["output_tokens"]) == (20, 5) for row in rows)

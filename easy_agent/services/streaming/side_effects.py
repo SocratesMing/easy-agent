@@ -19,6 +19,7 @@ from easy_agent.db.database import Database
 from easy_agent.db.repositories.file_repository import FileRepository
 from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.utils.blocking import run_blocking
+from easy_agent.utils.usage_context import get_usage_identity, usage_scope
 from easy_agent.services.memory.digest import clip_middle, describe_turn_actions
 from easy_agent.services.memory.manager import update_long_term_memory_after_session
 from easy_agent.services.memory.triggers import (
@@ -79,11 +80,15 @@ def _submit_memory_job(key: str, job: Callable[[], None]) -> Future:
     结束后才把下一个交给线程池，等待期间不占线程池的线程。跨进程的覆盖由写回前的
     内容核对兜底（``services/memory/manager.py``）。
     """
+    # Capture now: the previous job's completion callback may submit this work
+    # from another user's worker thread, after the originating scope has closed.
+    identity = get_usage_identity()
     done: Future = Future()
 
     def _run() -> None:
         try:
-            job()
+            with usage_scope(identity.user_id if identity else None, identity.session_id if identity else None):
+                job()
         except Exception as exc:  # noqa: BLE001 - 任务自己会记日志，这里只保证链不断
             logger.warning(f"记忆更新任务异常: {exc}")
         finally:

@@ -38,6 +38,7 @@ FRESH_TABLES = {
     "session_runtime",
     "sessions",
     "stream_events",
+    "token_usage",
     "users",
 }
 RETIRED_TABLES = {

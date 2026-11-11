@@ -85,6 +85,7 @@ from easy_agent.api import (
     connectors_router,
     scheduled_tasks_router,
     expert_router,
+    usage_router,
 )
 from easy_agent.services.metrics import snapshot_metrics
 from easy_agent.services.health import ping_database, workspace_writable
@@ -725,6 +726,7 @@ app.include_router(scheduled_tasks_router)
 app.include_router(knowledge_router)
 app.include_router(personnel_router)
 app.include_router(expert_router)
+app.include_router(usage_router)
 
 
 @app.get("/agent/live", summary="存活检查（liveness）", response_model=HealthResponse)

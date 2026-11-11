@@ -326,6 +326,35 @@ async def test_prepare_turn_expert_refusal_returns_refusal_plan(db, monkeypatch)
     assert captured["provision_kwargs"]["invalidate_cache"] is False
 
 
+@pytest.mark.parametrize("expert", [False, True])
+async def test_refusal_model_prechecks_use_verified_real_user_id(db, monkeypatch, expert):
+    from easy_agent.utils.usage_context import UsageIdentity, get_usage_identity, usage_scope
+    from easy_agent.services.agents import domain_gate
+
+    user = db.register_user("scope-alice", "password")
+    captured = {}
+    _patch_collaborators(monkeypatch, captured)
+    observed = []
+
+    async def refuse(*args, **kwargs):
+        observed.append(get_usage_identity())
+        return ("irrelevant", "refused") if expert else domain_gate.FINANCE_REFUSAL
+
+    if expert:
+        monkeypatch.setattr(expert_runtime, "load_expert_prompt", lambda *args: ("preset_x", "prompt", "preset"))
+        monkeypatch.setattr(expert_runtime, "relevance_gate", refuse)
+    else:
+        monkeypatch.setattr(domain_gate, "finance_refusal", refuse)
+    with usage_scope("unrelated-parent"):
+        plan = await chat_turn.prepare_turn(
+            request=_turn_request(message="unrelated", expert_agent_id="preset_x" if expert else None),
+            http_request=_http_request(), repo=ChatRepository(db), username=user.username,
+        )
+        assert get_usage_identity() == UsageIdentity("unrelated-parent")
+    assert isinstance(plan, chat_turn.RefusalPlan)
+    assert observed == [UsageIdentity(user.user_id, plan.session_id)]
+
+
 async def test_prepare_turn_rejects_concurrent_stream_before_persisting(db, monkeypatch):
     """并发 409：在用户消息落库之前返回，会话里不会多出无回复的消息。"""
     repo = ChatRepository(db)

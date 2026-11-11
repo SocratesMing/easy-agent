@@ -9,7 +9,7 @@ from collections.abc import Sequence
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from easy_agent.agent.model import create_model, resolve_llm_config
+from easy_agent.agent.model import create_model, resolve_llm_config, resolve_model_key
 from easy_agent.bootstrap.config_models import RetryConfig
 from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
@@ -58,7 +58,8 @@ def create_classifier_model(*, model_name: str | None = None, session_id: str | 
     llm_config = resolve_llm_config(config, model_name).model_copy(
         update={"retry": RetryConfig(enabled=False)}
     )
-    classifier_config = config.model_copy(update={"llm": llm_config})
+    effective_key = resolve_model_key(config, model_name)
+    classifier_config = config.model_copy(update={"llm": llm_config, "active_model": effective_key})
     return create_model(classifier_config, session_id=session_id)
 
 

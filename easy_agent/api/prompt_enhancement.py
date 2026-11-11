@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict, StrictStr, field_validator
 
 from easy_agent.bootstrap.config_models import PromptEnhancementConfig
 from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
+from easy_agent.services.usage import resolve_usage_identity
+from easy_agent.utils.usage_context import usage_scope
 from easy_agent.middleware import get_current_username
 from easy_agent.services.prompt_enhancement import EnhancedPrompt, EnhancementError, enhance_prompt
 
@@ -38,6 +40,8 @@ async def enhance(
     if config is None:
         raise HTTPException(503, "提示词增强暂不可用，请联系管理员检查模型配置")
     try:
-        return await enhance_prompt(body.prompt, config)
+        identity = await resolve_usage_identity(username)
+        with usage_scope(identity.user_id if identity else None, identity.session_id if identity else None):
+            return await enhance_prompt(body.prompt, config)
     except EnhancementError as exc:
         raise HTTPException(exc.status_code, str(exc)) from None

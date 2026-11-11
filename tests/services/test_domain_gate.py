@@ -98,9 +98,24 @@ def test_classifier_uses_selected_model_without_changing_business_retries(monkey
     classifier_config, kwargs = captured[0]
     assert classifier_config.llm.model == "selected-model"
     assert classifier_config.llm.retry.enabled is False
+    assert classifier_config.active_model == "selected"
     assert config.llm.retry.enabled is True
     assert config.llm.model == "default"
     assert kwargs == {"session_id": "session-1"}
+
+
+def test_classifier_invalid_selection_keeps_effective_active_key(monkeypatch):
+    from easy_agent.bootstrap.config import AgentConfig, Config, LLMConfig, ToolsConfig
+
+    config = Config(llm=LLMConfig(api_key="test", model="active-model"), active_model="actual",
+                    agent=AgentConfig(), tools=ToolsConfig())
+    monkeypatch.setattr(domain_gate, "get_runtime_agent_config", lambda: {"config": config})
+    captured = []
+    monkeypatch.setattr(domain_gate, "create_model", lambda cfg, **kwargs: captured.append(cfg))
+    domain_gate.create_classifier_model(model_name="unavailable")
+    assert captured[0].active_model == "actual"
+    assert captured[0].llm.model == "active-model"
+    assert captured[0].llm.retry.enabled is False
 
 
 async def test_unavailable_model_stops_request(monkeypatch):

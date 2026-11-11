@@ -17,6 +17,12 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_openai import ChatOpenAI
 
 from easy_agent.bootstrap.config import Config, LLMConfig, RetryConfig
+from easy_agent.agent.token_usage import (
+    USAGE_KEY,
+    TokenUsageCallback,
+    complete_usage_snapshot,
+    explicit_fields,
+)
 logger = logging.getLogger(__name__)
 #: 模型入口参数 / 发给模型的完整上下文（请求）/ 模型原始返回报文，都是 DEBUG 级别：
 #: 日志级别为 debug（``EASY_LOG_LEVEL=debug`` 或 ``easy-web --log-level debug``）时才记录。
@@ -416,6 +422,11 @@ def resolve_llm_config(config: Config, model_name: str | None):
     )
 
 
+def resolve_model_key(config: Config, model_name: str | None = None) -> str:
+    """Configuration identity using the same fallback as resolve_llm_config."""
+    return model_name if model_name and model_name in config.models else config.active_model
+
+
 # 未显式传 session_id 时的兜底会话标识：进程内稳定即可——网关只要求「稳定」，
 # 用于路由优化与 prompt 缓存。按会话区分时由调用方（EasyAgent）传入真实 session_id。
 _PROCESS_SESSION_ID = f"easy-agent-{os.getpid()}"
@@ -509,6 +520,11 @@ def create_model(
     model = _create_openai_compatible(
         llm_config, default_headers=build_request_headers(llm_config, session_id)
     )
+    # Per-instance model identity, per-call user identity. Preserve other callbacks.
+    callbacks = list(model.callbacks or [])
+    if not any(isinstance(item, TokenUsageCallback) for item in callbacks):
+        callbacks.append(TokenUsageCallback(resolve_model_key(config, model_name), llm_config.model))
+    model.callbacks = callbacks
     # 钩子总是挂上，每次请求再按日志级别决定是否记录（非 DEBUG 时只多一次级别判断）
     install_request_logging(model)
     return apply_context_profile(model, llm_config.context_length)
@@ -610,11 +626,19 @@ class ReasoningChatOpenAI(ChatOpenAI):
         default_chunk_class: type,
         base_generation_info: dict | None,
     ):
+        raw = explicit_fields(chunk)
+        choices = raw.get("choices") or raw.get("chunk", {}).get("choices", [])
+        # Standard include_usage tail, or a complete finish chunk. Body usage
+        # alone cannot prove this is a final cumulative snapshot.
+        final = not choices or bool(choices[0].get("finish_reason"))
+        snapshot = complete_usage_snapshot(raw.get("usage")) if final else None
         gen = super()._convert_chunk_to_generation_chunk(
-            chunk, default_chunk_class, base_generation_info
+            raw, default_chunk_class, base_generation_info
         )
         if gen is None:
             return gen
+        if snapshot is not None:
+            gen.generation_info = {**(gen.generation_info or {}), USAGE_KEY: [snapshot]}
         msg = gen.message
         if not isinstance(msg, AIMessageChunk):
             return gen
@@ -639,7 +663,13 @@ class ReasoningChatOpenAI(ChatOpenAI):
 
     def _create_chat_result(self, response, generation_info=None):
         """非流式响应也提取思考内容（调度任务等走 ``ainvoke`` 的链路）。"""
+        snapshot = complete_usage_snapshot(explicit_fields(response).get("usage"))
         result = super()._create_chat_result(response, generation_info)
+        if snapshot is not None:
+            for generation in result.generations:
+                generation.generation_info = {
+                    **(generation.generation_info or {}), USAGE_KEY: [snapshot],
+                }
         try:
             response_dict = (
                 response if isinstance(response, dict) else response.model_dump()
