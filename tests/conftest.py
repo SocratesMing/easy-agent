@@ -84,20 +84,6 @@ def db():
 
 
 @pytest.fixture()
-def finance_classifier(monkeypatch):
-    """为与范围分类无关的编排测试提供确定性的分类模型，不访问外部服务。"""
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-    from easy_agent.services.agents import domain_gate
-
-    model = SimpleNamespace(ainvoke=AsyncMock(return_value=SimpleNamespace(
-        content='{"is_finance": true}'
-    )))
-    monkeypatch.setattr(domain_gate, "create_classifier_model", lambda **kwargs: model)
-    return model
-
-
-@pytest.fixture()
 def client(db, monkeypatch):
     # 每个测试独立 checkpoint 文件：lifespan 打开/关闭官方 saver，
     # 避免 HITL 中断态跨用例串状态，也不写默认 data/checkpoints.db。
@@ -149,15 +135,8 @@ def client(db, monkeypatch):
             )
 
         async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
-            from easy_agent.services.agents.domain_gate import CLASSIFICATION_PROMPT
-
-            content = (
-                '{"is_finance": true}'
-                if messages and messages[0].content == CLASSIFICATION_PROMPT
-                else "mock-response"
-            )
             return ChatResult(
-                generations=[ChatGeneration(message=AIMessage(content=content))]
+                generations=[ChatGeneration(message=AIMessage(content="mock-response"))]
             )
 
         def stream(self, messages, *args, **kwargs):
@@ -173,14 +152,12 @@ def client(db, monkeypatch):
     import easy_agent.app as _app_mod
     import easy_agent.agent.model as _model_mod
     import easy_agent.services.agents.manager as _am_mod
-    import easy_agent.services.agents.domain_gate as _domain_mod
 
     for _m in (
         _model_mod,
         _app_mod,
         _am_mod,
         _agent_mod,
-        _domain_mod,
     ):
         if hasattr(_m, "create_model"):
             monkeypatch.setattr(_m, "create_model", lambda *a, **k: _FakeLLM())

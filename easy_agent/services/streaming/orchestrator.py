@@ -1029,8 +1029,6 @@ async def chat_stream_generator(
     parsed_content: str | None = None,
     session_logger=None,
     pinned_skills: list[str] | None = None,
-    system_context: str = "",
-    scope_approved: bool = False,
 ) -> AsyncGenerator[str, None]:
     identity = await resolve_usage_identity(username, session_id)
     with usage_scope(identity.user_id if identity else None, identity.session_id if identity else None):
@@ -1162,8 +1160,6 @@ async def chat_stream_generator(
                     message_id=message_id,
                     rendered=message_content,
                     pinned_skills=pinned_skills,
-                    system_context=system_context,
-                    scope_approved=scope_approved,
                 ),
             ):
                 yield frame

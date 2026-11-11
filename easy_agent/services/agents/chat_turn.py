@@ -11,7 +11,7 @@
 1. 知识库会话鉴权（fail-closed）最先；
 2. 打开 / 新建会话，然后 ``reject_concurrent_stream``——409 必须在用户消息落库之前，
    否则会话里会多出一条没有回复的用户消息；
-3. 解析技能 → 仅普通聊天做金融 / 技能意图预检（失败关闭，专家 / 知识库面板跳过）；
+3. 解析技能归属与启用状态；
 4. 专家分支：提示词 → 依赖技能补装 → 职责范围预检（硬闸）→ 命中即短路拒答。
    预检必须早于文件解析与知识库检索：被拒答的消息不该为这些付成本，更重要的是
    「Agent 未创建」时任何工具都不可达（提示词层面的边界块做不到这点）；
@@ -53,7 +53,6 @@ from easy_agent.services.sessions import (
     uploads as file_context,
 )
 from easy_agent.services.agents import (
-    domain_gate,
     manager as agent_manager,
     tool_scope,
 )
@@ -274,20 +273,6 @@ def resolve_request_skills(
     )
 
 
-def _intent_skill_catalog(username: str) -> list[dict[str, str]]:
-    """仅提供用户已启用技能的名称与描述，不加载技能正文或执行工具。"""
-    catalog = []
-    for item in skill_library.list_user_skill_dirs(username):
-        if not item["enabled"]:
-            continue
-        meta = skill_library.skill_metadata(item["path"])
-        catalog.append({
-            "name": meta.get("name") or item["dir_name"],
-            "description": (meta.get("description") or "")[:800],
-        })
-    return catalog
-
-
 def open_turn_session(
     repo: ChatRepository,
     session_id: str | None,
@@ -495,46 +480,10 @@ async def prepare_turn(
 
     identity = await resolve_usage_identity(username, session_id)
 
-    # 先验证技能归属与启用状态，让意图分类能识别技能调用；这里不执行技能。
+    # 验证本轮所选技能的归属与启用状态；这里不执行技能。
     turn = await asyncio.to_thread(
         resolve_request_skills, request.skills, request.message, username, sid
     )
-    # 普通聊天金融 / 技能意图硬闸；知识库面板和专家对话沿用原有处理。
-    # 位置在鉴权之后、技能执行准备 / 附件解析 / 检索 / Agent 创建之前。
-    session = await asyncio.to_thread(repo.get_session, session_id)
-    turn_system_context = ""
-    if not request.expert_agent_id and not is_knowledge_panel_title(session.title):
-        with usage_scope(identity.user_id if identity else None, identity.session_id if identity else None):
-            refusal = await domain_gate.finance_refusal(
-                request.message,
-                getattr(session, "messages", None) or [],
-                model_name=request.model,
-                session_id=session_id,
-                has_attachments=bool(request.files),
-                available_skills=await asyncio.to_thread(_intent_skill_catalog, username),
-                selected_skills=turn.pinned,
-            )
-        if refusal is not None:
-            await asyncio.to_thread(
-                expert_runtime.persist_user_turn,
-                repo.experts, session_id, username, request,
-                request.expert_agent_id or "", turn.dirs, turn_id=message_id,
-            )
-            expert_runtime.session_logger_for(session_id, username).log_user_message(
-                message=request.message, files=request.files, message_id=message_id,
-            )
-            return RefusalPlan(
-                session_id=session_id,
-                sid=sid,
-                classification=(
-                    "finance_unavailable"
-                    if refusal == domain_gate.CLASSIFICATION_UNAVAILABLE else "non_finance"
-                ),
-                refusal=refusal,
-                event_stream=expert_runtime.refusal_event_stream(session_id, repo.experts, refusal),
-            )
-        turn_system_context = domain_gate.APPROVED_TURN_PROMPT
-
     # 只选技能时继续沿用技能展示名作为空会话标题。
     if turn.fallback_name and not request.message.strip() and not request.files:
         await asyncio.to_thread(
@@ -792,8 +741,6 @@ async def prepare_turn(
         parsed_content=parsed_content,
         session_logger=session_logger,
         pinned_skills=turn.pinned,
-        system_context=turn_system_context,
-        scope_approved=bool(turn_system_context),
         context_prefix=knowledge_chat.context,
         initial_events=knowledge_chat.initial_events,
         assistant_metadata=knowledge_chat.assistant_metadata,
