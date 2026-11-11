@@ -1532,8 +1532,7 @@ class SourceSyncEngine:
                 )
                 if stage_stats["missing_source"]:
                     logger.warning(
-                        "本窗口 %d 条研报未在磁盘上找到对应源文件，已跳过（检查 "
-                        "source_sync.file_root 与 batchid 是否匹配）",
+                        "本窗口 %d 条研报未在磁盘上找到对应源文件，已跳过",
                         stage_stats["missing_source"],
                     )
 
