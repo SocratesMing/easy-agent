@@ -1,0 +1,22 @@
+
+.message-text :deep(.ke-cite-number), .thinking-text :deep(.ke-cite-number) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  margin: 0 3px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bg-tertiary, #edf2ff);
+  color: var(--accent-color, #2563eb);
+  font-family: inherit;
+  line-height: 1;
+  font-size: 12px;
+  vertical-align: 2px;
+  cursor: pointer;
+  text-decoration: none;
+}
+.message-text :deep(.ke-cite-number:hover) { background: #dbe6ff; }
+.message-text :deep(.ke-cite-number:focus-visible) { outline: 2px solid var(--accent-color, #2563eb); outline-offset: 2px; }

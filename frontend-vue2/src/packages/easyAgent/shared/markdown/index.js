@@ -102,8 +102,12 @@ function buildSourceCardHtml(title, url) {
 }
 
 /** 知识依据锚点：数据全部来自标记，display 由渲染器转义 */
-function buildCitationHtml(display) {
+function buildCitationHtml(display, compact) {
   const d = escapeHtml(display)
+  if (compact) {
+    return '<button type="button" class="ke-cite ke-cite-number" data-cite="' + d +
+      '" aria-label="查看知识依据 ' + d + '">' + d + '</button>'
+  }
   return '<a class="ke-cite" data-cite="' + d + '">[知识依据' + d + ']</a>'
 }
 
@@ -380,13 +384,14 @@ function easyAgentMarkerExtension() {
         raw: parsed.raw,
         cards: parsed.cards,
         display: parsed.display,
+        compact: parsed.compact,
       }
     },
     renderer(token) {
       if (token.kind === 'src') {
         return wrapSourceCards(token.cards.map((c) => buildSourceCardHtml(c.title, c.url)))
       }
-      return buildCitationHtml(token.display)
+      return buildCitationHtml(token.display, token.compact)
     },
   }
 }
