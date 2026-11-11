@@ -1519,7 +1519,7 @@ class SourceSyncEngine:
                 )
                 for key, value in stage_stats.items():
                     stats[key] += value
-                # 单独汇总打一条，missing_source 不再逐条打 warning
+                # 单独汇总打一条，missing_source 不再逐条打日志
                 logger.info(
                     "研报 SQL 批量暂存完成 | start=%s end=%s rows=%s "
                     "copied=%s failed=%s missing_source=%s",
@@ -1531,7 +1531,7 @@ class SourceSyncEngine:
                     stage_stats["missing_source"],
                 )
                 if stage_stats["missing_source"]:
-                    logger.warning(
+                    logger.info(
                         "本窗口 %d 条研报未在磁盘上找到对应源文件，已跳过",
                         stage_stats["missing_source"],
                     )
