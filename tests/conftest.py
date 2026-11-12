@@ -41,7 +41,9 @@ os.environ["TEST_SYSTEM_PROMPT"] = str(TEST_ROOT / "system_prompt.md")
 # FW-09：checkpointer 后端在 lifespan 内按业务库类型选择（默认官方 SQLite saver）。
 # 显式给一份临时路径，避免默认 data/checkpoints.db 写入仓库；每个 client fixture
 # 再覆盖成独立文件，保证测试之间不共享 HITL 中断态。
-os.environ["EASY_CHECKPOINT_BACKEND"] = "auto"
+# **必须显式写 sqlite，不能用 auto**：auto 在"业务库是 MySQL"的测试环境会选中
+# mysql_saver，于是每次跑用例都去连真库并建 cp_* 表——CI 会变成"没有 MySQL 就跑不了"。
+os.environ["EASY_CHECKPOINT_BACKEND"] = "sqlite"
 os.environ["EASY_CHECKPOINT_SQLITE_PATH"] = str(_TMP / "checkpoints" / "shared.db")
 (_TMP / "checkpoints").mkdir(parents=True, exist_ok=True)
 
@@ -81,20 +83,6 @@ def db():
     """每个测试独立的临时文件 SQLite 数据库（:memory: 跨连接不共享，故用文件）。"""
     path = _TMP / f"test_{uuid.uuid4().hex}.db"
     return init_database({"type": "sqlite", "sqlite": {"path": str(path)}})
-
-
-@pytest.fixture()
-def finance_classifier(monkeypatch):
-    """为与范围分类无关的编排测试提供确定性的分类模型，不访问外部服务。"""
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-    from easy_agent.services.agents import domain_gate
-
-    model = SimpleNamespace(ainvoke=AsyncMock(return_value=SimpleNamespace(
-        content='{"is_finance": true}'
-    )))
-    monkeypatch.setattr(domain_gate, "create_classifier_model", lambda **kwargs: model)
-    return model
 
 
 @pytest.fixture()
@@ -149,15 +137,8 @@ def client(db, monkeypatch):
             )
 
         async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
-            from easy_agent.services.agents.domain_gate import CLASSIFICATION_PROMPT
-
-            content = (
-                '{"is_finance": true}'
-                if messages and messages[0].content == CLASSIFICATION_PROMPT
-                else "mock-response"
-            )
             return ChatResult(
-                generations=[ChatGeneration(message=AIMessage(content=content))]
+                generations=[ChatGeneration(message=AIMessage(content="mock-response"))]
             )
 
         def stream(self, messages, *args, **kwargs):
@@ -173,14 +154,12 @@ def client(db, monkeypatch):
     import easy_agent.app as _app_mod
     import easy_agent.agent.model as _model_mod
     import easy_agent.services.agents.manager as _am_mod
-    import easy_agent.services.agents.domain_gate as _domain_mod
 
     for _m in (
         _model_mod,
         _app_mod,
         _am_mod,
         _agent_mod,
-        _domain_mod,
     ):
         if hasattr(_m, "create_model"):
             monkeypatch.setattr(_m, "create_model", lambda *a, **k: _FakeLLM())

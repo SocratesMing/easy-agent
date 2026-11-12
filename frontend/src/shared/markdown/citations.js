@@ -1,19 +1,52 @@
-/**
- * 把正文里的 `[知识依据N]` 改写成可点击锚点（数据来自消息的 sources 映射）。
- * 与 Vue2 基线保持同一实现，供 MarkdownBody 复用。
- * 2026-11-06：改成占位标记 + marked 扩展生成 HTML（不再往源文本注入 <a>），
- * 并经 protectCodeRegions 跳过代码块，避免 `print("[知识依据1]")` 被改写。
- */
+// ⚠️ 自动生成，请勿直接编辑。
+// 源文件：frontend-shared/markdown/citations.js
+// 同步：npm run sync:shared（frontend-vue2 / frontend 各自目录下执行）
 import { protectCodeRegions } from './codeRegions.js'
 import { citationMarker } from './markers.js'
 
-export function linkKnowledgeCitations(content, citeMap) {
+const CITATION = /\[知识(?:库)?依据\s*(\d+)\]/g
+
+/** 主聊天：正文中的有效编号按首次出现排序，代码里的示例不计入。 */
+export function relatedEvidence(message) {
+  const evidence = message.knowledge_evidence || []
+  const blocks = (message.blocks || []).filter(block => block.type === 'content')
+  const text = blocks.length
+    ? [...blocks].sort((a, b) => (a.order || 0) - (b.order || 0)).map(block => block.content || '').join('\n')
+    : message.content || ''
+  const numbers = new Set()
+  protectCodeRegions(text, part => {
+    for (const match of part.matchAll(CITATION)) {
+      const number = Number(match[1])
+      if (number > 0 && number <= evidence.length) numbers.add(number)
+    }
+    return part
+  })
+  return {
+    numberMap: Object.fromEntries([...numbers].map((number, index) => [number, index + 1])),
+    items: numbers.size ? [...numbers].map(number => evidence[number - 1]) : evidence,
+  }
+}
+
+export function linkKnowledgeCitations(content, citeMap, compact = false) {
   if (typeof content !== 'string') return content
   const map = citeMap || {}
-  return protectCodeRegions(content, (text) =>
-    text.replace(
-      /\[知识(?:库)?依据\s*(\d+)\]/g,
-      (match, num) => citationMarker(map[num] || Number(num))
-    )
+  return protectCodeRegions(content, text =>
+    text.replace(CITATION, (match, digits) => {
+      const number = Number(digits)
+      const display = map[number]
+      if (compact && !display) return match
+      return citationMarker(display || number, compact)
+    })
   )
+}
+
+/** 工作台保留既有的文字标记编号规则。 */
+export function inlineCitationMap(content, evidenceCount) {
+  if (!evidenceCount) return {}
+  const seen = new Set()
+  for (const match of (content || '').matchAll(CITATION)) {
+    const number = Number(match[1])
+    if (number > 0 && number <= evidenceCount) seen.add(number)
+  }
+  return Object.fromEntries([...seen].map((number, index) => [number, index + 1]))
 }

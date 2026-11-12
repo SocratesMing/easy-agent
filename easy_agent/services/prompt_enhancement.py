@@ -11,7 +11,9 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpe
 from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
 
 from easy_agent.agent.model import build_request_headers
+from easy_agent.agent.token_usage import capture_sdk_usage, write_usage_event
 from easy_agent.bootstrap.config import Config
+from easy_agent.utils.blocking import run_blocking
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,7 @@ async def enhance_prompt(prompt: str, config: Config) -> EnhancedPrompt:
     started = time.monotonic()
     outcome = "cancelled"
     settings = config.prompt_enhancement
+    usage_event = None
     try:
         model = _configured_model(config)
         rules = load_enhancement_rules()
@@ -123,6 +126,9 @@ async def enhance_prompt(prompt: str, config: Config) -> EnhancedPrompt:
                     stream=False,
                     response_format={"type": "json_object"},
                     max_tokens=settings.max_output_tokens,
+                )
+                usage_event = capture_sdk_usage(
+                    completion, model_key=settings.model, model_name=model.model,
                 )
                 result = validate_completion(completion, settings.max_output_chars)
         outcome = "success"
@@ -147,4 +153,11 @@ async def enhance_prompt(prompt: str, config: Config) -> EnhancedPrompt:
         outcome = "internal_failure"
         raise EnhancementError(500) from None
     finally:
+        # Parsing/validation failures still consumed tokens. Flush outside the
+        # business timeout, so a database wait cannot become an upstream timeout.
+        if usage_event is not None:
+            try:
+                await run_blocking(write_usage_event, usage_event)
+            except Exception as exc:
+                logger.warning("token usage write failed | error=%s", type(exc).__name__)
         logger.info("prompt enhancement | model_key=%s outcome=%s elapsed_ms=%d", settings.model, outcome, (time.monotonic() - started) * 1000)

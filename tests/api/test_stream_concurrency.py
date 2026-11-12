@@ -77,10 +77,17 @@ def test_resume_on_a_busy_session_is_409(client, busy_session):
     assert resp.json()["detail"] == BUSY
 
 
-def test_a_finished_stream_does_not_block_the_next_turn(busy_session):
-    """登记的任务已结束（done）时不算忙：只看运行中的任务。"""
+async def test_a_finished_stream_does_not_block_the_next_turn(busy_session):
+    """登记的任务已结束（done）时不算忙：只看运行中的任务 + DB 里的流锁。"""
     agent_manager._sessions[busy_session] = agent_manager.SessionState(
         stream_task=SimpleNamespace(done=lambda: True)
     )
 
-    chat_turn.reject_concurrent_stream(busy_session)
+    class _Runtime:
+        """跨副本流锁仓储的最小替身：没有锁 = 没人在生成。"""
+
+        def get_session_runtime(self, session_id):
+            return None
+
+    # 进程内没在跑 + DB 里没锁 → 放行（不抛 ConflictError）
+    await chat_turn.reject_concurrent_stream(busy_session, _Runtime())

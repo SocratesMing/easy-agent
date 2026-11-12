@@ -26,6 +26,8 @@ from easy_agent.db.expert_store import (
 from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.agent.model import create_model
 from easy_agent.services.agents.manager import get_agent_config
+from easy_agent.services.usage import resolve_usage_identity
+from easy_agent.utils.usage_context import usage_scope
 from easy_agent.services.experts.runtime import (  # noqa: F401 - re-export 历史名字
     _as_str_list,
     _current_user_id,
@@ -157,9 +159,11 @@ async def _generate_and_store(
     tag_options = _tag_options(config)
     try:
         llm = create_model(config, model_name, session_id)
-        generated = await generate_expert_config(
-            llm, name_cn, user_prompt, tag_options=tag_options
-        )
+        identity = await resolve_usage_identity(username, session_id)
+        with usage_scope(identity.user_id if identity else None, identity.session_id if identity else None):
+            generated = await generate_expert_config(
+                llm, name_cn, user_prompt, tag_options=tag_options
+            )
     except Exception as exc:  # noqa: BLE001
         logger.error("专家配置生成失败 | expert=%s | %s", expert_agent_id, exc)
         await asyncio.to_thread(store.update_fields, expert_agent_id, {"agent_status": STATUS_FAILED})

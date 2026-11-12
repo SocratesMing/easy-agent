@@ -16,6 +16,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from easy_agent.agent.model import create_model, extract_reasoning
+from easy_agent.services.usage import resolve_usage_identity
+from easy_agent.utils.usage_context import usage_scope
 from easy_agent.middleware import get_current_username
 from easy_agent.models.api import ChatCompletionRequest
 from easy_agent.services.agents.manager import get_agent_config
@@ -121,7 +123,9 @@ async def chat_completion(
 
     start = time.time()
     try:
-        result = await llm.ainvoke(lc_messages)
+        identity = await resolve_usage_identity(username)
+        with usage_scope(identity.user_id if identity else None, identity.session_id if identity else None):
+            result = await llm.ainvoke(lc_messages)
     except Exception as e:
         logger.error("对话补全调用失败: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"大模型调用失败: {e}")

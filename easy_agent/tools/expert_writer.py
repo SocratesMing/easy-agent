@@ -51,6 +51,8 @@ from easy_agent.services.experts.service import (
     validate_create_params,
     write_expert_version,
 )
+from easy_agent.services.usage import resolve_usage_identity
+from easy_agent.utils.usage_context import get_usage_identity, usage_scope
 from easy_agent.utils.blocking import run_blocking
 from easy_agent.services.agents import tool_scope
 from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
@@ -378,9 +380,13 @@ class SaveExpertTool(BaseTool):
         from easy_agent.agent.model import create_model  # 延迟导入：测试 monkeypatch 语义 + 导入期重依赖：函数内导入才能取到替换对象且不拖慢导入
 
         llm = create_model(config, self.config_model or None, self.session_id or None)
-        generated = await generate_expert_config(
-            llm, name_cn, user_prompt, tag_options=tags
-        )
+        identity = get_usage_identity()
+        if identity is None:
+            identity = await resolve_usage_identity(self.username, self.session_id or None)
+        with usage_scope(identity.user_id if identity else None, identity.session_id if identity else None):
+            generated = await generate_expert_config(
+                llm, name_cn, user_prompt, tag_options=tags
+            )
         return generated, "llm"
 
     # ── 主流程 ────────────────────────────────────────────────────────

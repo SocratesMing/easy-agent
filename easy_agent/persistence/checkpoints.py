@@ -1,36 +1,60 @@
-"""Durable HITL checkpointer：官方 AsyncSqliteSaver 或 MySQL 业务库快照。
+"""Durable HITL checkpointer：共享 MySQL（自研）或官方 SQLite。
 
-FW-09：由 ``EASY_CHECKPOINT_BACKEND=auto|sqlite|mysql|legacy`` 控制，选择规则集中在
-``resolve_checkpoint_backend()``：默认用官方 SQLite saver，文件路径取 config.yaml 的
-``checkpoint.sqlite_path``，没配时用旧环境变量 ``EASY_CHECKPOINT_SQLITE_PATH``，再没有就是
-``/qts/checkpoint/{pod}.db``。业务库不再保存 checkpoint。只有显式 ``legacy``，或单 pod 时
-SQLite 文件打不开，才用进程内 ``PersistentMemorySaver``。显式 ``mysql`` 时将快照保存到业务 MySQL，
-供多副本和 Pod 重建后恢复。
+``EASY_CHECKPOINT_BACKEND`` 选的是**用哪一种 checkpointer 实现**，不是"连哪个数据库"
+（数据库连接在 ``database.mysql`` / ``checkpoint.mysql``）：
 
-生产只有 MySQL，Postgres checkpointer 已移除。SQLite 不能在副本之间共享，多副本时每个 pod
-用自己的 SQLite 文件：路径里写 ``{pod}``（启动时替换成实例名，默认路径就是这样），由 Ingress 粘性会话把同一用户的
-请求固定到同一个 pod（``EASY_STICKY_SESSIONS=1`` 确认已配好），删除会话时别的 pod 里的残留由后台
-对账补删。其余多副本组合在启动期 fail-fast；显式设置 ``EASY_ALLOW_LEGACY_CHECKPOINTER=1``（默认
-关闭）才放行，此时 HITL 跨副本恢复不保证一致。见 ``docs/design/2026-10-21-per-pod-sqlite-checkpoints.md``。
+============================  =======================================================  ==================
+值                            实现                                                     状态存在哪
+============================  =======================================================  ==================
+``mysql_saver``（默认）        ``AsyncMySQLSaver``：协议级 4 张表，多 Pod 共享              业务库 ``cp_*`` 表
+``mysql``                     **废弃别名**，等价 ``mysql_saver``（老 ConfigMap 里可能写着）  同上
+``sqlite``                    官方 ``AsyncSqliteSaver``                                本 Pod 的 ``{pod}.db``
+``legacy``                    进程内 ``MemorySaver``                                    内存，重启即丢
+``auto``                      业务库是 MySQL → ``mysql_saver``；否则 → ``sqlite``        跟随后两者
+============================  =======================================================  ==================
+
+为什么默认是 MySQL：SQLite 文件不能跨副本共享（WAL 不能跨进程可靠共享），多副本下 HITL
+审批只能在记录它的那个 Pod 上恢复，靠 Ingress 粘性会话兜着。粘性一失效（清 cookie、换设备、
+Pod 重建、HPA 扩缩容）审批就丢。共享 saver 把状态放到库里，任意 Pod 都能接手，粘性不再必需。
+
+**sqlite 分支一行未改**，它是回滚目标（发布后出问题把 ``EASY_CHECKPOINT_BACKEND`` 改回
+``sqlite`` 即可，历史会话由 ``plan_turn`` 从 ``session_messages`` 水合，一条不少）。
+回滚的前提是保留 Ingress 的粘性 annotation 与路径里的 ``{pod}``（see
+``validate_checkpoint_deployment``）。
+
+命名上的两件事容易搞混：
+
+- ``sqlite_checkpointer_active()`` 语义是"当前有没有一个**进程级共享**的官方 saver"，
+  所以它现在同时覆盖 sqlite 与 mysql_saver；新增的 ``shared_checkpointer_active()`` 是
+  推荐写法，老名字保留只为兼容。
+- ``per_pod_checkpoints_active()`` 仍然**只**表示 sqlite 文件按 Pod 隔离 —— 审批归属校验
+  依赖它，不能跟着改。
+
+见 ``docs/design/2026-11-11-self-hosted-mysql-saver-plan.md``。
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import pickle
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 
 from easy_agent.bootstrap.env import env_bool, env_int, env_str
+from easy_agent.persistence.mysql_saver import (
+    AsyncMySQLSaver,
+    MySQLCheckpointConfig,
+    MySQLCheckpointError,
+)
+from easy_agent.persistence.thread_ids import session_id_of_thread
 from easy_agent.utils.paths import PROJECT_ROOT
 from easy_agent.utils.blocking import run_blocking
-from easy_agent.persistence.thread_ids import session_id_of_thread
 from easy_agent.utils.deployment import (
     detect_replica_count,
     detect_workers_per_pod,
@@ -41,40 +65,36 @@ from easy_agent.db.repositories import sessions as sessions_repo
 
 logger = logging.getLogger(__name__)
 
-_CHECKPOINTERS: dict[str, "PersistentMemorySaver"] = {}
+# legacy 后端：每会话一个进程内 saver，只为调试保留
+_CHECKPOINTERS: dict[str, MemorySaver] = {}
 _CHECKPOINTER_MAX = 200
-# 持久化裁剪：MemorySaver 会按 thread 保留全部 checkpoint。thread_id 形如
-# "{session_id}-{message_id}"，每轮新增一个 thread 且永不裁剪 → 每轮全量 pickle
-# 写库、blob 大小 O(轮数²)。这里只保留最近若干 thread：HITL 只会恢复最新未完成
-# thread，历史 thread 不再需要。
-#
-# thread 内部的 checkpoint 一个都不能删：deepagents 0.7 的 messages 是 DeltaChannel，
-# checkpoint 里只存增量，读状态时要沿父链回溯到最近的快照再重放各祖先的写入。
-# 早先按 thread 只留最近 2 个 checkpoint，运行刚结束 messages 就重建成空列表，
-# HITL 恢复时模型看不到对话（DA-03 P1 发现）。
-_PERSIST_MAX_THREADS = 3
-# 单会话快照上限：大模型工具返回的 base64/大文件会进 checkpoint，超过业务库
-# 单包上限后每次写入都失败并刷屏。超过上限时跳过持久化（HITL 快照不可用），
-# 但保留进程内 MemorySaver，当前进程内仍可继续运行。
-_PERSIST_MAX_BYTES = 12 * 1024 * 1024
 _CHECKPOINTER_LOCK = threading.Lock()
 _sqlite_cm = None
 _sqlite_saver = None
-_mysql_snapshots_active = False
-# 打开官方 SQLite saver 时用的解析结果：按 pod 隔离（路径含 {pod}）时记下实例名
+_mysql_saver: AsyncMySQLSaver | None = None
+#: 进程级共享 saver（sqlite 或 mysql_saver），语义中性，判据统一用它
+_shared_saver: Any = None
+# 打开 saver 时用的解析结果：按 pod 隔离（路径含 {pod}）时记下实例名
 _active_selection: "CheckpointSelection | None" = None
 _gc_task: asyncio.Task | None = None
 
 
-# ── FW-09：checkpointer 后端选择（auto/sqlite/legacy） ──────────────────────
-# auto（默认）：配了 SQLite 路径或业务库为 SQLite → 官方 AsyncSqliteSaver；
-# 业务库为 MySQL（官方无 saver）→ 回退自研 PersistentMemorySaver。
-# EASY_CHECKPOINT_BACKEND 可强制指定后端。
+# ── 后端选择 ────────────────────────────────────────────────────────
 BACKEND_AUTO = "auto"
 BACKEND_SQLITE = "sqlite"
 BACKEND_LEGACY = "legacy"
-BACKEND_MYSQL = "mysql"
-BACKEND_CHOICES = (BACKEND_AUTO, BACKEND_SQLITE, BACKEND_MYSQL, BACKEND_LEGACY)
+BACKEND_MYSQL_SAVER = "mysql_saver"
+#: 废弃别名：历史上 ``mysql`` 指"业务库全量 pickle 快照"，那套实现已删除；
+#: 现在它映射到 ``mysql_saver``，只为不让"ConfigMap 里还写着 mysql"的部署启动失败。
+BACKEND_MYSQL_ALIAS = "mysql"
+BACKEND_CHOICES = (
+    BACKEND_AUTO,
+    BACKEND_SQLITE,
+    BACKEND_MYSQL_SAVER,
+    BACKEND_MYSQL_ALIAS,
+    BACKEND_LEGACY,
+)
+_DEPRECATED_BACKENDS = {BACKEND_MYSQL_ALIAS: BACKEND_MYSQL_SAVER}
 
 _BACKEND_ENV = "EASY_CHECKPOINT_BACKEND"
 _SQLITE_PATH_ENV = "EASY_CHECKPOINT_SQLITE_PATH"
@@ -101,7 +121,7 @@ class CheckpointSelection:
     """checkpointer 后端解析结果（纯数据，便于单测注入，不打开任何连接）。
 
     ``per_pod`` 表示 SQLite 路径模板里有 ``{pod}``：``sqlite_path`` 是替换成 ``instance``
-    之后的实际路径，``sqlite_template`` 是原始模板。
+    之后的实际路径，``sqlite_template`` 是原始模板。``mysql`` 只在 ``mysql_saver`` 时非空。
     """
 
     kind: str
@@ -111,10 +131,12 @@ class CheckpointSelection:
     per_pod: bool = False
     instance: str = ""
     sqlite_template: str = ""
+    mysql: MySQLCheckpointConfig | None = None
 
     @property
     def is_official(self) -> bool:
-        return self.kind == BACKEND_SQLITE
+        """是否"进程级共享、可跨会话复用"的实现（sqlite / mysql_saver 都是）。"""
+        return self.kind in (BACKEND_SQLITE, BACKEND_MYSQL_SAVER)
 
 
 def resolve_sqlite_path(path: str) -> Path:
@@ -129,8 +151,6 @@ def resolve_sqlite_path(path: str) -> Path:
 
 def _pod_instance_name() -> str:
     """拼进 SQLite 路径的实例名；不能安全地放进路径时启动失败。"""
-    # 延迟导入：utils 包会拉起较重依赖，checkpoints 可能先于 app 初始化被导入。
-
     name = instance_name()
     if not is_valid_instance_name(name):
         raise CheckpointDeploymentError(
@@ -143,7 +163,7 @@ def _pod_instance_name() -> str:
 def detect_business_db_type() -> str | None:
     """返回已加载业务库的类型（sqlite/mysql）；不触发建库，避免启动副作用。"""
     try:
-        from easy_agent.db import database as _database_module  # 延迟导入：可选依赖：包在 try/except 中，导入失败走降级分支
+        from easy_agent.db import database as _database_module
     except Exception:  # noqa: BLE001 - 数据库模块不可用时按未知处理
         return None
     db = getattr(_database_module, "_db_instance", None)
@@ -151,8 +171,109 @@ def detect_business_db_type() -> str | None:
     return str(db_type).strip().lower() if db_type else None
 
 
-def _sqlite_path_template(configured: str | None, warnings: list[str]) -> tuple[str, str]:
-    """SQLite 路径模板和它的来源：config.yaml 的 checkpoint.sqlite_path > 旧环境变量 > 默认路径。"""
+def _pick(source: Any, name: str, default: Any = "") -> Any:
+    """从 pydantic 模型或 dict 里取一个配置值（两种都支持，单测好写）。"""
+    if source is None:
+        return default
+    if isinstance(source, Mapping):
+        value = source.get(name, default)
+    else:
+        value = getattr(source, name, default)
+    return default if value is None else value
+
+
+def build_mysql_checkpoint_config(
+    checkpoint_mysql: Any = None,
+    business_mysql: Any = None,
+) -> MySQLCheckpointConfig:
+    """把 ``checkpoint.mysql`` 与业务库 ``database.mysql`` 合成 saver 的配置。
+
+    连接参数**留空即复用业务库**（同实例同库，用 ``cp_`` 前缀隔离）；显式配了就以它为准，
+    这样也可以把 checkpoint 单独放另一个库。
+    """
+    defaults = MySQLCheckpointConfig()
+    host = str(_pick(checkpoint_mysql, "host", "") or "").strip()
+    port = int(_pick(checkpoint_mysql, "port", 0) or 0)
+    user = str(_pick(checkpoint_mysql, "user", "") or "").strip()
+    password = str(_pick(checkpoint_mysql, "password", "") or "")
+    database = str(_pick(checkpoint_mysql, "database", "") or "").strip()
+
+    fallback_host = str(_pick(business_mysql, "host", defaults.host) or defaults.host)
+    fallback_port = int(_pick(business_mysql, "port", defaults.port) or defaults.port)
+    fallback_user = str(_pick(business_mysql, "user", defaults.user) or defaults.user)
+    fallback_password = str(_pick(business_mysql, "password", defaults.password) or "")
+    fallback_database = str(
+        _pick(business_mysql, "database", defaults.database) or defaults.database
+    )
+
+    return MySQLCheckpointConfig(
+        host=host or fallback_host,
+        port=port or fallback_port,
+        user=user or fallback_user,
+        password=password or fallback_password,
+        database=database or fallback_database,
+        charset=str(_pick(checkpoint_mysql, "charset", defaults.charset) or "utf8mb4"),
+        table_prefix=str(
+            _pick(checkpoint_mysql, "table_prefix", defaults.table_prefix)
+            or defaults.table_prefix
+        ),
+        pool_min_size=int(
+            _pick(checkpoint_mysql, "pool_min_size", defaults.pool_min_size)
+            or defaults.pool_min_size
+        ),
+        pool_max_size=int(
+            _pick(checkpoint_mysql, "pool_max_size", defaults.pool_max_size)
+            or defaults.pool_max_size
+        ),
+        connect_timeout=int(
+            _pick(checkpoint_mysql, "connect_timeout", defaults.connect_timeout)
+            or defaults.connect_timeout
+        ),
+        read_timeout=int(
+            _pick(checkpoint_mysql, "read_timeout", defaults.read_timeout)
+            or defaults.read_timeout
+        ),
+        auto_setup=bool(_pick(checkpoint_mysql, "auto_setup", defaults.auto_setup)),
+        auto_setup_lock_wait=int(
+            _pick(
+                checkpoint_mysql,
+                "auto_setup_lock_wait",
+                defaults.auto_setup_lock_wait,
+            )
+            or defaults.auto_setup_lock_wait
+        ),
+        gc_interval_seconds=int(
+            _pick(checkpoint_mysql, "gc_interval_seconds", defaults.gc_interval_seconds)
+            or defaults.gc_interval_seconds
+        ),
+        record_ttl_days=int(
+            _pick(checkpoint_mysql, "record_ttl_days", defaults.record_ttl_days) or 0
+        ),
+        ttl_basis=str(
+            _pick(checkpoint_mysql, "ttl_basis", defaults.ttl_basis)
+            or defaults.ttl_basis
+        ),
+        ttl_only_archived=bool(
+            _pick(checkpoint_mysql, "ttl_only_archived", defaults.ttl_only_archived)
+        ),
+        ttl_batch_size=int(
+            _pick(checkpoint_mysql, "ttl_batch_size", defaults.ttl_batch_size)
+            or defaults.ttl_batch_size
+        ),
+        ttl_protect_active_stream=bool(
+            _pick(
+                checkpoint_mysql,
+                "ttl_protect_active_stream",
+                defaults.ttl_protect_active_stream,
+            )
+        ),
+    )
+
+
+def _sqlite_path_template(
+    configured: str | None, warnings: list[str]
+) -> tuple[str, str]:
+    """SQLite 路径模板和它的来源：config.yaml > 旧环境变量 > 默认路径。"""
     configured = (configured or "").strip()
     legacy = env_str(_SQLITE_PATH_ENV).strip()
     if configured:
@@ -172,35 +293,76 @@ def resolve_checkpoint_backend(
     backend: str | None = None,
     sqlite_path: str | None = None,
     db_type: Any = _UNSET,
+    mysql_config: Any = None,
+    business_mysql: Any = None,
 ) -> CheckpointSelection:
     """解析 checkpointer 后端（不打开连接）。
 
-    ``sqlite_path`` 是 config.yaml 的 ``checkpoint.sqlite_path``：没配（``None`` / 空串）时用
-    旧环境变量 ``EASY_CHECKPOINT_SQLITE_PATH``，再没有就用 :data:`DEFAULT_SQLITE_PATH`。
-    ``backend`` 为 ``None`` 时读环境变量；``db_type`` 保持 ``_UNSET`` 时读取已加载的业务库
-    实例。单测依赖这些注入点，无需真实 MySQL。
+    ``sqlite_path`` 是 config.yaml 的 ``checkpoint.sqlite_path``；``mysql_config`` /
+    ``business_mysql`` 分别是 ``checkpoint.mysql`` 与 ``database.mysql`` 两段配置
+    （pydantic 模型或 dict 都行），留空时连接参数取默认值。
+
+    ``auto`` 的语义（容易写错，这里定死）：**只看配置，不看连通性** —— 业务库是 MySQL 且
+    ``checkpoint.mysql.enabled`` 为真就选 ``mysql_saver``，否则 ``sqlite``。不做"连不上就
+    退回 sqlite"这种事：那会导致 Pod1 写库、Pod2 写本地文件，比启动失败严重得多。
     """
-    raw_backend = (env_str(_BACKEND_ENV) if backend is None else str(backend)).strip().lower()
+    raw_backend = (
+        (env_str(_BACKEND_ENV) if backend is None else str(backend)).strip().lower()
+    )
     warnings: list[str] = []
     if not raw_backend:
         raw_backend = BACKEND_AUTO
     elif raw_backend not in BACKEND_CHOICES:
         warnings.append(
             f"未知的 {_BACKEND_ENV}={raw_backend!r}"
-            "（可选 auto/sqlite/mysql/legacy），按 auto 处理"
+            "（可选 auto/sqlite/mysql_saver/mysql/legacy），按 auto 处理"
         )
         raw_backend = BACKEND_AUTO
+    if raw_backend in _DEPRECATED_BACKENDS:
+        mapped = _DEPRECATED_BACKENDS[raw_backend]
+        warnings.append(
+            f"{_BACKEND_ENV}={raw_backend} 已废弃（旧的业务库全量快照实现已删除），"
+            f"自动按 {mapped} 处理；请把部署配置改成 {mapped}"
+        )
+        raw_backend = mapped
     if raw_backend == BACKEND_LEGACY:
         # 用不到 SQLite 文件：不解析路径，也就不校验 {pod} 的实例名
-        return CheckpointSelection(BACKEND_LEGACY, "EASY_CHECKPOINT_BACKEND=legacy：显式使用自研业务库快照")
+        return CheckpointSelection(
+            BACKEND_LEGACY, "EASY_CHECKPOINT_BACKEND=legacy：显式使用进程内 MemorySaver"
+        )
 
-    if raw_backend == BACKEND_MYSQL:
-        business_db = detect_business_db_type() if db_type is _UNSET else str(db_type).strip().lower() if db_type else None
-        if business_db != "mysql":
+    business_db = (
+        detect_business_db_type()
+        if db_type is _UNSET
+        else (str(db_type).strip().lower() if db_type else None)
+    )
+    mysql_enabled = bool(_pick(mysql_config, "enabled", True))
+    mysql_settings = build_mysql_checkpoint_config(mysql_config, business_mysql)
+
+    if raw_backend == BACKEND_MYSQL_SAVER:
+        configured_target = bool(
+            str(_pick(mysql_config, "host", "") or "").strip()
+            or str(_pick(mysql_config, "database", "") or "").strip()
+        )
+        if business_db != "mysql" and not configured_target:
             raise CheckpointDeploymentError(
-                f"EASY_CHECKPOINT_BACKEND=mysql 要求业务数据库为 MySQL，当前为 {business_db!r}"
+                f"EASY_CHECKPOINT_BACKEND={BACKEND_MYSQL_SAVER} 要求业务数据库为 MySQL，"
+                f"当前为 {business_db!r}；或显式配置 checkpoint.mysql.host/database"
             )
-        return CheckpointSelection(BACKEND_MYSQL, "EASY_CHECKPOINT_BACKEND=mysql：共享 MySQL checkpoint 快照")
+        return CheckpointSelection(
+            BACKEND_MYSQL_SAVER,
+            f"EASY_CHECKPOINT_BACKEND={BACKEND_MYSQL_SAVER}：共享 MySQL checkpoint（协议级 4 张表）",
+            warning="；".join(warnings),
+            mysql=mysql_settings,
+        )
+
+    if raw_backend == BACKEND_AUTO and business_db == "mysql" and mysql_enabled:
+        return CheckpointSelection(
+            BACKEND_MYSQL_SAVER,
+            "auto：业务库是 MySQL，使用共享 MySQL checkpoint（协议级 4 张表）",
+            warning="；".join(warnings),
+            mysql=mysql_settings,
+        )
 
     sqlite, source = _sqlite_path_template(sqlite_path, warnings)
     # 路径模板里的 {pod} 替换成本实例名：多副本时每个 pod 一个文件
@@ -209,19 +371,18 @@ def resolve_checkpoint_backend(
         instance = _pod_instance_name()
         pod_fields = {"per_pod": True, "instance": instance, "sqlite_template": sqlite}
         sqlite = sqlite.replace(POD_PLACEHOLDER, instance)
-    if db_type is _UNSET:
-        business_db = detect_business_db_type()
-    else:
-        business_db = str(db_type).strip().lower() if db_type else None
     # 按 pod 隔离时多副本由启动校验把关，这条单机提示就不必了
-    if business_db == "mysql" and not pod_fields:
+    if business_db == "mysql" and not pod_fields and not mysql_enabled:
         warnings.append(
-            "业务库为 MySQL，checkpoint 将落在本地 SQLite 文件，"
-            "多副本会各写各的（仅适合单机）"
+            "业务库为 MySQL 但 checkpoint.mysql.enabled=false，checkpoint 将落在本地 "
+            "SQLite 文件，多副本会各写各的（仅适合单机）"
         )
 
-    # auto 和显式 sqlite 一样：路径总有（没配就是默认路径），都用官方 saver
-    mode = "EASY_CHECKPOINT_BACKEND=sqlite" if raw_backend == BACKEND_SQLITE else "auto"
+    mode = (
+        "EASY_CHECKPOINT_BACKEND=sqlite"
+        if raw_backend == BACKEND_SQLITE
+        else "auto"
+    )
     return CheckpointSelection(
         kind=BACKEND_SQLITE,
         reason=f"{mode}：使用官方 AsyncSqliteSaver，路径来自{source}",
@@ -233,11 +394,37 @@ def resolve_checkpoint_backend(
 
 def active_checkpoint_backend() -> str:
     """当前进程实际生效的 checkpointer 后端。"""
+    if _mysql_saver is not None:
+        return BACKEND_MYSQL_SAVER
     if _sqlite_saver is not None:
         return BACKEND_SQLITE
-    if _mysql_snapshots_active:
-        return BACKEND_MYSQL
     return BACKEND_LEGACY
+
+
+def shared_checkpointer_active() -> bool:
+    """进程级共享 saver 是否已打开（sqlite 或 mysql_saver）。
+
+    **这是唯一应该用的判据**。以前各处写 ``sqlite_checkpointer_active()``，语义上是
+    "有没有一个进程级共享、可跨会话复用的 saver"，只是当时只有 sqlite 一种实现。多一个
+    后端就必须改成这个，否则会话线程、图缓存、手动压缩会**静默退化**。
+    """
+    return _shared_saver is not None
+
+
+def sqlite_checkpointer_active() -> bool:
+    """兼容旧名字（语义已改为"共享 saver 是否就绪"）。新代码用
+    :func:`shared_checkpointer_active`。"""
+    return _shared_saver is not None
+
+
+def mysql_checkpointer_active() -> bool:
+    """当前是否用的是新的共享 MySQL saver。"""
+    return _mysql_saver is not None
+
+
+def mysql_checkpoint_config() -> MySQLCheckpointConfig | None:
+    """当前生效的 MySQL checkpoint 配置（GC/TTL/运维查询用）；未启用时 None。"""
+    return _mysql_saver.config if _mysql_saver is not None else None
 
 
 def _resolve_agent_env(agent_env: str | None) -> str:
@@ -249,15 +436,12 @@ def _resolve_agent_env(agent_env: str | None) -> str:
 def _resolve_replicas(replicas: int | None) -> int:
     if replicas is not None:
         return int(replicas)
-    # 延迟导入：utils 包会拉起较重依赖，checkpoints 可能先于 app 初始化被导入。
-
     return detect_replica_count()
 
 
 def _resolve_workers_per_pod(workers_per_pod: int | None) -> int:
     if workers_per_pod is not None:
         return int(workers_per_pod)
-
     return detect_workers_per_pod()
 
 
@@ -272,17 +456,26 @@ def validate_checkpoint_deployment(
 ) -> bool:
     """生产多副本的部署校验，不成立时抛 ``CheckpointDeploymentError``。
 
-    MySQL 快照可被所有副本共享。SQLite 则要求路径含 ``{pod}``、Ingress 粘性会话以及每个 pod
-    一个 worker。返回 True 表示调用方要按 pod 隔离 SQLite，且打开失败时不能回退。
+    返回 True 表示调用方要按 pod 隔离 SQLite，且打开失败时不能回退。
 
-    dev/test、单 pod 单 worker 不受影响；``EASY_ALLOW_LEGACY_CHECKPOINTER=1`` 是逃生门（放行并
-    告警）。各入参 ``None`` 时读环境变量，显式传值用于单测。
+    - **mysql_saver**：状态在库里，任意 Pod / 任意 worker 都能接手，直接放行；
+    - **sqlite**：要求路径含 ``{pod}`` + Ingress 粘性会话（回滚目标，规则原样保留）。
+
+    dev/test、单 pod 单 worker 不受影响；``EASY_ALLOW_LEGACY_CHECKPOINTER=1`` 是逃生门。
     """
     if _resolve_agent_env(agent_env) != "prod":
         return False
     replicas = _resolve_replicas(replicas)
     workers_per_pod = _resolve_workers_per_pod(workers_per_pod)
     if replicas <= 1 and workers_per_pod <= 1:
+        return False
+    if selection.kind == BACKEND_MYSQL_SAVER:
+        logger.info(
+            "生产环境 %s 个副本、每 pod %s 个 worker：HITL checkpoint 在共享 MySQL 上，"
+            "不依赖粘性会话",
+            replicas,
+            workers_per_pod,
+        )
         return False
     allowed = (
         env_bool(_ALLOW_LEGACY_ENV, False)
@@ -301,30 +494,32 @@ def validate_checkpoint_deployment(
         return False
     if workers_per_pod > 1:
         raise CheckpointDeploymentError(
-            f"生产环境每个 pod 跑了 {workers_per_pod} 个 worker：同一个 pod 的 worker 共用 checkpoint 文件，"
-            "审批还可能落到另一个 worker 上；请把 WEB_CONCURRENCY / UVICORN_WORKERS 设为 1，用多个 pod 扩容。"
+            f"生产环境每个 pod 跑了 {workers_per_pod} 个 worker：同一个 pod 的 worker 共用 "
+            "checkpoint 文件，审批还可能落到另一个 worker 上；请把 WEB_CONCURRENCY / "
+            f"UVICORN_WORKERS 设为 1，或改用 {_BACKEND_ENV}={BACKEND_MYSQL_SAVER}。"
             f"若接受审批恢复不一致，可显式设置 {_ALLOW_LEGACY_ENV}=1（默认关闭）。"
         )
-    if selection.kind == BACKEND_MYSQL:
-        return False
     if selection.kind != BACKEND_SQLITE:
         raise CheckpointDeploymentError(
-            f"生产环境检测到 {replicas} 个副本，但 HITL checkpointer 是 {selection.kind!r}（业务库快照），"
-            f"不能跨副本共享。请设置 {_BACKEND_ENV}=mysql 使用共享 MySQL 快照，"
-            f"或使用每个 pod 独立的 SQLite 文件（路径带 {POD_PLACEHOLDER}）并配置粘性会话。"
+            f"生产环境检测到 {replicas} 个副本，但 HITL checkpointer 是 "
+            f"{selection.kind!r}（进程内，不能跨副本共享）。请设置 {_BACKEND_ENV}="
+            f"{BACKEND_MYSQL_SAVER} 使用共享 MySQL，或使用每个 pod 独立的 SQLite 文件"
+            f"（路径带 {POD_PLACEHOLDER}）并配置粘性会话。"
             f"若接受审批跨副本恢复不一致，可显式设置 {_ALLOW_LEGACY_ENV}=1（默认关闭）。"
         )
     if not selection.per_pod:
         raise CheckpointDeploymentError(
-            f"生产环境检测到 {replicas} 个副本，但 checkpoint 路径 {selection.sqlite_path} 里没有 {POD_PLACEHOLDER}："
+            f"生产环境检测到 {replicas} 个副本，但 checkpoint 路径 "
+            f"{selection.sqlite_path} 里没有 {POD_PLACEHOLDER}："
             "多个 pod 不能共用一个 SQLite 文件（WAL 不能跨主机，网络盘上的文件锁也不可靠）。"
-            f"请把 config.yaml 的 checkpoint.sqlite_path 改成 {DEFAULT_SQLITE_PATH} 这类每个 pod 一个文件的路径。"
+            f"请把 config.yaml 的 checkpoint.sqlite_path 改成 {DEFAULT_SQLITE_PATH} "
+            "这类每个 pod 一个文件的路径。"
         )
     if not (env_bool(_STICKY_ENV, False) if sticky is None else bool(sticky)):
         raise CheckpointDeploymentError(
             f"生产环境检测到 {replicas} 个副本，checkpoint 按 pod 隔离，但没有确认粘性会话："
             "审批只能在记录它的 pod 上恢复。请先在 Ingress 配好基于 cookie 的会话保持，"
-            f"再设置 {_STICKY_ENV}=1。"
+            f"再设置 {_STICKY_ENV}=1；或改用 {_BACKEND_ENV}={BACKEND_MYSQL_SAVER}。"
         )
     logger.info(
         "生产环境 %s 个副本：HITL checkpoint 按 pod 隔离（%s → %s），依赖 Ingress 粘性会话",
@@ -335,197 +530,15 @@ def validate_checkpoint_deployment(
     return True
 
 
+# ── 打开 / 关闭 ─────────────────────────────────────────────────────
 def _clear_legacy_checkpointers() -> None:
     with _CHECKPOINTER_LOCK:
         _CHECKPOINTERS.clear()
 
 
-class PersistentMemorySaver(MemorySaver):
-    """MemorySaver：传入 ``AgentStateRepository`` 时，每次写入后保存共享快照。
-
-    MySQL 快照模式下传入 ``AgentStateRepository``，并按 ``_PERSIST_MAX_THREADS`` 裁剪。
-    legacy 回退不传存储，只在进程内保存状态。
-    """
-
-    def __init__(self, session_id: str, db=None):
-        super().__init__()
-        self._session_id = session_id
-        self._db = db
-        self._oversize_warned = False
-        # 落库顺序保护：快照在调用线程（通常是事件循环）上生成并递增序号，pickle /
-        # 写库在线程里执行。线程池不保证先后，序号更旧的快照如果后落库会覆盖新状态，
-        # 直接丢弃。
-        self._flush_seq = 0
-        self._persisted_seq = 0
-        self._persist_lock = threading.Lock()
-        self._hydrate()
-
-    def _hydrate(self) -> None:
-        if self._db is None:
-            return
-        blob = self._db.load_checkpoint(self._session_id)
-        if not blob:
-            return
-        if len(blob) > _PERSIST_MAX_BYTES:
-            logger.warning(
-                "checkpoint 快照超过上限，跳过回放 | session=%s | bytes=%s limit=%s",
-                self._session_id,
-                len(blob),
-                _PERSIST_MAX_BYTES,
-            )
-            return
-        try:
-            payload = pickle.loads(blob)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("回放 checkpointer 失败 | session=%s | %s", self._session_id, exc)
-            return
-        for attr in ("storage", "writes", "blobs"):
-            value = payload.get(attr)
-            if value is not None and hasattr(self, attr):
-                current = getattr(self, attr)
-                if hasattr(current, "clear") and hasattr(current, "update"):
-                    current.clear()
-                    current.update(value)
-                else:
-                    setattr(self, attr, value)
-
-    @staticmethod
-    def _plain_mapping(value: Any) -> Any:
-        """Drop defaultdict factories so MemorySaver state can be pickled."""
-        if isinstance(value, Mapping):
-            return {k: PersistentMemorySaver._plain_mapping(v) for k, v in value.items()}
-        return value
-
-    def _prune_for_persistence(self) -> None:
-        """裁剪内存态 checkpoint，避免全量 pickle 无限增长：只保留最近 M 个 thread。
-
-        按 thread 的最新 checkpoint id 排序（LangGraph 使用时间有序的 UUID6），同步清理
-        writes/blobs 中属于被删 thread 的条目。thread 内的 checkpoint 全部保留（见模块顶部
-        ``_PERSIST_MAX_THREADS`` 的说明）。
-        """
-        try:
-            if len(self.storage) <= _PERSIST_MAX_THREADS:
-                return
-
-            def _latest(thread_id: str) -> str:
-                ids = [
-                    cid
-                    for ns_map in self.storage.get(thread_id, {}).values()
-                    if isinstance(ns_map, dict)
-                    for cid in ns_map
-                    if isinstance(cid, str)
-                ]
-                return max(ids) if ids else ""
-
-            keep = set(sorted(self.storage, key=_latest)[-_PERSIST_MAX_THREADS:])
-            for thread_id in list(self.storage):
-                if thread_id not in keep:
-                    self.storage.pop(thread_id, None)
-            for key in list(self.writes):
-                if key[0] not in keep:
-                    self.writes.pop(key, None)
-            for key in list(self.blobs):
-                if key[0] not in keep:
-                    self.blobs.pop(key, None)
-        except Exception as exc:  # noqa: BLE001 - 裁剪失败不能阻断持久化
-            logger.warning("checkpoint 裁剪失败（忽略，继续全量持久化）: %s", exc)
-
-    def _snapshot(self) -> tuple[int, dict[str, Any]]:
-        """在当前线程上给内存态做快照：裁剪 + 深拷贝成普通 dict，并递增写入序号。
-
-        快照必须是「这一刻」的独立副本：写库在线程里进行，期间事件循环还会继续 put，
-        不能把仍在变化的 dict 交给线程去 pickle。
-        """
-        with self._persist_lock:
-            self._flush_seq += 1
-            seq = self._flush_seq
-            self._prune_for_persistence()
-            payload: dict[str, Any] = {}
-            for attr in ("storage", "writes", "blobs"):
-                if hasattr(self, attr):
-                    payload[attr] = self._plain_mapping(getattr(self, attr))
-            return seq, payload
-
-    def _write_snapshot(self, seq: int, payload: dict[str, Any]) -> None:
-        """pickle 快照并写库（线程里执行）；序号更旧的快照直接丢弃，避免覆盖新状态。"""
-        if self._db is None:
-            return
-        try:
-            blob = pickle.dumps(payload, protocol=5)
-            if len(blob) > _PERSIST_MAX_BYTES:
-                if not self._oversize_warned:
-                    logger.error(
-                        "checkpoint 快照超过上限，跳过持久化 | session=%s | "
-                        "bytes=%s limit=%s；大工具结果（如 PDF base64）不应进入 checkpoint",
-                        self._session_id,
-                        len(blob),
-                        _PERSIST_MAX_BYTES,
-                    )
-                    self._oversize_warned = True
-                return
-            with self._persist_lock:
-                if seq < self._persisted_seq:
-                    return
-                self._db.save_checkpoint(self._session_id, blob)
-                self._persisted_seq = seq
-            self._oversize_warned = False
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("持久化 checkpointer 失败 | session=%s | %s", self._session_id, exc)
-
-    def _flush(self) -> None:
-        """同步落库：快照与写库都在调用线程上（sync saver 方法本来就在调用线程执行）。"""
-        if self._db is None:
-            return
-        self._write_snapshot(*self._snapshot())
-
-    async def _aflush(self) -> None:
-        """异步落库：快照留在事件循环上，pickle + 写库放进线程。"""
-        if self._db is None:
-            return
-        seq, payload = self._snapshot()
-        await asyncio.to_thread(self._write_snapshot, seq, payload)
-
-    def put(self, *args, **kwargs):
-        result = super().put(*args, **kwargs)
-        self._flush()
-        return result
-
-    def put_writes(self, *args, **kwargs):
-        result = super().put_writes(*args, **kwargs)
-        self._flush()
-        return result
-
-    async def aput(self, *args, **kwargs):
-        result = await super().aput(*args, **kwargs)
-        await self._aflush()
-        return result
-
-    async def aput_writes(self, *args, **kwargs):
-        result = await super().aput_writes(*args, **kwargs)
-        await self._aflush()
-        return result
-
-    def delete_thread(self, thread_id: str) -> None:
-        super().delete_thread(thread_id)
-        self._flush()
-
-    async def adelete_thread(self, thread_id: str) -> None:
-        await super().adelete_thread(thread_id)
-        await self._aflush()
-
-
-def sqlite_checkpointer_active() -> bool:
-    return _sqlite_saver is not None
-
-
 async def open_sqlite_checkpointer(path: str):
-    """打开官方 AsyncSqliteSaver（FW-09 默认后端）。
-
-    ``auto`` 默认走这里（路径见 :func:`resolve_checkpoint_backend`：config.yaml 的
-    ``checkpoint.sqlite_path``，默认 ``/qts/checkpoint/{pod}.db``）；checkpoint 由 sqlite
-    自身持久化，不再每轮 pickle 全量写业务库。
-    """
-    global _sqlite_cm, _sqlite_saver
+    """打开官方 AsyncSqliteSaver（dev/test、单机与生产回滚都用它）。"""
+    global _sqlite_cm, _sqlite_saver, _shared_saver
     if _sqlite_saver is not None:
         return _sqlite_saver
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -539,32 +552,75 @@ async def open_sqlite_checkpointer(path: str):
     # 单文件压测吞吐约 +70%。进程崩溃不丢数据；断电或系统崩溃时最后一小段提交可能回滚，
     # 库不会损坏，最多是那一刻正在跑的几轮要重试。该设置只对当前连接生效。
     await _sqlite_saver.conn.execute("PRAGMA synchronous=NORMAL")
+    _shared_saver = _sqlite_saver
     logger.info("HITL checkpointer: AsyncSqliteSaver | path=%s", db_path)
     return _sqlite_saver
 
 
 async def close_sqlite_checkpointer() -> None:
-    global _sqlite_cm, _sqlite_saver, _active_selection
+    global _sqlite_cm, _sqlite_saver, _shared_saver, _active_selection
     cm = _sqlite_cm
     _sqlite_cm = None
     _sqlite_saver = None
+    if _shared_saver is not None and _mysql_saver is None:
+        _shared_saver = None
     _active_selection = None
     if cm is None:
         return
     await cm.__aexit__(None, None, None)
 
 
+async def open_mysql_checkpointer(
+    config: MySQLCheckpointConfig,
+) -> AsyncMySQLSaver:
+    """打开共享 MySQL saver（建池 + 建表/迁移 + 自检）。
+
+    失败时抛 :class:`CheckpointDeploymentError`，**不回退**进程内存储：一半 Pod 写库、
+    一半写内存，比启动失败难查一百倍。
+    """
+    global _mysql_saver, _shared_saver
+    if _mysql_saver is not None:
+        return _mysql_saver
+    saver = AsyncMySQLSaver(config)
+    try:
+        await saver.asetup()
+    except MySQLCheckpointError as exc:
+        await saver.aclose()
+        raise CheckpointDeploymentError(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - 连接失败、权限不足等统一转部署错误
+        await saver.aclose()
+        raise CheckpointDeploymentError(
+            f"共享 MySQL checkpoint 打不开（{config.host}:{config.port}/{config.database}）："
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    _mysql_saver = saver
+    _shared_saver = saver
+    return saver
+
+
+async def close_mysql_checkpointer() -> None:
+    global _mysql_saver, _shared_saver
+    saver, _mysql_saver = _mysql_saver, None
+    if _shared_saver is saver:
+        _shared_saver = None
+    if saver is not None:
+        await saver.aclose()
+
+
 async def shutdown_checkpointers() -> None:
-    """停掉对账任务、关闭官方 saver 并清空自研缓存（应用 shutdown 与测试隔离都依赖它）。"""
-    global _mysql_snapshots_active
+    """停掉对账任务、关闭 saver 并清空 legacy 缓存（应用 shutdown 与测试隔离都依赖它）。"""
     await stop_checkpoint_gc()
+    await close_mysql_checkpointer()
     await close_sqlite_checkpointer()
-    _mysql_snapshots_active = False
     _clear_legacy_checkpointers()
 
 
 def per_pod_checkpoints_active() -> bool:
-    """当前进程的官方 SQLite checkpoint 是否按 pod 隔离（路径里有 ``{pod}``）。"""
+    """当前进程的官方 SQLite checkpoint 是否按 pod 隔离（路径里有 ``{pod}``）。
+
+    共享 MySQL 下恒为 False —— 这正是我们要的：审批归属校验
+    （``ensure_approval_on_this_instance``）会自动失效。
+    """
     return (
         _sqlite_saver is not None
         and _active_selection is not None
@@ -576,7 +632,6 @@ def checkpoint_instance() -> str:
     """checkpoint 所在的实例名：按 pod 隔离时是替换进路径的名字，否则是本实例名。"""
     if _active_selection is not None and _active_selection.instance:
         return _active_selection.instance
-
     return instance_name()
 
 
@@ -588,24 +643,36 @@ def _describe_target(selection: CheckpointSelection) -> str:
                 f"实例 {selection.instance}）"
             )
         return selection.sqlite_path
-    if selection.kind == BACKEND_MYSQL:
-        return "业务 MySQL agent_checkpoints 表"
+    if selection.kind == BACKEND_MYSQL_SAVER:
+        cfg = selection.mysql
+        if cfg is None:
+            return "共享 MySQL checkpoint"
+        return (
+            f"{cfg.host}:{cfg.port}/{cfg.database} 的 {cfg.table_prefix}* 四张表"
+            f"（auto_setup={cfg.auto_setup}）"
+        )
     return "进程内 MemorySaver（不写业务库）"
 
 
 async def _open_with_fallback(selection: CheckpointSelection) -> str:
-    """打开官方 SQLite saver，失败时回退自研业务库快照；返回实际生效的后端名。"""
+    """单机场景打开官方 SQLite saver；打不开时降级为进程内 saver。
+
+    注意：**只有 sqlite 允许降级**。mysql_saver 一律 fail-fast（见
+    :func:`open_mysql_checkpointer`），否则会出现"一半 Pod 写库、一半写内存"。
+    """
     if selection.kind == BACKEND_SQLITE:
         try:
             await open_sqlite_checkpointer(selection.sqlite_path)
             return BACKEND_SQLITE
-        except Exception as exc:  # noqa: BLE001 - 降级不能阻断启动
+        except Exception as exc:  # noqa: BLE001 - 单机降级不能阻断启动
             logger.error(
-                "官方 sqlite checkpointer 启用失败，回退自研业务库快照 | %s: %s",
+                "官方 sqlite checkpointer 启用失败，降级为进程内 MemorySaver | %s: %s",
                 type(exc).__name__,
                 exc,
             )
-    logger.warning("HITL checkpointer: PersistentMemorySaver（业务库快照）")
+    logger.warning(
+        "HITL checkpointer: MemorySaver（进程内，重启即丢；HITL 审批无法跨重启恢复）"
+    )
     return BACKEND_LEGACY
 
 
@@ -613,6 +680,8 @@ async def start_checkpoint_backend(
     selection: CheckpointSelection | None = None,
     *,
     sqlite_path: str | None = None,
+    mysql_config: Any = None,
+    business_mysql: Any = None,
     agent_env: str | None = None,
     replicas: int | None = None,
     workers_per_pod: int | None = None,
@@ -621,16 +690,18 @@ async def start_checkpoint_backend(
 ) -> str:
     """按解析结果打开 checkpointer，返回实际生效的后端名。
 
-    ``selection`` 为空时按 ``sqlite_path``（config.yaml 的 ``checkpoint.sqlite_path``）和环境变量
-    解析。部署形态在打开之前校验（见
-    :func:`validate_checkpoint_deployment`）。单 pod 时官方 saver 打不开会降级为自研快照；
-    按 pod 隔离的多副本模式下打不开直接失败（``CheckpointDeploymentError``），不回退。
+    部署形态在打开之前校验（见 :func:`validate_checkpoint_deployment`）。
+    ``mysql_saver`` 打开失败直接抛 ``CheckpointDeploymentError``；单 pod 的 ``sqlite``
+    打不开会降级为进程内 saver。
     """
-    global _active_selection, _mysql_snapshots_active
+    global _active_selection
     if selection is None:
-        selection = resolve_checkpoint_backend(sqlite_path=sqlite_path)
+        selection = resolve_checkpoint_backend(
+            sqlite_path=sqlite_path,
+            mysql_config=mysql_config,
+            business_mysql=business_mysql,
+        )
     _clear_legacy_checkpointers()
-    _mysql_snapshots_active = False
     if selection.warning:
         logger.warning("HITL checkpointer 配置 | %s", selection.warning)
     logger.info(
@@ -647,18 +718,28 @@ async def start_checkpoint_backend(
         sticky=sticky,
         allow_legacy=allow_legacy,
     )
-    if selection.kind == BACKEND_MYSQL:
-        _mysql_snapshots_active = True
-        opened = BACKEND_MYSQL
-        logger.info("HITL checkpointer: PersistentMemorySaver（共享 MySQL 快照）")
+    if selection.kind == BACKEND_MYSQL_SAVER:
+        if selection.mysql is None:
+            raise CheckpointDeploymentError("mysql_saver 后端缺少连接配置")
+        try:
+            await open_mysql_checkpointer(selection.mysql)
+        except CheckpointDeploymentError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 任何异常都不能降级成进程内 saver
+            raise CheckpointDeploymentError(
+                f"共享 MySQL checkpoint 打开失败，不回退本地 saver："
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        _active_selection = None
+        opened = BACKEND_MYSQL_SAVER
     elif per_pod_cluster:
-        # 多副本只靠每个 pod 自己的 SQLite 文件：业务库快照既同步写库、又不能跨副本一致，不能回退
+        # 多副本只靠每个 pod 自己的 SQLite 文件：打不开直接失败，不回退
         try:
             await open_sqlite_checkpointer(selection.sqlite_path)
         except Exception as exc:  # noqa: BLE001 - 统一转成部署错误，app 启动会因此失败
             raise CheckpointDeploymentError(
-                f"多副本模式下官方 SQLite checkpointer 打不开（{selection.sqlite_path}），"
-                f"不回退业务库快照：{type(exc).__name__}: {exc}"
+                f"多副本模式下官方 SQLite checkpointer 打不开"
+                f"（{selection.sqlite_path}），不回退本地 saver：{type(exc).__name__}: {exc}"
             ) from exc
         opened = BACKEND_SQLITE
     else:
@@ -667,9 +748,9 @@ async def start_checkpoint_backend(
     return opened
 
 
-# ── 删除会话后的对账：补删本 pod 文件里「会话已不存在」的 thread ─────────────────
+# ── 删除会话后的对账：补删"会话已不存在"的 thread ─────────────────────
 async def _list_thread_ids(saver) -> list[str]:
-    """本进程 SQLite 文件里的全部 thread_id（直接查官方 saver 的 checkpoints 表，不遍历 checkpoint）。"""
+    """SQLite 文件里的全部 thread_id（直接查官方 saver 的表，不遍历 checkpoint）。"""
     async with saver.lock, saver.conn.execute(
         "SELECT DISTINCT thread_id FROM checkpoints"
     ) as cursor:
@@ -677,13 +758,31 @@ async def _list_thread_ids(saver) -> list[str]:
     return [str(row[0]) for row in rows if row and row[0]]
 
 
-async def prune_deleted_session_threads(db=None) -> int:
-    """删掉本进程 SQLite 文件里「会话已不存在」的 thread，返回删除个数。
+def _resolve_db(db=None):
+    """取业务库 facade：调用方没传时回落到单例。
 
-    删除会话时只有处理请求的进程能当场删（:func:`delete_session_threads`）；多副本下其余 pod
-    文件里的残留由这里补删。只删能认出会话 id、且 ``sessions`` 表里已经没有该会话的 thread；
-    查库失败时整轮跳过。
+    GC 的两个阶段（对账、TTL）都要查会话表，但 ``get_database()`` 在 ``easy_agent/db/``
+    之外是「只减不增」的架构计数项（DW212），所以整个模块只保留这一个出口。
     """
+    if db is not None:
+        return db
+    from easy_agent.db import get_database
+
+    return get_database()
+
+
+async def prune_deleted_session_threads(db=None) -> int:
+    """删掉「会话已不存在」的 thread，返回删除个数。
+
+    删除会话时只有处理请求的进程能当场删（:func:`delete_session_threads`）；多副本下其余
+    残留由这里补删。
+
+    - sqlite：读本 Pod 文件里的 thread 列表，回查 ``sessions``；
+    - mysql_saver：**一条库内 JOIN**（``session_id`` 冗余列 + ``idx_session``），
+      不再把几十万 thread 拉到应用层解析。
+    """
+    if _mysql_saver is not None:
+        return await _prune_orphans_mysql()
     saver = _sqlite_saver
     if saver is None:
         return 0
@@ -696,13 +795,12 @@ async def prune_deleted_session_threads(db=None) -> int:
     if not by_session:
         return 0
 
-
     if db is None:
-        from easy_agent.db import get_database  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
-
-        db = get_database()
+        db = _resolve_db()
     try:
-        existing = await run_blocking(sessions_repo.existing_session_ids, db, list(by_session))
+        existing = await run_blocking(
+            sessions_repo.existing_session_ids, db, list(by_session)
+        )
     except Exception as exc:  # noqa: BLE001 - 查不到就不删，下一轮再来
         logger.warning("checkpoint 对账：查询会话失败，本轮跳过 | %s", exc)
         return 0
@@ -718,12 +816,157 @@ async def prune_deleted_session_threads(db=None) -> int:
                 await saver.adelete_thread(thread_id)
                 deleted += 1
             except Exception as exc:  # noqa: BLE001
-                logger.warning("checkpoint 对账：删除 thread 失败 | thread=%s | %s", thread_id, exc)
+                logger.warning(
+                    "checkpoint 对账：删除 thread 失败 | thread=%s | %s", thread_id, exc
+                )
             # 每删一个让出一次事件循环：saver 的锁也是进行中的对话写 checkpoint 要用的
             await asyncio.sleep(0)
     if deleted:
         logger.info("checkpoint 对账：删除 %s 个已删除会话的 thread", deleted)
     return deleted
+
+
+async def _prune_orphans_mysql() -> int:
+    saver = _mysql_saver
+    if saver is None:
+        return 0
+    try:
+        thread_ids = await saver.list_orphan_threads(limit=500)
+    except Exception as exc:  # noqa: BLE001 - 查不到就不删，下一轮再来
+        logger.warning("checkpoint 对账：查询孤儿 thread 失败，本轮跳过 | %s", exc)
+        return 0
+    deleted = 0
+    for thread_id in thread_ids:
+        if _mysql_saver is not saver:
+            break
+        try:
+            await saver.adelete_thread(thread_id)
+            deleted += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "checkpoint 对账：删除 thread 失败 | thread=%s | session=%s | %s",
+                thread_id,
+                session_id_of_thread(thread_id) or "-",
+                exc,
+            )
+        await asyncio.sleep(0)
+    if deleted:
+        logger.info("checkpoint 对账：删除 %s 个已删除会话的 thread", deleted)
+    return deleted
+
+
+def _ttl_cutoff(days: int) -> str:
+    """TTL 的截止时间串。
+
+    ``sessions.updated_at`` 是 ``datetime.now().isoformat()`` 写进去的**本地时间的 ISO
+    串**（``VARCHAR(50)``），所以 cutoff 必须用同样的格式生成，否则字符串比较会错。这是
+    已知风险 R22：一旦写入格式变成带 ``Z`` 或时区偏移，比较会失效 → 启动期探针（见
+    ``_probe_sessions_updated_at``）会先验一遍。
+    """
+    return (datetime.now() - timedelta(days=int(days))).isoformat()
+
+
+async def _probe_sessions_updated_at(db) -> bool:
+    """TTL 前的探针：确认 ``sessions.updated_at`` 仍是可比较的 ISO 串。
+
+    取一条真实行按固定格式解析；解析失败说明格式变了，此时 TTL 必须降级为
+    ``checkpoint_created_at``，否则会误删或永不删（R22）。
+    """
+    try:
+        def _read_one():
+            with db.get_connection() as conn:
+                cursor = conn.cursor()
+                db._execute(cursor, "SELECT updated_at FROM sessions LIMIT 1", ())
+                return cursor.fetchone()
+
+        row = await run_blocking(_read_one)
+    except Exception as exc:  # noqa: BLE001 - 探针失败就当不可用，宁可不删
+        logger.warning("checkpoint TTL：updated_at 探针失败，本轮跳过 | %s", exc)
+        return False
+    if not row:
+        return True
+    value = (
+        row.get("updated_at") if isinstance(row, dict) else row[0]
+    ) or ""
+    try:
+        datetime.fromisoformat(str(value))
+    except ValueError:
+        logger.error(
+            "checkpoint TTL：sessions.updated_at 不再是可解析的 ISO 串（示例 %r），"
+            "本轮降级为 checkpoint_created_at 判定",
+            value,
+        )
+        return False
+    return True
+
+
+async def prune_expired_session_threads(db=None) -> int:
+    """TTL：把「很久没人用」的会话对应 checkpoint **整条 thread** 删掉。
+
+    默认关闭（``record_ttl_days=0``）。开启后三重保护缺一不可：
+    ① 有活跃流锁的会话跳过；② 优先只清理 ``archived=1``；③ 按整 thread 删，绝不删中间行。
+    只让一个 Pod 干活（``DistributedLock``）；抢不到锁就本轮跳过。
+    """
+    saver = _mysql_saver
+    cfg = saver.config if saver is not None else None
+    if saver is None or cfg is None or int(cfg.record_ttl_days) <= 0:
+        return 0
+
+    if db is None:
+        db = _resolve_db()
+
+    handle = None
+    try:
+        from easy_agent.persistence.distributed_lock import get_distributed_lock
+
+        handle = await run_blocking(
+            get_distributed_lock().acquire, "checkpoint-ttl", 300.0, 0.0
+        )
+        if handle is not None and not handle.acquired:
+            return 0
+    except Exception as exc:  # noqa: BLE001 - 锁不可用时退化为每个 Pod 都跑（DELETE 幂等）
+        logger.warning("checkpoint TTL：抢锁失败，本轮按单实例处理 | %s", exc)
+
+    try:
+        basis = cfg.ttl_basis
+        if basis == "session_updated_at" and not await _probe_sessions_updated_at(db):
+            basis = "checkpoint_created_at"
+        cutoff = _ttl_cutoff(cfg.record_ttl_days)
+        try:
+            thread_ids = await saver.list_expired_threads(
+                cutoff=cutoff,
+                basis=basis,
+                only_archived=bool(cfg.ttl_only_archived),
+                protect_active_stream=bool(cfg.ttl_protect_active_stream),
+                limit=int(cfg.ttl_batch_size),
+            )
+        except Exception as exc:  # noqa: BLE001 - 查询失败本轮跳过
+            logger.warning("checkpoint TTL：查询过期会话失败，本轮跳过 | %s", exc)
+            return 0
+        deleted = 0
+        for thread_id in thread_ids:
+            try:
+                await saver.adelete_thread(thread_id)
+                deleted += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "checkpoint TTL：删除 thread 失败 | thread=%s | %s", thread_id, exc
+                )
+            await asyncio.sleep(0)
+        if deleted:
+            logger.info(
+                "checkpoint TTL：删除 %s 个过期会话的 thread | basis=%s | cutoff=%s",
+                deleted,
+                basis,
+                cutoff,
+            )
+        return deleted
+    finally:
+        if handle is not None:
+            try:
+                await run_blocking(handle.release)
+            except Exception as exc:  # noqa: BLE001 - 释放失败由 TTL 到期兜底
+                logger.debug("checkpoint TTL：锁释放失败，等租约到期 | %s", exc)
 
 
 async def _checkpoint_gc_loop(interval: int, db) -> None:
@@ -732,24 +975,47 @@ async def _checkpoint_gc_loop(interval: int, db) -> None:
             await prune_deleted_session_threads(db)
         except Exception as exc:  # noqa: BLE001 - 对账失败不能拖垮应用，下一轮重试
             logger.warning("checkpoint 对账失败 | %s", exc)
+        try:
+            await prune_expired_session_threads(db)
+        except Exception as exc:  # noqa: BLE001 - TTL 失败同样只记日志
+            logger.warning("checkpoint TTL 失败 | %s", exc)
+        if _mysql_saver is not None:
+            try:
+                await _mysql_saver.set_last_gc_at(
+                    datetime.now(UTC).isoformat(timespec="seconds")
+                )
+            except Exception as exc:  # noqa: BLE001 - 只是运维字段
+                logger.debug("checkpoint GC：写 last_gc_at 失败 | %s", exc)
         await asyncio.sleep(interval)
 
 
 def start_checkpoint_gc(*, interval: int | None = None, db=None) -> asyncio.Task | None:
-    """启动后台对账任务（官方 SQLite saver 激活时才启动），启动时先跑一轮。
+    """启动后台对账任务（共享 saver 激活时才启动），启动时先跑一轮。
 
-    间隔取 ``EASY_CHECKPOINT_GC_INTERVAL``（秒，默认 600），不大于 0 时关闭。
+    间隔优先取 ``EASY_CHECKPOINT_GC_INTERVAL``，没配时用 ``checkpoint.mysql.
+    gc_interval_seconds``；不大于 0 时关闭（对账与 TTL 一起关）。
     """
     global _gc_task
-    if _sqlite_saver is None:
+    if _shared_saver is None:
         return None
     if _gc_task is not None and not _gc_task.done():
         return _gc_task
-    seconds = env_int(_GC_INTERVAL_ENV, DEFAULT_GC_INTERVAL) if interval is None else int(interval)
+    if interval is None:
+        env_value = env_int(_GC_INTERVAL_ENV, -1)
+        if env_value >= 0:
+            seconds = env_value
+        elif _mysql_saver is not None:
+            seconds = int(_mysql_saver.config.gc_interval_seconds)
+        else:
+            seconds = DEFAULT_GC_INTERVAL
+    else:
+        seconds = int(interval)
     if seconds <= 0:
-        logger.info("checkpoint 对账已关闭（%s=%s）", _GC_INTERVAL_ENV, seconds)
+        logger.info("checkpoint 对账已关闭（间隔=%s 秒）", seconds)
         return None
-    _gc_task = asyncio.create_task(_checkpoint_gc_loop(seconds, db), name="checkpoint-gc")
+    _gc_task = asyncio.create_task(
+        _checkpoint_gc_loop(seconds, db), name="checkpoint-gc"
+    )
     return _gc_task
 
 
@@ -763,35 +1029,17 @@ async def stop_checkpoint_gc() -> None:
 
 
 def get_session_checkpointer(session_id: str):
-    """官方 SQLite saver 激活时全局共享；否则按 session 给一个进程内 MemorySaver。
-
-    MySQL 快照后端按 session 创建 saver；SQLite 后端共享官方 saver，legacy 后端只保留进程内状态。
-    """
-    if _sqlite_saver is not None:
-        return _sqlite_saver
+    """共享 saver 激活时返回它；legacy 后端按 session 给一个进程内 MemorySaver。"""
+    if _shared_saver is not None:
+        return _shared_saver
     with _CHECKPOINTER_LOCK:
         checkpointer = _CHECKPOINTERS.get(session_id)
         if checkpointer is None:
             if len(_CHECKPOINTERS) >= _CHECKPOINTER_MAX:
                 _CHECKPOINTERS.pop(next(iter(_CHECKPOINTERS)), None)
-            repository = None
-            if _mysql_snapshots_active:
-                from easy_agent.db.providers import get_agent_state_repository
-
-                repository = get_agent_state_repository()
-            checkpointer = PersistentMemorySaver(session_id, repository)
+            checkpointer = MemorySaver()
             _CHECKPOINTERS[session_id] = checkpointer
         return checkpointer
-
-
-async def refresh_session_checkpointer(session_id: str) -> None:
-    """刷新 MySQL saver 缓存，读取其他副本可能刚写入的最新 checkpoint。"""
-    if not _mysql_snapshots_active:
-        return
-    with _CHECKPOINTER_LOCK:
-        checkpointer = _CHECKPOINTERS.get(session_id)
-    if checkpointer is not None:
-        await asyncio.to_thread(checkpointer._hydrate)
 
 
 def release_session_checkpointer(session_id: str) -> None:
@@ -800,13 +1048,12 @@ def release_session_checkpointer(session_id: str) -> None:
 
 
 async def adelete_threads(thread_ids) -> int:
-    """从官方 SQLite saver 删除这些 thread，返回成功删除的个数。
+    """从共享 saver 删除这些 thread，返回成功删除的个数。
 
-    官方 saver 全局共享，删除会话不会顺带删掉它的 thread，只能按 thread_id 显式删除
-    （公开 API ``adelete_thread``）。legacy 快照按会话存放，由
-    :func:`release_session_checkpointer` 整体清理，这里不处理。单个失败只记日志。
+    saver 全局共享，删除会话不会顺带删掉它的 thread，只能按 thread_id 显式删除。legacy
+    按会话存放，由 :func:`release_session_checkpointer` 整体清理，这里不处理。
     """
-    saver = _sqlite_saver
+    saver = _shared_saver
     if saver is None:
         return 0
     deleted = 0
@@ -815,15 +1062,17 @@ async def adelete_threads(thread_ids) -> int:
             await saver.adelete_thread(thread_id)
             deleted += 1
         except Exception as exc:  # noqa: BLE001
-            logger.warning("删除 checkpoint thread 失败 | thread=%s | %s", thread_id, exc)
+            logger.warning(
+                "删除 checkpoint thread 失败 | thread=%s | session=%s | %s",
+                thread_id,
+                session_id_of_thread(thread_id) or "-",
+                exc,
+            )
     return deleted
 
 
 async def adelete_agent_thread(agent, thread_id: str) -> bool:
-    """用 agent 编译图自己的 checkpointer 删除一个 thread（官方 saver 与 legacy 快照都适用）。
-
-    失败只记日志，返回是否删除成功。
-    """
+    """用 agent 编译图自己的 checkpointer 删除一个 thread（共享 saver 与 legacy 都适用）。"""
     checkpointer = getattr(getattr(agent, "agent", None), "checkpointer", None)
     if checkpointer is None or not thread_id:
         return False
@@ -831,25 +1080,22 @@ async def adelete_agent_thread(agent, thread_id: str) -> bool:
         await checkpointer.adelete_thread(thread_id)
         return True
     except Exception as exc:  # noqa: BLE001
-        logger.warning("删除 checkpoint thread 失败 | thread=%s | %s", thread_id, exc)
+        logger.warning(
+            "删除 checkpoint thread 失败 | thread=%s | session=%s | %s",
+            thread_id,
+            session_id_of_thread(thread_id) or "-",
+            exc,
+        )
         return False
 
 
 async def delete_session_threads(session_id: str, message_ids=()) -> int:
-    """删除会话的全部 thread：会话 thread、每条消息一个的旧 thread，以及 legacy 快照（DA-03）。
+    """删除会话的全部 thread：会话 thread 与每条消息一个的旧 thread（DA-03）。
 
     ``message_ids`` 来自该会话的 ``agent_runs``；旧 thread 名为 ``{session_id}-{message_id}``。
     """
     deleted = await adelete_threads(
         [session_id, *(f"{session_id}-{mid}" for mid in message_ids if mid)]
     )
-    if _mysql_snapshots_active:
-        try:
-            from easy_agent.db.providers import get_agent_state_repository
-
-            repository = get_agent_state_repository()
-            await run_blocking(repository.delete_checkpoint, session_id)
-        except Exception as exc:  # noqa: BLE001 - 会话删除仍应继续，后台可清理孤儿快照
-            logger.warning("删除 MySQL checkpoint 快照失败 | session=%s | %s", session_id, exc)
     release_session_checkpointer(session_id)
     return deleted

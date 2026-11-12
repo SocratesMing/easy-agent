@@ -136,6 +136,27 @@ export function resumeCandidates({ saved, flight, sessions, current }) {
   }
 }
 
+/**
+ * 打开会话时的探活：**不依赖本地「在飞」记录**，直接问后端这一轮还在不在跑。
+ *
+ * 为什么需要它：「在飞」记录存在 `sessionStorage`，换浏览器、换标签页、
+ * 重新登录后都是空的。此时后台那一轮可能还在跑，但前端不会挂 `/stream/live`，用户看到的
+ * 就是「停在半截的静态页面」——而内容其实还在源源不断地产出。刷新场景由
+ * `resolveResumeTargets` 兜底，打开/切换会话的场景只回来这里。
+ *
+ * 返回 true 表示调用方应该挂 `/stream/live`（并把它标成"进行中"）。
+ * 查询失败（会话刚被删除、网络抖动）一律视为不活跃：探活不该影响打开会话。
+ */
+export async function shouldAttachOnOpen(sessionId, getStatus) {
+  if (!sessionId || typeof getStatus !== 'function') return false
+  try {
+    const status = await getStatus(sessionId)
+    return Boolean(status && status.active)
+  } catch (e) {
+    return false
+  }
+}
+
 /** 逐个问后端「这一轮还在跑吗」，返回确实活跃的会话。 */
 export async function probeActive(ids, getStatus) {
   const active = []

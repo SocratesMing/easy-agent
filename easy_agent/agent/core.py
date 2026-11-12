@@ -70,7 +70,7 @@ from easy_agent.agent.model import (
 )
 from easy_agent.security.prompt_guard import assemble_system_prompt
 from easy_agent.utils.prompt_probe import describe_prompt, prompt_fingerprint
-from easy_agent.agent.model import resolve_llm_config
+from easy_agent.agent.model import resolve_llm_config, resolve_model_key
 from easy_agent.agent.tool_errors import build_tool_error_middleware
 
 
@@ -182,15 +182,18 @@ def build_subagent_specs(
 
 
 def _shared_graph_checkpointer():
-    """返回可跨会话共享的 checkpointer；legacy 按 session 的 saver 返回 None。
+    """返回可跨会话共享的 checkpointer；按会话隔离的本地 saver 返回 None。
 
-    D2 只复用「官方全局 saver」：``AsyncSqliteSaver`` 由进程共享，thread_id 已含
-    session 维度。MySQL 无官方 saver 时 checkpoints.py 会按 session 创建
-    ``PersistentMemorySaver``，该对象不能塞进共享图，此时由调用方显式降级为按会话建图。
+    这里只复用「进程级共享的官方 saver」：``AsyncSqliteSaver`` 或自研
+    ``AsyncMySQLSaver`` 都由进程共享、thread_id 已含 session 维度，可以塞进同一张图；
+    两者都通过 :func:`shared_checkpointer_active` 判定，不要再用
+    ``sqlite_checkpointer_active``（它只是同义兼容名，语义已经扩到两种共享后端）。
+    纯内存 ``MemorySaver`` 属"每会话一个"，它的多会话共享实例也是同一个对象，但
+    生命周期与进程绑定、重启即失，因此这里仍返回 None 让调用方走按会话建图。
     """
-    from easy_agent.persistence.checkpoints import sqlite_checkpointer_active  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
+    from easy_agent.persistence.checkpoints import shared_checkpointer_active  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
-    if not sqlite_checkpointer_active():
+    if not shared_checkpointer_active():
         return None
     return get_session_checkpointer("__graph_cache__")
 
@@ -772,6 +775,7 @@ class EasyAgent(AgentWorkspaceMixin):
         )
         return build_graph_key(
             model=model_fingerprint(actual_llm_cfg),
+            model_key=resolve_model_key(self.config, self.model_name),
             tools=inputs.raw_tools,
             system_prompt=self.system_prompt,
             middleware=inputs.middleware,

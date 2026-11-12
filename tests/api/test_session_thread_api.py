@@ -63,7 +63,7 @@ def test_new_message_marks_the_left_over_approval_rejected(client, db, monkeypat
         },
     )
     monkeypatch.setattr(chat_turn, "_get_agent_config", lambda: _ON)
-    monkeypatch.setattr(checkpoints, "sqlite_checkpointer_active", lambda: True)
+    monkeypatch.setattr(checkpoints, "shared_checkpointer_active", lambda: True)
 
     async def fake_get_agent(session_id, username, workspace_name, **kwargs):
         return SimpleNamespace(workspace_dir=None, workspace_virtual_path="/workspace")
@@ -89,7 +89,7 @@ def test_legacy_snapshot_saver_does_not_abandon_approvals(client, db, monkeypatc
     pending = {"role": "assistant", "content": "", "pending_approval": {"thread_id": f"{sid}-m1"}}
     MessageRepository(db).add_message(sid, pending)
     monkeypatch.setattr(chat_turn, "_get_agent_config", lambda: _ON)
-    monkeypatch.setattr(checkpoints, "sqlite_checkpointer_active", lambda: False)
+    monkeypatch.setattr(checkpoints, "shared_checkpointer_active", lambda: False)
 
     async def fake_get_agent(session_id, username, workspace_name, **kwargs):
         return SimpleNamespace(workspace_dir=None, workspace_virtual_path="/workspace")

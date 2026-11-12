@@ -18,13 +18,13 @@
 | `backends/shell.py` | `LocalShellBackend` + 虚拟路径翻译 + bwrap/Landlock/fail-closed 策略 |
 | `sandboxing/sandbox.py` / `landlock.py` / `fs_safety.py` | 命令沙箱、Landlock 降级、外部目录挂载安全校验 |
 | `agent/hitl.py` | 破坏性命令识别、execute 工具描述、按 config.yaml 的 `hitl` 段构造 `interrupt_on` |
-| `persistence/checkpoints.py` | 官方 `AsyncSqliteSaver` 与自研 `PersistentMemorySaver`（可选 MySQL 共享快照） |
+| `persistence/checkpoints.py` / `mysql_saver.py` | checkpointer 选型与生命周期；官方 `AsyncSqliteSaver` 与自研 `AsyncMySQLSaver`（4 张 `cp_*` 表，多副本共享） |
 | `persistence/stores.py` | 自研 LangGraph `BaseStore`（SQLite/MySQL） |
 | `agent/summarization.py` | 建图期替换官方摘要工厂 + 缺失降级护栏 |
 | `agent/subagents.py` / `agent/skills.py` | 子代理定义；技能发现（根 `skills/` 为 canonical，包内副本回退） |
 | `bootstrap/runtime_config.py` | 运行期配置 + Agent 失效回调注册（架构解耦用） |
 | `bootstrap/config.py` / `config_models.py` / `config_validation.py` | 配置加载（`Config.from_yaml` 把各段交给模型校验，只处理 YAML 写法与模型对不上的地方）与路径 helpers；Pydantic 配置模型（字段名与默认值的唯一来源）；未知/废弃键校验（已知键由模型字段生成）与 `${VAR}` 展开；`config.py` re-export 原有公开名字与兼容私有名 |
-| `api/` | chat / auth / sessions / files / expert / connectors / scheduled_tasks / settings / skill_center / completion / prompts / terminal（POSIX，HITL 无关） |
+| `api/` | chat / auth / sessions / files / expert / connectors / scheduled_tasks / settings / skill_center / completion / prompts / usage / terminal（POSIX，HITL 无关） |
 | `services/` | 7 个领域子包：agents（会话 Agent 缓存/流锁/每轮准备）、streaming（SSE 编排/事件/处理器/审批）、sessions（运行期/线程/上传）、mcp（连接器工具/会话/策略/证据）、memory、experts、skills；根下留 scheduler、health、metrics、document_convert |
 | `db/` | `database.py`（连接/迁移/核心表）、`session_messages.py`、`expert_store.py`、`schema_registry.py`、`login_state.py`（登录态校验与活跃时间，主鉴权与知识库鉴权共用） |
 | `middleware/` | JWT 鉴权依赖（`auth.py`，判定在 `db/login_state.py`）、进程内限流（`rate_limit.py`） |
@@ -68,7 +68,8 @@
 - SQLite（单机开发，启用 WAL/busy_timeout/synchronous=NORMAL）或 MySQL（多副本生产，代码禁止静默降级）。
 - 会话消息行表 `session_messages`；`sessions.messages` 为 legacy 大字段（仅历史会话回退读取）。
 - 领域 schema 通过 `db/schema_registry.py` 注册，`Database.init_tables()` 统一执行。
-- LangGraph checkpointer：默认（`EASY_CHECKPOINT_BACKEND=auto`）用官方 `AsyncSqliteSaver`，文件路径取 config.yaml 的 `checkpoint.sqlite_path`（没配时用旧环境变量 `EASY_CHECKPOINT_SQLITE_PATH`，再没有是 `/qts/checkpoint/{pod}.db`；相对路径按仓库根解析，`synchronous=NORMAL`）；单机显式 `EASY_CHECKPOINT_BACKEND=legacy` 或 SQLite 打不开时使用进程内 `PersistentMemorySaver`。多副本生产显式设为 `EASY_CHECKPOINT_BACKEND=mysql`，`PersistentMemorySaver` 将 session 快照写入业务库 `agent_checkpoints`，Pod 重建或请求落到其他副本时从共享库恢复；新消息和 resume 前刷新缓存快照。所有 saver 快照限制 12 MiB、每 session 保留最近 3 个 thread，thread 内 checkpoint 全保留（`messages` 是增量存储）。删除会话时删除共享快照。Postgres checkpointer / Store 已移除（2026-10-21），LangGraph Store 固定为业务库 `SqlStore`。
+- Token 账本（schema 17）是核心表 `token_usage`，由 `db/schema.py` 直接建表；按 `event_id` 幂等、独立于会话删除/归档。`agent/model.py` 提取完整原始 usage，`agent/token_usage.py` 按每次模型调用回调写入；SDK 提示词增强在校验结果前捕获、业务超时外写入。`utils/usage_context.py` 的不可变身份随实际执行 scope 传递，后台流、压缩和记忆线程各自建立 scope。编译图键包含有效模型配置键，用户身份不进入模型实例或缓存键。`GET /agent/usage?days=7|30` 在一个显式读快照中聚合上海自然日四卡与逐日模型趋势，详见 [接口与统计规则](token-usage-api.md)。
+- LangGraph checkpointer：默认（`EASY_CHECKPOINT_BACKEND=auto`）只看配置不看连通性——业务库是 MySQL 就用自研 `AsyncMySQLSaver`（`persistence/mysql_saver.py`，4 张 `cp_checkpoint_*` 表，`auto_setup` 时用 `GET_LOCK` 串行建表），否则用官方 `AsyncSqliteSaver`，文件路径取 config.yaml 的 `checkpoint.sqlite_path`（没配时用旧环境变量 `EASY_CHECKPOINT_SQLITE_PATH`，再没有是 `/qts/checkpoint/{pod}.db`；相对路径按仓库根解析，`synchronous=NORMAL`）。显式 `mysql_saver`（别名 `mysql`）跨副本共享，Pod 重建或请求落到其他副本时从共享库恢复待审批状态；显式 `sqlite` 每 Pod 一个文件；`legacy` 是进程内 `MemorySaver`，仅供排查。`mysql_saver` 打不开时启动直接失败、不降级（降级会让多副本的审批状态分裂）；`sqlite` 打不开才降级为进程内 checkpointer。checkpoint 不做全量快照裁剪：`messages` 是 `DeltaChannel` 增量，thread 内按父链重放。表按 `record_ttl_days`（默认 0=不启用）与「会话已删除」两种口径清理，清理走 `DistributedLock` 的 `checkpoint-ttl` 互斥。Postgres checkpointer / Store 已移除（2026-10-21），LangGraph Store 固定为业务库 `SqlStore`；旧的 `PersistentMemorySaver` + `agent_checkpoints` 全量快照链路 2026-11-11 删除。
 
 ## 4. 前端
 
@@ -76,6 +77,7 @@
   `frontend-vue2/src/packages/easyAgent/`：外网独立应用、内网 Vue 2 宿主的路由页面与 AI 侧边栏 SDK 共用，内网按迁移包整体
   同步该目录（`npm run check:easy-agent` / `export:easy-agent`，见 `frontend-vue2/integration/README.md`）。
 - `frontend/`：Vue 3.5 + Vite（并行维护的第二基线）。
+- 两套设置页均提供“Token统计”：四卡、7/30日原生 SVG 趋势、可切换图例及键盘/触屏可访问的逐日精确明细。共享坐标和格式化源为 `frontend-shared/utils/tokenUsage.js`，由同步脚本分发；组件不引入图表运行时依赖。
 - 两者都**不是** `npm run dev` 自动代理到 8080 的旧 CLI 结构（已改为 Vite 脚本）；构建命令见各自 `package.json`。
 - 无路由/状态库（Vue2 侧）：视图由 `App.vue` 布尔开关切换；**SSE 解析已统一**为各基线的 `src/api/sse.js`（唯一 `readSSE`），chat/expert/knowledge 只注册回调（审计项 ARCH-05 第一步完成）。
 

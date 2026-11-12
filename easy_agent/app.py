@@ -85,6 +85,7 @@ from easy_agent.api import (
     connectors_router,
     scheduled_tasks_router,
     expert_router,
+    usage_router,
 )
 from easy_agent.services.metrics import snapshot_metrics
 from easy_agent.services.health import ping_database, workspace_writable
@@ -367,31 +368,50 @@ def _log_public_experts() -> None:
 
 
 async def _start_checkpointing(agent_env: str, config) -> None:
-    """FW-09：默认官方 SQLite checkpointer，文件路径取 config.yaml 的 checkpoint.sqlite_path。
+    """按 ``EASY_CHECKPOINT_BACKEND`` 打开 checkpointer（默认生产用自研 ``mysql_saver``）。
 
-    两种后端都不能跨副本共享，prod 多副本在启动期 fail-fast（可用
-    EASY_ALLOW_LEGACY_CHECKPOINTER=1 显式豁免），配置错误不再被静默吞掉。
+    三种后端的选择见 ``persistence/checkpoints.py::resolve_checkpoint_backend``：
+
+    - ``mysql_saver``：共享 MySQL 4 张表，所有 Pod 都能恢复同一 thread。**打开失败必须
+      fail-fast**——绝不回退到本地文件，否则会出现「Pod1 写库、Pod2 写本地」的数据
+      劈裂，比启动失败严重得多；
+    - ``sqlite``：官方 ``AsyncSqliteSaver``，dev/test/单机与生产回滚用；多副本时启动期
+      校验会 fail-fast（可用 ``EASY_ALLOW_LEGACY_CHECKPOINTER=1`` 显式豁免）；
+    - ``legacy``：进程内 ``MemorySaver``，仅供调试。
     """
     from easy_agent.persistence.checkpoints import (  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
+        BACKEND_MYSQL_SAVER,
         CheckpointDeploymentError,
+        resolve_checkpoint_backend,
         start_checkpoint_backend,
         start_checkpoint_gc,
     )
 
+    # 先解析（不建连）拿到后端种类：后面 catch 分支要靠它决定"能不能降级"。
+    # checkpoint.mysql 与 database.mysql 一起传：连接参数留空即复用业务库。
+    selection = resolve_checkpoint_backend(
+        sqlite_path=config.checkpoint.sqlite_path,
+        mysql_config=getattr(config.checkpoint, "mysql", None),
+        business_mysql=getattr(getattr(config, "database", None), "mysql", None),
+    )
     try:
-        checkpoint_backend = await start_checkpoint_backend(
-            sqlite_path=config.checkpoint.sqlite_path, agent_env=agent_env
-        )
+        checkpoint_backend = await start_checkpoint_backend(selection, agent_env=agent_env)
         logger.info(f"✅ HITL checkpointer 后端: {checkpoint_backend}")
     except CheckpointDeploymentError:
         raise
     except Exception as exc:  # noqa: BLE001
+        if selection.kind == BACKEND_MYSQL_SAVER:
+            # 共享后端不允许静默降级：降级后各 Pod 各写本地文件，会话跨 Pod 就断
+            raise CheckpointDeploymentError(
+                "HITL checkpointer（mysql_saver）启动失败，不回退本地 saver："
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
         logger.error(
-            "HITL checkpointer 启动失败，回退业务库 MemorySaver 快照: "
+            "HITL checkpointer 启动失败，回退进程内 MemorySaver: "
             f"{type(exc).__name__}: {exc}"
         )
-    # 删除会话时只有处理请求的进程能当场删 checkpoint；多副本下别的 pod 文件里的残留
-    # 由各自的后台对账补删（官方 SQLite saver 激活时才启动，shutdown_checkpointers 负责停）
+    # 删除会话时只有处理请求的进程能当场删 checkpoint；多副本下别的 pod 的残留由各自的
+    # 后台对账补删（共享后端激活时启动；shutdown_checkpointers 负责停）
     start_checkpoint_gc()
 
 
@@ -725,6 +745,7 @@ app.include_router(scheduled_tasks_router)
 app.include_router(knowledge_router)
 app.include_router(personnel_router)
 app.include_router(expert_router)
+app.include_router(usage_router)
 
 
 @app.get("/agent/live", summary="存活检查（liveness）", response_model=HealthResponse)

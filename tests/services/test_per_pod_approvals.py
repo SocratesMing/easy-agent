@@ -109,7 +109,9 @@ async def test_two_pods_resume_only_their_own_approvals_and_clean_up_deleted_ses
     async def boot(pod):
         await ck.shutdown_checkpointers()
         monkeypatch.setenv("EASY_POD_NAME", pod)
-        selection = ck.resolve_checkpoint_backend(backend="auto", sqlite_path=template, db_type="mysql")
+        # 显式 sqlite：auto 在"业务库是 MySQL"时会选共享 mysql_saver（要真库），
+        # 本用例验证的是"每 pod 一个文件"的回滚形态
+        selection = ck.resolve_checkpoint_backend(backend="sqlite", sqlite_path=template, db_type="mysql")
         kind = await ck.start_checkpoint_backend(
             selection, agent_env="prod", replicas=2, workers_per_pod=1, sticky=True, allow_legacy=False
         )

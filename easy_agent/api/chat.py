@@ -90,8 +90,14 @@ router = APIRouter(
 
 _detached_bg_tasks: "set[asyncio.Task]" = set()
 
-# 流锁续约间隔：默认 TTL 30 分钟，5 分钟续一次，避免长任务被其它副本误判过期。
-_STREAM_HEARTBEAT_SECONDS = 300.0
+# 流锁续约间隔：TTL 180 秒，60 秒续一次（必须 ≤ TTL/3）。
+# 心跳本身只是一条 ``UPDATE session_runtime``，每会话每分钟一次，可忽略；
+# 反过来 TTL 不能太长：Pod 崩溃后锁要挂到过期才失效，这期间任何 Pod 的
+# ``/stream/status`` 都报 active，用户刷新后会一直看到"生成中"。
+_STREAM_HEARTBEAT_SECONDS = 60.0
+
+# 流锁租约丢失时给客户端的终态文案：不暴露内部细节，只说明"被接走了、要重连"。
+_LEASE_LOST_MESSAGE = "本轮生成的会话锁已失效（可能已在其它实例上重新生成），请刷新页面继续"
 
 
 async def _record_run_end(runs, run_id: str, status: str, error: str, sid: str) -> None:
@@ -127,16 +133,41 @@ async def _renew_stream_lock(renew_stream, session_id: str, sid: str) -> bool:
     return bool(renewed)
 
 
-async def _stream_heartbeat(session_id: str, sid: str, renew_stream, runs, run_id) -> None:
-    """每隔 ``_STREAM_HEARTBEAT_SECONDS`` 续约一次：run 租约与流锁同频。"""
+async def _stream_heartbeat(
+    session_id: str,
+    sid: str,
+    renew_stream,
+    runs,
+    run_id,
+    owner_task: "asyncio.Task | None" = None,
+    lease_lost: "asyncio.Event | None" = None,
+) -> None:
+    """每隔 ``_STREAM_HEARTBEAT_SECONDS`` 续约一次：run 租约与流锁同频。
+
+    **续约失败 = 租约已丢，必须终止本轮**。旧实现只是停止续约、让流继续跑，于是：
+    Pod1 因网络抖动丢锁 → Pod2 在 TTL 到点后接管并清空事件表 → Pod1 还在往同一会话
+    写事件和 checkpoint，构成双写。租约丢了就不该继续写，这是租约的字面语义。
+
+    终止方式：置 ``lease_lost``（让 ``_drive_stream`` 把 run 记成 failed 而不是
+    cancelled）并 cancel 持有流的那条任务。
+    """
     while True:
         await asyncio.sleep(_STREAM_HEARTBEAT_SECONDS)
         if run_id is not None and runs is not None:
             await _renew_run_lease(runs, run_id, sid)
-        if renew_stream is not None and not await _renew_stream_lock(
-            renew_stream, session_id, sid
-        ):
-            return
+        if renew_stream is None:
+            continue
+        if await _renew_stream_lock(renew_stream, session_id, sid):
+            continue
+        logger.error(
+            f"[{sid}] 流锁租约丢失（已被其它实例接管或续约失败），终止本轮生成，"
+            "不再写事件/checkpoint"
+        )
+        if lease_lost is not None:
+            lease_lost.set()
+        if owner_task is not None and not owner_task.done():
+            owner_task.cancel()
+        return
 
 
 async def _stop_heartbeat(heartbeat: "asyncio.Task | None") -> None:
@@ -167,25 +198,33 @@ async def _clear_previous_events(stream_events, db, session_id: str, sid: str) -
 async def _drive_stream(
     gen, hub, queue: asyncio.Queue, emitter: SSEEmitter,
     session_id: str, sid: str, renew_stream, db, runs, stream_events, run_id,
+    keep_events: bool = False,
 ) -> None:
     """后台任务：推进生成器，把每个 SSE 分片广播给 hub 的全部订阅者（原始客户端队列也是其一）。
 
     run 终态默认 failed，生成器正常耗尽且没有 error 帧才改为 completed；
-    CancelledError（/cancel）标记 cancelled。
+    CancelledError 分两种：``/cancel`` → cancelled，**流锁租约丢失 → failed**
+    （租约丢了还继续写就是双写，见 :func:`_stream_heartbeat`）。
+
+    ``keep_events``：HITL 恢复是**同一轮的延续**，不能清掉中断前已产生的事件，
+    否则跨 Pod 打开时会话只剩落库的半截消息、思考过程永久消失。
     """
     bg = asyncio.current_task()
     registered = False
     heartbeat = None
+    lease_lost = asyncio.Event()
     run_status = "failed"
     run_error = ""
     try:
         await aregister_stream_task(session_id, bg)
         registered = True
-        if db is not None or stream_events is not None:
+        if (db is not None or stream_events is not None) and not keep_events:
             await _clear_previous_events(stream_events, db, session_id, sid)
         if renew_stream is not None or (run_id is not None and runs is not None):
             heartbeat = asyncio.create_task(
-                _stream_heartbeat(session_id, sid, renew_stream, runs, run_id)
+                _stream_heartbeat(
+                    session_id, sid, renew_stream, runs, run_id, bg, lease_lost
+                )
             )
         async for chunk in gen:
             hub.broadcast(chunk)
@@ -199,16 +238,35 @@ async def _drive_stream(
         else:
             run_status = "failed" if run_error else "completed"
     except SessionBusyError as e:
-        # 进程内兜底：不向共享 hub 广播（会污染正在运行的流），只结束本请求队列。
+        # 抢锁失败（通常意味着另一副本已经接管）。**必须推一条明确终态帧**：
+        # 旧实现只 ``queue.put_nowait(None)``，客户端拿到一个空流，表现为"发完没反应"。
+        # 这里只写本请求自己的队列，不 hub.broadcast：本会话此刻可能真有另一条流在本进程
+        # 广播，往 hub 里塞错误帧会把别人的流打断。
         logger.warning(f"[{sid}] 会话已被占用，拒绝并发流: {e}")
+        run_status = "failed"
         run_error = f"SessionBusyError: {e}"
         try:
+            queue.put_nowait(
+                emitter.error(
+                    "本会话正在其它实例上生成回复，请稍候；已生成的内容会自动同步显示"
+                )
+            )
             queue.put_nowait(None)
         except asyncio.QueueFull:
             pass
     except asyncio.CancelledError:
-        logger.info(f"[{sid}] 后台流式任务被取消（/cancel）")
-        run_status = "cancelled"
+        if lease_lost.is_set():
+            logger.error(f"[{sid}] 流锁丢失，本轮已终止（run 记 failed）: {run_id}")
+            run_status = "failed"
+            run_error = _LEASE_LOST_MESSAGE
+            hub.broadcast(emitter.error(_LEASE_LOST_MESSAGE))
+        else:
+            logger.info(f"[{sid}] 后台流式任务被取消（/cancel）")
+            run_status = "cancelled"
+        # 消费一次取消请求：否则 finally 里的落库 await 会被立刻再打断，
+        # run 终态就写不进去了（异常仍会继续向上抛，任务最终仍是 cancelled）。
+        if bg is not None and hasattr(bg, "uncancel"):
+            bg.uncancel()
         raise
     except Exception as e:
         logger.error(f"[{sid}] 后台流式任务异常: {type(e).__name__}: {e}")
@@ -233,7 +291,7 @@ async def _drive_stream(
 
 async def _detached_event_stream(
     gen, session_id: str, sid: str, renew_stream=None, db=None, runs=None,
-    stream_events=None, run_id=None,
+    stream_events=None, run_id=None, keep_events: bool = False,
 ):
     """以「后台任务 + 事件中枢」驱动流式生成器，与客户端断开解耦。
 
@@ -270,7 +328,7 @@ async def _detached_event_stream(
     bg_task = asyncio.create_task(
         _drive_stream(
             gen, hub, queue, emitter, session_id, sid, renew_stream, db,
-            run_store, stream_events, run_id,
+            run_store, stream_events, run_id, keep_events=keep_events,
         )
     )
     _detached_bg_tasks.add(bg_task)
@@ -401,6 +459,8 @@ async def chat_resume(
             stream_events=repo.stream_events,
             runs=repo.runs,
             run_id=plan.run_id,
+            # 恢复是同一轮的延续：保留中断前的思考过程，跨 Pod 打开时才能回放完整过程
+            keep_events=True,
         )
     )
 

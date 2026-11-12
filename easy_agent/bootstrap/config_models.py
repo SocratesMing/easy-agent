@@ -364,14 +364,111 @@ class DistributedLockConfig(BaseModel):
     """``acquire(wait_seconds>0)`` 等待抢锁时的轮询间隔（秒）。"""
 
 
+class MySQLCheckpointSectionConfig(BaseModel):
+    """``config.yaml`` 的 ``checkpoint.mysql`` 段（自研 ``AsyncMySQLSaver``）。
+
+    **连接参数留空即复用 ``database.mysql.*``**（同实例同库不同表），这是生产默认形态：
+    只要把后端切成 ``mysql_saver`` 就能跑，不需要额外填一套连接串。表名前缀
+    ``table_prefix`` 是同库隔离的唯一手段，**不允许为空**（否则 cp_ 表会写进业务表名空间）。
+
+    ``record_ttl_days`` 默认 0（不按时间过期）：checkpoint 是"用户点开会话就能续聊"的
+    唯一依据，贸然按天数清理会出现"列表里还在、点进去是空的"。要开 TTL 必须同时满足
+    ``ttl_only_archived=true``（只清已归档会话）与业务侧会话保留策略已经上线。
+    """
+
+    enabled: bool = True
+    """业务库是 MySQL 时是否允许 ``auto`` 选中本后端。"""
+
+    host: str = ""
+    """留空 = 复用 ``database.mysql.host``。"""
+
+    port: int = 0
+    """0 = 复用业务库端口。"""
+
+    user: str = ""
+    """留空 = 复用业务库账号。"""
+
+    password: str = ""
+    """留空 = 复用业务库密码。"""
+
+    database: str = ""
+    """留空 = 复用业务库库名。"""
+
+    charset: str = "utf8mb4"
+    """连接字符集。**必须 utf8mb4**：它同时决定建表时中文表/列注释能否正确入库。"""
+
+    table_prefix: str = Field(default="cp_", min_length=1)
+    """表名前缀，多环境共库时靠它隔离；为空直接启动失败。"""
+
+    pool_min_size: int = Field(default=2, ge=1)
+    pool_max_size: int = Field(default=10, ge=1)
+    """单 Pod 连接数上限；多副本时总连接数 = Pod 数 × 该值，需 ≤ MySQL ``max_connections`` 的 30%。"""
+
+    connect_timeout: int = Field(default=5, ge=1)
+    """建连超时（秒）。"""
+
+    read_timeout: int = Field(default=10, ge=1)
+    """单次查询超时（秒），落到服务端 ``max_execution_time``（只对 SELECT 生效）。"""
+
+    auto_setup: bool = True
+    """启动时幂等建表 + 执行未应用的迁移。多 Pod 并发启动用 ``GET_LOCK`` 串行化。"""
+
+    auto_setup_lock_wait: int = Field(default=60, ge=0)
+    """抢建表串行锁的等待秒数；超时则**启动失败**，不静默跳过建表。"""
+
+    gc_interval_seconds: int = Field(default=600, ge=0)
+    """巡检间隔；0 = 完全关闭（已删会话对账 + TTL 一起关）。"""
+
+    record_ttl_days: int = Field(default=0, ge=0)
+    """0 = 不按时间过期（推荐）；>0 时按"整 thread"删除。"""
+
+    ttl_basis: str = "session_updated_at"
+    """过期判定依据：``session_updated_at``（推荐，语义是用户真的没再动过）或
+    ``checkpoint_created_at``（只跟 checkpoint 表自身耦合）。"""
+
+    ttl_only_archived: bool = True
+    """只清理 ``archived=1`` 的会话，避免"列表里还在、点进去空了"。"""
+
+    ttl_batch_size: int = Field(default=200, ge=1)
+    """单轮最多删多少个 thread，分批提交，避免 LONGBLOB 的 DELETE 撑爆 redo。"""
+
+    ttl_protect_active_stream: bool = True
+    """删除前跳过有活跃流锁的 thread，防误删正在跑的回合。"""
+
+    @field_validator("table_prefix")
+    @classmethod
+    def _strip_prefix(cls, value: str) -> str:
+        prefix = (value or "").strip()
+        if not prefix:
+            raise ValueError("checkpoint.mysql.table_prefix 不能为空")
+        return prefix
+
+    @field_validator("ttl_basis")
+    @classmethod
+    def _check_ttl_basis(cls, value: str) -> str:
+        basis = (value or "session_updated_at").strip() or "session_updated_at"
+        if basis not in {"session_updated_at", "checkpoint_created_at"}:
+            raise ValueError(
+                "checkpoint.mysql.ttl_basis 只能是 session_updated_at 或 checkpoint_created_at"
+            )
+        return basis
+
+
 class CheckpointConfig(BaseModel):
-    """HITL 人工审批的 checkpoint（config.yaml 的 ``checkpoint`` 段，官方 AsyncSqliteSaver）。"""
+    """HITL 人工审批的 checkpoint（config.yaml 的 ``checkpoint`` 段）。
+
+    ``sqlite_path`` 供官方 ``AsyncSqliteSaver``（dev/test 与生产回滚）；
+    ``mysql`` 子段供自研 ``AsyncMySQLSaver``（生产多副本共享）。
+    """
 
     sqlite_path: str = ""
     """SQLite 文件路径，``{pod}`` 启动时换成实例名（``EASY_POD_NAME`` → ``POD_NAME`` →
     ``HOSTNAME``），每个 pod 一个文件；相对路径按项目根解析。留空时用旧环境变量
     ``EASY_CHECKPOINT_SQLITE_PATH``，也没有时默认 ``/qts/checkpoint/{pod}.db``
     （见 ``persistence/checkpoints.py``）。"""
+
+    mysql: MySQLCheckpointSectionConfig = Field(default_factory=MySQLCheckpointSectionConfig)
+    """MySQL 共享后端配置（``checkpoint.mysql``），不配置时全部走默认值。"""
 
 
 class HitlConfig(BaseModel):

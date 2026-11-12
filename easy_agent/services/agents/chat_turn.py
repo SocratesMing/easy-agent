@@ -11,7 +11,7 @@
 1. 知识库会话鉴权（fail-closed）最先；
 2. 打开 / 新建会话，然后 ``reject_concurrent_stream``——409 必须在用户消息落库之前，
    否则会话里会多出一条没有回复的用户消息；
-3. 解析技能 → 仅普通聊天做金融 / 技能意图预检（失败关闭，专家 / 知识库面板跳过）；
+3. 解析技能归属与启用状态；
 4. 专家分支：提示词 → 依赖技能补装 → 职责范围预检（硬闸）→ 命中即短路拒答。
    预检必须早于文件解析与知识库检索：被拒答的消息不该为这些付成本，更重要的是
    「Agent 未创建」时任何工具都不可达（提示词层面的边界块做不到这点）；
@@ -53,7 +53,6 @@ from easy_agent.services.sessions import (
     uploads as file_context,
 )
 from easy_agent.services.agents import (
-    domain_gate,
     manager as agent_manager,
     tool_scope,
 )
@@ -68,6 +67,8 @@ from easy_agent.services.streaming.orchestrator import (
     resume_stream_generator,
     validate_resume_decisions,
 )
+from easy_agent.services.usage import resolve_usage_identity
+from easy_agent.utils.usage_context import usage_scope
 from easy_agent.utils.blocking import run_blocking
 from easy_agent.utils.file_parser import parse_file_content
 from easy_agent.utils.prompt_probe import describe_prompt
@@ -225,15 +226,28 @@ def require_turn_content(message: str | None, files: list | None, skills: list |
         raise BadRequestError("消息内容不能为空")
 
 
-def reject_concurrent_stream(session_id: str) -> None:
+async def reject_concurrent_stream(session_id: str, runtime) -> None:
     """同一会话已有流式生成在跑时返回 409（``ConflictError`` → HTTP 409）。
 
     两条流会共享 agent、last-assistant 行与 hub，互相覆盖 / EOF（实测新流 0 条内容即结束）。
     要在用户消息落库之前调用：``_detached_event_stream`` 里也有同样的兜底，但走到那里时
     用户消息已经落库，会话里会多出一条没有回复的消息。
+
+    **跨副本**：进程内的 ``is_session_streaming`` 只看当前 Pod，多副本下必须再查
+    ``session_runtime.stream_until``（``is_stream_active``）。两者都命中才拒，进程内那步
+    只是省一次 DB 往返。
+
+    局限（已知且接受）：这是"早失败"，不是权威判定——`prepare_turn` 后续还有技能解析、
+    意图闸、建 Agent/MCP 等耗时动作，期间锁可能被别人抢走。权威判定仍是后台任务里的
+    ``acquire_stream``，所以那边失败时必须推明确的错误帧（见 ``api/chat.py``）。
     """
     if agent_manager.is_session_streaming(session_id):
         raise ConflictError("本会话正在生成回复，请等待完成或先取消当前生成")
+    # 查库走线程：数据库层是同步的，别占事件循环
+    from easy_agent.services.sessions.runtime import is_stream_active
+
+    if await run_blocking(is_stream_active, runtime, session_id):
+        raise ConflictError("本会话正在其它实例上生成回复，请稍后再试")
 
 
 @dataclass(frozen=True)
@@ -270,20 +284,6 @@ def resolve_request_skills(
         pinned=skill_library.pinned_skill_names(items),
         fallback_name=items[0]["name"] if items else "",
     )
-
-
-def _intent_skill_catalog(username: str) -> list[dict[str, str]]:
-    """仅提供用户已启用技能的名称与描述，不加载技能正文或执行工具。"""
-    catalog = []
-    for item in skill_library.list_user_skill_dirs(username):
-        if not item["enabled"]:
-            continue
-        meta = skill_library.skill_metadata(item["path"])
-        catalog.append({
-            "name": meta.get("name") or item["dir_name"],
-            "description": (meta.get("description") or "")[:800],
-        })
-    return catalog
 
 
 def open_turn_session(
@@ -489,47 +489,15 @@ async def prepare_turn(
     )
 
     # 并发互斥：同一会话同一时刻只允许一条流式生成（必须在用户消息落库之前）
-    reject_concurrent_stream(session_id)
+    # 传 repo.runtime：跨副本判断要查 session_runtime.stream_until，进程内状态不够
+    await reject_concurrent_stream(session_id, repo.runtime)
 
-    # 先验证技能归属与启用状态，让意图分类能识别技能调用；这里不执行技能。
+    identity = await resolve_usage_identity(username, session_id)
+
+    # 验证本轮所选技能的归属与启用状态；这里不执行技能。
     turn = await asyncio.to_thread(
         resolve_request_skills, request.skills, request.message, username, sid
     )
-    # 普通聊天金融 / 技能意图硬闸；知识库面板和专家对话沿用原有处理。
-    # 位置在鉴权之后、技能执行准备 / 附件解析 / 检索 / Agent 创建之前。
-    session = await asyncio.to_thread(repo.get_session, session_id)
-    turn_system_context = ""
-    if not request.expert_agent_id and not is_knowledge_panel_title(session.title):
-        refusal = await domain_gate.finance_refusal(
-            request.message,
-            getattr(session, "messages", None) or [],
-            model_name=request.model,
-            session_id=session_id,
-            has_attachments=bool(request.files),
-            available_skills=await asyncio.to_thread(_intent_skill_catalog, username),
-            selected_skills=turn.pinned,
-        )
-        if refusal is not None:
-            await asyncio.to_thread(
-                expert_runtime.persist_user_turn,
-                repo.experts, session_id, username, request,
-                request.expert_agent_id or "", turn.dirs, turn_id=message_id,
-            )
-            expert_runtime.session_logger_for(session_id, username).log_user_message(
-                message=request.message, files=request.files, message_id=message_id,
-            )
-            return RefusalPlan(
-                session_id=session_id,
-                sid=sid,
-                classification=(
-                    "finance_unavailable"
-                    if refusal == domain_gate.CLASSIFICATION_UNAVAILABLE else "non_finance"
-                ),
-                refusal=refusal,
-                event_stream=expert_runtime.refusal_event_stream(session_id, repo.experts, refusal),
-            )
-        turn_system_context = domain_gate.APPROVED_TURN_PROMPT
-
     # 只选技能时继续沿用技能展示名作为空会话标题。
     if turn.fallback_name and not request.message.strip() and not request.files:
         await asyncio.to_thread(
@@ -604,16 +572,17 @@ async def prepare_turn(
             f"会话暂存={cached_turn_skills}"
         )
 
-    gate = await expert_runtime.relevance_gate(
-        expert_repo,
-        session_id,
-        username,
-        expert_id,
-        request.message,
-        sid,
-        files=request.files,
-        prompt_text=expert_prompt,
-    )
+    with usage_scope(identity.user_id if identity else None, identity.session_id if identity else None):
+        gate = await expert_runtime.relevance_gate(
+            expert_repo,
+            session_id,
+            username,
+            expert_id,
+            request.message,
+            sid,
+            files=request.files,
+            prompt_text=expert_prompt,
+        )
     if gate is not None:
         classification, refusal = gate
         # 拒答也要落用户消息：否则会话列表里只剩一条 assistant 拒答，上下文断裂
@@ -748,9 +717,8 @@ async def prepare_turn(
     # （见 api/connectors.py 的 /agent/connectors/session），agent_manager 按会话读取。
     # expert_agent_id 只用于「专家变更 -> 驱逐缓存 Agent」，提示词已在上面的
     # system_prompt_extra 里拼好（专家切换立即生效，不串用上一轮的人设）。
-    from easy_agent.persistence.checkpoints import refresh_session_checkpointer
-
-    await refresh_session_checkpointer(session_id)
+    # 不再有 refresh_session_checkpointer：旧的「业务库 MemorySaver 快照」链路已删除，
+    # 现在的 saver 是进程级共享对象（sqlite 文件 / MySQL 4 张表），无需每轮刷新。
     agent = await get_or_create_agent_for_session(
         session_id, username, workspace_name, model_name=request.model,
         system_prompt_extra=system_prompt_extra,
@@ -787,8 +755,6 @@ async def prepare_turn(
         parsed_content=parsed_content,
         session_logger=session_logger,
         pinned_skills=turn.pinned,
-        system_context=turn_system_context,
-        scope_approved=bool(turn_system_context),
         context_prefix=knowledge_chat.context,
         initial_events=knowledge_chat.initial_events,
         assistant_metadata=knowledge_chat.assistant_metadata,
@@ -827,7 +793,8 @@ async def prepare_resume(
     workspace_name = session_meta["workspace_name"] or ""
 
     # 同一会话已有流在跑时拒绝 resume（它依赖进程内缓存与 checkpointer 状态）。
-    reject_concurrent_stream(session_id)
+    # 多副本下还要查库：别的 Pod 正在跑时它持有 session_runtime 流锁。
+    await reject_concurrent_stream(session_id, repo.runtime)
 
     # 审批句柄由后端固定生成 ``f"{session_id}-{message_id}"``；绝不信任前端
     # 传入的任意 thread_id：官方 SQLite checkpointer 是全局共享的，否则可读取/
@@ -857,9 +824,7 @@ async def prepare_resume(
     # 原样复用、人设保留；要么为 ""（缓存已失效）—— 等价于通用 Agent 重建，
     # 行为与引入专家模块之前逐字一致。
     # 连接器无需传参：agent_manager 直接读该会话的开关记录，缓存失效时按同一套集合重建。
-    from easy_agent.persistence.checkpoints import refresh_session_checkpointer
-
-    await refresh_session_checkpointer(session_id)
+    # 不刷新 checkpointer：saver 是进程级共享对象，resume 直接读同一份 checkpoint。
     agent = await get_or_create_agent_for_session(
         session_id,
         username,

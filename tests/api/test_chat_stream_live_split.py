@@ -95,7 +95,11 @@ def test_stream_status_uses_db_stream_owner(client, db):
         "/agent/chat/stream/status", params={"session_id": SESSION_ID}
     )
     assert active.status_code == 200
-    assert active.json() == {"session_id": SESSION_ID, "active": True}
+    body = active.json()
+    assert body["session_id"] == SESSION_ID
+    assert body["active"] is True
+    # 正在跑就不需要额外的回放判据（避免多一次流事件查询）
+    assert body["replayable"] is False
 
     _runtime(db).upsert_session_runtime(
         SESSION_ID, stream_owner="pod-a:123", stream_until=past
@@ -104,11 +108,39 @@ def test_stream_status_uses_db_stream_owner(client, db):
         "/agent/chat/stream/status", params={"session_id": SESSION_ID}
     )
     assert expired.status_code == 200
-    assert expired.json() == {"session_id": SESSION_ID, "active": False}
+    assert expired.json()["active"] is False
+    # 没有事件：没过程可回放
+    assert expired.json()["replayable"] is False
 
     assert client.get(
         "/agent/chat/stream/status", params={"session_id": "missing"}
     ).status_code == 404
+
+
+def test_stream_status_marks_unfinished_events_as_replayable(client, db):
+    """没在跑但过程事件比落库消息新时，打开会话要能挂一次 live 回放。
+
+    HITL 待审批、进程崩溃、写入器异常都停在这些非终态帧上：落库的只有半截消息，
+    思考过程还在 ``stream_events`` 里。终态帧（done/error）说明该轮已终结，
+    事件只是历史缓冲，不能再回放（否则会把上一轮的正文重放一遍）。
+    """
+    _seed_session(db)
+
+    def status():
+        response = client.get(
+            "/agent/chat/stream/status", params={"session_id": SESSION_ID}
+        )
+        assert response.status_code == 200
+        return response.json()["replayable"]
+
+    # 停在待审批：replayable
+    append_stream_event(db, SESSION_ID, _frame("thinking", content="想一下"))
+    append_stream_event(db, SESSION_ID, _frame("approval_required", action_requests=[]))
+    assert status() is True
+
+    # 已收尾：done 是终态，不再回放
+    append_stream_event(db, SESSION_ID, _frame("done", already_completed=True))
+    assert status() is False
 
 
 def test_stream_live_emits_heartbeat_while_idle(client, db, monkeypatch):
@@ -159,3 +191,51 @@ def test_stream_live_replays_terminal_events_from_db(client, db):
     assert '"type": "done"' in body
     # 只读端点不得依赖/创建本 Pod 的进程内 hub
     assert stream_hub._session_stream_hubs == {}
+
+
+def test_stream_live_keeps_replaying_after_approval_required(client, db, monkeypatch):
+    """HITL 恢复后事件是追加的：回放到 approval_required 不能停。
+
+    以前 ``approval_required`` 按终态处理，回放到它就 return，导致跨 Pod 打开一个
+    已恢复过的会话只能看到中断前那一段，恢复后的正文全部丢失。
+    """
+    _seed_session(db)
+    frames = [
+        _frame("thinking", content="先想一下", step=1),
+        _frame("approval_required", thread_id=SESSION_ID, action_requests=[]),
+        _frame("content", content="批准后继续写的正文", step=2),
+        _frame("done", session_id=SESSION_ID, finish_reason="stop"),
+    ]
+    for frame in frames:
+        append_stream_event(db, SESSION_ID, frame)
+
+    response = client.get(
+        "/agent/chat/stream/live", params={"session_id": SESSION_ID}
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert '"type": "approval_required"' in body
+    assert "批准后继续写的正文" in body, "approval_required 之后的事件必须继续回放"
+    assert '"type": "done"' in body
+
+
+def test_stream_live_does_not_synthesize_done_while_approval_pending(client, db, monkeypatch):
+    _seed_session(db)
+    frames = [
+        _frame("thinking", content="先想一下", step=1),
+        _frame("approval_required", thread_id=SESSION_ID, action_requests=[]),
+    ]
+    for frame in frames:
+        append_stream_event(db, SESSION_ID, frame)
+    # 会话没有流锁（HITL 中断时已释放），空闲轮询会走完 2 轮
+    monkeypatch.setattr(chat_live, "is_stream_active", lambda *a, **k: False)
+
+    response = client.get(
+        "/agent/chat/stream/live", params={"session_id": SESSION_ID}
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert '"type": "approval_required"' in body
+    assert '"type": "done"' not in body, "待审批收尾补 done 会清掉前端审批状态"

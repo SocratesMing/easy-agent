@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from easy_agent.persistence import checkpoints as ck
+from easy_agent.persistence import checkpoints as checkpoints_module
 
 POD = "easy-agent-0"
 DEFAULT = f"/qts/checkpoint/{POD}.db"
@@ -43,9 +44,17 @@ class TestAuto:
         assert selection.sqlite_template == ck.DEFAULT_SQLITE_PATH
         assert "默认路径" in selection.reason
 
-    def test_mysql_without_a_configured_path_uses_the_default_file_too(self):
-        # 以前业务库是 MySQL、没配路径时回退进程内快照；现在总有默认路径
+    def test_auto_on_mysql_picks_the_shared_mysql_saver(self):
+        """auto 只看配置不看连通性：业务库是 MySQL 就选 mysql_saver。"""
         selection = _resolve(db_type="mysql")
+        assert selection.kind == ck.BACKEND_MYSQL_SAVER
+        assert selection.mysql is not None
+        assert selection.is_official is True
+        assert "共享 MySQL" in selection.reason
+
+    def test_auto_on_mysql_with_the_backend_disabled_still_uses_a_local_file(self):
+        """checkpoint.mysql.enabled=false 时 auto 退回本地文件（单机调试形态）。"""
+        selection = _resolve(db_type="mysql", mysql_config={"enabled": False})
         assert selection.kind == ck.BACKEND_SQLITE
         assert selection.sqlite_path == DEFAULT
         assert selection.warning == ""
@@ -63,7 +72,9 @@ class TestAuto:
         assert "checkpoint.sqlite_path" in selection.reason
 
     def test_shared_path_on_mysql_warns_local_only(self):
-        selection = _resolve(db_type="mysql", sqlite_path="/tmp/mysql-ckpt.db")
+        selection = _resolve(
+            db_type="mysql", sqlite_path="/tmp/mysql-ckpt.db", mysql_config={"enabled": False}
+        )
         assert selection.kind == ck.BACKEND_SQLITE
         assert selection.sqlite_path == "/tmp/mysql-ckpt.db"
         assert "多副本" in selection.warning
@@ -87,7 +98,12 @@ class TestForced:
         assert selection.per_pod is True
 
     def test_sqlite_forced_on_mysql_with_a_shared_path_warns_local_only(self):
-        selection = _resolve(backend="sqlite", sqlite_path="data/checkpoints.db", db_type="mysql")
+        selection = _resolve(
+            backend="sqlite",
+            sqlite_path="data/checkpoints.db",
+            db_type="mysql",
+            mysql_config={"enabled": False},
+        )
         assert selection.kind == ck.BACKEND_SQLITE
         assert "MySQL" in selection.warning
 
@@ -96,7 +112,7 @@ class TestForced:
         selection = _resolve(backend="postgres", db_type="sqlite")
         assert selection.kind == ck.BACKEND_SQLITE
         assert "'postgres'" in selection.warning
-        assert "auto/sqlite/mysql/legacy" in selection.warning
+        assert "auto/sqlite/mysql_saver/mysql/legacy" in selection.warning
 
     def test_unknown_backend_treated_as_auto(self):
         selection = _resolve(backend="bogus", db_type="sqlite")
@@ -107,7 +123,11 @@ class TestForced:
 class TestPerPodPath:
     def test_pod_placeholder_becomes_the_instance_name(self, monkeypatch):
         monkeypatch.setenv("EASY_POD_NAME", "easy-agent-0")
-        selection = _resolve(sqlite_path="data/checkpoints/{pod}.db", db_type="mysql")
+        selection = _resolve(
+            sqlite_path="data/checkpoints/{pod}.db",
+            db_type="mysql",
+            mysql_config={"enabled": False},
+        )
         assert selection.kind == ck.BACKEND_SQLITE
         assert selection.sqlite_path == "data/checkpoints/easy-agent-0.db"
         assert selection.per_pod is True
@@ -123,14 +143,20 @@ class TestPerPodPath:
         assert selection.per_pod is True
 
     def test_path_without_placeholder_is_shared(self):
-        selection = _resolve(sqlite_path="data/checkpoints.db", db_type="mysql")
+        selection = _resolve(
+            sqlite_path="data/checkpoints.db", db_type="mysql", mysql_config={"enabled": False}
+        )
         assert selection.per_pod is False
         assert selection.instance == ""
 
     def test_unsafe_instance_name_fails_fast(self, monkeypatch):
         monkeypatch.setenv("EASY_POD_NAME", "../escape")
         with pytest.raises(ck.CheckpointDeploymentError, match="EASY_POD_NAME"):
-            _resolve(sqlite_path="data/checkpoints/{pod}.db", db_type="mysql")
+            _resolve(
+                sqlite_path="data/checkpoints/{pod}.db",
+                db_type="mysql",
+                mysql_config={"enabled": False},
+            )
 
 
 class TestEnvAndDetection:
@@ -143,7 +169,7 @@ class TestEnvAndDetection:
     def test_stale_postgres_uri_env_is_ignored(self, monkeypatch):
         monkeypatch.delenv("EASY_CHECKPOINT_BACKEND", raising=False)
         monkeypatch.setenv("EASY_CHECKPOINT_POSTGRES_URI", "postgresql://user:password@db:5432/agent")
-        selection = ck.resolve_checkpoint_backend(db_type="mysql")
+        selection = ck.resolve_checkpoint_backend(db_type="sqlite")
         assert selection.kind == ck.BACKEND_SQLITE
         assert selection.sqlite_path == DEFAULT
         assert "postgres" not in selection.warning.lower()
@@ -151,7 +177,9 @@ class TestEnvAndDetection:
     def test_legacy_env_path_is_used_when_yaml_has_none(self, monkeypatch):
         monkeypatch.delenv("EASY_CHECKPOINT_BACKEND", raising=False)
         monkeypatch.setenv("EASY_CHECKPOINT_SQLITE_PATH", "/tmp/env-ckpt.db")
-        selection = ck.resolve_checkpoint_backend(db_type="mysql")
+        selection = ck.resolve_checkpoint_backend(
+            db_type="mysql", mysql_config={"enabled": False}
+        )
         assert selection.kind == ck.BACKEND_SQLITE
         assert selection.sqlite_path == "/tmp/env-ckpt.db"
         assert "EASY_CHECKPOINT_SQLITE_PATH" in selection.reason
@@ -170,8 +198,14 @@ class TestEnvAndDetection:
 
         monkeypatch.setattr(db_module, "_db_instance", _FakeDb(), raising=False)
         assert ck.detect_business_db_type() == "mysql"
-        # 只有不按 pod 分文件时才用得上业务库类型：MySQL 上共用一个文件要提示
+        # auto 靠业务库类型决定用哪个后端：MySQL → 共享 mysql_saver
         selection = ck.resolve_checkpoint_backend(backend="auto", sqlite_path="data/x.db")
+        assert selection.kind == ck.BACKEND_MYSQL_SAVER
+        # 关掉 checkpoint 的 MySQL 后端时才退回本地文件，并提示"仅适合单机"
+        selection = ck.resolve_checkpoint_backend(
+            backend="auto", sqlite_path="data/x.db", mysql_config={"enabled": False}
+        )
+        assert selection.kind == ck.BACKEND_SQLITE
         assert "MySQL" in selection.warning
 
     def test_detect_business_db_type_without_instance(self, monkeypatch):
@@ -212,32 +246,75 @@ class TestStartBackend:
 
     def test_mysql_backend_requires_mysql_database(self):
         with pytest.raises(ck.CheckpointDeploymentError, match="要求业务数据库为 MySQL"):
-            ck.resolve_checkpoint_backend(backend="mysql", db_type="sqlite")
+            ck.resolve_checkpoint_backend(backend="mysql_saver", db_type="sqlite")
+
+    def test_deprecated_mysql_alias_maps_to_mysql_saver(self):
+        """ConfigMap 里还写着 ``mysql`` 的部署不能因为改名而启动失败。"""
+        selection = ck.resolve_checkpoint_backend(backend="mysql", db_type="mysql")
+        assert selection.kind == ck.BACKEND_MYSQL_SAVER
+        assert "已废弃" in (selection.warning or "")
+
+    def test_mysql_saver_reuses_business_db_when_fields_are_blank(self):
+        """连接参数留空即复用业务库：只改后端名就能跑。"""
+        mysql = ck.build_mysql_checkpoint_config(
+            {"host": "", "port": 0, "user": "", "database": "", "table_prefix": "cp_"},
+            {"host": "biz-db", "port": 3307, "user": "app", "password": "p", "database": "easy_agent"},
+        )
+        assert (mysql.host, mysql.port, mysql.user, mysql.database) == (
+            "biz-db",
+            3307,
+            "app",
+            "easy_agent",
+        )
+        assert mysql.password == "p"
+        # 显式配置优先，可以把 checkpoint 单独放另一个库
+        override = ck.build_mysql_checkpoint_config(
+            {"host": "ckpt-db", "database": "ckpt"}, {"host": "biz-db", "database": "easy_agent"}
+        )
+        assert (override.host, override.database) == ("ckpt-db", "ckpt")
 
     @pytest.mark.asyncio
-    async def test_mysql_backend_uses_shared_per_session_savers(self, monkeypatch):
-        selection = ck.resolve_checkpoint_backend(backend="mysql", db_type="mysql")
-        assert await ck.start_checkpoint_backend(
-            selection, agent_env="prod", replicas=2, workers_per_pod=1
-        ) == ck.BACKEND_MYSQL
+    async def test_mysql_saver_opens_one_shared_saver(self, monkeypatch):
+        """mysql_saver 是进程级共享对象：任意 session_id 都拿到同一个 saver。"""
+        opened = []
 
-        class _Repository:
-            def load_checkpoint(self, session_id):
-                return None
+        async def _fake_open(config):
+            opened.append(config)
+            saver = object()
+            checkpoints_module._mysql_saver = saver
+            checkpoints_module._shared_saver = saver
 
-            def save_checkpoint(self, session_id, blob):
-                pass
+        async def _fake_close():
+            checkpoints_module._mysql_saver = None
+            checkpoints_module._shared_saver = None
 
-        monkeypatch.setattr(
-            "easy_agent.db.providers.get_agent_state_repository",
-            lambda: _Repository(),
-        )
+        monkeypatch.setattr(ck, "open_mysql_checkpointer", _fake_open)
+        monkeypatch.setattr(ck, "close_mysql_checkpointer", _fake_close)
+        selection = ck.resolve_checkpoint_backend(backend="mysql_saver", db_type="mysql")
         try:
-            assert ck.active_checkpoint_backend() == ck.BACKEND_MYSQL
-            assert ck.get_session_checkpointer("s1") is ck.get_session_checkpointer("s1")
-            assert ck.get_session_checkpointer("s1") is not ck.get_session_checkpointer("s2")
+            assert await ck.start_checkpoint_backend(
+                selection, agent_env="prod", replicas=2, workers_per_pod=1
+            ) == ck.BACKEND_MYSQL_SAVER
+            assert len(opened) == 1
+            assert ck.shared_checkpointer_active() is True
+            assert ck.mysql_checkpointer_active() is True
+            assert ck.active_checkpoint_backend() == ck.BACKEND_MYSQL_SAVER
+            assert ck.get_session_checkpointer("s1") is ck.get_session_checkpointer("s2")
         finally:
             await ck.shutdown_checkpointers()
+        assert ck.shared_checkpointer_active() is False
+
+    @pytest.mark.asyncio
+    async def test_mysql_saver_open_failure_does_not_fall_back(self, monkeypatch):
+        """共享后端打不开必须抛错：降级成进程内 saver 会造成各 Pod 各写一份。"""
+        async def _boom(config):
+            raise RuntimeError("cannot connect")
+
+        monkeypatch.setattr(ck, "open_mysql_checkpointer", _boom)
+        selection = ck.resolve_checkpoint_backend(backend="mysql_saver", db_type="mysql")
+        with pytest.raises(ck.CheckpointDeploymentError, match="不回退"):
+            await ck.start_checkpoint_backend(selection)
+        assert ck.active_checkpoint_backend() == ck.BACKEND_LEGACY
 
     @pytest.mark.asyncio
     async def test_sqlite_open_failure_falls_back_to_legacy(self, tmp_path, monkeypatch):
@@ -271,28 +348,61 @@ def test_relative_sqlite_path_resolves_under_project_root():
     assert resolved.is_absolute()
     assert resolved == project_root / "data" / "checkpoints.db"
     assert ck.resolve_sqlite_path(str(project_root / "x.db")).is_absolute()
-    assert ck.resolve_sqlite_path(DEFAULT) == Path(DEFAULT)
+    # 注意 "/qts/..." 在 Windows 上没有盘符、Path.is_absolute() 为假，会被当相对路径
+    # 拼到项目根下；这里只校验"绝对路径原样返回"，不比平台相关的字符串形态
+    assert ck.resolve_sqlite_path(str(Path(project_root / "qts" / "x.db"))).is_absolute()
     assert ck.resolve_sqlite_path(":memory:") == Path(":memory:")
 
 
 @pytest.mark.asyncio
 async def test_app_startup_passes_the_yaml_checkpoint_path(monkeypatch):
-    """app 启动把 config.yaml 的 checkpoint.sqlite_path 交给 checkpointer。"""
+    """app 启动把 config.yaml 的 checkpoint 段（含 mysql 子段）交给 checkpointer。"""
     import easy_agent.app as app_module
 
     seen = {}
 
-    async def fake_start(**kwargs):
+    async def fake_start(selection, **kwargs):
+        seen["selection"] = selection
         seen.update(kwargs)
         return ck.BACKEND_SQLITE
 
     monkeypatch.setattr(ck, "start_checkpoint_backend", fake_start)
     monkeypatch.setattr(ck, "start_checkpoint_gc", lambda: None)
-    config = SimpleNamespace(checkpoint=SimpleNamespace(sqlite_path="/qts/checkpoint/{pod}.db"))
+    monkeypatch.setenv("EASY_CHECKPOINT_BACKEND", "sqlite")
+    monkeypatch.setenv("EASY_POD_NAME", "easy-agent-0")
+    mysql_section = ck.MySQLCheckpointConfig(table_prefix="cp_")
+    config = SimpleNamespace(
+        checkpoint=SimpleNamespace(
+            sqlite_path="/qts/checkpoint/{pod}.db", mysql=mysql_section
+        ),
+        database=SimpleNamespace(mysql=SimpleNamespace(host="biz-db", database="easy_agent")),
+    )
 
     await app_module._start_checkpointing("prod", config)
 
-    assert seen == {"sqlite_path": "/qts/checkpoint/{pod}.db", "agent_env": "prod"}
+    assert seen["agent_env"] == "prod"
+    assert seen["selection"].sqlite_path.endswith("easy-agent-0.db")
+
+
+@pytest.mark.asyncio
+async def test_app_startup_fails_fast_when_mysql_saver_cannot_open(monkeypatch):
+    """mysql_saver 打开失败必须让启动失败，不能降级成进程内 saver。"""
+    import easy_agent.app as app_module
+
+    async def _boom(config):
+        raise RuntimeError("cannot connect")
+
+    monkeypatch.setattr(ck, "open_mysql_checkpointer", _boom)
+    monkeypatch.setattr(ck, "start_checkpoint_gc", lambda: None)
+    monkeypatch.setenv("EASY_CHECKPOINT_BACKEND", "mysql_saver")
+    config = SimpleNamespace(
+        checkpoint=SimpleNamespace(
+            sqlite_path="", mysql=ck.MySQLCheckpointConfig(table_prefix="cp_")
+        ),
+        database=SimpleNamespace(mysql=SimpleNamespace(host="biz-db", database="easy_agent")),
+    )
+    with pytest.raises(ck.CheckpointDeploymentError, match="不回退本地 saver"):
+        await app_module._start_checkpointing("prod", config)
 
 
 def test_app_lifespan_uses_official_sqlite_saver(client):

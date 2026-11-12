@@ -1,8 +1,10 @@
 # Multi-replica Easy Agent. Requires MySQL (application database), RWX workspace
 # storage, and the sticky-session Ingress in agent-ingress.yaml.
 #
-# HITL checkpoints use shared MySQL snapshots so approvals survive Pod replacement and
-# can resume on any replica. The schema migration creates agent_checkpoints.
+# HITL checkpoints live in shared MySQL tables (cp_checkpoints / cp_checkpoint_blobs /
+# cp_checkpoint_writes / cp_checkpoint_meta, created automatically at startup by
+# AsyncMySQLSaver.asetup with a GET_LOCK-guarded DDL), so approvals survive Pod
+# replacement and can resume on any replica. Chat threads are shared the same way.
 # The LangGraph Store also lives in MySQL (SqlStore).
 apiVersion: v1
 kind: ConfigMap
@@ -15,11 +17,20 @@ data:
   EASY_REPLICA_COUNT: "2"
   EASY_TRUST_PROXY: "1"
   EASY_SKIP_LLM_PROBE: "1"
-  # Shared MySQL snapshots preserve pending HITL approvals across Pod replacement.
-  EASY_CHECKPOINT_BACKEND: "mysql"
+  # Shared MySQL checkpointer (self-hosted AsyncMySQLSaver) preserves pending HITL
+  # approvals and chat threads across Pod replacement. "mysql" is a deprecated alias
+  # kept only so old ConfigMaps keep working; write mysql_saver from now on.
+  EASY_CHECKPOINT_BACKEND: "mysql_saver"
+  # Sticky sessions are no longer required (any Pod can resume any thread), but keep
+  # the Ingress annotation: it is the rollback path to the sqlite backend.
   EASY_STICKY_SESSIONS: "1"
-  # Seconds between background passes that delete leftover checkpoints of deleted sessions.
+  # Seconds between background passes: (1) reconcile threads of deleted sessions,
+  # (2) expire threads by age when record_ttl_days > 0 (0 = disabled, recommended).
   EASY_CHECKPOINT_GC_INTERVAL: "600"
+  # 0 = never expire by age. >0 deletes whole threads (not single checkpoints).
+  CHECKPOINT_TTL_DAYS: "0"
+  # Same-instance table prefix; raise it to isolate several environments in one database.
+  CHECKPOINT_MYSQL_TABLE_PREFIX: "cp"
   # Scheduled tasks run on one pod only (the scheduler refuses to register them otherwise).
   DISTRIBUTED_LOCK_ENABLED: "true"
   # Uploaded files go to MySQL instead of the pod-local data/uploads.

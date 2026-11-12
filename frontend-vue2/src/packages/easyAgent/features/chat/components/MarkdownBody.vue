@@ -17,6 +17,7 @@ const SETTLE_MS = 150
 export default {
   name: 'MarkdownBody',
   props: {
+    compactCitations: { type: Boolean, default: false },
     content: {
       type: String,
       default: '',
@@ -34,6 +35,7 @@ export default {
         this.queue(value)
       },
     },
+    compactCitations() { if (this.md.started) this.render(false) },
     citeMap: {
       deep: true,
       handler() {
@@ -80,7 +82,7 @@ export default {
       md.settleTimer = setTimeout(() => this.render(false), SETTLE_MS)
     },
     render(partial) {
-      this.md.blocks = renderMarkdownBlocks(linkKnowledgeCitations(this.md.pending, this.citeMap), { partial })
+      this.md.blocks = renderMarkdownBlocks(linkKnowledgeCitations(this.md.pending, this.citeMap, this.compactCitations), { partial })
       this.flush()
     },
     flush() {

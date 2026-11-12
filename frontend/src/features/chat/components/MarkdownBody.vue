@@ -12,6 +12,7 @@ import { linkKnowledgeCitations } from '../../../shared/markdown/citations.js'
 import { patchMarkdownBlocks } from '../../../shared/markdown/blockDom.js'
 
 const props = defineProps({
+  compactCitations: { type: Boolean, default: false },
   content: {
     type: String,
     default: '',
@@ -50,7 +51,7 @@ function flush() {
 }
 
 function render(partial) {
-  blocks = renderMarkdownBlocks(linkKnowledgeCitations(pending, props.citeMap), { partial })
+  blocks = renderMarkdownBlocks(linkKnowledgeCitations(pending, props.citeMap, props.compactCitations), { partial })
   flush()
 }
 
@@ -75,6 +76,7 @@ watch(() => props.content, queue, { immediate: true })
 watch(() => props.citeMap, () => { if (started) render(false) }, { deep: true })
 // shiki 异步就绪后重渲一次：首屏 / 历史消息在高亮器就绪前渲染的代码块补上高亮
 // （以前用 computed 渲染会自动追踪高亮器，改成命令式渲染后要显式监听）
+watch(() => props.compactCitations, () => { if (started) render(false) })
 watch(highlighterVersion, () => { if (started) render(false) })
 onMounted(flush)
 onBeforeUnmount(clearTimers)

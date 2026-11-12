@@ -14,6 +14,7 @@ from easy_agent.api.skill_center import router as skill_center_router
 from easy_agent.api.connectors import router as connectors_router
 from easy_agent.api.scheduled_tasks import router as scheduled_tasks_router
 from easy_agent.api.expert import router as expert_router
+from easy_agent.api.usage import router as usage_router
 
 # Web Terminal 依赖 pty（POSIX 专用），Windows 不支持，故不加载该模块
 if platform.system() != "Windows":
@@ -32,6 +33,7 @@ __all__ = [
     "connectors_router",
     "scheduled_tasks_router",
     "expert_router",
+    "usage_router",
 ]
 
 if platform.system() != "Windows":

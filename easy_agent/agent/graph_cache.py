@@ -17,7 +17,8 @@
    真正调用时按 ``ToolRuntime.context`` 克隆出本次会话的工具实例；因此同一
    张图可以安全地服务多个会话。
 4. **无法安全共享时显式降级**：模型请求头里含 ``{session_id}``、或
-   checkpointer 仍是按 session 创建的 legacy ``PersistentMemorySaver`` 时，
+   checkpointer 是按 session 创建的进程内 ``MemorySaver``（``shared_checkpointer_active()``
+   为假）时，
    ``EasyAgent._create_agent`` 不写缓存、按会话建图，并在日志中给出原因
    （见 docs/archive/design/2026-10-18-d2-graph-reuse.md）。
 
@@ -57,7 +58,7 @@ from easy_agent.bootstrap.env import env_str
 logger = logging.getLogger("easy-agent.graph_cache")
 
 # 改动编译图结构/键语义时递增，旧进程内缓存自然失效。
-GRAPH_CACHE_VERSION = 1
+GRAPH_CACHE_VERSION = 2
 
 _DEFAULT_MAX_ENTRIES = 32
 _MAX_ENTRIES_ENV = "EASY_AGENT_GRAPH_CACHE_SIZE"
@@ -343,6 +344,7 @@ class GraphKey:
 def build_graph_key(
     *,
     model: Mapping[str, Any],
+    model_key: str,
     tools: Iterable[Any] | None,
     system_prompt: str,
     middleware: Iterable[Any] | None,
@@ -361,6 +363,7 @@ def build_graph_key(
     parts: dict[str, Any] = {
         "version": GRAPH_CACHE_VERSION,
         "model": dict(model),
+        "model_key": model_key,
         "tools": tools_fingerprint(tools),
         "system_prompt": system_prompt,
         "middleware": middleware_fingerprint(middleware),

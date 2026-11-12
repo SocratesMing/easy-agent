@@ -25,6 +25,8 @@ from easy_agent.db.providers import (
 from easy_agent.models.db import ScheduledTaskModel, ScheduledTaskRunModel, SessionModel
 from easy_agent.utils.deployment import detect_worker_count as _detect_worker_count
 from easy_agent.persistence.distributed_lock import get_distributed_lock
+from easy_agent.services.usage import resolve_usage_identity
+from easy_agent.utils.usage_context import usage_scope
 from easy_agent.utils.blocking import run_blocking
 from easy_agent.utils.task_logger import log_task_event
 from langchain_core.callbacks import BaseCallbackHandler
@@ -572,11 +574,13 @@ async def _invoke_task_agent(
 
     # 与聊天流同一套调用参数：共享编译图必须带 SessionContext，否则 backend 在
     # before_agent 读记忆时就抛「缺少运行期 SessionContext」，任务直接失败。
-    result = await execution.agent.agent.ainvoke(
-        {"messages": [HumanMessage(content=task.task_prompt)]},
-        config=build_run_config(execution.agent, execution.thread_id, callbacks=[handler]),
-        **run_context_kwargs(execution.agent),
-    )
+    identity = await resolve_usage_identity(task.username, execution.session_id)
+    with usage_scope(identity.user_id if identity else None, identity.session_id if identity else None):
+        result = await execution.agent.agent.ainvoke(
+            {"messages": [HumanMessage(content=task.task_prompt)]},
+            config=build_run_config(execution.agent, execution.thread_id, callbacks=[handler]),
+            **run_context_kwargs(execution.agent),
+        )
     _raise_if_waiting_for_approval(result)
     messages = result.get("messages", []) if isinstance(result, dict) else []
     execution.final_content = _extract_final_content(messages)

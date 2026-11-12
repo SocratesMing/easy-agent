@@ -964,7 +964,7 @@ export default {
 
       // 切换到进行中的会话：若本页尚未挂载其流式任务，懒挂载以继续接收事件
       // （刷新后恢复出的多个进行中会话，除当前展示外都走这里）
-      if (this.isSessionStreaming(sessionId) && this.attachedStreamingSessions[sessionId] !== 'displayed') {
+      if (this.needsLazyAttach(sessionId)) {
         this.attachToStreamingSession(sessionId, { switchTo: false, displayed: true })
         this.scrollTrigger++
         await this.refreshSessionFiles(sessionId)

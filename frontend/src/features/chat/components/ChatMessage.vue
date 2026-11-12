@@ -75,7 +75,7 @@
                   </svg>
                 </div>
                 <div v-if="isExpandedThinking(block.origIndex)" class="thinking-content">
-                  <MarkdownBody class="thinking-text" :content="block.content" :cite-map="citeNumberMap" />
+                  <MarkdownBody class="thinking-text" :content="block.content" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" />
                 </div>
               </div>
 
@@ -98,7 +98,7 @@
               />
 
               <!-- 中间穿插的正文（其后仍有思考/工具）放进处理过程内部按原序展示 -->
-              <MarkdownBody v-if="block.type === 'content'" class="message-text process-inline-content" :content="block.content" :cite-map="citeNumberMap" />
+              <MarkdownBody v-if="block.type === 'content'" class="message-text process-inline-content" :content="block.content" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" />
             </template>
           </div>
         </div>
@@ -136,7 +136,7 @@
             </span>
             <UserMessageText v-if="block.content" class="user-bubble-body" :content="block.content" />
           </div>
-          <MarkdownBody v-else-if="block.type === 'content'" class="message-text" :content="block.content" :cite-map="citeNumberMap" />
+          <MarkdownBody v-else-if="block.type === 'content'" class="message-text" :content="block.content" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" />
         </template>
       </template>
 
@@ -159,7 +159,7 @@
             </svg>
           </div>
           <div v-if="showThinking" class="thinking-content">
-            <MarkdownBody class="thinking-text" :content="message.thinking" :cite-map="citeNumberMap" />
+            <MarkdownBody class="thinking-text" :content="message.thinking" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" />
           </div>
         </div>
 
@@ -175,7 +175,7 @@
           />
         </div>
 
-        <MarkdownBody v-if="message.content" class="message-text" :content="message.content" :cite-map="citeNumberMap" />
+        <MarkdownBody v-if="message.content" class="message-text" :content="message.content" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" />
 
         <!-- 生成的文件按钮 -->
         <div v-if="message.role === 'assistant' && message.generated_files && message.generated_files.length > 0" class="generated-files-btn-container">
@@ -194,9 +194,9 @@
       <MessageError :error="message.error" />
       <MessageFallbackNote v-if="message.role === 'assistant'" :note="message.fallback_note" />
       <KnowledgeEvidence
-        v-if="message.role === 'assistant'"
+        v-if="message.role === 'assistant' && (citationPresentation !== 'popover' || (message.knowledge_warnings || []).length)"
         ref="knowledgeEvidence"
-        :evidence="message.knowledge_evidence || []"
+        :evidence="citationPresentation === 'popover' ? [] : (message.knowledge_evidence || [])"
         :warnings="message.knowledge_warnings || []"
         :content="citationSourceText"
       />
@@ -226,6 +226,7 @@ import { ref, computed, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
 import { ensureHighlighter } from '../composables/useMarkdownRenderer.js'
 import MarkdownBody from './MarkdownBody.vue'
 import UserMessageText from './UserMessageText.vue'
+import { relatedEvidence, inlineCitationMap } from '../../../shared/markdown/citations.js'
 import KnowledgeEvidence from '../../knowledge/KnowledgeEvidence.vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
@@ -241,6 +242,7 @@ import { parseLeadingSkillTokens } from '../../../utils/skillTokens.js'
 import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../../skills/store/skillDirectoryStore.js'
 
 const props = defineProps({
+  citationPresentation: { type: String, default: 'inline' },
   message: {
     type: Object,
     required: true
@@ -339,20 +341,8 @@ const citationSourceText = computed(() => {
 // 引用编号重排映射：按正文出现顺序把原始依据编号映射为 1..N 连续编号，
 // 与 KnowledgeEvidence 的展示编号规则保持一致（仅重排有效引用编号）
 const citeNumberMap = computed(() => {
-  const evidenceCount = (props.message.knowledge_evidence || []).length
-  if (!evidenceCount) return {}
-  const pattern = /\[知识(?:库)?依据\s*(\d+)\]/g
-  const seen = []
-  let match
-  while ((match = pattern.exec(citationSourceText.value || '')) !== null) {
-    const value = Number(match[1])
-    if (value > 0 && value <= evidenceCount && seen.indexOf(value) === -1) {
-      seen.push(value)
-    }
-  }
-  const map = {}
-  seen.forEach((value, i) => { map[value] = i + 1 })
-  return map
+  if (props.citationPresentation === 'popover') return relatedEvidence(props.message).numberMap
+  return inlineCitationMap(citationSourceText.value, (props.message.knowledge_evidence || []).length)
 })
 
 // 正文里的 [知识依据N] 锚点：事件委托展开证据面板并定位到对应卡片
@@ -360,9 +350,12 @@ const knowledgeEvidence = ref(null)
 function handleContentClick(event) {
   const target = event.target
   if (!target || typeof target.closest !== 'function') return
-  const link = target.closest('a.ke-cite')
+  const link = target.closest('.ke-cite')
   if (!link) return
   event.preventDefault()
+  if (props.citationPresentation === 'popover') {
+    return
+  }
   const evidence = knowledgeEvidence.value
   if (evidence && typeof evidence.jumpTo === 'function') {
     evidence.jumpTo(Number(link.dataset.cite) || 0)
@@ -2518,3 +2511,5 @@ html[data-theme="dark"] .tool-status-text.executing {
 }
 
 </style>
+
+<style scoped src="./citationNumbers.css"></style>

@@ -19,7 +19,7 @@ const CLOSE = '\uE001'
 export const MARKER_PREFIX = OPEN + 'EA'
 
 // inline tokenizer 会在每个字符位置调用一次，正则必须复用
-const MARKER_RE = new RegExp('^' + OPEN + 'EA(SRC|CITE):([^' + CLOSE + ']*)' + CLOSE)
+const MARKER_RE = new RegExp('^' + OPEN + 'EA(SRC|CITE|CNUM):([^' + CLOSE + ']*)' + CLOSE)
 
 /** 一行或多行连续来源卡片的标记 */
 export function sourceCardMarker(cards) {
@@ -27,14 +27,14 @@ export function sourceCardMarker(cards) {
 }
 
 /** 知识依据锚点的标记 */
-export function citationMarker(display) {
-  return MARKER_PREFIX + 'CITE:' + encodeURIComponent(String(display)) + CLOSE
+export function citationMarker(display, compact = false) {
+  return MARKER_PREFIX + (compact ? 'CNUM:' : 'CITE:') + encodeURIComponent(String(display)) + CLOSE
 }
 
 /**
  * 解析 inline tokenizer 当前位置上的标记。
  * @param {string} src 从当前位置开始的剩余文本
- * @returns {{type:'src'|'cite', raw:string, cards?:Array, display?:string}|null}
+ * @returns {{type:'src'|'cite', raw:string, cards?:Array, display?:string, compact?:boolean}|null}
  */
 export function parseMarker(src) {
   const m = MARKER_RE.exec(src)
@@ -44,7 +44,7 @@ export function parseMarker(src) {
       const cards = JSON.parse(decodeURIComponent(m[2]))
       return Array.isArray(cards) ? { type: 'src', raw: m[0], cards } : null
     }
-    return { type: 'cite', raw: m[0], display: decodeURIComponent(m[2]) }
+    return { type: 'cite', raw: m[0], display: decodeURIComponent(m[2]), compact: m[1] === 'CNUM' }
   } catch (e) {
     return null
   }

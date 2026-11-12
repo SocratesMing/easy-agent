@@ -369,6 +369,56 @@ async def test_duplicate_requests_share_work_and_survive_disconnected_waiter(tmp
     assert len(calls) == 1
 
 
+async def test_duplicate_requests_share_identity_lookup_before_model_work(monkeypatch):
+    from easy_agent.utils.usage_context import UsageIdentity
+
+    identity_started, release_identity = asyncio.Event(), asyncio.Event()
+    second_lookup, execution_started, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    identity_calls, executions, lookups = [], [], []
+
+    async def identity(username, session_id):
+        identity_calls.append((username, session_id))
+        identity_started.set()
+        await release_identity.wait()
+        return UsageIdentity("real-id", session_id)
+
+    async def no_records(session_id):
+        lookups.append(session_id)
+        if len(lookups) == 2:
+            second_lookup.set()
+        return []
+
+    async def execute(*args):
+        executions.append(args)
+        execution_started.set()
+        await finish.wait()
+        return {"status": "compacted"}
+
+    monkeypatch.setattr(compaction, "resolve_usage_identity", identity)
+    monkeypatch.setattr(compaction, "records", no_records)
+    monkeypatch.setattr(compaction, "_execute", execute)
+    first = asyncio.create_task(compaction.compact(repo(history()), "s1", "tester", "small", "identity-wait"))
+    second = None
+    try:
+        await asyncio.wait_for(identity_started.wait(), 5)
+        second = asyncio.create_task(compaction.compact(repo(history()), "s1", "tester", "small", "identity-wait"))
+        await asyncio.wait_for(second_lookup.wait(), 5)
+        assert identity_calls == [("tester", "s1")]
+        release_identity.set()
+        await asyncio.wait_for(execution_started.wait(), 5)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        finish.set()
+        assert (await asyncio.wait_for(second, 5))["status"] == "compacted"
+        assert len(executions) == 1
+        assert executions[0][-1] == UsageIdentity("real-id", "s1")
+    finally:
+        release_identity.set()
+        finish.set()
+        await asyncio.gather(first, *([second] if second else []), return_exceptions=True)
+
+
 @pytest.mark.parametrize('failure', ['media', 'sentinel', 'write'])
 async def test_prepare_or_write_failures_leave_checkpoint_unchanged(tmp_path, monkeypatch, failure):
     from deepagents.middleware.summarization import SummarizationMiddleware
@@ -410,8 +460,7 @@ async def test_committed_result_recovers_after_read_failure(tmp_path, monkeypatc
                 raise OSError('read interrupted after save')
             return await original(*args, **kwargs)
         monkeypatch.setattr(a.agent, 'aget_state', fail_post_write)
-        monkeypatch.setattr(compaction, 'sqlite_checkpointer_active', lambda: True)
-        monkeypatch.setattr(compaction, 'detect_worker_count', lambda: 1)
+        monkeypatch.setattr(compaction, 'shared_checkpointer_active', lambda: True)
         monkeypatch.setattr(compaction, 'get_session_checkpointer', lambda sid: saver)
         rows = history()
         rt = runtime(tmp_path)
