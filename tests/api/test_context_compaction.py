@@ -76,6 +76,44 @@ def test_api_rejects_busy_approval_empty_invalid_and_unsupported(client, db, set
     assert client.post(url, json=body).status_code == 409
 
 
+@pytest.mark.parametrize("package,installed", [("deepagents", "0.7.29"), ("langgraph", "1.2.17")])
+def test_unsupported_framework_rejected_before_agent_or_archive_work(
+    client, setup_compaction, monkeypatch, package, installed,
+):
+    from easy_agent.agent import manual_compaction
+
+    sid, agents, _ = setup_compaction
+    real_version = manual_compaction.version
+    monkeypatch.setattr(manual_compaction, "version", lambda name: installed if name == package else real_version(name))
+    url = f"/agent/sessions/{sid}/context"
+    status = client.get(url)
+    assert status.status_code == 200
+    assert status.json()["supported"] is False
+    assert package in status.json()["reason"] and installed in status.json()["reason"]
+    result = client.post(url + "/compact", json={"model": "small", "request_id": "unsupported-version"})
+    assert result.status_code == 409
+    assert result.json()["detail"] == status.json()["reason"]
+    assert agents == {}  # 拒绝发生在建图、模型和 backend/归档之前。
+    assert client.get(url).json()["compactions"] == []
+
+
+def test_committed_result_still_recovers_when_framework_becomes_unsupported(client, setup_compaction, monkeypatch):
+    from easy_agent.agent import manual_compaction
+
+    sid, agents, _ = setup_compaction
+    url = f"/agent/sessions/{sid}/context"
+    body = {"model": "small", "request_id": "saved-before-upgrade"}
+    result = client.post(url + "/compact", json=body)
+    assert result.status_code == 200
+    monkeypatch.setattr(manual_compaction, "version", lambda name: "unsupported")
+    status = client.get(url).json()
+    assert not status["supported"]
+    assert status["compactions"] == [result.json()["compaction"]]
+    retry = client.post(url + "/compact", json=body)
+    assert retry.status_code == 200 and retry.json() == result.json()
+    assert len(agents[sid].model.inputs) == 1
+
+
 @pytest.mark.parametrize("double_summary", [False, True])
 def test_summary_usage_survives_commit_failure_and_only_new_calls_bill(client, db, setup_compaction, monkeypatch, double_summary):
     from easy_agent.agent.token_usage import TokenUsageCallback, complete_usage_snapshot

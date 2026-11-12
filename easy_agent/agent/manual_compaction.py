@@ -1,6 +1,6 @@
 """DeepAgents 0.7.28 手动摘要适配层。私有接口仅在此使用，不调用主模型 handler。"""
 
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 
 from deepagents.middleware.summarization import SummarizationMiddleware
 from langchain_core.messages import HumanMessage, SystemMessage, get_buffer_string, trim_messages
@@ -8,6 +8,34 @@ from langchain_core.messages import HumanMessage, SystemMessage, get_buffer_stri
 from easy_agent.agent.model import resolve_context_length
 from easy_agent.agent.summarization import summarization_settings
 from easy_agent.agent.token_counting import count_context_tokens
+
+
+VERIFIED_VERSIONS = {"deepagents": "0.7.28", "langgraph": "1.2.16"}
+_REQUIRED_METHODS = (
+    "_apply_event_to_messages", "_determine_cutoff_index", "_partition_messages",
+    "_aoffload_inline_media", "_acreate_summary", "_get_session_id",
+    "_aoffload_to_backend", "_build_new_messages_with_path", "_compute_state_cutoff",
+)
+
+
+def compatibility_reason() -> str | None:
+    """状态查询和执行共用的能力探测；私有协议只接受真实图验证过的版本。"""
+    for package, expected in VERIFIED_VERSIONS.items():
+        try:
+            installed = version(package)
+        except PackageNotFoundError:
+            return f"当前环境不支持手动压缩：缺少 {package} 版本信息（需要 {expected}）"
+        if installed != expected:
+            return f"当前环境不支持手动压缩：{package} {installed} 尚未验证（需要 {expected}）"
+    missing = [name for name in _REQUIRED_METHODS if not callable(getattr(SummarizationMiddleware, name, None))]
+    if missing:
+        return "当前环境不支持手动压缩：摘要适配接口不可用（" + ", ".join(missing) + "）"
+    return None
+
+
+def _require_compatible() -> None:
+    if reason := compatibility_reason():
+        raise RuntimeError(reason)
 
 
 def _bounded_tool_history(messages: list, budget: int) -> list:
@@ -27,6 +55,7 @@ def _bounded_tool_history(messages: list, budget: int) -> list:
 
 
 def _context_view(agent, messages: list, values: dict, *, backend=None):
+    _require_compatible()
     settings = summarization_settings(agent.config, agent.model_name, manual=True)
     middleware = SummarizationMiddleware(
         agent.model, backend=backend if backend is not None else agent._build_backend([]), token_counter=count_context_tokens,
@@ -54,8 +83,7 @@ def estimate_context(agent, messages: list, values: dict) -> dict:
 
 
 async def prepare_compaction(agent, messages: list, values: dict) -> dict | None:
-    if version("deepagents") != "0.7.28" or version("langgraph") != "1.2.16":
-        raise RuntimeError("手动压缩适配层尚未验证当前框架版本")
+    _require_compatible()
     backend = agent._build_backend([])
     settings, middleware, effective = _context_view(agent, messages, values, backend=backend)
     previous = values.get("_summarization_event")
