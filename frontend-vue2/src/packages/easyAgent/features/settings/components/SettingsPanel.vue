@@ -116,7 +116,6 @@
           >
             <div class="panel-header">
               <h3>版本信息</h3>
-              <p class="panel-desc">当前部署代码的来源分支与提交（来自部署目录的 version.json）</p>
             </div>
             <div v-if="loading" class="loading-state"><div class="spinner"></div></div>
             <dl v-else class="version-list">
@@ -229,17 +228,10 @@ export default {
     versionRows() {
       const v = this.versionInfo || {}
       const rows = [
+        { key: 'name', label: '名称', value: v.name },
         { key: 'version', label: '版本号', value: v.version },
-        { key: 'branch', label: '分支', value: v.branch },
-        { key: 'commit', label: 'Commit', value: v.commit },
-        { key: 'commit_time', label: '提交时间', value: v.commit_time },
-        { key: 'commit_author', label: '提交人', value: v.commit_author },
-        { key: 'commit_subject', label: '提交说明', value: v.commit_subject },
-        { key: 'tag', label: 'Tag', value: v.tag },
-        { key: 'dirty', label: '含未提交改动', value: v.dirty === undefined ? '' : (v.dirty ? '是' : '否') },
-        { key: 'generated_at', label: '生成时间', value: v.generated_at },
       ]
-      return rows.filter(r => r.value !== undefined && r.value !== null && r.value !== '')
+      return rows.filter(r => r.value)
     },
   },
   watch: {

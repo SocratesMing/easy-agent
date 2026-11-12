@@ -24,7 +24,7 @@ from easy_agent.utils.version_info import write_version_file  # noqa: E402
 # 需要打包的顶层路径（相对 ROOT），支持文件或目录；
 # 目录会自动递归收集；文件/目录路径不能重复。
 INCLUDE_PATHS = [
-    # 来源版本（分支 / commit），main() 打包前重新生成
+    # 部署版本号（末尾为 commit id 后 6 位），main() 打包前重新生成
     "version.json",
     # 后端源码 + 入口
     "main.py",
@@ -145,7 +145,7 @@ def main() -> int:
     zip_name = f"easy-agent-{tag or sha}.zip" if tag else f"easy-agent-{sha}.zip"
     zip_path = OUTPUT_DIR / zip_name
 
-    version_info = write_version_file(source="publish_zip")
+    version_info = write_version_file()
     if version_info is None:
         print("  [warn] 无法读取 git 信息，version.json 未更新")
 
@@ -165,8 +165,7 @@ def main() -> int:
         "name": zip_name,
         "git_sha": sha,
         "git_tag": tag,
-        "git_branch": (version_info or {}).get("branch", ""),
-        "git_commit": (version_info or {}).get("commit", ""),
+        "version": (version_info or {}).get("version", ""),
         "built_at": ts,
         "files": len(files),
         "size_mb": round(size_mb, 2),

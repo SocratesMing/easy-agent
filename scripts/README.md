@@ -16,10 +16,10 @@ python scripts/skills/sync_skills.py --check
 | `quality/` | CI 质量门禁 / 架构检查 / 配置校验 | `check_config_schema.py`、`check_env_usage.py`、`check_multi_replica.py`、`check_double_write.py`、`check_async_blocking.py`（async 里的同步数据库调用，基线只减不增）、`import_graph.py` |
 | `db/` | 数据库迁移与一次性数据修复 | `migrate_db.py`、`migrate_sqlite_to_mysql.py`、`prune_checkpoint_threads.py`（清理官方 checkpoint saver 里存量的每消息 / 定时任务 thread，默认只预览） |
 | `deps/` | 离线依赖下载/落盘 | `download_backend_deps.py`、`download_backend_whls.py`、`download_frontend_deps.py`、`place_whls_to_repo.py` |
-| `release/` | 发布前检查 / 变更导出 / 版本信息 | `release_preflight.py`、`export_changes.py`、`publish_zip.py`、`write_version.py`（生成根目录 `version.json`：分支、commit 等，git hook 与打包时调用） |
+| `release/` | 发布前检查 / 变更导出 / 版本信息 | `release_preflight.py`、`export_changes.py`、`publish_zip.py`、`write_version.py`（生成根目录 `version.json`：版本号末尾拼 commit id 后 6 位，git hook 与打包时调用） |
 | `docs/` | 文档生成 | `generate_api_docs.py` |
 | `skills/` | 技能单一源同步 / 公共技能迁移 | `sync_skills.py`、`migrate_builtin_skills.py`（把 S2 之前复制进用户目录、与公共版本一致的技能副本迁到公共技能清单，默认只预览） |
-| `dev/` | 本地开发辅助 | `set-agent-env.sh`、`start.dev.keychain.sh`、`memory_guard.sh`、`install_git_hooks.sh`（启用 `.githooks/`，每个 clone 执行一次） |
+| `dev/` | 本地开发辅助 | `set-agent-env.sh`、`start.dev.keychain.sh`、`memory_guard.sh`、`install_git_hooks.py`（启用 `.githooks/`，Linux / Windows 通用，每个 clone 执行一次） |
 
 > `quality/` 内的白名单 JSON 与检查脚本同目录，脚本用 `Path(__file__).with_name(...)`
 > 定位，移动目录时无需改配置路径。
