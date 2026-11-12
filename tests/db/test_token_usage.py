@@ -4,6 +4,7 @@ import sqlite3
 import os
 import uuid
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -253,7 +254,9 @@ def mysql_usage_db(monkeypatch):
     try:
         with admin.cursor() as cursor:
             cursor.execute(f"CREATE DATABASE `{name}` CHARACTER SET utf8mb4")
-        db = Database({"type": "mysql", "mysql": {**settings, "database": name}})
+        db = Database({"type": "mysql", "mysql": {
+            **settings, "database": name, "pool": {"pool_size": 2, "max_overflow": 0},
+        }})
         assert db.db_type == "mysql", "MySQL test must never silently fall back to SQLite"
         db.init_tables()
         original_get = db._get_mysql_connection
@@ -344,3 +347,91 @@ def test_failed_read_rolls_back_snapshot_and_allows_next_query(db, monkeypatch):
     assert not db._connection.in_transaction
     monkeypatch.setattr(db, "_execute", execute)
     assert repo.query("alice-id", 7, AS_OF)["summary"]["today"] == 12
+
+
+def test_real_mysql_small_pool_returns_connections_across_repositories(mysql_usage_db):
+    """T5：显式归还使用户/会话/统计调用在小池内反复及并发复用。"""
+    import pymysql
+
+    from easy_agent.db.repositories.user_repository import UserRepository
+
+    db = mysql_usage_db
+    # A leak must fail promptly rather than block the test indefinitely.
+    db._pool._blocking = False
+    users = UserRepository(db)
+    sessions = SessionRepository(db)
+    repo = TokenUsageRepository(db)
+    owner = db.register_user("pool-owner", "password")
+    sessions.create_session(SessionModel(session_id="pool-session", title="Pool lifecycle", username=owner.username))
+
+    def exercise(index):
+        assert users.get_user_by_username(owner.username).user_id == owner.user_id
+        assert sessions.get_session("pool-session").username == owner.username
+        record(repo, f"pool-{index}", user=owner.user_id)
+        assert repo.query(owner.user_id, 7, AS_OF)["summary"]["all_time"] >= 12
+        with pytest.raises(pymysql.err.ProgrammingError):
+            with db.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT * FROM missing_lifecycle_table")
+
+    for index in range(12):
+        exercise(index)
+        assert db._pool._connections == 0
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(exercise, range(12, 36)))
+    assert db._pool._connections == 0
+    assert repo.query(owner.user_id, 7, AS_OF)["summary"]["all_time"] == 36 * 12
+    assert db._pool._connections == 0
+
+
+def test_real_mysql_return_preserves_snapshot_and_next_borrow_isolation(mysql_usage_db, monkeypatch):
+    """T5：归还契约下，统计仍共享快照，且失败事务不会污染下一借用者。"""
+    import pymysql
+
+    db = mysql_usage_db
+    db._pool._blocking = False
+    repo = TokenUsageRepository(db)
+    record(repo, "old")
+    execute = db._execute
+    selected_cursors = []
+    inserted = False
+
+    def interleave(cursor, sql, params=None):
+        nonlocal inserted
+        if "FROM token_usage" in sql:
+            selected_cursors.append(cursor)
+        if "GROUP BY usage_date" in sql and not inserted:
+            inserted = True
+            record(repo, "between-queries", input=20, output=3)
+        return execute(cursor, sql, params)
+
+    monkeypatch.setattr(db, "_execute", interleave)
+    first = repo.query("alice-id", 7, AS_OF)
+    assert first["summary"]["today"] == sum(first["daily"]["totals"]) == 12
+    assert len(selected_cursors) == 2 and selected_cursors[0] is selected_cursors[1]
+    assert repo.query("alice-id", 7, AS_OF)["summary"]["today"] == 35
+    assert db._pool._connections == 0
+
+    def fail_query(cursor, sql, params=None):
+        if "GROUP BY usage_date" in sql:
+            raise pymysql.err.OperationalError(2013, "injected query failure")
+        return execute(cursor, sql, params)
+
+    monkeypatch.setattr(db, "_execute", fail_query)
+    with pytest.raises(pymysql.err.OperationalError):
+        repo.query("alice-id", 7, AS_OF)
+    assert db._pool._connections == 0
+    monkeypatch.setattr(db, "_execute", execute)
+    assert repo.query("alice-id", 7, AS_OF)["summary"]["today"] == 35
+    # Bypass fixture's per-borrow SET SESSION to detect leaked isolation changes.
+    with db._pool.connection() as first, db._pool.connection() as second:
+        for conn in (first, second):
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT @@transaction_isolation AS isolation_level")
+                assert cursor.fetchone()["isolation_level"] == "READ-COMMITTED"
+                cursor.execute(
+                    "SELECT ENGINE FROM information_schema.TABLES "
+                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='token_usage'"
+                )
+                assert cursor.fetchone()["ENGINE"] == "InnoDB"
+    assert db._pool._connections == 0

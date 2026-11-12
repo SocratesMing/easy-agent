@@ -5,6 +5,7 @@ T4 之后准备逻辑在 ``services/agents/chat_turn.py``（路由只剩「参�
 上下文，以及 ``prepare_turn`` 的专家拒答 / 并发 409 / 待修改专家越权三种关键场景。
 """
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -344,6 +345,61 @@ async def test_expert_precheck_uses_verified_real_user_id(db, monkeypatch):
         assert get_usage_identity() == UsageIdentity("unrelated-parent")
     assert isinstance(plan, chat_turn.RefusalPlan)
     assert observed == [UsageIdentity(user.user_id, plan.session_id)]
+
+
+@pytest.mark.parametrize("lookup_failure", [False, True])
+async def test_chat_reuses_precheck_identity_through_knowledge_stream(db, monkeypatch, lookup_failure):
+    from easy_agent.knowledges.chat import streaming as knowledge_streaming
+    from easy_agent.services import usage
+    from easy_agent.services.streaming import orchestrator
+    from easy_agent.utils.usage_context import UsageIdentity, get_usage_identity, usage_scope
+    from tests.services.test_stream_split_golden import FakeGraph, _agent
+
+    user = db.register_user("usage-alice", "password")
+    captured, lookups, observed = {}, [], []
+    _patch_collaborators(monkeypatch, captured)
+
+    def lookup(username):
+        lookups.append(username)
+        if lookup_failure:
+            raise RuntimeError("lookup failed")
+        return user
+
+    async def gate(*args, **kwargs):
+        observed.append(get_usage_identity())
+        return None
+
+    async def stop_before_model(func, *args, **kwargs):
+        observed.append(get_usage_identity())
+        raise RuntimeError("stop preparation before model")
+
+    async def create(*args, **kwargs):
+        return _agent(FakeGraph([]))
+
+    monkeypatch.setattr(usage, "get_user_repository", lambda: SimpleNamespace(get_user_by_username=lookup))
+    monkeypatch.setattr(expert_runtime, "relevance_gate", gate)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", create)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", knowledge_streaming.chat_stream_generator)
+    monkeypatch.setattr(knowledge_streaming, "get_host_capabilities", lambda: SimpleNamespace(
+        host_chat_stream_generator=orchestrator.chat_stream_generator,
+    ))
+
+    with usage_scope("unrelated-parent"):
+        plan = await chat_turn.prepare_turn(
+            request=_turn_request(), http_request=_http_request(),
+            repo=ChatRepository(db), username=user.username,
+        )
+        # 真正迭代时执行另外一次数据库边界；准备阶段仍使用真实 DB。
+        monkeypatch.setattr(orchestrator, "run_blocking", stop_before_model)
+        monkeypatch.setattr(orchestrator, "resolve_chat_context", lambda agent: (None, None, 200))
+        frames = [frame async for frame in plan.event_stream]
+        assert get_usage_identity() == UsageIdentity("unrelated-parent")
+    expected = None if lookup_failure else UsageIdentity(user.user_id, plan.session_id)
+    assert observed == [expected, expected]
+    assert lookups == [user.username]
+    assert [json.loads(frame.removeprefix("data: "))["type"] for frame in frames] == [
+        "start", "error",
+    ]
 
 
 async def test_prepare_turn_rejects_concurrent_stream_before_persisting(db, monkeypatch):

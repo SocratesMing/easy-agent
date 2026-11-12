@@ -558,7 +558,7 @@ async def prepare_turn(
             f"会话暂存={cached_turn_skills}"
         )
 
-    with usage_scope(identity.user_id if identity else None, identity.session_id if identity else None):
+    with usage_scope(identity):
         gate = await expert_runtime.relevance_gate(
             expert_repo,
             session_id,
@@ -742,6 +742,7 @@ async def prepare_turn(
         parsed_content=parsed_content,
         session_logger=session_logger,
         pinned_skills=turn.pinned,
+        usage_identity=identity,
         context_prefix=knowledge_chat.context,
         initial_events=knowledge_chat.initial_events,
         assistant_metadata=knowledge_chat.assistant_metadata,

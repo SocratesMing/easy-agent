@@ -225,14 +225,31 @@ class Database:
 
     @contextmanager
     def get_connection(self):
+        """事务内借用连接；MySQL 必须归还池，SQLite 保留共享连接。
+
+        连接和 cursor 不得逃出上下文。清理失败记录 traceback；已有事务异常
+        时保留原异常，成功提交后的 close 失败则直接向调用方报告。
+        """
         if self.db_type == "mysql":
             conn = self._get_connection()
+            failed = False
             try:
                 yield conn
                 conn.commit()
-            except Exception:
-                conn.rollback()
+            except BaseException:
+                failed = True
+                try:
+                    conn.rollback()
+                except Exception:
+                    logger.exception("MySQL rollback failed; preserving transaction error")
                 raise
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    logger.exception("MySQL connection return failed")
+                    if not failed:
+                        raise
             return
         # SQLite：单连接多线程共享，整段访问（含 commit/rollback）持锁串行化
         with self._sqlite_lock:

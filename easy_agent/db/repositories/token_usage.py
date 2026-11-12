@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from contextlib import contextmanager
 from datetime import datetime, time as day_time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -13,17 +12,6 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 class TokenUsageRepository:
     def __init__(self, db):
         self._db = db
-
-    @contextmanager
-    def _connection(self):
-        # Database.get_connection 负责 commit/rollback；MySQL close 将连接归还池。
-        conn = None
-        try:
-            with self._db.get_connection() as conn:
-                yield conn
-        finally:
-            if conn is not None and self._db.db_type == "mysql":
-                conn.close()
 
     def record_usage(
         self,
@@ -58,7 +46,7 @@ class TokenUsageRepository:
             if self._db.db_type == "sqlite"
             else "ON DUPLICATE KEY UPDATE event_id=event_id"
         )
-        with self._connection() as conn:
+        with self._db.get_connection() as conn:
             cursor = conn.cursor()
             try:
                 self._db._execute(
@@ -100,7 +88,7 @@ class TokenUsageRepository:
             )
 
         dates = [(today - timedelta(days=offset)).isoformat() for offset in reversed(range(days))]
-        with self._connection() as conn:
+        with self._db.get_connection() as conn:
             cursor = conn.cursor()
             try:
                 if self._db.db_type == "sqlite":

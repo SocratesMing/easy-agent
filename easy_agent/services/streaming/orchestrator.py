@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import aclosing
 from dataclasses import dataclass
 from typing import AsyncGenerator
 
@@ -30,7 +31,7 @@ from easy_agent.agent.run_config import build_run_config
 from easy_agent.agent.turn_context import turn_input
 from easy_agent.models.api import ChatRequest
 from easy_agent.services.usage import resolve_usage_identity
-from easy_agent.utils.usage_context import usage_scope
+from easy_agent.utils.usage_context import UsageIdentity, usage_scope
 from easy_agent.utils.blocking import run_blocking
 from easy_agent.utils.session_logger import SessionLogger
 from easy_agent.services.agents.manager import get_agent_config
@@ -1018,6 +1019,13 @@ async def _run_stream(run: StreamRun, stream_input) -> AsyncGenerator[str, None]
             yield frame
 
 
+class _UnresolvedUsageIdentity:
+    """Omitted identity: independent callers resolve at iteration time."""
+
+
+_UNRESOLVED_USAGE_IDENTITY = _UnresolvedUsageIdentity()
+
+
 async def chat_stream_generator(
     request: ChatRequest,
     db: Database,
@@ -1029,149 +1037,175 @@ async def chat_stream_generator(
     parsed_content: str | None = None,
     session_logger=None,
     pinned_skills: list[str] | None = None,
+    *,
+    usage_identity: UsageIdentity | None | _UnresolvedUsageIdentity = _UNRESOLVED_USAGE_IDENTITY,
 ) -> AsyncGenerator[str, None]:
-    identity = await resolve_usage_identity(username, session_id)
-    with usage_scope(identity.user_id if identity else None, identity.session_id if identity else None):
-        start_time = time.time()
-        sid = session_id[-5:] if session_id else "new"
-        emitter = SSEEmitter(session_id)
-
-        message_content = parsed_content or request.message
-        # 保存原始用户输入（记忆/工作区前缀注入前），供日志明确打印用户实际提问。
-        raw_user_input = message_content
-
-        if agent and agent.workspace_dir:
-            message_content = f"[workspace: {agent.workspace_virtual_path}/ | shell: cd {agent.workspace_virtual_path}]\n{message_content}"
-
-        # 记忆统一由 create_deep_agent(memory=[...]) 经 MemoryMiddleware 注入 system prompt：
-        #   - 会话记忆 /workspace/memory.md
-        #   - 长期记忆 /memories/AGENTS.md（见 _build_backend 的 /memories/ 路由）
-        # 此处**不再**把记忆拼进用户消息——否则同一份内容会同时出现在 system prompt
-        # 与用户消息中，多占一份上下文。记忆更新后由 remove_session_agent 使缓存失效，
-        # 下次重建 Agent 时会加载到最新内容。
-
-        ws_info = (
-            str(agent.workspace_dir.absolute())
-            if agent and agent.workspace_dir
-            else "unknown"
-        )
-        logger.info(
-            f"[{sid}] 开始流式响应 | workspace: {ws_info} | 用户: {username}"
-        )
-        logger.info(
-            f"[{sid}] 💬 用户输入 | {raw_user_input[:200]}{'...' if len(raw_user_input) > 200 else ''}"
-        )
-
-        context_length = None
-        auto_compress_tokens = None
-        result_log_truncate = 200
-        try:
-
-            yield emitter.start()
-
-            # ── 配置 ─────────────────────────────────────────────────
-            context_length, auto_compress_tokens, result_log_truncate = (
-                resolve_chat_context(agent)
-            )
-
-            # ── StreamProcessor（混合流式：updates 权威 + messages token 流式）──
-            proc = StreamProcessor(
-                sid=sid, session_id=session_id, db=db, message_id=message_id,
-                session_logger=session_logger,
-                context_length=context_length,
-                auto_compress_tokens=auto_compress_tokens,
-                start_time=start_time,
-            )
-
-            persister = IncrementalPersister(
-                db=db,
-                session_id=session_id,
-                sid=sid,
-                start_time=start_time,
-            )
-
-            # ── 构建上下文消息 ─────────────────────────────────────────────
-            # session.messages 末尾是本次刚写入 DB 的当前用户消息（chat.py 在调用
-            # 本生成器前已 add_message），需排除以免与下方 message_content 重复注入。
-            # 超长时由官方 SummarizationMiddleware 在模型调用前按 token 阈值自动摘要。
-            session = await run_blocking(db.get_session, session_id)
-            total_msgs = len(session.messages) if session and session.messages else 0
-            history_messages = (
-                session.messages[:-1] if session and session.messages else []
-            )
-            provider = agent.config.llm.provider.lower() if agent and agent.config else ""
-            # DA-03：thread 里的本轮消息只存用户原话（与 DB 一致）；工作区前缀、知识库 /
-            # 页面上下文、上传预览等本轮注入（message_content）走 turn_context，只进本轮
-            # 模型请求，见 agent/turn_context.py。开关 agent.session_thread 打开时一个会话
-            # 一个 thread，只输入本轮消息（及需要补齐的内容），见 services/sessions/thread.py。
-            plan = await plan_turn(
-                agent,
-                session_id=session_id,
-                turn_id=message_id,
-                history=history_messages,
-                raw=turn_message_text(request.message, request.files, request.skills),
-                provider=provider,
-            )
-            context_messages = plan.messages
-            logger.info(
-                f"[{sid}] 📚 上下文消息构建 | DB 消息数: {total_msgs} | thread: {plan.mode} | "
-                f"输入消息: {len(context_messages)} | 补齐 DB 行: {plan.caught_up_rows} | "
-                f"补回半截回复: {plan.restored_tail} | 压缩: 官方 SummarizationMiddleware"
-            )
-            if plan.checkpoint_id:
-                await run_blocking(
-                    record_turn_checkpoint, db, session_id, message_id, plan.checkpoint_id, sid
-                )
-
-            # ── 启动流式输出 (stream_mode=['messages', 'updates']) ─────────
-            logger.info(f"[{sid}] 🚀 使用 stream_mode=['messages', 'updates'] 流式接口")
-
-            # 审批句柄始终是 {session_id}-{message_id}（前端据此还原 message_id）；
-            # 每消息模式下它就是 thread_id，会话 thread 模式下 thread_id = session_id。
-            thread_id = plan.thread_id
-            handle = approval_handle(session_id, message_id)
-            stream_config = build_run_config(agent, thread_id)
-
-            run = StreamRun(
-                agent=agent,
-                db=db,
-                session_id=session_id,
-                sid=sid,
-                message_id=message_id,
-                emitter=emitter,
-                proc=proc,
-                persister=persister,
-                stream_config=stream_config,
-                start_time=start_time,
-                context_length=context_length,
-                auto_compress_tokens=auto_compress_tokens,
-                thread_id=thread_id,
-                handle=handle,
-                raw_user_msg=parsed_content or request.message,
-                message_content=message_content,
-                session_logger=session_logger,
-                result_log_truncate=result_log_truncate,
-            )
-            # 主循环、收尾与兜底统一在 _run_stream（与 resume 共用）；这里只构造本轮输入。
-            async for frame in _run_stream(
-                run,
-                turn_input(
-                    context_messages,
-                    message_id=message_id,
-                    rendered=message_content,
-                    pinned_skills=pinned_skills,
-                ),
-            ):
+    """消费时绑定服务端身份；省略时解析，显式 ``None`` 禁用采集。"""
+    identity = usage_identity
+    if identity is _UNRESOLVED_USAGE_IDENTITY:
+        identity = await resolve_usage_identity(username, session_id)
+    with usage_scope(identity):
+        async with aclosing(_chat_stream_impl(
+            request, db, agent, session_id, message_id, username,
+            http_request, parsed_content, session_logger, pinned_skills,
+        )) as stream:
+            async for frame in stream:
                 yield frame
-        except asyncio.CancelledError:
-            # 取消发生在准备阶段（主循环内的取消由 _run_stream 兜底）：还没有产出任何
-            # token，不写空 assistant 消息，取消继续向上传播（/cancel 语义不变）。
-            logger.info(f"[{sid}] ❌ 准备阶段被取消（未产生回复）")
-            raise
-        except Exception as e:
-            # 准备阶段异常（查库 / 上下文构建）：还没产出任何 token，按统一文案补终态帧。
-            logger.error(f"[{sid}] ❌ 聊天准备异常: {str(e)}", exc_info=True)
-            yield emitter.error(f"处理失败: {friendly_error_message(e)}")
+
+
+async def _chat_stream_impl(
+    request: ChatRequest,
+    db: Database,
+    agent: EasyAgent,
+    session_id: str,
+    message_id: str,
+    username: str,
+    http_request=None,
+    parsed_content: str | None = None,
+    session_logger=None,
+    pinned_skills: list[str] | None = None,
+) -> AsyncGenerator[str, None]:
+    start_time = time.time()
+    sid = session_id[-5:] if session_id else "new"
+    emitter = SSEEmitter(session_id)
+
+    message_content = parsed_content or request.message
+    # 保存原始用户输入（记忆/工作区前缀注入前），供日志明确打印用户实际提问。
+    raw_user_input = message_content
+
+    if agent and agent.workspace_dir:
+        message_content = f"[workspace: {agent.workspace_virtual_path}/ | shell: cd {agent.workspace_virtual_path}]\n{message_content}"
+
+    # 记忆统一由 create_deep_agent(memory=[...]) 经 MemoryMiddleware 注入 system prompt：
+    #   - 会话记忆 /workspace/memory.md
+    #   - 长期记忆 /memories/AGENTS.md（见 _build_backend 的 /memories/ 路由）
+    # 此处**不再**把记忆拼进用户消息——否则同一份内容会同时出现在 system prompt
+    # 与用户消息中，多占一份上下文。记忆更新后由 remove_session_agent 使缓存失效，
+    # 下次重建 Agent 时会加载到最新内容。
+
+    ws_info = (
+        str(agent.workspace_dir.absolute())
+        if agent and agent.workspace_dir
+        else "unknown"
+    )
+    logger.info(
+        f"[{sid}] 开始流式响应 | workspace: {ws_info} | 用户: {username}"
+    )
+    logger.info(
+        f"[{sid}] 💬 用户输入 | {raw_user_input[:200]}{'...' if len(raw_user_input) > 200 else ''}"
+    )
+
+    context_length = None
+    auto_compress_tokens = None
+    result_log_truncate = 200
+    try:
+
+        yield emitter.start()
+
+        # ── 配置 ─────────────────────────────────────────────────
+        context_length, auto_compress_tokens, result_log_truncate = (
+            resolve_chat_context(agent)
+        )
+
+        # ── StreamProcessor（混合流式：updates 权威 + messages token 流式）──
+        proc = StreamProcessor(
+            sid=sid, session_id=session_id, db=db, message_id=message_id,
+            session_logger=session_logger,
+            context_length=context_length,
+            auto_compress_tokens=auto_compress_tokens,
+            start_time=start_time,
+        )
+
+        persister = IncrementalPersister(
+            db=db,
+            session_id=session_id,
+            sid=sid,
+            start_time=start_time,
+        )
+
+        # ── 构建上下文消息 ─────────────────────────────────────────────
+        # session.messages 末尾是本次刚写入 DB 的当前用户消息（chat.py 在调用
+        # 本生成器前已 add_message），需排除以免与下方 message_content 重复注入。
+        # 超长时由官方 SummarizationMiddleware 在模型调用前按 token 阈值自动摘要。
+        session = await run_blocking(db.get_session, session_id)
+        total_msgs = len(session.messages) if session and session.messages else 0
+        history_messages = (
+            session.messages[:-1] if session and session.messages else []
+        )
+        provider = agent.config.llm.provider.lower() if agent and agent.config else ""
+        # DA-03：thread 里的本轮消息只存用户原话（与 DB 一致）；工作区前缀、知识库 /
+        # 页面上下文、上传预览等本轮注入（message_content）走 turn_context，只进本轮
+        # 模型请求，见 agent/turn_context.py。开关 agent.session_thread 打开时一个会话
+        # 一个 thread，只输入本轮消息（及需要补齐的内容），见 services/sessions/thread.py。
+        plan = await plan_turn(
+            agent,
+            session_id=session_id,
+            turn_id=message_id,
+            history=history_messages,
+            raw=turn_message_text(request.message, request.files, request.skills),
+            provider=provider,
+        )
+        context_messages = plan.messages
+        logger.info(
+            f"[{sid}] 📚 上下文消息构建 | DB 消息数: {total_msgs} | thread: {plan.mode} | "
+            f"输入消息: {len(context_messages)} | 补齐 DB 行: {plan.caught_up_rows} | "
+            f"补回半截回复: {plan.restored_tail} | 压缩: 官方 SummarizationMiddleware"
+        )
+        if plan.checkpoint_id:
+            await run_blocking(
+                record_turn_checkpoint, db, session_id, message_id, plan.checkpoint_id, sid
+            )
+
+        # ── 启动流式输出 (stream_mode=['messages', 'updates']) ─────────
+        logger.info(f"[{sid}] 🚀 使用 stream_mode=['messages', 'updates'] 流式接口")
+
+        # 审批句柄始终是 {session_id}-{message_id}（前端据此还原 message_id）；
+        # 每消息模式下它就是 thread_id，会话 thread 模式下 thread_id = session_id。
+        thread_id = plan.thread_id
+        handle = approval_handle(session_id, message_id)
+        stream_config = build_run_config(agent, thread_id)
+
+        run = StreamRun(
+            agent=agent,
+            db=db,
+            session_id=session_id,
+            sid=sid,
+            message_id=message_id,
+            emitter=emitter,
+            proc=proc,
+            persister=persister,
+            stream_config=stream_config,
+            start_time=start_time,
+            context_length=context_length,
+            auto_compress_tokens=auto_compress_tokens,
+            thread_id=thread_id,
+            handle=handle,
+            raw_user_msg=parsed_content or request.message,
+            message_content=message_content,
+            session_logger=session_logger,
+            result_log_truncate=result_log_truncate,
+        )
+        # 主循环、收尾与兜底统一在 _run_stream（与 resume 共用）；这里只构造本轮输入。
+        async with aclosing(_run_stream(
+            run,
+            turn_input(
+                context_messages,
+                message_id=message_id,
+                rendered=message_content,
+                pinned_skills=pinned_skills,
+            ),
+        )) as stream:
+            async for frame in stream:
+                yield frame
+    except asyncio.CancelledError:
+        # 取消发生在准备阶段（主循环内的取消由 _run_stream 兜底）：还没有产出任何
+        # token，不写空 assistant 消息，取消继续向上传播（/cancel 语义不变）。
+        logger.info(f"[{sid}] ❌ 准备阶段被取消（未产生回复）")
+        raise
+    except Exception as e:
+        # 准备阶段异常（查库 / 上下文构建）：还没产出任何 token，按统一文案补终态帧。
+        logger.error(f"[{sid}] ❌ 聊天准备异常: {str(e)}", exc_info=True)
+        yield emitter.error(f"处理失败: {friendly_error_message(e)}")
 
 
 async def resume_stream_generator(
@@ -1194,139 +1228,159 @@ async def resume_stream_generator(
     模式下两者不同），缺省时与 ``thread_id`` 相同。
     """
     identity = await resolve_usage_identity(username, session_id)
-    with usage_scope(identity.user_id if identity else None, identity.session_id if identity else None):
-        handle = handle or thread_id
-        start_time = time.time()
-        sid = session_id[-5:] if session_id else "resume"
-        emitter = SSEEmitter(session_id)
+    with usage_scope(identity):
+        async with aclosing(_resume_stream_impl(
+            db, agent, session_id, thread_id, decisions, username,
+            session_logger, message_id, handle,
+        )) as stream:
+            async for frame in stream:
+                yield frame
 
-        yield emitter.start()
 
-        # 从 DB 加载部分 assistant 消息
-        session = None
-        try:
-            session = await run_blocking(db.get_session, session_id)
-            snapshot = load_resume_snapshot(session.messages if session else [])
-        except Exception as e:
-            logger.warning(f"[{sid}] HITL 恢复: 加载部分消息失败: {e}")
-            snapshot = load_resume_snapshot([])
+async def _resume_stream_impl(
+    db: Database,
+    agent: EasyAgent,
+    session_id: str,
+    thread_id: str,
+    decisions: list[dict],
+    username: str = "",
+    session_logger: SessionLogger | None = None,
+    message_id: str = "",
+    handle: str | None = None,
+) -> AsyncGenerator[str, None]:
+    handle = handle or thread_id
+    start_time = time.time()
+    sid = session_id[-5:] if session_id else "resume"
+    emitter = SSEEmitter(session_id)
 
-        accumulated_response = snapshot.accumulated_response
-        accumulated_thinking = snapshot.accumulated_thinking
-        blocks = snapshot.blocks
-        tool_call_records = snapshot.tool_call_records
-        current_step = snapshot.current_step
-        # 计时接着中断前已用的耗时往下算（等待审批的时间不计）：续跑下发和落库的
-        # elapsed_time 与 step_count 一样是这条消息的累计值，落库不再丢掉中断前那段。
-        start_time -= snapshot.elapsed_time
-        last_context_tokens = 0
-        pending_tool_call_ids = snapshot.pending_tool_call_ids
-        original_user_msg = ""  # 触发 HITL 的原始用户消息，供记忆生成使用
+    yield emitter.start()
 
-        # 捕获触发 HITL 的原始用户消息（会话中最后一条 user 消息），供记忆生成使用
-        try:
-            if session and session.messages:
-                original_user_msg = last_user_message(session.messages)
-        except Exception as exc:  # noqa: BLE001 - 只用于记忆生成，取不到不影响恢复流
-            logger.debug(f"[{sid}] HITL 恢复: 读取原始用户消息失败: {exc}")
+    # 从 DB 加载部分 assistant 消息
+    session = None
+    try:
+        session = await run_blocking(db.get_session, session_id)
+        snapshot = load_resume_snapshot(session.messages if session else [])
+    except Exception as e:
+        logger.warning(f"[{sid}] HITL 恢复: 加载部分消息失败: {e}")
+        snapshot = load_resume_snapshot([])
 
-        # 与主生成器同一套 config（含按编译图节点数计算的 recursion_limit 兜底）。
-        stream_config = build_run_config(agent, thread_id)
+    accumulated_response = snapshot.accumulated_response
+    accumulated_thinking = snapshot.accumulated_thinking
+    blocks = snapshot.blocks
+    tool_call_records = snapshot.tool_call_records
+    current_step = snapshot.current_step
+    # 计时接着中断前已用的耗时往下算（等待审批的时间不计）：续跑下发和落库的
+    # elapsed_time 与 step_count 一样是这条消息的累计值，落库不再丢掉中断前那段。
+    start_time -= snapshot.elapsed_time
+    last_context_tokens = 0
+    pending_tool_call_ids = snapshot.pending_tool_call_ids
+    original_user_msg = ""  # 触发 HITL 的原始用户消息，供记忆生成使用
 
-        # 按 interrupt_id 规划恢复值（DA-02）；接口已前置校验，这里只处理并发竞态。
-        try:
-            plan = await plan_resume_for_agent(
-                agent=agent, stream_config=stream_config, decisions=decisions, sid=sid
-            )
-        except HitlDecisionError as e:
-            logger.warning(f"[{sid}] HITL 恢复: 审批决策无效: {e}")
-            yield emitter.error(f"审批决策无效：{e}")
-            return
-        except StaleApprovalError as e:
-            logger.warning(f"[{sid}] HITL 恢复: 审批已不在本实例: {e}")
-            yield emitter.error(str(e))
-            return
+    # 捕获触发 HITL 的原始用户消息（会话中最后一条 user 消息），供记忆生成使用
+    try:
+        if session and session.messages:
+            original_user_msg = last_user_message(session.messages)
+    except Exception as exc:  # noqa: BLE001 - 只用于记忆生成，取不到不影响恢复流
+        logger.debug(f"[{sid}] HITL 恢复: 读取原始用户消息失败: {exc}")
 
-        # 将审批决策立即应用到内存中的 blocks / tool_call_records：
-        # 1) 前端历史渲染优先读 blocks，只写 tool_calls 不够；
-        # 2) 恢复流结束后会用内存数据整条覆盖持久化（build_assistant_message_dict），
-        #    若只 patch 数据库（_persist_approval_decisions），最终写回会把状态冲回 "pending"。
-        # 只标记本次作答的中断；改造前落库的记录没有 interrupt_id，退回按 pending 块顺序的旧口径。
-        decision_status_by_id = decision_status_by_interrupt(
-            plan.answered, snapshot.pending_action_requests
+    # 与主生成器同一套 config（含按编译图节点数计算的 recursion_limit 兜底）。
+    stream_config = build_run_config(agent, thread_id)
+
+    # 按 interrupt_id 规划恢复值（DA-02）；接口已前置校验，这里只处理并发竞态。
+    try:
+        plan = await plan_resume_for_agent(
+            agent=agent, stream_config=stream_config, decisions=decisions, sid=sid
         )
-        snapshot_has_interrupt_ids = any(
-            ar.get("interrupt_id") for ar in snapshot.pending_action_requests
+    except HitlDecisionError as e:
+        logger.warning(f"[{sid}] HITL 恢复: 审批决策无效: {e}")
+        yield emitter.error(f"审批决策无效：{e}")
+        return
+    except StaleApprovalError as e:
+        logger.warning(f"[{sid}] HITL 恢复: 审批已不在本实例: {e}")
+        yield emitter.error(str(e))
+        return
+
+    # 将审批决策立即应用到内存中的 blocks / tool_call_records：
+    # 1) 前端历史渲染优先读 blocks，只写 tool_calls 不够；
+    # 2) 恢复流结束后会用内存数据整条覆盖持久化（build_assistant_message_dict），
+    #    若只 patch 数据库（_persist_approval_decisions），最终写回会把状态冲回 "pending"。
+    # 只标记本次作答的中断；改造前落库的记录没有 interrupt_id，退回按 pending 块顺序的旧口径。
+    decision_status_by_id = decision_status_by_interrupt(
+        plan.answered, snapshot.pending_action_requests
+    )
+    snapshot_has_interrupt_ids = any(
+        ar.get("interrupt_id") for ar in snapshot.pending_action_requests
+    )
+    if not decision_status_by_id and not snapshot_has_interrupt_ids:
+        pending_decisions = normalize_resume_decisions(
+            decisions, hanging_tool_count=len(pending_tool_call_ids)
         )
-        if not decision_status_by_id and not snapshot_has_interrupt_ids:
-            pending_decisions = normalize_resume_decisions(
-                decisions, hanging_tool_count=len(pending_tool_call_ids)
-            )
-            decision_status_by_id = decision_status_map(
-                pending_tool_call_ids, pending_decisions
-            )
-        apply_decision_status_to_records(tool_call_records, decision_status_by_id)
-        apply_decision_status_to_blocks(blocks, decision_status_by_id)
-
-        logger.info(
-            f"[{sid}] 🔔 HITL 恢复 | thread_id={thread_id} | "
-            f"已有内容 {len(accumulated_response)} 字符 | "
-            f"已有 blocks {len(blocks)} | decisions={decisions}"
+        decision_status_by_id = decision_status_map(
+            pending_tool_call_ids, pending_decisions
         )
-        if decisions:
-            decision_desc = "、".join(
-                ("批准" if (d or {}).get("type") == "approve" else "拒绝")
-                if isinstance(d, dict) else str(d)
-                for d in decisions
-            )
-            logger.info(f"[{sid}] 👤 用户审批操作: {decision_desc}")
+    apply_decision_status_to_records(tool_call_records, decision_status_by_id)
+    apply_decision_status_to_blocks(blocks, decision_status_by_id)
 
-        context_length, auto_compress_tokens = resolve_resume_context(agent)
-
-        # ── StreamProcessor（用 DB 载入的初始状态初始化）──────────────────
-        proc = StreamProcessor(
-            sid=sid, session_id=session_id, db=db, message_id=message_id,
-            session_logger=session_logger,
-            context_length=context_length,
-            auto_compress_tokens=auto_compress_tokens,
-            current_step=current_step, blocks=list(blocks),
-            last_context_tokens=last_context_tokens,
-            accumulated_response=accumulated_response,
-            accumulated_thinking=accumulated_thinking,
-            start_time=start_time,
+    logger.info(
+        f"[{sid}] 🔔 HITL 恢复 | thread_id={thread_id} | "
+        f"已有内容 {len(accumulated_response)} 字符 | "
+        f"已有 blocks {len(blocks)} | decisions={decisions}"
+    )
+    if decisions:
+        decision_desc = "、".join(
+            ("批准" if (d or {}).get("type") == "approve" else "拒绝")
+            if isinstance(d, dict) else str(d)
+            for d in decisions
         )
+        logger.info(f"[{sid}] 👤 用户审批操作: {decision_desc}")
 
-        # 多个 pending interrupt（并行子代理各自触发 HITL）时 LangGraph 要求
-        # {interrupt_id: value} 映射；未作答的中断保持挂起，流结束后再次下发审批。
-        resume_command = Command(resume=plan.resume)
+    context_length, auto_compress_tokens = resolve_resume_context(agent)
 
-        persister = IncrementalPersister(
-            db=db,
-            session_id=session_id,
-            sid=sid,
-            start_time=start_time,
-        )
+    # ── StreamProcessor（用 DB 载入的初始状态初始化）──────────────────
+    proc = StreamProcessor(
+        sid=sid, session_id=session_id, db=db, message_id=message_id,
+        session_logger=session_logger,
+        context_length=context_length,
+        auto_compress_tokens=auto_compress_tokens,
+        current_step=current_step, blocks=list(blocks),
+        last_context_tokens=last_context_tokens,
+        accumulated_response=accumulated_response,
+        accumulated_thinking=accumulated_thinking,
+        start_time=start_time,
+    )
 
-        run = StreamRun(
-            agent=agent,
-            db=db,
-            session_id=session_id,
-            sid=sid,
-            message_id=message_id,
-            emitter=emitter,
-            proc=proc,
-            persister=persister,
-            stream_config=stream_config,
-            start_time=start_time,
-            context_length=context_length,
-            auto_compress_tokens=auto_compress_tokens,
-            thread_id=thread_id,
-            handle=handle,
-            raw_user_msg=original_user_msg,
-            mode="resume",
-            session_logger=session_logger,
-            decision_status_by_id=decision_status_by_id,
-        )
-        # 主循环、收尾与兜底统一在 _run_stream（与 chat 共用）；这里只构造恢复输入。
-        async for frame in _run_stream(run, resume_command):
+    # 多个 pending interrupt（并行子代理各自触发 HITL）时 LangGraph 要求
+    # {interrupt_id: value} 映射；未作答的中断保持挂起，流结束后再次下发审批。
+    resume_command = Command(resume=plan.resume)
+
+    persister = IncrementalPersister(
+        db=db,
+        session_id=session_id,
+        sid=sid,
+        start_time=start_time,
+    )
+
+    run = StreamRun(
+        agent=agent,
+        db=db,
+        session_id=session_id,
+        sid=sid,
+        message_id=message_id,
+        emitter=emitter,
+        proc=proc,
+        persister=persister,
+        stream_config=stream_config,
+        start_time=start_time,
+        context_length=context_length,
+        auto_compress_tokens=auto_compress_tokens,
+        thread_id=thread_id,
+        handle=handle,
+        raw_user_msg=original_user_msg,
+        mode="resume",
+        session_logger=session_logger,
+        decision_status_by_id=decision_status_by_id,
+    )
+    # 主循环、收尾与兜底统一在 _run_stream（与 chat 共用）；这里只构造恢复输入。
+    async with aclosing(_run_stream(run, resume_command)) as stream:
+        async for frame in stream:
             yield frame
