@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from langgraph.checkpoint.base import empty_checkpoint
@@ -99,3 +100,24 @@ async def test_background_task_is_off_with_zero_interval_or_without_a_saver(save
     assert ck.start_checkpoint_gc(interval=0) is None
     await ck.shutdown_checkpointers()
     assert ck.start_checkpoint_gc(interval=600) is None
+
+
+def test_ttl_cutoff_uses_the_timezone_of_each_basis():
+    """``session_updated_at`` 是本地时间串，``checkpoint_created_at`` 是 naive UTC。
+
+    两者共用同一份 ``now()`` 会整体偏一个时区（东八区 = 多删 8 小时的量），所以 cutoff
+    必须按 basis 分别取本地时间与 UTC。
+    """
+    offset = datetime.now().astimezone().utcoffset() or timedelta(0)
+    days = 7
+    local_cut = datetime.fromisoformat(ck._ttl_cutoff(days, "session_updated_at"))
+    utc_cut = datetime.fromisoformat(ck._ttl_cutoff(days, "checkpoint_created_at"))
+
+    assert abs(
+        local_cut - (datetime.now() - timedelta(days=days))
+    ) < timedelta(seconds=5)
+    assert abs(
+        utc_cut - (datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days))
+    ) < timedelta(seconds=5)
+    # 两条 cutoff 的差值正好是本地时区偏移
+    assert abs((local_cut - utc_cut) - offset) < timedelta(seconds=5)
