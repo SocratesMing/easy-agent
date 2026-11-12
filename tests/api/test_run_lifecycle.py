@@ -12,19 +12,21 @@
 
 import asyncio
 import json
-import time
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from langchain_core.messages import AIMessageChunk
 
 import easy_agent.api.chat as chat_api
 import easy_agent.services.agents.chat_turn as chat_turn
 from easy_agent.services.streaming import runs as run_registry
+from easy_agent.services.streaming import orchestrator
 import easy_agent.services.experts.runtime as expert_runtime
 from easy_agent.models.db import SessionModel
 from easy_agent.db.repositories import agent_runs as agent_runs_repo
+from easy_agent.db.repositories.message_repository import MessageRepository
 from easy_agent.services.streaming.runs import new_run_id, start_run
-from easy_agent.services.streaming.persistence import persist_partial
 
 
 async def _async_noop(*args, **kwargs):
@@ -119,37 +121,73 @@ def test_chat_stream_exception_marks_failed_and_emits_error(client, db, monkeypa
     assert run["lease_until"] == ""
 
 
-def test_chat_error_frame_marks_failed_and_releases_lock(client, db, monkeypatch):
-    """编排器捕获异常并返回 error 帧时，正常耗尽不代表执行成功。"""
+@pytest.mark.parametrize("exception_type", [httpx.ReadError, RuntimeError, asyncio.TimeoutError])
+def test_chat_error_frame_marks_failed_and_releases_lock(client, db, monkeypatch, exception_type):
+    """真实异常编排：保留半截回复和中性说明，error 帧使 run 失败并释放锁。"""
     sid = "sess-run-error-frame"
     _seed_session(db, sid)
-    _patch_agent(monkeypatch)
 
-    async def fake_stream(**kwargs):
-        yield 'data: {"type": "start"}\n\n'
-        proc = SimpleNamespace(
-            accumulated_response="已完成部分分析", accumulated_thinking="",
-            blocks=[{"type": "content", "content": "已完成部分分析", "order": 0}],
-            last_usage={"input_tokens": 100, "output_tokens": 10},
-            last_context_tokens=100, current_step=1,
-        )
-        persist_partial(proc, db=db, session_id=sid, sid=sid,
-                        start_time=time.time(), error="模型连接中断")
-        yield 'data: {"type": "error", "content": "模型连接中断"}\n\n'
+    class InterruptedGraph:
+        async def aget_state(self, config):
+            return SimpleNamespace(values={"messages": []})
 
-    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
+        async def astream(self, *args, **kwargs):
+            yield ("messages", (AIMessageChunk(content="已完成部分分析"), {}))
+            raise exception_type("upstream failure detail" if exception_type is RuntimeError else "")
+
+    async def fake_agent(*args, **kwargs):
+        return SimpleNamespace(workspace_dir=None, config=None, agent=InterruptedGraph())
+
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_agent)
     resp = client.post("/agent/chat/stream", json={
         "message": "hi", "session_id": sid, "message_id": "msg-error-frame",
     })
     assert resp.status_code == 200
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in resp.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert events[-1]["type"] == "error"
+    assert "done" not in [event["type"] for event in events]
+    assert "".join(
+        event["content"] for event in events if event["type"] == "content"
+    ) == "已完成部分分析"
+    timed_out = exception_type is asyncio.TimeoutError
+    if timed_out:
+        assert events[-1]["code"] == "timeout"
+    else:
+        assert "code" not in events[-1]
+    if exception_type is httpx.ReadError:
+        assert "模型连接中断" in events[-1]["content"]
     run = agent_runs_repo.get_run(db, new_run_id(sid, "msg-error-frame"))
     assert run["status"] == "failed"
-    assert run["error"] == "模型连接中断"
+    assert run["error"] == events[-1]["content"]
     assert run["lease_until"] == ""
     assert client.get("/agent/chat/stream/status", params={"session_id": sid}).json()["active"] is False
     messages = client.get(f"/agent/sessions/{sid}/history").json()["messages"]
     assert messages[-1]["content"] == "已完成部分分析"
-    assert messages[-1]["error"] == "模型连接中断"
+    assert messages[-1]["blocks"][0]["content"] == "已完成部分分析"
+    assert messages[-1]["fallback_note"] == (
+        orchestrator.TIMEOUT_FALLBACK_NOTE if timed_out else orchestrator.ERROR_FALLBACK_NOTE
+    )
+    assert "error" not in messages[-1]
+    assert "upstream failure detail" not in json.dumps(messages[-1], ensure_ascii=False)
+
+
+def test_history_preserves_legacy_message_error(client, db):
+    """收敛异常持久化参数后，旧消息中的 error 仍能经历史接口回填。"""
+    sid = "sess-legacy-error"
+    _seed_session(db, sid)
+    MessageRepository(db).add_message(sid, {
+        "role": "assistant", "content": "旧版部分回复", "error": "旧版中断提示",
+    })
+
+    resp = client.get(f"/agent/sessions/{sid}/history")
+    assert resp.status_code == 200
+    [message] = resp.json()["messages"]
+    assert message["content"] == "旧版部分回复"
+    assert message["error"] == "旧版中断提示"
 
 
 @pytest.mark.parametrize("swallow_cancel", [False, True])

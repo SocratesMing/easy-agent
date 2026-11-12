@@ -752,7 +752,6 @@ async def _save_partial(
     *,
     with_approval: bool = False,
     raise_on_error: bool = False,
-    error: str = "",
     fallback_note: str | None = None,
 ) -> None:
     """在线程里保存「进行中」的 assistant 消息（取消 / 异常兜底共用）。
@@ -769,7 +768,6 @@ async def _save_partial(
         start_time=run.start_time,
         with_approval=with_approval,
         raise_on_error=raise_on_error,
-        error=error,
         fallback_note=fallback_note,
     )
 
