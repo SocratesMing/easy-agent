@@ -71,7 +71,12 @@ def test_api_rejects_busy_approval_empty_invalid_and_unsupported(client, db, set
     cfg.agent.session_thread = False
     assert client.post(url, json=body).status_code == 409
     cfg.agent.session_thread = True
+    # 多 worker / 多副本不再关闭压缩：旧判据 `detect_worker_count() == 1` 是"checkpoint
+    # 在本 Pod 文件里"的遗留，共享 saver 下并发一致性交给 session_runtime 的流锁。
+    # 真正"不支持"只剩两种情况：会话线程关闭（上一行）与没有共享 saver（下面两行）。
     monkeypatch.setenv("EASY_REPLICA_COUNT", "2")
+    assert client.get(f"/agent/sessions/{sid}/context").json()["supported"]
+    monkeypatch.setattr(compaction, "shared_checkpointer_active", lambda: False)
     assert not client.get(f"/agent/sessions/{sid}/context").json()["supported"]
     assert client.post(url, json=body).status_code == 409
 

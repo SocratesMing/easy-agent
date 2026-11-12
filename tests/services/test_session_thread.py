@@ -103,6 +103,18 @@ class FakeDB:
         return lambda *args, **kwargs: None
 
 
+@pytest.fixture(autouse=True)
+def _shared_checkpointer(monkeypatch):
+    """这些用例用注入的 InMemorySaver 跑真实图，语义上等价于"共享 saver 已就绪"。
+
+    生产里的判据是 ``shared_checkpointer_active()``（sqlite/mysql_saver 已打开）；单测没有
+    真库，直接把它钉成 True，个别用例（legacy 形态）再用 ``monkeypatch.setattr`` 改回 False。
+    """
+    from easy_agent.persistence import checkpoints as ck
+
+    monkeypatch.setattr(ck, "shared_checkpointer_active", lambda: True)
+
+
 def _agent(tmp_path, *, session_thread=True, interrupt_on=None):
     model = Recorder()
     backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
@@ -338,12 +350,19 @@ async def test_flag_off_resume_uses_the_handle_as_thread(tmp_path):
     assert await resolve_resume_thread(agent, session_id="s1", handle="s1-m1", last_message=None) == "s1-m1"
 
 
-async def test_legacy_snapshot_saver_keeps_per_message_threads(tmp_path):
-    """MySQL 回退的 legacy 快照 saver 每次写入都 pickle 全量，会话 thread 下不启用。"""
-    from easy_agent.persistence.checkpoints import PersistentMemorySaver
+async def test_legacy_memory_saver_keeps_per_message_threads(tmp_path, monkeypatch):
+    """``legacy`` 后端的进程内 MemorySaver 不持久化，会话 thread 下不启用。"""
+    from easy_agent.persistence import checkpoints as ck
+
+    # 模拟"没有共享 saver"的真实单机 legacy 形态
+    monkeypatch.setattr(ck, "shared_checkpointer_active", lambda: False)
+    ck_local = ck
+    monkeypatch.setattr(
+        "easy_agent.services.sessions.thread._legacy_warned", False, raising=False
+    )
 
     agent, _ = _agent(tmp_path)
-    agent.agent.checkpointer = PersistentMemorySaver("s1", db=None)
+    agent.agent.checkpointer = ck_local.get_session_checkpointer("s1")
 
     plan = await plan_turn(agent, session_id="s1", turn_id="m1", history=[], raw="q1")
     assert (plan.thread_id, plan.mode) == ("s1-m1", "per-message")

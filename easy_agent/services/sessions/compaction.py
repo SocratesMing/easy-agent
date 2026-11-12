@@ -13,10 +13,10 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from easy_agent.agent.manual_compaction import estimate_context, prepare_compaction, terminal_update_node
 from easy_agent.agent.run_config import build_run_config
 from easy_agent.db.providers import get_session_runtime_repository, get_agent_run_repository
-from easy_agent.persistence.checkpoints import get_session_checkpointer, sqlite_checkpointer_active
+from easy_agent.persistence.checkpoints import get_session_checkpointer, shared_checkpointer_active
 from easy_agent.services.agents.manager import get_or_create_agent_for_session, is_session_streaming
 from easy_agent.services.sessions.thread import plan_turn, session_thread_active
-from easy_agent.utils.deployment import detect_worker_count, instance_owner
+from easy_agent.utils.deployment import instance_owner
 from easy_agent.services.usage import resolve_usage_identity
 from easy_agent.utils.usage_context import usage_scope
 from easy_agent.utils.blocking import run_blocking
@@ -45,14 +45,21 @@ async def independent_checkpoint(runtime, saver) -> bool:
 
 
 def supported(config) -> bool:
+    """手动压缩可用性。
+
+    旧判据额外要求 ``detect_worker_count() == 1``，理由是"checkpoint 存在本 Pod 文件
+    里，多 worker 会读到别的进程没写到的状态"。切到共享后端（sqlite 文件共享盘 /
+    mysql_saver）后这条前提不再成立，闸门只应看"当前是否共享后端 + 会话线程是否开启"；
+    多 worker 下的并发一致性由 ``session_runtime`` 的流式互斥保证。
+    """
     return bool(
         getattr(getattr(config, "agent", None), "session_thread", False)
-        and sqlite_checkpointer_active() and detect_worker_count() == 1
+        and shared_checkpointer_active()
     )
 
 
 async def records(session_id: str) -> list[dict]:
-    if not sqlite_checkpointer_active() or detect_worker_count() != 1:
+    if not shared_checkpointer_active():
         return []
     checkpoint = await get_session_checkpointer(session_id).aget_tuple(
         {"configurable": {"thread_id": session_id}}

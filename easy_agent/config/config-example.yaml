@@ -129,9 +129,36 @@ database:
 
 # ===== HITL 审批 checkpoint =====
 checkpoint:
-  # 后端由 EASY_CHECKPOINT_BACKEND 选择。多副本部署用 mysql，快照共享保存在业务 MySQL；
-  # auto/sqlite 使用本机 SQLite 文件。
+  # 后端由 EASY_CHECKPOINT_BACKEND 选择：
+  #   mysql_saver（生产多副本）—— 自研 AsyncMySQLSaver，全部 Pod 读写业务 MySQL 的 cp_* 表
+  #   sqlite      —— 官方 AsyncSqliteSaver，本机文件，dev/test/单机 + 生产回滚
+  #   legacy      —— 进程内 MemorySaver，仅供调试
+  #   mysql       —— 已废弃别名，等同 mysql_saver（打一条 WARN）
+  #   auto        —— 业务库是 MySQL 则 mysql_saver，否则 sqlite（只看配置，不探连通性）
   sqlite_path: "${CHECKPOINT_DIR:-/qts/checkpoint}/{pod}.db"
+
+  # MySQL 共享后端（mysql_saver）。连接参数留空即复用 database.mysql.*，只需切后端名即可跑。
+  mysql:
+    enabled: true
+    host: ""                                  # 留空 = 复用 database.mysql.host
+    port: 0                                   # 0 = 复用业务库端口
+    user: ""                                  # 留空 = 复用业务库账号
+    password: ""                              # 留空 = 复用业务库密码
+    database: ""                              # 留空 = 复用业务库库名（同库不同表）
+    charset: utf8mb4                          # 必须 utf8mb4，中文表/列注释靠它
+    table_prefix: "${CHECKPOINT_MYSQL_TABLE_PREFIX:-cp_}"   # 同库隔离靠前缀；不允许为空
+    pool_min_size: 2
+    pool_max_size: ${CHECKPOINT_MYSQL_POOL_MAX:-10}         # 多副本时总连接数 = Pod 数 × 本值
+    connect_timeout: 5
+    read_timeout: 10                          # 落服务端 max_execution_time（只对 SELECT）
+    auto_setup: ${CHECKPOINT_MYSQL_AUTO_SETUP:-true}        # 启动时幂等建表/升级
+    auto_setup_lock_wait: 60                  # 抢 GET_LOCK 建表锁的等待秒数；超时则启动失败
+    gc_interval_seconds: ${EASY_CHECKPOINT_GC_INTERVAL:-600}  # 0 = 对账与 TTL 一起关
+    record_ttl_days: ${CHECKPOINT_TTL_DAYS:-0}              # 0 = 不按时间过期（推荐）
+    ttl_basis: session_updated_at             # session_updated_at | checkpoint_created_at
+    ttl_only_archived: true                   # 只清已归档会话，避免"列表里有、点进去空"
+    ttl_batch_size: 200
+    ttl_protect_active_stream: true           # 有活跃流锁的 thread 一律跳过
 
 # ===== 人员账号 =====
 personnel:

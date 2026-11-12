@@ -13,7 +13,6 @@ from easy_agent.db.schema import SCHEMA_VERSION
 # 全新库建出来的全部表。新增表要同时改这里，让表的数量变化在评审里看得见。
 FRESH_TABLES = {
     "agent_runs",
-    "agent_checkpoints",
     "distributed_locks",
     "expert_agents",
     "generated_files",

@@ -34,9 +34,13 @@ const MAX_NEW_FILE_LINES = 800
  *  2026-11-07 刷新续接根因修复（候选漏传「当前会话」、会话还没建好时不等待、回填不再
  *  覆盖本地刚发的提问）后按实测值更新：App.vue 3251 → 3303；
  *  2026-11-07 「挂上实时流就收手」导致永久空白（attach 成功但事件没渲染）后改为
- *  历史轮询兜底 + force 回填，按实测值更新：App.vue 3303 → 3349 */
+ *  历史轮询兜底 + force 回填，按实测值更新：App.vue 3303 → 3349；
+ *  2026-11-11 打开会话时探一次流状态（shouldAttachOnOpen / probeLiveStream，
+ *  §14.4-D）后按实测值更新：App.vue 3349 → 3370；
+ *  2026-11-11 存量校正（SessionList 在合并后即为 1040 行、预算未同步）：1038 → 1040。
+ */
 const LINE_BUDGET = {
-  'App.vue': 3349,
+  'App.vue': 3370,
   'features/chat/components/ChatInput.vue': 4824,
   'features/chat/components/ChatMessage.vue': 2523,
   'features/experts/components/ExpertListPanel.vue': 2188,
@@ -45,7 +49,7 @@ const LINE_BUDGET = {
   'features/skills/components/SkillListPanel.vue': 1245,
   'shared/preview/FilePreview.vue': 1130,
   'features/chat/components/Chat.vue': 986,
-  'features/chat/components/SessionList.vue': 1038,
+  'features/chat/components/SessionList.vue': 1040,
   'features/workspace/components/WorkspacePanel.vue': 978,
   'features/tasks/components/ScheduledTasksPanel.vue': 842,
   'features/knowledge/KnowledgeWorkbench.vue': 1922,

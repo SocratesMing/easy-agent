@@ -9,8 +9,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-#: 会话流锁的租期（秒）：持有者崩溃后最多这么久，别的实例就能接管
-STREAM_TTL_SECONDS = 30 * 60
+#: 会话流锁的租期（秒）：持有者崩溃后最多这么久，别的实例就能接管。
+#:
+#: 从 30 分钟收紧到 180 秒（配合 ``api/chat.py`` 的 60 秒续约间隔）。旧值在去掉
+#: Ingress 粘性之后会变成"假活跃"：Pod 崩溃后锁要挂半小时才失效，这期间任何 Pod 的
+#: ``/stream/status`` 都报 active，客户端刷新后一直显示"生成中"。
+STREAM_TTL_SECONDS = 180
 
 
 def get_session_runtime(db, session_id: str) -> dict | None:

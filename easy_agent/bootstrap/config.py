@@ -27,6 +27,7 @@ from easy_agent.bootstrap.config_models import (  # noqa: F401 - 兼容重导出
     HitlConfig,
     LLMConfig,
     MCPToolConfig,
+    MySQLCheckpointSectionConfig,
     MySQLConfig,
     MySQLPoolConfig,
     PersonnelConfig,

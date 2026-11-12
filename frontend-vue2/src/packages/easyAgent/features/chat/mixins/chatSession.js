@@ -30,7 +30,7 @@ import {
   createStreamChunkHandler as createChunkHandler,
   resumeUsageBase,
 } from "../services/chunkHandler.js";
-import { hasAssistantReply } from "../services/streamResume.js";
+import { hasAssistantReply, shouldAttachOnOpen } from "../services/streamResume.js";
 import streamLifecycle from "./streamLifecycle.js";
 import {
   applyApprovalRequests,
@@ -718,6 +718,31 @@ export default {
         null
       );
     },
+    // 打开 / 切换会话时探一次后端流状态（与 sessionStorage 无关）。
+    //
+    // 为什么不能只靠刷新续接：那边的候选来自 sessionStorage 的「在飞」记录，换浏览器、
+    // 换标签页、重新登录后是空的，于是「后台还在跑、页面停在半截」的会话永远接不上。
+    // 这里直接问后端这一轮还在不在，在的话就按「进行中会话」挂上实时流。
+    //
+    // 失败（会话刚被删 / 网络抖动）静默忽略：探活绝不能影响打开会话本身。
+    async probeLiveStream(sessionId) {
+      if (!sessionId || isSessionDeleted(sessionId)) return;
+      const active = await shouldAttachOnOpen(sessionId, getStreamStatus);
+      // 探测期间用户可能已经切走或删掉会话，两种都不该再挂
+      if (
+        !active ||
+        this.currentSessionId !== sessionId ||
+        isSessionDeleted(sessionId)
+      ) {
+        return;
+      }
+      this.markStreaming(sessionId);
+      if (this.attachedStreamingSessions[sessionId] === "displayed") return;
+      this.attachToStreamingSession(sessionId, {
+        switchTo: false,
+        displayed: true,
+      });
+    },
     clearPendingApprovalOf(sid) {
       if (!sid || sid === this.loadedSessionId) this.pendingApproval = null;
       else if (this.sessionStates[sid])
@@ -1003,6 +1028,8 @@ export default {
       if (this.restoreSessionState(sessionId)) {
         this.scrollTrigger++;
         await this.refreshSessionFiles(sessionId);
+        // 本地有缓存 ≠ 这一轮已经结束：后台可能还在跑，探一次再决定要不要挂实时流
+        this.probeLiveStream(sessionId);
         return;
       }
 
@@ -1048,6 +1075,8 @@ export default {
         this.scrollTrigger++;
 
         await this.refreshSessionFiles(sessionId);
+        // 历史加载完再探活：挂载会往消息列表里插占位消息，必须等历史就位
+        this.probeLiveStream(sessionId);
       } catch (e) {
         console.error("加载聊天历史失败:", e);
         if (this.currentSessionId !== sessionId) return;

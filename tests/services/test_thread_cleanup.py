@@ -23,7 +23,7 @@ async def _seed(saver, *thread_ids):
 async def test_delete_session_threads_removes_session_and_per_message_threads(monkeypatch):
     saver = InMemorySaver()
     await _seed(saver, "s1", "s1-m1", "s1-m2", "s2-m1")
-    monkeypatch.setattr(checkpoints, "_sqlite_saver", saver)
+    monkeypatch.setattr(checkpoints, "_shared_saver", saver)
     released = []
     monkeypatch.setattr(checkpoints, "release_session_checkpointer", released.append)
 
@@ -34,8 +34,8 @@ async def test_delete_session_threads_removes_session_and_per_message_threads(mo
     assert released == ["s1"]
 
 
-async def test_adelete_threads_without_an_official_saver_is_a_no_op(monkeypatch):
-    monkeypatch.setattr(checkpoints, "_sqlite_saver", None)
+async def test_adelete_threads_without_a_shared_saver_is_a_no_op(monkeypatch):
+    monkeypatch.setattr(checkpoints, "_shared_saver", None)
     assert await checkpoints.adelete_threads(["s1"]) == 0
 
 
@@ -48,7 +48,7 @@ async def test_adelete_threads_keeps_going_after_a_failure(monkeypatch):
 
     saver = _Flaky()
     await _seed(saver, "ok")
-    monkeypatch.setattr(checkpoints, "_sqlite_saver", saver)
+    monkeypatch.setattr(checkpoints, "_shared_saver", saver)
 
     assert await checkpoints.adelete_threads(["bad", "ok"]) == 1
     assert "ok" not in saver.storage
@@ -71,7 +71,7 @@ async def test_delete_session_threads_with_the_official_sqlite_saver(tmp_path, m
 
     async with aio.AsyncSqliteSaver.from_conn_string(str(tmp_path / "checkpoints.db")) as saver:
         await _seed(saver, "s1", "s1-m1", "s2-m1")
-        monkeypatch.setattr(checkpoints, "_sqlite_saver", saver)
+        monkeypatch.setattr(checkpoints, "_shared_saver", saver)
 
         await checkpoints.delete_session_threads("s1", ["m1"])
 
