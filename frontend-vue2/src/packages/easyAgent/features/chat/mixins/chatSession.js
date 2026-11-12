@@ -30,7 +30,7 @@ import {
   createStreamChunkHandler as createChunkHandler,
   resumeUsageBase,
 } from "../services/chunkHandler.js";
-import { hasAssistantReply, shouldAttachOnOpen } from "../services/streamResume.js";
+import { hasAssistantReply, probeStreamState } from "../services/streamResume.js";
 import streamLifecycle from "./streamLifecycle.js";
 import {
   applyApprovalRequests,
@@ -293,7 +293,7 @@ export default {
     // displayed=true：重建界面消息并持续更新（当前查看的会话）；
     // displayed=false：仅后台同步 token 用量、流结束时移除"进行中"标记，不触碰界面。
     async attachToStreamingSession(sessionId, opts = {}) {
-      const { switchTo = false, displayed = true } = opts;
+      const { switchTo = false, displayed = true, markActive = true } = opts;
       if (!sessionId) return;
       const mode = displayed ? "displayed" : "background";
       // 已展示挂载的会话无需重复挂载；后台挂载可被升级为展示挂载
@@ -308,7 +308,8 @@ export default {
       if (displayed) {
         this.loadedSessionId = sessionId;
       }
-      this.markStreaming(sessionId);
+      // markActive=false：只是回放已产生的过程（待审批/异常中断），不算「生成中」
+      if (markActive) this.markStreaming(sessionId);
 
       if (displayed) {
         this.sessionLoading = true;
@@ -727,20 +728,26 @@ export default {
     // 失败（会话刚被删 / 网络抖动）静默忽略：探活绝不能影响打开会话本身。
     async probeLiveStream(sessionId) {
       if (!sessionId || isSessionDeleted(sessionId)) return;
-      const active = await shouldAttachOnOpen(sessionId, getStreamStatus);
+      const status = await probeStreamState(sessionId, getStreamStatus);
+      // active：这一轮还在跑；replayable：没在跑但过程事件比落库消息新（待审批/异常中断）
+      const attach = Boolean(status && (status.active || status.replayable));
       // 探测期间用户可能已经切走或删掉会话，两种都不该再挂
       if (
-        !active ||
+        !attach ||
         this.currentSessionId !== sessionId ||
         isSessionDeleted(sessionId)
       ) {
         return;
       }
-      this.markStreaming(sessionId);
+      // 只有真在跑才点亮「生成中」：停在审批/异常中断的会话只做一次回放补过程，
+      // 标成生成中会与「待审批」标识打架，回放结束后它本来也不是 active
+      const running = Boolean(status.active);
+      if (running) this.markStreaming(sessionId);
       if (this.attachedStreamingSessions[sessionId] === "displayed") return;
       this.attachToStreamingSession(sessionId, {
         switchTo: false,
         displayed: true,
+        markActive: running,
       });
     },
     clearPendingApprovalOf(sid) {

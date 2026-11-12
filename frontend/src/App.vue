@@ -152,7 +152,7 @@ const SettingsPanel = defineAsyncComponent(() => import('./features/settings/com
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
 import { applyApprovalRequests, buildResumeDecisions, derivePendingApproval, markApprovalDecision } from './utils/hitlApproval.js'
 import { createStreamChunkHandler, resumeUsageBase } from './features/chat/composables/useStreamChunks.js'
-import { clearStreamFlight, hasAssistantReply, markStreamFlight, readStreamFlight, resolveResumeTargets, shouldAttachOnOpen } from './features/chat/services/streamResume.js'
+import { clearStreamFlight, hasAssistantReply, markStreamFlight, probeStreamState, readStreamFlight, resolveResumeTargets } from './features/chat/services/streamResume.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getKnowledgeStatus, getModels as fetchModels } from './api/settings.js'
@@ -345,7 +345,7 @@ const attachedStreamingSessions = ref({})
 // displayed=true：重建界面消息并持续更新（当前查看的会话）；
 // displayed=false：仅后台同步 token 用量、流结束时移除"进行中"标记，不触碰界面。
 async function attachToStreamingSession(sessionId, opts = {}) {
-  const { switchTo = false, displayed = true } = opts
+  const { switchTo = false, displayed = true, markActive = true } = opts
   if (!sessionId) return
   const mode = displayed ? 'displayed' : 'background'
   // 已展示挂载的会话无需重复挂载；后台挂载可被升级为展示挂载
@@ -360,7 +360,8 @@ async function attachToStreamingSession(sessionId, opts = {}) {
   if (displayed) {
     loadedSessionId.value = sessionId
   }
-  markStreaming(sessionId)
+  // markActive=false：只是回放已产生的过程（待审批/异常中断），不算「生成中」
+  if (markActive) markStreaming(sessionId)
 
   if (displayed) {
     sessionLoading.value = true
@@ -537,12 +538,17 @@ async function attachToStreamingSession(sessionId, opts = {}) {
 // 失败（会话刚被删 / 网络抖动）静默忽略：探活绝不能影响打开会话本身。
 async function probeLiveStream(sessionId) {
   if (!sessionId || isSessionDeleted(sessionId)) return
-  const active = await shouldAttachOnOpen(sessionId, getStreamStatus)
+  const status = await probeStreamState(sessionId, getStreamStatus)
+  // active：这一轮还在跑；replayable：没在跑但过程事件比落库消息新（待审批/异常中断）
+  const attach = Boolean(status && (status.active || status.replayable))
   // 探测期间用户可能已经切走或删掉会话，两种都不该再挂
-  if (!active || currentSessionId.value !== sessionId || isSessionDeleted(sessionId)) return
-  markStreaming(sessionId)
+  if (!attach || currentSessionId.value !== sessionId || isSessionDeleted(sessionId)) return
+  // 只有真在跑才点亮「生成中」：停在审批/异常中断的会话只做一次回放补过程，
+  // 标成生成中会与「待审批」标识打架，回放结束后它本来也不是 active
+  const running = Boolean(status.active)
+  if (running) markStreaming(sessionId)
   if (attachedStreamingSessions.value[sessionId] === 'displayed') return
-  attachToStreamingSession(sessionId, { switchTo: false, displayed: true })
+  attachToStreamingSession(sessionId, { switchTo: false, displayed: true, markActive: running })
 }
 
 // 刷新后恢复活跃任务：当前会话展示挂载，其余后台挂载，保持用户选择。

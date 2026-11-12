@@ -198,12 +198,16 @@ async def _clear_previous_events(stream_events, db, session_id: str, sid: str) -
 async def _drive_stream(
     gen, hub, queue: asyncio.Queue, emitter: SSEEmitter,
     session_id: str, sid: str, renew_stream, db, runs, stream_events, run_id,
+    keep_events: bool = False,
 ) -> None:
     """后台任务：推进生成器，把每个 SSE 分片广播给 hub 的全部订阅者（原始客户端队列也是其一）。
 
     run 终态默认 failed，生成器正常耗尽且没有 error 帧才改为 completed；
     CancelledError 分两种：``/cancel`` → cancelled，**流锁租约丢失 → failed**
     （租约丢了还继续写就是双写，见 :func:`_stream_heartbeat`）。
+
+    ``keep_events``：HITL 恢复是**同一轮的延续**，不能清掉中断前已产生的事件，
+    否则跨 Pod 打开时会话只剩落库的半截消息、思考过程永久消失。
     """
     bg = asyncio.current_task()
     registered = False
@@ -214,7 +218,7 @@ async def _drive_stream(
     try:
         await aregister_stream_task(session_id, bg)
         registered = True
-        if db is not None or stream_events is not None:
+        if (db is not None or stream_events is not None) and not keep_events:
             await _clear_previous_events(stream_events, db, session_id, sid)
         if renew_stream is not None or (run_id is not None and runs is not None):
             heartbeat = asyncio.create_task(
@@ -287,7 +291,7 @@ async def _drive_stream(
 
 async def _detached_event_stream(
     gen, session_id: str, sid: str, renew_stream=None, db=None, runs=None,
-    stream_events=None, run_id=None,
+    stream_events=None, run_id=None, keep_events: bool = False,
 ):
     """以「后台任务 + 事件中枢」驱动流式生成器，与客户端断开解耦。
 
@@ -324,7 +328,7 @@ async def _detached_event_stream(
     bg_task = asyncio.create_task(
         _drive_stream(
             gen, hub, queue, emitter, session_id, sid, renew_stream, db,
-            run_store, stream_events, run_id,
+            run_store, stream_events, run_id, keep_events=keep_events,
         )
     )
     _detached_bg_tasks.add(bg_task)
@@ -455,6 +459,8 @@ async def chat_resume(
             stream_events=repo.stream_events,
             runs=repo.runs,
             run_id=plan.run_id,
+            # 恢复是同一轮的延续：保留中断前的思考过程，跨 Pod 打开时才能回放完整过程
+            keep_events=True,
         )
     )
 
