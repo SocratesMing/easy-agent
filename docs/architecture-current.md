@@ -48,6 +48,8 @@
 
 模型协议：只支持 OpenAI 兼容协议（`protocol: openai`，`agent/model.py` 的 `ReasoningChatOpenAI`），Anthropic 协议已移除，配成其他协议时 `create_model` 直接报错。
 
+手动压缩：`POST /agent/sessions/{id}/context/compact` 经 `services/sessions/compaction.py` 使用与聊天/resume 共用的业务租约和提交围栏，摘要事件及幂等结果原子写入 checkpoint；原聊天记录不变。能力限单实例、单 worker、开启会话 thread、独立 SQLite checkpoint。适配层及安装声明共同限定 DeepAgents 0.7.28 / LangGraph 1.2.16；状态查询与执行共用版本/接口探测，不兼容环境在摘要前拒绝。官方工具对照及升级契约见 [手动压缩设计 §7](design/指令菜单于手动压缩设计.md)。
+
 思考回传：每条 assistant 消息的思考都随请求回传给模型，本轮和历史轮次、带不带工具调用一视同仁（DeepSeek 文档要求请求带 tools 时回传历史各轮的 `reasoning_content`）。`ReasoningChatOpenAI` 把 `additional_kwargs` 里的思考写成请求里的 `reasoning_content` 字段（`agent/model.py` 的 `inject_reasoning_content`）；会话 thread 的历史原样发出，`agent/turn_context.py` 只渲染本轮用户消息。从 DB 重建历史时按 step 把思考块放回对应的 AIMessage（`services/streaming/messages.py`）。`/agent/completion/chat` 的 assistant 消息可带 `thinking` 回传。摘要的 token 计数包含 `additional_kwargs` 里的思考（`agent/summarization.py` 的 `count_tokens_with_reasoning`）。
 
 ### Agent 工具与沙箱
