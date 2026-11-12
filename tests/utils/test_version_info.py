@@ -31,12 +31,12 @@ def test_write_version_file_keeps_only_name_and_version(repo):
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved == info
-    assert saved == {"name": "easy-agent", "version": f"{version_info.package_version()}.{head[-6:]}"}
+    assert saved == {"name": "easy-agent", "version": f"{version_info.package_version()}.{head[:6]}"}
 
 
-def test_build_version_appends_last_six_chars_of_commit():
+def test_build_version_appends_first_six_chars_of_commit():
     commit = "6f9557d191badd1d14809489bc0f8e5910c64f43"
-    assert version_info.build_version(commit) == f"{version_info.package_version()}.c64f43"
+    assert version_info.build_version(commit) == f"{version_info.package_version()}.6f9557"
     assert version_info.build_version(None) == version_info.package_version()
 
 

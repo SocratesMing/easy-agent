@@ -24,7 +24,7 @@ from easy_agent.utils.version_info import write_version_file  # noqa: E402
 # 需要打包的顶层路径（相对 ROOT），支持文件或目录；
 # 目录会自动递归收集；文件/目录路径不能重复。
 INCLUDE_PATHS = [
-    # 部署版本号（末尾为 commit id 后 6 位），main() 打包前重新生成
+    # 部署版本号（末尾为 commit id 前 6 位），main() 打包前重新生成
     "version.json",
     # 后端源码 + 入口
     "main.py",

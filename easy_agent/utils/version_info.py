@@ -1,6 +1,6 @@
 """部署版本信息：项目根的 ``version.json``，只有 ``name`` 和 ``version`` 两个字段。
 
-``version`` 是包版本号拼上来源 commit id 的后 6 位，例如 ``0.1.0.c64f43``；不记录分支、作者等
+``version`` 是包版本号拼上来源 commit id 的前 6 位，例如 ``0.1.0.6f9557``；不记录分支、作者等
 其他 git 信息。文件由 git hook（``.githooks/``）在每次提交 / 切分支 / 合并后重新生成，发布打包时
 再生成一次，随代码一起拷到离线环境。它不入库：commit id 要在提交之后才知道。
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 VERSION_FILE = PROJECT_ROOT / "version.json"
 NAME = "easy-agent"
-COMMIT_SUFFIX_LEN = 6
+COMMIT_PREFIX_LEN = 6
 
 
 @lru_cache(maxsize=1)
@@ -62,7 +62,7 @@ def _head_commit(root: Path) -> str | None:
 
 def build_version(commit: str | None) -> str:
     base = package_version()
-    return f"{base}.{commit[-COMMIT_SUFFIX_LEN:]}" if commit else base
+    return f"{base}.{commit[:COMMIT_PREFIX_LEN]}" if commit else base
 
 
 def collect_from_git(root: Path = PROJECT_ROOT) -> dict[str, str] | None:

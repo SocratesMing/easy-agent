@@ -1,4 +1,4 @@
-"""生成项目根的 version.json（name + version，version 末尾拼来源 commit id 后 6 位），供离线部署后查看。
+"""生成项目根的 version.json（name + version，version 末尾拼来源 commit id 前 6 位），供离线部署后查看。
 
 用法: python scripts/release/write_version.py [--quiet]
 git hook（.githooks/）在提交 / 切分支 / 合并 / rebase 后自动调用；publish_zip.py 打包前也会调用。
