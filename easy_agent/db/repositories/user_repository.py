@@ -103,10 +103,13 @@ class UserRepository:
         return users_repo.verify_user_password(self._db, account, password)
 
     def get_or_create_passwordless_user(
-        self, username: str, user_id: str = ""
+        self,
+        username: str,
+        user_id: str = "",
+        profile: Optional[dict] = None,
     ) -> tuple[Optional[UserModel], bool]:
         return users_repo.get_or_create_passwordless_user(
-            self._db, username, user_id=user_id
+            self._db, username, user_id=user_id, profile=profile
         )
 
     def get_or_create_default_user(self) -> UserModel:

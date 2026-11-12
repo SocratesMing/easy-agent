@@ -16,8 +16,8 @@ def trusted_portal_policy(client, monkeypatch):
     monkeypatch.setattr(policy, "passwordless_login_enabled", True)
 
 
-def _passwordless_login(client, username, user_id=None):
-    payload = {"username": username}
+def _passwordless_login(client, username, user_id=None, **profile):
+    payload = {"username": username, **profile}
     if user_id is not None:
         payload["user_id"] = user_id
     return client.post("/agent/auth/login-passwordless", json=payload)
@@ -108,6 +108,110 @@ def test_passwordless_login_creates_workspace_dirs(client):
 
     workspace = Path(os.environ["TEST_WORKSPACE_DIR"]) / "users" / "pluser-ws"
     assert workspace.is_dir()
+
+
+def test_passwordless_login_creates_user_with_personnel_fields(auth_client, db):
+    resp = _passwordless_login(
+        auth_client,
+        "plprofile1",
+        "ext-profile-1",
+        display_name="张三",
+        employee_id="E-1001",
+        department_id="D-01",
+        department_name="研发部",
+        division_name="平台处",
+        team_name="AI组",
+        email="zhangsan@example.com",
+        position="工程师",
+        mobile="13800000000",
+    )
+    assert resp.status_code == 200
+
+    user = db.get_user_by_username("plprofile1")
+    assert user.display_name == "张三"
+    assert user.employee_id == "E-1001"
+    assert user.department_id == "D-01"
+    assert user.department_name == "研发部"
+    assert user.division_name == "平台处"
+    assert user.team_name == "AI组"
+    assert user.email == "zhangsan@example.com"
+    assert user.position == "工程师"
+    assert user.mobile == "13800000000"
+    # 知识库鉴权读 organization_id，必须与部门编号同步
+    assert user.organization_id == "D-01"
+    assert user.personnel_source == "portal"
+
+
+def test_passwordless_login_department_id_falls_back_to_name(auth_client, db):
+    resp = _passwordless_login(
+        auth_client, "plprofile2", department_name="运营部"
+    )
+    assert resp.status_code == 200
+
+    user = db.get_user_by_username("plprofile2")
+    assert user.department_id == "运营部"
+    assert user.department_name == "运营部"
+    assert user.organization_id == "运营部"
+
+
+def test_passwordless_login_only_fills_empty_personnel_fields(auth_client, db):
+    first = _passwordless_login(
+        auth_client,
+        "plprofile3",
+        department_id="D-02",
+        department_name="研发部",
+    )
+    assert first.status_code == 200
+
+    second = _passwordless_login(
+        auth_client,
+        "plprofile3",
+        display_name="李四",
+        division_name="数据处",
+        team_name="报表组",
+        employee_id="E-1002",
+        email="lisi@example.com",
+        position="分析师",
+        mobile="13900000000",
+        department_id="D-99",
+        department_name="市场部",
+    )
+    assert second.status_code == 200
+
+    user = db.get_user_by_username("plprofile3")
+    # 已有部门不被覆盖
+    assert user.department_id == "D-02"
+    assert user.department_name == "研发部"
+    assert user.organization_id == "D-02"
+    # 空字段被补全
+    assert user.display_name == "李四"
+    assert user.division_name == "数据处"
+    assert user.team_name == "报表组"
+    assert user.employee_id == "E-1002"
+    assert user.email == "lisi@example.com"
+    assert user.position == "分析师"
+    assert user.mobile == "13900000000"
+
+
+def test_passwordless_login_skips_employee_id_taken_by_other_user(auth_client, db):
+    first = _passwordless_login(
+        auth_client, "plprofile4", employee_id="E-2001"
+    )
+    assert first.status_code == 200
+
+    second = _passwordless_login(
+        auth_client, "plprofile5", employee_id="E-2001"
+    )
+    assert second.status_code == 200
+    assert db.get_user_by_username("plprofile5").employee_id == ""
+
+
+def test_passwordless_login_rejects_admin_department(client):
+    resp = client.post(
+        "/agent/auth/login-passwordless",
+        json={"username": "plbaddept", "department_id": "admin"},
+    )
+    assert resp.status_code == 422
 
 
 def test_passwordless_login_validates_username(client):

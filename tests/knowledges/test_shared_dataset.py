@@ -10,7 +10,12 @@ import pytest
 
 from easy_agent.knowledges.api import KnowledgePrincipal
 from easy_agent.knowledges.core.config import KnowledgeConfig
-from easy_agent.knowledges.core.models import KnowledgeBaseVisibility
+from easy_agent.knowledges.core.models import (
+    Evidence,
+    KnowledgeBaseVisibility,
+    RetrieveResponse,
+    SessionKnowledgeScopeResponse,
+)
 from easy_agent.knowledges.core.repository import KnowledgeRepository
 from easy_agent.knowledges.core.original_store import LocalOriginalStore
 from easy_agent.knowledges.ragflow import RagflowError
@@ -114,7 +119,7 @@ def _principal(
 
 
 def _make_service(
-    db, ragflow: _FakeRagflow, tmp_path, *, embedding_model: str = ""
+    db, ragflow: _FakeRagflow, tmp_path
 ) -> KnowledgeService:
     return KnowledgeService(
         KnowledgeRepository(db),
@@ -123,7 +128,6 @@ def _make_service(
             enabled=True,
             base_url="http://ragflow",
             api_key="rk",
-            embedding={"model": embedding_model},
         ),
         original_store=LocalOriginalStore(tmp_path / "originals"),
     )
@@ -135,7 +139,6 @@ def _make_service_with_dataset(
     tmp_path,
     *,
     dataset_id: str,
-    embedding_model: str = "",
 ) -> KnowledgeService:
     return KnowledgeService(
         KnowledgeRepository(db),
@@ -145,7 +148,6 @@ def _make_service_with_dataset(
             base_url="http://ragflow",
             api_key="rk",
             shared_dataset_id=dataset_id,
-            embedding={"model": embedding_model},
         ),
         original_store=LocalOriginalStore(tmp_path / "originals"),
     )
@@ -281,30 +283,32 @@ async def test_configured_missing_dataset_raises_actionable_error(db, tmp_path):
 
 
 async def test_from_mapping_reads_shared_dataset_id(monkeypatch):
-    """配置解析：YAML 键 shared_dataset_id 生效；未提供时回退环境变量。"""
+    """配置解析：环境变量优先于 YAML；未设置时回退 YAML / 空值。"""
+
+    monkeypatch.delenv("RAGFLOW_SHARED_DATASET_ID", raising=False)
     config = KnowledgeConfig.from_mapping({"shared_dataset_id": "ds-yaml"})
     assert config.shared_dataset_id == "ds-yaml"
 
     monkeypatch.setenv("RAGFLOW_SHARED_DATASET_ID", "ds-env")
+    # 环境变量显式设置时覆盖 YAML 字面值
+    assert (
+        KnowledgeConfig.from_mapping({"shared_dataset_id": "ds-yaml"}).shared_dataset_id
+        == "ds-env"
+    )
     assert KnowledgeConfig.from_mapping({}).shared_dataset_id == "ds-env"
 
     monkeypatch.delenv("RAGFLOW_SHARED_DATASET_ID")
     assert KnowledgeConfig.from_mapping({}).shared_dataset_id == ""
 
 
-def test_from_mapping_ignores_embedding_model(monkeypatch):
-    """embedding 模型不再从 YAML / RAGFLOW_EMBEDDING_MODEL 环境变量读取——
-    一律静默忽略，让运行时从上游 RAGFlow 数据集解析。"""
-    # YAML 里写了 embedding.model
+def test_from_mapping_ignores_legacy_embedding_key(monkeypatch):
+    """旧配置里的 knowledge.embedding 不再生效，也不会导致加载失败。"""
+
     config = KnowledgeConfig.from_mapping({"embedding": {"model": "bge-yaml"}})
-    assert config.embedding.model == ""
+    assert not hasattr(config, "embedding")
 
-    # 环境变量写了 RAGFLOW_EMBEDDING_MODEL
     monkeypatch.setenv("RAGFLOW_EMBEDDING_MODEL", "bge-env")
-    assert KnowledgeConfig.from_mapping({}).embedding.model == ""
-
-    monkeypatch.delenv("RAGFLOW_EMBEDDING_MODEL")
-    assert KnowledgeConfig.from_mapping({}).embedding.model == ""
+    assert not hasattr(KnowledgeConfig.from_mapping({}), "embedding")
 
 
 async def test_find_shared_dataset_does_not_use_name_filter(db, tmp_path):
@@ -375,9 +379,12 @@ async def test_upload_personal_base_routes_to_shared_and_tags_owner(db, tmp_path
     assert ragflow.parsed[0]["document_ids"] == [
         ragflow.document_updates[0]["document_id"]
     ]
-    # 个人库文档打 owner_user_id 标签
+    # 个人库文档打 owner_user_id 标签，并统一带 base_id 元数据
     assert ragflow.document_updates[0]["dataset_id"] == shared_id
-    assert ragflow.document_updates[0]["meta_fields"] == {"owner_user_id": "u-1"}
+    assert ragflow.document_updates[0]["meta_fields"] == {
+        "base_id": str(base["id"]),
+        "owner_user_id": "u-1",
+    }
 
 
 async def test_upload_public_shared_base_has_no_tag(db, tmp_path):
@@ -399,8 +406,8 @@ async def test_upload_public_shared_base_has_no_tag(db, tmp_path):
 
     shared_id = await service._ensure_shared_dataset()
     assert ragflow.uploaded[0]["dataset_id"] == shared_id
-    # 公共库不打个人标签
-    assert ragflow.document_updates[0]["meta_fields"] is None
+    # 公共库不打个人标签，但仍写入 base_id 元数据（检索范围过滤用）
+    assert ragflow.document_updates[0]["meta_fields"] == {"base_id": str(base["id"])}
 
 
 # ---------------------------------------------------------------------------
@@ -617,7 +624,8 @@ async def test_retrieve_percentage_question_does_not_trigger_aggregation(db, tmp
     call = ragflow.retrieve_calls[0]
     # 仅含百分比的分析题不再走聚合模式（不降阈值、不扩候选）
     assert call["similarity_threshold"] == 0.5
-    assert call["page_size"] == 5
+    # 宽召回：候选条数取 knowledge.retrieval.page_size（默认 30），不再等于 top_n
+    assert call["page_size"] >= 5
 
 
 async def test_retrieve_falls_back_when_primary_threshold_has_no_hits(db, tmp_path):
@@ -660,6 +668,8 @@ async def test_retrieve_falls_back_when_primary_threshold_has_no_hits(db, tmp_pa
     assert [call["similarity_threshold"] for call in calls] == [0.5, 0.4]
     assert result.evidence
     assert result.evidence[0].snippet == "降级命中内容"
+    # 降级阈值命中属于弱证据，提示词需要标注「弱相关」
+    assert result.evidence[0].metadata["weak"] is True
 
 
 async def test_retrieve_aggregation_stops_at_next_section(db, tmp_path):
@@ -872,3 +882,227 @@ async def test_refresh_shared_base_updates_fast_document_before_slow_one(db, tmp
     release_slow.set()
     await asyncio.wait_for(refresh_task, timeout=2)
     assert repository.get_document(slow["id"])["status"] == "ready"
+
+
+# ---------------------------------------------------------------------------
+# 检索增强：base_id 元数据范围 / 同文档去重 / 按库配额 / 重复上传
+# ---------------------------------------------------------------------------
+async def test_retrieve_uses_base_meta_when_backfilled(db, tmp_path):
+    """已回填 base_id 的库按元数据过滤，不再传 document_ids（不受 500 篇上限）。"""
+
+    ragflow = _FakeRagflow()
+    service = _make_service(db, ragflow, tmp_path)
+    base = _create_base_row(db, space_type="team", owner_user_id="u-admin")
+    KnowledgeRepository(db).update_base(base["id"], meta_backfilled=1)
+    _add_document(
+        db,
+        str(base["id"]),
+        name="b.txt",
+        status="ready",
+        remote_document_id="rd-2",
+        created_by="u-admin",
+    )
+
+    await service._retrieve_base_evidence(
+        base_id=str(base["id"]),
+        principal=_principal(user_id="u-admin", username="admin"),
+        question="问题",
+        document_ids=None,
+        top_n=5,
+        request_id="req-meta",
+    )
+
+    call = ragflow.retrieve_calls[0]
+    assert call["meta_fields"] == {"base_id": str(base["id"])}
+    assert "document_ids" not in call
+
+
+async def test_retrieve_falls_back_to_document_ids_when_meta_scope_misscoped(db, tmp_path):
+    """元数据过滤失效（返回其它库片段）时回退 document_ids 范围。"""
+
+    ragflow = _FakeRagflow()
+    service = _make_service(db, ragflow, tmp_path)
+    base = _create_base_row(db, space_type="team", owner_user_id="u-admin")
+    KnowledgeRepository(db).update_base(base["id"], meta_backfilled=1)
+    _add_document(
+        db,
+        str(base["id"]),
+        name="b.txt",
+        status="ready",
+        remote_document_id="rd-2",
+        created_by="u-admin",
+    )
+    calls: list[dict] = []
+
+    async def retrieve(**kwargs):
+        calls.append(kwargs)
+        if "document_ids" not in kwargs:
+            # 模拟上游忽略 meta_fields：返回了其它知识库的片段
+            return {
+                "chunks": [
+                    {
+                        "document_id": "rd-other",
+                        "chunk_id": "c-other",
+                        "content_with_weight": "别的库",
+                        "similarity": 0.9,
+                    }
+                ]
+            }
+        return {
+            "chunks": [
+                {
+                    "document_id": "rd-2",
+                    "chunk_id": "c1",
+                    "content_with_weight": "回退命中",
+                    "similarity": 0.9,
+                }
+            ]
+        }
+
+    ragflow.retrieve = retrieve
+
+    result = await service._retrieve_base_evidence(
+        base_id=str(base["id"]),
+        principal=_principal(user_id="u-admin", username="admin"),
+        question="问题",
+        document_ids=None,
+        top_n=5,
+        request_id="req-meta-fallback",
+    )
+
+    assert "document_ids" not in calls[0]
+    assert calls[1]["document_ids"] == ["rd-2"]
+    assert result.evidence and result.evidence[0].snippet == "回退命中"
+
+
+async def test_retrieve_dedupes_chunks_of_same_document(db, tmp_path):
+    """同一文档多个命中块只保留最高分一条，避免挤占其它文档的证据名额。"""
+
+    ragflow = _FakeRagflow()
+    service = _make_service(db, ragflow, tmp_path)
+    base = _create_base_row(db, space_type="personal", owner_user_id="u-1")
+    _add_document(
+        db, str(base["id"]), name="a.txt", status="ready", remote_document_id="rd-1"
+    )
+    ragflow.retrieve_result = {
+        "chunks": [
+            {
+                "document_id": "rd-1",
+                "chunk_id": "c1",
+                "content_with_weight": "高分段",
+                "similarity": 0.9,
+            },
+            {
+                "document_id": "rd-1",
+                "chunk_id": "c2",
+                "content_with_weight": "低分段",
+                "similarity": 0.8,
+            },
+        ]
+    }
+
+    result = await service._retrieve_base_evidence(
+        base_id=str(base["id"]),
+        principal=_principal(user_id="u-1"),
+        question="问题",
+        document_ids=None,
+        top_n=5,
+        request_id="req-dedupe",
+    )
+
+    assert len(result.evidence) == 1
+    assert result.evidence[0].snippet == "高分段"
+    assert result.evidence[0].score == 0.9
+
+
+async def test_retrieve_session_applies_per_base_quota(db, tmp_path, monkeypatch):
+    """多库检索时每个库至少保留配额条数，剩余名额再按全局分数补齐。"""
+
+    ragflow = _FakeRagflow()
+    service = _make_service(db, ragflow, tmp_path)
+    base_a = _create_base_row(db, space_type="team", owner_user_id="u-admin")
+    base_b = _create_base_row(db, space_type="team", owner_user_id="u-admin")
+
+    async def get_scope(*, session_id, principal):
+        return SessionKnowledgeScopeResponse(
+            session_id=session_id,
+            base_ids=[str(base_a["id"]), str(base_b["id"])],
+        )
+
+    async def fake_retrieve(
+        *, base_id, principal, question, document_ids, top_n, request_id,
+        metadata_filter=None,
+    ):
+        if base_id == str(base_a["id"]):
+            evidence = [
+                Evidence(
+                    document_id=f"a{index}",
+                    document_name=f"a{index}.txt",
+                    snippet="片段",
+                    score=0.9 - index * 0.01,
+                )
+                for index in range(5)
+            ]
+        else:
+            evidence = [
+                Evidence(
+                    document_id=f"b{index}",
+                    document_name=f"b{index}.txt",
+                    snippet="片段",
+                    score=0.5 - index * 0.01,
+                )
+                for index in range(3)
+            ]
+        return RetrieveResponse(evidence=evidence, request_id=request_id)
+
+    monkeypatch.setattr(service, "get_session_scope", get_scope)
+    monkeypatch.setattr(service, "_retrieve_base_evidence", fake_retrieve)
+
+    result = await service.retrieve_session_evidence(
+        session_id="session-1",
+        principal=_principal(),
+        question="问题",
+        top_n=8,
+        request_id="req-quota",
+    )
+
+    names = [item.document_name for item in result.evidence]
+    assert len(names) == 8
+    # 低分的 B 库也保住配额，不被高分的 A 库完全挤掉
+    assert "b0.txt" in names and "b1.txt" in names
+
+
+async def test_upload_rejects_duplicate_content_in_same_base(db, tmp_path):
+    """同库重复内容直接拒绝上传，并提示已存在的文档名。"""
+
+    ragflow = _FakeRagflow()
+    service = _make_service(db, ragflow, tmp_path)
+    base = _create_base_row(db, space_type="personal", owner_user_id="u-1")
+    content = b"duplicate bytes"
+
+    await service.upload_document(
+        base_id=str(base["id"]),
+        folder_id=None,
+        filename="first.txt",
+        content_type="text/plain",
+        size_bytes=len(content),
+        content=io.BytesIO(content),
+        principal=_principal(user_id="u-1"),
+        request_id="req-dup-1",
+    )
+
+    with pytest.raises(KnowledgeServiceError) as exc_info:
+        await service.upload_document(
+            base_id=str(base["id"]),
+            folder_id=None,
+            filename="second.txt",
+            content_type="text/plain",
+            size_bytes=len(content),
+            content=io.BytesIO(content),
+            principal=_principal(user_id="u-1"),
+            request_id="req-dup-2",
+        )
+
+    assert exc_info.value.code == "KNOWLEDGE_DUPLICATE_DOCUMENT"
+    assert exc_info.value.status_code == 409
+    assert "first.txt" in exc_info.value.message
