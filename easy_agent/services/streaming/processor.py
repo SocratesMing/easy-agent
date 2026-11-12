@@ -579,9 +579,12 @@ class StreamProcessor:
         tcc = getattr(chunk, "tool_call_chunks", None) or []
         if rc:
             events.extend(self._process_reasoning(rc))
-        if content and not tcc:
-            # chunk.content 的静态类型是 str | list[block]；流式 token 实际只可能是 str，
-            # 非 str 内容沿用原行为（交给 _process_content，不做类型分支改写）。
+        # OpenAI 兼容流的工具参数只在 tool_call_chunks 里，字符串 content 一定是模型说的话：
+        # 和工具分片同包到达（网关合包、或非流式结果被包成单包）时也要计入正文，
+        # 否则工具调用前的最后几个字在界面和库里都会丢。
+        # chunk.content 的静态类型是 str | list[block]；非 str 内容只在没有工具分片时
+        # 交给 _process_content，沿用原行为（不做类型分支改写）。
+        if content and (isinstance(content, str) or not tcc):
             events.extend(self._process_content(cast(str, content)))
         # 大参数工具（write_file/edit_file）的 arguments 分片：边收边解析出当前
         # 快照，下发 tool_call_delta 供前端实时渲染正在写入的内容。
@@ -782,19 +785,25 @@ class StreamProcessor:
         )
 
     def _sse_blocks(self) -> list[dict]:
+        """审批续跑的 ``done`` / ``approval_required`` 下发的整条消息 blocks 快照。
+
+        前端拿它**整体替换**这条消息的内存 blocks（含审批之前的部分），所以思考、正文、
+        工具结果都不能截断——截了就会在实时视图里少一截，直到刷新读库才恢复。
+        库里存的就是完整 blocks，历史接口也原样整段返回，快照不会比一次历史加载更大。
+        """
         out = []
         for b in self.blocks:
             bt = b.get("type", "")
             item = {"type": bt, "order": b.get("order", 0), "step": b.get("step", 0)}
             if bt == "thinking":
-                item["content"] = (b.get("content", "") or "")[:3000]
+                item["content"] = b.get("content", "") or ""
                 item["duration"] = b.get("duration")
             elif bt == "tool_call":
                 item["tool_name"] = b.get("tool_name", "")
                 item["tool_call_id"] = b.get("tool_call_id", "")
                 item["id"] = b.get("tool_call_id", "") or b.get("id", "")
                 item["arguments"] = b.get("arguments", {})
-                item["result"] = str(b.get("result", ""))[:3000]
+                item["result"] = str(b.get("result", ""))
                 item["success"] = b.get("success", True)
                 item["duration"] = b.get("duration")
                 if b.get("approval_status"):
@@ -804,7 +813,7 @@ class StreamProcessor:
                 # 过滤空/纯空白的 content block，避免 done 事件下发空正文
                 if not _c.strip():
                     continue
-                item["content"] = _c[:8000]
+                item["content"] = _c
             out.append(item)
         return out
 

@@ -8,7 +8,7 @@ DeepSeek 文档要求请求带 tools 时历史各轮的 ``reasoning_content`` �
 
 from __future__ import annotations
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
 from easy_agent.agent.model import ReasoningChatOpenAI, inject_reasoning_content
 
@@ -156,3 +156,35 @@ def test_non_stream_response_reasoning_is_extracted():
     message = result.generations[0].message
     assert message.additional_kwargs["reasoning_content"] == "先想一想"
     assert message.tool_calls[0]["name"] == "execute"
+
+
+def _stream_chunk(delta: dict) -> dict:
+    return {
+        "id": "c1",
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": "thinking-model",
+        "choices": [
+            {"index": 0, "finish_reason": None, "delta": {"role": "assistant", "content": "", **delta}}
+        ],
+    }
+
+
+def test_stream_delta_with_both_reasoning_keys_keeps_one_copy():
+    """网关同时下发 reasoning_content 和 reasoning（同一段内容）时，思考只记一份。"""
+    gen = _model()._convert_chunk_to_generation_chunk(
+        _stream_chunk({"reasoning_content": "先读表格", "reasoning": "先读表格"}), AIMessageChunk, {}
+    )
+    assert gen.message.additional_kwargs["reasoning_content"] == "先读表格"
+
+
+def test_stream_delta_takes_first_non_empty_reasoning_field():
+    """只带别名字段，或主字段为空 / null 时，取第一个非空的字符串字段。"""
+    model = _model()
+    for delta, expected in [
+        ({"reasoning": "想一想"}, "想一想"),
+        ({"reasoning_content": "", "reasoning": "再想想"}, "再想想"),
+        ({"reasoning_content": None, "reason_content": "换个字段"}, "换个字段"),
+    ]:
+        gen = model._convert_chunk_to_generation_chunk(_stream_chunk(delta), AIMessageChunk, {})
+        assert gen.message.additional_kwargs["reasoning_content"] == expected, delta

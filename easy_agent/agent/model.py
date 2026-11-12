@@ -177,6 +177,19 @@ def _extract_reasoning(source: dict):
     return None
 
 
+def _first_reasoning_text(source: dict) -> str:
+    """``source`` 里按 ``_REASONING_KEYS`` 优先级取到的第一个非空字符串思考字段。
+
+    一包流式 delta 只取一个：有的网关为兼容同时下发 ``reasoning_content`` 和
+    ``reasoning`` 两份同样的内容，逐个拼接会让思考重复一遍。
+    """
+    for key in _REASONING_KEYS:
+        val = source.get(key)
+        if isinstance(val, str) and val:
+            return val
+    return ""
+
+
 def extract_reasoning(additional_kwargs) -> str:
     """Extract reasoning/thinking text from a message's ``additional_kwargs``.
 
@@ -649,12 +662,7 @@ class ReasoningChatOpenAI(ChatOpenAI):
             return gen
         delta = choices[0]["delta"]
 
-        reasoning = ""
-        for key in _REASONING_KEYS:
-            val = delta.get(key)
-            if isinstance(val, str):
-                reasoning += val
-
+        reasoning = _first_reasoning_text(delta)
         if reasoning:
             existing = msg.additional_kwargs.get("reasoning_content")
             msg.additional_kwargs["reasoning_content"] = (existing or "") + reasoning
