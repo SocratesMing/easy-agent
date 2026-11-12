@@ -28,7 +28,7 @@ import markedCjkFriendly from './cjkFriendly.js'
 import { createInlineMathExtension } from './math.js'
 import { CODE_COPY_ONCLICK, sanitizeHtml } from './sanitize.js'
 import { CODE_HOLDER_PREFIX, protectCodeRegions } from './codeRegions.js'
-import { MARKER_PREFIX, parseMarker, sourceCardMarker } from './markers.js'
+import { MARKER_PREFIX, parseMarker } from './markers.js'
 import { bufferStreamingTail } from './streamingTail.js'
 import { isFenceClosed, visualKindOfLang, visualPendingHtml, visualPlaceholderHtml } from '../visual/fence.js'
 
@@ -58,45 +58,19 @@ export function normalizeMathDelimiters(content) {
 }
 
 // ---------------------------------------------------------------------------
-// 来源卡片：把 AI 回复里「标题 + 链接」独立成行的来源美化成可点击卡片。
-// 诉求：不展示裸 URL，直接显示标题，点击标题跳转，卡片化外观。
-//   同花顺涨停复盘 http://xxx.shtml
-//   东方财富收评：https://xxx.html
-//   [东方财富收评](https://xxx.html)
-//   https://xxx.html（无标题时以域名作为卡片标题）
-// 完整地址放在卡片 title 属性里，悬停可查看但界面不展示。
-//
-// 2026-11-06：只往源文本放占位标记（./markers.js），HTML 由 marked 扩展生成；
-// 同时收紧判定，命令行 / 表格行 / 完整句子 / 含反引号的行一律不改写。
+// 来源行：独立成行的「标题 + 裸链接」收成 markdown 链接 [标题](url)，
+// 和正文里的 [文字](链接) 走同一套文字链接。已经是 markdown 链接的行、纯 URL 行不改写
+// （纯 URL 交给后面的自动链接，显示地址本身）。
+//   东方财富收评：https://xxx.html  →  [东方财富收评](https://xxx.html)
+//   [东方财富收评](https://xxx.html)  →  保持不变
+// 命令行 / 表格行 / 完整句子 / 含反引号的行一律不改写。
 // ---------------------------------------------------------------------------
 
-const SOURCE_CARD_ICON =
-  // width/height 属性给出固有尺寸：所在容器没有卡片样式时也不会被撑成整块宽度的大图标
-  '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
-  ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-  '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>' +
-  '<polyline points="15 3 21 3 21 9"></polyline>' +
-  '<line x1="10" y1="14" x2="21" y2="3"></line>' +
-  '</svg>'
-
-/** 纯链接行无标题时的兜底：展示可读域名 */
-function getSourceCardDomain(url) {
-  try {
-    return new URL(url).hostname.replace(/^www\./i, '')
-  } catch (e) {
-    return url
-  }
-}
-
-function buildSourceCardHtml(title, url) {
-  return (
-    '<a class="msg-source-card" href="' + escapeHtml(url) + '"' +
-    ' target="_blank" rel="noopener noreferrer"' +
-    ' title="' + escapeHtml(url) + '">' +
-    SOURCE_CARD_ICON +
-    '<span class="msg-source-card-title">' + escapeHtml(title) + '</span>' +
-    '</a>'
-  )
+/** 把来源标题收成 markdown 链接。目标地址用尖括号包裹，URL 里的括号不会截断链接。 */
+function toMarkdownLink(title, url) {
+  const label = String(title || '').replace(/[\[\]]/g, '').trim()
+  const dest = String(url || '').replace(/>/g, '%3E')
+  return '[' + label + '](<' + dest + '>)'
 }
 
 /** 知识依据锚点：数据全部来自标记，display 由渲染器转义 */
@@ -120,7 +94,6 @@ const TRAIL_PUNCT = "[。，、；：！？…,.;:!?'\"）】》」』]*"
 const TITLE_URL_RE = new RegExp(
   '^(.+?)\\s*[:：，,]?\\s*(' + URL_BODY + ')\\s*(' + TRAIL_PUNCT + ')\\s*$'
 )
-const URL_ONLY_RE = new RegExp('^(' + URL_BODY + ')\\s*(' + TRAIL_PUNCT + ')\\s*$')
 const MD_LINK_LINE_RE = new RegExp(
   '^\\[([^\\]\\n]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)\\s*(' + TRAIL_PUNCT + ')\\s*$'
 )
@@ -235,7 +208,7 @@ export function linkifyText(text) {
 }
 
 /**
- * 单行解析：命中来源链接模式则返回卡片数据，否则返回 null。
+ * 单行解析：命中「标题 + 裸 URL」则返回改写数据，否则返回 null。
  * 保留列表 / 标题前缀，改写后前缀仍留在 markdown 源文本里。
  */
 function parseSourceLine(raw) {
@@ -246,12 +219,11 @@ function parseSourceLine(raw) {
   // 表格行（含无首尾竖线的写法）、含反引号的行、命令行都不参与改写
   if (line.indexOf('|') !== -1 || line.indexOf('`') !== -1 || COMMAND_RE.test(line)) return null
 
-  // 1. markdown 链接独立成行：[标题](url)
-  let m = line.match(MD_LINK_LINE_RE)
-  if (m) return { prefix, title: m[1].trim(), url: m[2], tail: m[3] || '' }
+  // 1. 已经是 markdown 链接：[标题](url)。保持原样，后面和行内链接同一套渲染。
+  if (MD_LINK_LINE_RE.test(line)) return null
 
   // 2. 标题 + 裸链接：「东方财富收评：url」「凤凰财经/中国证券报 url」
-  m = line.match(TITLE_URL_RE)
+  let m = line.match(TITLE_URL_RE)
   if (m) {
     // 流式期间未闭合的 markdown 链接不当作来源行，避免卡片标题里露出 [ ] 字面量
     if (hasUnclosedMarkdown(m[1])) return null
@@ -264,62 +236,25 @@ function parseSourceLine(raw) {
     return { prefix, title, url, tail: (m[3] || '') + tail }
   }
 
-  // 3. 纯链接行：没有可展示的标题，用域名替代
-  m = line.match(URL_ONLY_RE)
-  if (m) {
-    const { url, tail } = splitUrlTail(m[1])
-    if (!url) return null
-    return { prefix, title: getSourceCardDomain(url), url, tail: (m[2] || '') + tail }
-  }
+  // 3. 纯链接行：不改写成带标题的链接，交给 normalizeInlineUrls 做自动链接
   return null
 }
 
-/** 连续卡片行包进 flex 容器：横向排列、装不下自动换行 */
-function wrapSourceCards(cardHtmlLines) {
-  return '<span class="msg-source-cards">' + cardHtmlLines.join(' ') + '</span>'
-}
-
 /**
- * 来源链接美化：把 AI 回复里的「标题 + 链接」行换成占位标记。
- * 连续的卡片行合并成一个标记（对应一个 flex 容器）。
- * 代码区域整体保护，其中的 URL / 公式 / `[知识依据N]` 均不改写。
+ * 来源行收成 markdown 链接：只有「标题 + 裸 URL」整行会被改写。
+ * 已经是 [标题](url) 的、纯 URL、命令行、表格、代码区域都不改。
  *
  * @param {string} content markdown 文本
  * @returns {string} 替换后的 markdown 文本
  */
 export function beautifySourceLinks(content) {
   if (typeof content !== 'string' || !content) return content
-  return protectCodeRegions(content, (text) => {
-    const lines = text.split('\n').map((raw) => {
-      if (raw.indexOf(CODE_HOLDER_PREFIX) !== -1) return raw
-      const parsed = parseSourceLine(raw)
-      if (!parsed) return normalizeInlineUrls(raw)
-      const marker = sourceCardMarker([{ title: parsed.title, url: parsed.url }])
-      if (parsed.prefix) return { line: parsed.prefix + marker + parsed.tail, card: null }
-      return { line: marker + parsed.tail, card: { title: parsed.title, url: parsed.url } }
-    })
-
-    const grouped = []
-    let pending = []
-    const flush = () => {
-      if (!pending.length) return
-      grouped.push(sourceCardMarker(pending))
-      pending = []
-    }
-    for (const entry of lines) {
-      if (typeof entry === 'string') {
-        flush()
-        grouped.push(entry)
-      } else if (entry.card) {
-        pending.push(entry.card)
-      } else {
-        flush()
-        grouped.push(entry.line)
-      }
-    }
-    flush()
-    return grouped.join('\n')
-  })
+  return protectCodeRegions(content, (text) => text.split('\n').map((raw) => {
+    if (raw.indexOf(CODE_HOLDER_PREFIX) !== -1) return raw
+    const parsed = parseSourceLine(raw)
+    if (!parsed) return normalizeInlineUrls(raw)
+    return parsed.prefix + toMarkdownLink(parsed.title, parsed.url) + (parsed.tail || '')
+  }).join('\n'))
 }
 
 // ---------------------------------------------------------------------------
@@ -387,7 +322,10 @@ function easyAgentMarkerExtension() {
     },
     renderer(token) {
       if (token.kind === 'src') {
-        return wrapSourceCards(token.cards.map((c) => buildSourceCardHtml(c.title, c.url)))
+        return (token.cards || []).map((c) => (
+          '<a href="' + escapeHtml(c.url) + '" target="_blank" rel="noopener noreferrer">' +
+          escapeHtml(c.title) + '</a>'
+        )).join(' ')
       }
       return buildCitationHtml(token.display, token.compact)
     },
@@ -662,7 +600,8 @@ function tokensToHtml(tokens, renderer, options) {
 function modeOf(options) {
   return (options.rawHtml === 'allow' ? 'A' : 'E') +
     (options.partial ? 'P' : 'F') +
-    (options.remoteImages === 'inline' ? 'I' : 'L')
+    (options.remoteImages === 'inline' ? 'I' : 'L') +
+    (options.sourceCards === false ? 'D' : 'S')
 }
 
 function hashText(text) {
@@ -683,7 +622,7 @@ function prepareMarkdown(content, options) {
  * @param {string} content markdown 文本
  * @param {Object} renderer createMarkdownRenderer 创建的渲染器
  * @param {{ sourceCards?: boolean, remoteImages?: 'link'|'inline', rawHtml?: 'escape'|'allow', partial?: boolean }} [options]
- *   sourceCards=false 时不做来源卡片改写（文件/文档预览）；
+ *   sourceCards=false 时不把「标题 + 裸 URL」收成 markdown 链接（文件/文档预览）；
  *   remoteImages 默认 'link'：外站图片改成链接、不自动加载（防提示注入借图片地址外带数据），文件预览传 'inline'；
  *   rawHtml 默认 'escape'：模型写的原始 HTML 当文本显示，只放行 br/sub/sup/kbd/details/summary；
  *   partial=true 为流式中间帧：缓冲末行、代码块不做自动语言识别
