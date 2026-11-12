@@ -125,6 +125,9 @@ RUN uv pip install --system --no-cache --no-deps -e .
 # Copy frontend build output
 COPY --from=frontend-builder /build/frontend-vue2/dist ./frontend-vue2/dist/
 
+# 来源版本信息（.git 不进镜像）；version.json 不存在时只复制 pyproject.toml，构建不失败
+COPY pyproject.toml version.jso[n] ./
+
 # Copy entrypoint script
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

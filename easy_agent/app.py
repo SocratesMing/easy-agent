@@ -54,6 +54,7 @@ from easy_agent.models.exceptions import (
     NotFoundError,
 )
 from easy_agent.utils.paths import PROJECT_ROOT
+from easy_agent.utils.version_info import describe_version, get_version_info
 from easy_agent.services.agents.manager import (
     drain_stream_tasks,
     get_agent_config,
@@ -226,6 +227,7 @@ def _log_startup_banner(agent_env: str, config_path) -> None:
     logger.info(f"项目目录: {PROJECT_ROOT}")
     logger.info(f"操作系统: {platform.system()} {platform.release()}")
     logger.info(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"版本: {describe_version()}")
     logger.info("=" * 60)
 
     # 打印环境信息和配置文件
@@ -733,6 +735,12 @@ app.include_router(usage_router)
 @app.get("/api/live", summary="存活检查（liveness）", response_model=HealthResponse)
 async def liveness():
     return HealthResponse(status="live")
+
+
+@app.get("/agent/version", summary="部署版本（来源分支 / commit）")
+@app.get("/api/version", summary="部署版本（来源分支 / commit）")
+async def version_info():
+    return get_version_info()
 
 
 @app.get("/agent/health", summary="健康检查", response_model=HealthResponse)

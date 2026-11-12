@@ -32,6 +32,9 @@ ENV/
 # 便携运行时（嵌入式 Python + 依赖，仅本地分发用，勿提交；仅限仓库根目录）
 /runtime/
 
+# 部署版本信息（分支 / commit），由 .githooks 与发布打包生成；写的是当前 commit，不能入库
+/version.json
+
 workspace/
 *.log
 
