@@ -27,6 +27,12 @@
 审批续跑接着中断前的值往下算（等待审批的时间不计），与落库的 `usage` 一致。前端的会话合计 =
 流开始前其余消息的合计 + 本条累计值；续跑时先从会话合计里扣掉这条消息中断前已计入的部分。
 
+上述累计规则只适用于耗时和步数。`input_tokens` / `output_tokens` / `reasoning_tokens` /
+`context_tokens` 是最近一次模型调用的用量快照，后续调用覆盖前一份，不累加整轮消耗。
+个人 Token 账本另按每次实际调用累计，详见 [Token 用量统计](token-usage-api.md)。
+错误展示也分层：全局临时提示 5 秒后清空，`message.error` 与 `fallback_note` 随消息保留；
+超时使用常驻中性 `fallback_note`。完整约定见 [聊天行为契约](chat-behavior-contract.md)。
+
 ## HITL 审批：`approval_required` 与 `/agent/chat/resume`（DA-02，2026-10-19）
 
 并行的 `task` 子代理各自触发审批时，图里会同时挂着多个中断。`action_requests` 下发**全部**

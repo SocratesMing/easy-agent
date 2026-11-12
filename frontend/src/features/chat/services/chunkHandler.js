@@ -446,7 +446,7 @@ export function createStreamChunkHandler(vm, ctx) {
       const idx = findIdx()
       // code === 'timeout'：模型流式静默超时（一次模型调用 120 秒没收到新 chunk）。
       // 半成品和兜底文案后端已经落库，这里的差别只有「怎么展示」：
-      //   - 不写 message.error，也不设 vm.error —— 那是红色报错且 5 秒后自动消失；
+      //   - 不写 message.error（常驻红条），也不设 vm.error（5 秒临时通知）；
       //   - 改写 message.fallback_note，由 ChatMessage 在正文后渲染常驻灰条。
       // 其他异常（步数用尽等）code 为 undefined，走原来的红字路径，行为不变。
       const timedOut = data.code === 'timeout'

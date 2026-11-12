@@ -238,6 +238,35 @@ async def test_real_graph_stream_records_usage_but_checkpoint_has_no_internal_me
     assert not llm.callbacks[0]._pending
 
 
+async def test_stream_latest_call_usage_and_personal_ledger_have_distinct_scopes(db, graph_model):
+    """同一轮两次调用：聊天展示最后一次快照，个人账本保留并累计两次消耗。"""
+    _, requests, llm, _ = graph_model([
+        call("measured_echo", {"text": "echo"}, "echo-1"),
+        {"role": "assistant", "content": "finished"},
+    ])
+    graph = create_deep_agent(model=llm, tools=[measured_echo], backend=StateBackend())
+    processor = StreamProcessor(sid="two-calls", session_id="two-calls")
+    emitted = processor.start()
+    with usage_scope("alice-id", "two-calls"):
+        async for mode, item in graph.astream(
+            {"messages": [{"role": "user", "content": "Echo then answer"}]},
+            stream_mode=["messages", "updates"],
+        ):
+            emitted.extend(processor.handle(mode, item))
+    emitted.extend(processor.finalize(session_id="two-calls", elapsed_time=1))
+
+    assert len(requests) == len(records(db)) == 2
+    assert sum(row["input_tokens"] + row["output_tokens"] for row in records(db)) == 330
+    snapshots = [event for event in emitted if event["type"] == "token_usage"]
+    assert [(event["input_tokens"], event["output_tokens"]) for event in snapshots] == [
+        (100, 10), (200, 20),
+    ]
+    done = next(event for event in emitted if event["type"] == "done")
+    assert done["usage"]["input_tokens"] == 200
+    assert done["usage"]["output_tokens"] == 20
+    assert done["usage"]["context_tokens"] == 200
+
+
 @pytest.mark.parametrize("after_usage", [False, True])
 async def test_real_stream_close_only_records_when_complete_final_evidence_exists(
     db, graph_model, after_usage

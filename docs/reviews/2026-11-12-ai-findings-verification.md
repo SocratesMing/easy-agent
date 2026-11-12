@@ -1,6 +1,6 @@
 # 截图中 6 项潜在问题核查
 
-> 更新（2026-11-12）：第 1 项已修复并完成回归验证，详见第 4 节。以下第 1～3 节保留修复前的核查记录。
+> 更新（2026-11-12）：第 1 项已修复并完成回归验证，详见第 4 节；第 2 项已统一当前行为契约、修复关联回归并完成验证，详见第 5 节。以下第 1～3 节保留修复前的核查记录。
 
 - 核查日期：2026-11-12（Asia/Shanghai）。
 - 代码基线：分支 `audit-improvements-2026-10-18_llf`，提交 `7351eaf5`；开始核查时工作区干净。
@@ -333,3 +333,113 @@ node --test --test-reporter=spec \
 结果：**255 passed，5 条第三方 SWIG 弃用警告，34.60 秒**。覆盖流式处理、取消、HITL 恢复、异常保存、生命周期、SSE 契约及消息仓储兼容；本次未修改前端，也未调用真实模型或执行浏览器验收。
 
 静态检查：`uvx ruff check easy_agent/services/streaming/orchestrator.py easy_agent/services/streaming/persistence.py tests/api/test_run_lifecycle.py` 与 `git diff --check` 均通过。
+
+## 5. 第 2 项处理与验证（2026-11-12）
+
+**状态：当前契约已统一，关联回归已修复。** 本节基于提交 `2fd5250a` 开始处理；历史上已发生的需求调整仍按第 2.2 节记录，不把它改写为当前代码故障，也不推测金融门禁撤回的产品决策背景。
+
+### 当前行为及修复
+
+- 新增 [聊天行为契约](../chat-behavior-contract.md)，明确普通聊天金融门禁维持撤回，专家预检、技能校验及工具权限继续生效；今后调整需同步更新契约、接口文档和回归断言。金融历史设计增加当前契约入口。
+- 聊天 Token / 上下文是最近一次模型调用的快照，个人账本累计每次实际调用；耗时、步数另按当前消息累计。修正 Token API 文档中已撤回的普通聊天领域分类描述，并在 SSE 文档中明确这些范围。
+- 全局临时错误 5 秒消失，消息内 `error` 和中性 `fallback_note` 随消息保留；修正 Vue3 超时处理注释中误称消息错误也会自动消失的文字。
+- **修复实际回归**：Vue3 侧栏 `chatSession.js` 声明了两个同名 `watch` 对象，后面的临时错误计时监听覆盖了前面的 `loadedSessionId` 监听，导致切换 / 加载历史后不再重建审批。合并为单个 `watch`，两类监听同时生效。新增用例先复现审批未恢复，再验证修复后恢复待审批工具、通知 5 秒消失、消息错误保留及切换会话清除旧审批。
+
+### 整理提交范围前的验证记录
+
+以下完整前端测试和构建结果来自当时的工作区，其中还包含额外的流状态导出修复和行数整理；不能直接视为下方编号 2 独立提交范围的验证结果。后端验证不依赖这些额外前端改动。
+
+后端命令：
+
+```bash
+.venv/bin/python -m pytest -q \
+  tests/api/test_chat_turn_prep.py \
+  tests/agent/test_token_usage.py \
+  tests/agent/test_token_usage_graph.py \
+  tests/db/test_token_usage.py \
+  tests/api/test_usage.py \
+  tests/services/test_usage_scopes.py \
+  tests/services/test_stream_processor.py \
+  tests/services/test_stream_cache_usage.py \
+  tests/api/test_run_lifecycle.py \
+  --tb=short --show-capture=no -rs
+```
+
+结果：**177 passed、3 skipped，40.33 秒**；3 项跳过均因未配置 `EASY_TEST_MYSQL_HOST`，另有 5 条第三方 SWIG 弃用警告。普通聊天覆盖诗歌、旅游、编程、债券、PPT 等话题；新增图调用用例经过生产模型工厂 / 回调、真实图、流处理器和临时 SQLite，验证两次调用 `100/10`、`200/20` 对应最终快照 `200/20`、个人累计 `330`。
+
+前端与构建命令：
+
+```bash
+npm --prefix frontend-vue2 run test:unit
+npm --prefix frontend-vue2 run lint:vue2
+npm --prefix frontend-vue2 run check:easy-agent
+npm --prefix frontend-vue2 run build
+npm --prefix frontend run build
+```
+
+Vue3 的 `npm run test:unit` 使用带引号的通配符，本机 Node v20.19.0 未展开而报找不到文件。本次按其相同范围显式收集测试文件执行，未把空集视为通过：
+
+```bash
+cd frontend
+node --input-type=module - <<'JS'
+import { execFileSync, spawnSync } from 'node:child_process'
+const files = execFileSync('rg', ['--files', 'src'], { encoding: 'utf8' })
+  .trim().split('\n')
+  .filter(file => /^src\/(api|utils|features|shared)\//.test(file) && file.endsWith('.test.js'))
+const result = spawnSync(process.execPath, ['--test', ...files], { stdio: 'inherit' })
+process.exit(result.status ?? 1)
+JS
+```
+
+结果：**Vue2 全量 395 passed，Vue3 全量 190 passed，均无失败 / 跳过**。新增两版 `MessageError.render.test.js` 编译实际组件并执行生命周期，验证初始错误超过 5 秒仍显示，清空后隐藏，历史重新回填后超过 60 秒仍显示；Vue2 使用 jsdom 挂载，Vue3 使用内存渲染宿主。已有用例覆盖通知更新 / 取消、普通异常与超时、会话用量及审批续跑。
+
+两版生产构建均成功；仍有既有样式导出、产物体积和 Browserslist 提示，无缺失 `probeStreamState` 导出警告。Vue2 语法 / 模块检查、`uvx ruff check tests/agent/test_token_usage_graph.py`、`git diff --check` 均通过。
+
+验证边界：供应商响应使用模拟 HTTP，不消耗真实模型额度；未运行真实 MySQL、浏览器视觉验收或重启运行中的服务。组件渲染和图调用测试不等于线上端到端验收；本次未提交、推送或部署。
+
+### 编号 2 的独立提交范围
+
+本次仅准备以下 11 个文件，用于统一三项行为契约、修复错误计时导致的审批监听覆盖并补充回归：
+
+| 文件 | 提交理由 |
+| --- | --- |
+| `docs/chat-behavior-contract.md` | 集中定义金融限制、Token 范围及错误展示的当前约定 |
+| `docs/design/意图识别-只回答金融相关的问题.md` | 历史撤回记录链接当前约定 |
+| `docs/token-usage-api.md` | 区分累计账本与调用快照，移除过时的金融分类采集说明 |
+| `docs/sse-events.md` | 明确 Token、耗时 / 步数和错误提示各自的范围 |
+| `docs/reviews/2026-11-12-ai-findings-verification.md` | 记录编号 2 处理结果、提交边界和验证限制 |
+| `frontend/src/features/chat/mixins/chatSession.js` | 合并重复 watch，保留通知计时和审批恢复两类监听 |
+| `frontend/src/features/chat/services/chunkHandler.js` | 修正消息错误也会在 5 秒后消失的误导注释 |
+| `frontend/src/features/chat/mixins/chatSession.errors.test.js` | 回归通知计时与审批恢复同时生效 |
+| `frontend/src/features/chat/components/MessageError.render.test.js` | 固定 Vue3 消息错误常驻及历史回填行为 |
+| `frontend-vue2/src/packages/easyAgent/features/chat/components/MessageError.render.test.js` | 固定 Vue2 同一展示契约 |
+| `tests/agent/test_token_usage_graph.py` | 验证最近调用快照和个人累计账本采用不同范围 |
+
+额外 6 个文件的改动保留在工作区，不纳入本次提交：双前端的 `streamResume.js` / `streamResume.test.js`、Vue3 `App.vue`、Vue2 `features/chat/mixins/chatSession.js`。这些属于既有缺失导出修复及行数整理。
+
+独立补丁仍继承 HEAD 已有的验证阻塞：缺失 `probeStreamState` 导出造成 Vue2 三个测试文件无法加载、Vue3 生产构建失败；两版结构测试另有既有行数超限。这些失败已在原始 HEAD 的独立临时副本复现，不能表述为编号 2 独立补丁的全量测试和双构建均通过。
+
+### 独立提交范围的实际验证
+
+通过 `git checkout-index --all --prefix=<临时目录>/` 导出仅含上述 11 个暂存文件改动的快照，前端仅链接现有 `node_modules`，后端使用现有 `.venv` 和快照内的源码执行；未包含额外 6 个未暂存文件的改动。
+
+- 后端执行上方同一组 9 个测试文件：**177 passed、3 skipped，37.06 秒**。3 项真实 MySQL 测试仍因未配置 `EASY_TEST_MYSQL_HOST` 跳过，另有 5 条第三方 SWIG 弃用警告。
+- 前端执行下列 14 个文件：**58 passed、0 failed、0 skipped**，覆盖双版本消息错误常驻、全局通知计时、审批恢复、SSE 错误与 Token 快照 / 回放归属。此结果为定向回归，不代表全量测试或构建通过。
+
+```bash
+node --test \
+  frontend/src/features/chat/mixins/chatSession.errors.test.js \
+  frontend/src/features/chat/components/MessageError.render.test.js \
+  frontend-vue2/src/packages/easyAgent/features/chat/components/MessageError.render.test.js \
+  frontend/src/utils/autoDismiss.test.js \
+  frontend-vue2/src/packages/easyAgent/utils/autoDismiss.test.js \
+  frontend/src/features/chat/services/chunkHandler.events.test.js \
+  frontend/src/features/chat/services/streamReplay.test.js \
+  frontend/src/features/chat/composables/useStreamChunks.test.js \
+  frontend/src/features/chat/composables/useStreamChunks.resumeUsage.test.js \
+  frontend/src/features/chat/composables/useStreamChunks.sessions.test.js \
+  frontend-vue2/src/packages/easyAgent/features/chat/services/chunkHandler.events.test.js \
+  frontend-vue2/src/packages/easyAgent/features/chat/services/chunkHandler.resumeUsage.test.js \
+  frontend-vue2/src/packages/easyAgent/features/chat/services/chunkHandler.usage.test.js \
+  frontend-vue2/src/packages/easyAgent/features/chat/services/streamReplay.test.js
+```
