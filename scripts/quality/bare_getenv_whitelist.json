@@ -8,8 +8,7 @@
       "raw = os.environ.get(name)": 1
     },
     "easy_agent/knowledges/core/config.py": {
-      "raw = os.environ.get(name)": 1,
-      "env_value = os.environ.get(match.group(1))": 1
+      "raw = os.environ.get(name)": 1
     },
     "easy_agent/knowledges/personnel/bootstrap.py": {
       "password = os.environ.get(\"EASYAGENT_BOOTSTRAP_ADMIN_PASSWORD\", \"\")": 1

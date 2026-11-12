@@ -14,6 +14,7 @@ from easy_agent.knowledges.core.config import KnowledgeConfig, SourceSyncConfig
 from easy_agent.knowledges.core.models import DocumentMetadataFilter, KnowledgePrincipal
 from easy_agent.knowledges.core.repository import KnowledgeRepository
 from easy_agent.knowledges.runtime.source_sync import (
+    MAX_UPLOAD_ATTEMPTS,
     SourceSyncEngine,
     _iter_windows,
     build_source_query,
@@ -94,7 +95,8 @@ def test_build_upload_name_truncates_long_title_by_utf8_bytes():
 
 def test_date_folder_segments_use_chinese_units():
     assert date_folder_segments("2026-10-23") == ["2026年", "10月", "23日"]
-    assert date_folder_segments("2026-01-05") == ["2026年", "1月", "5日"]
+    # 月/日补零，保证按目录名字典序排列时仍是自然顺序
+    assert date_folder_segments("2026-01-05") == ["2026年", "01月", "05日"]
 
 
 def test_sanitize_title_strips_illegal_chars():
@@ -146,11 +148,13 @@ def test_source_table_required_and_validated():
     assert "%(start)s" in query and "%(end)s" in query
 
 
-def test_source_sync_start_delay_validates_non_negative():
-    assert SourceSyncConfig().start_delay_minutes == 0
-    assert SourceSyncConfig(start_delay_minutes=5).start_delay_minutes == 5
+def test_source_sync_start_time_validates_hh_mm_ss():
+    assert SourceSyncConfig().start_time == ""
+    assert SourceSyncConfig(start_time="08:30:00").start_time == "08:30:00"
     with pytest.raises(ValidationError):
-        SourceSyncConfig(start_delay_minutes=-1)
+        SourceSyncConfig(start_time="25:00:00")
+    with pytest.raises(ValidationError):
+        SourceSyncConfig(start_time="08:30")
 
 
 def test_source_table_name_validated():
@@ -313,7 +317,6 @@ def _refresh_engine(tmp_path, document: dict, *, retention_hours: int = 24):
     config = SourceSyncConfig(
         file_root=str(tmp_path / "source"),
         staging_dir=str(staging),
-        max_attempts=1,
         staging_retention_hours=retention_hours,
         mysql={"table": "my_reports"},
     )
@@ -384,7 +387,7 @@ async def test_refresh_inflight_failure_keeps_staged_file(tmp_path):
                 "id": "item-1",
                 "source_record_id": "101",
                 "document_id": "doc-1",
-                "attempts": 1,  # max_attempts=1，已用完，不再重试
+                "attempts": MAX_UPLOAD_ATTEMPTS,  # 已达固定重试上限，不再重试
             }
         ],
         base_id="base-1",

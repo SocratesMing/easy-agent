@@ -91,6 +91,21 @@ def repo(rows):
         session_id=sid, username=username, workspace_name="test", messages=rows))
 
 
+@pytest.mark.parametrize("checkpoint_backend", ["same_sqlite", "separate_sqlite", "mysql"])
+async def test_independent_checkpoint_with_sqlite_business_db(tmp_path, checkpoint_backend):
+    rt = runtime(tmp_path)
+    if checkpoint_backend == "mysql":
+        from easy_agent.persistence.mysql_saver import AsyncMySQLSaver, MySQLCheckpointConfig
+
+        saver = AsyncMySQLSaver(MySQLCheckpointConfig())
+        assert await compaction.independent_checkpoint(rt, saver) is True
+        return
+
+    path = rt._db.db_path if checkpoint_backend == "same_sqlite" else str(tmp_path / "checkpoint.db")
+    async with AsyncSqliteSaver.from_conn_string(path) as saver:
+        assert await compaction.independent_checkpoint(rt, saver) is (checkpoint_backend == "separate_sqlite")
+
+
 @pytest.mark.parametrize("failure", ["version", "missing_package", "missing_method"])
 async def test_incompatible_adapter_rejects_before_backend(tmp_path, monkeypatch, failure):
     from importlib.metadata import PackageNotFoundError
@@ -501,8 +516,7 @@ async def test_committed_result_recovers_after_read_failure(tmp_path, monkeypatc
                 raise OSError('read interrupted after save')
             return await original(*args, **kwargs)
         monkeypatch.setattr(a.agent, 'aget_state', fail_post_write)
-        monkeypatch.setattr(compaction, 'sqlite_checkpointer_active', lambda: True)
-        monkeypatch.setattr(compaction, 'detect_worker_count', lambda: 1)
+        monkeypatch.setattr(compaction, 'shared_checkpointer_active', lambda: True)
         monkeypatch.setattr(compaction, 'get_session_checkpointer', lambda sid: saver)
         rows = history()
         rt = runtime(tmp_path)

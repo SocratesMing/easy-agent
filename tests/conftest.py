@@ -41,7 +41,9 @@ os.environ["TEST_SYSTEM_PROMPT"] = str(TEST_ROOT / "system_prompt.md")
 # FW-09：checkpointer 后端在 lifespan 内按业务库类型选择（默认官方 SQLite saver）。
 # 显式给一份临时路径，避免默认 data/checkpoints.db 写入仓库；每个 client fixture
 # 再覆盖成独立文件，保证测试之间不共享 HITL 中断态。
-os.environ["EASY_CHECKPOINT_BACKEND"] = "auto"
+# **必须显式写 sqlite，不能用 auto**：auto 在"业务库是 MySQL"的测试环境会选中
+# mysql_saver，于是每次跑用例都去连真库并建 cp_* 表——CI 会变成"没有 MySQL 就跑不了"。
+os.environ["EASY_CHECKPOINT_BACKEND"] = "sqlite"
 os.environ["EASY_CHECKPOINT_SQLITE_PATH"] = str(_TMP / "checkpoints" / "shared.db")
 (_TMP / "checkpoints").mkdir(parents=True, exist_ok=True)
 

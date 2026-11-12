@@ -1,11 +1,23 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14'",
     "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
     "(python_full_version < '3.13' and sys_platform != 'emscripten') or (python_full_version < '3.12' and sys_platform == 'emscripten')",
+]
+
+[[package]]
+name = "aiomysql"
+version = "0.3.2"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
+dependencies = [
+    { name = "pymysql" },
+]
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/29/e0/302aeffe8d90853556f47f3106b89c16cc2ec2a4d269bdfd82e3f4ae12cc/aiomysql-0.3.2.tar.gz", hash = "sha256:72d15ef5cfc34c03468eb41e1b90adb9fd9347b0b589114bd23ead569a02ac1a", size = 108311, upload-time = "2025-10-22T00:15:21.278Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/4c/af/aae0153c3e28712adaf462328f6c7a3c196a1c1c27b491de4377dd3e6b52/aiomysql-0.3.2-py3-none-any.whl", hash = "sha256:c82c5ba04137d7afd5c693a258bea8ead2aad77101668044143a991e04632eb2", size = 71834, upload-time = "2025-10-22T00:15:15.905Z" },
 ]
 
 [[package]]
@@ -465,6 +477,7 @@ name = "easy-agent"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiomysql" },
     { name = "apscheduler" },
     { name = "bcrypt" },
     { name = "dbutils" },
@@ -508,6 +521,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiomysql", specifier = ">=0.3.2" },
     { name = "apscheduler", specifier = ">=3.10.0,<4.0.0" },
     { name = "bcrypt", specifier = ">=4.1.0" },
     { name = "dbutils", specifier = ">=3.0.0" },

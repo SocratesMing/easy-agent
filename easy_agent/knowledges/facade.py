@@ -4,28 +4,28 @@
 一律从本模块导入，避免散落多处的直接包依赖。
 """
 
-from easy_agent.knowledges.api import router as knowledge_router  # noqa: E402
-from easy_agent.knowledges.runtime.source_sync import (  # noqa: E402
+from easy_agent.knowledges.api import router as knowledge_router
+from easy_agent.knowledges.runtime.source_sync import (
     run_source_sync,
     shutdown_source_sync,
     startup_source_sync,
 )
-from easy_agent.knowledges.runtime.lifecycle import shutdown_knowledge, startup_knowledge  # noqa: E402
-from easy_agent.knowledges.runtime.observability import (  # noqa: E402
+from easy_agent.knowledges.runtime.lifecycle import shutdown_knowledge, startup_knowledge
+from easy_agent.knowledges.runtime.observability import (
     audit_metadata,
     metrics,
     resolve_request_id,
     should_audit,
 )
-from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository  # noqa: E402
-from easy_agent.knowledges.chat.chat_bridge import (  # noqa: E402
+from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
+from easy_agent.knowledges.chat.chat_bridge import (
     authorize_scoped_chat,
     empty_knowledge_context,
     is_knowledge_panel_title,
     prepare_knowledge_chat,
 )
-from easy_agent.knowledges.chat.streaming import chat_stream_generator  # noqa: E402
-from easy_agent.knowledges.chat.agent_extension import extend_agent_tools  # noqa: E402
+from easy_agent.knowledges.chat.streaming import chat_stream_generator
+from easy_agent.knowledges.chat.agent_extension import extend_agent_tools
 
 
 class LegacyHostRoutes:

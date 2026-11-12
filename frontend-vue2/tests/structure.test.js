@@ -53,6 +53,10 @@ const MAX_NEW_FILE_LINES = 800
  * 历史轮询兜底 + force 回填，按实测值更新：chatSession 1321 → 1364。
  * 2026-11-09 普通异常也落 fallback_note，awaitingAnswer 据此判定「本轮已收尾」
  * （+4 行注释与判据），按实测值更新：chatSession 1364 → 1368。
+ * 2026-11-11 打开会话时探一次流状态（shouldAttachOnOpen / probeLiveStream，§14.4-D）
+ * 后按实测值更新：chatSession 1368 → 1733。
+ * 2026-11-11 存量校正（合并后即为实测值、预算一直没同步）：
+ *   KnowledgeWorkbench 1921 → 1926、PersonnelManagement 1145 → 1165。
  */
 const LINE_BUDGET = {
   // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
@@ -62,7 +66,7 @@ const LINE_BUDGET = {
   [`${MOD}features/chat/components/ChatMessage.vue`]: 2644,
   [`${MOD}features/chat/components/AiSidebar.vue`]: 1726,
   [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2253,
-  [`${MOD}features/chat/mixins/chatSession.js`]: 1368,
+  [`${MOD}features/chat/mixins/chatSession.js`]: 1733,
   [`${MOD}features/connectors/components/ConnectorListPanel.vue`]: 1504,
   [`${MOD}features/skills/components/SkillListPanel.vue`]: 1260,
   [`${MOD}shared/preview/FilePreview.vue`]: 1164,
@@ -71,8 +75,8 @@ const LINE_BUDGET = {
   [`${MOD}features/chat/components/SessionList.vue`]: 1072,
   [`${MOD}features/tasks/components/ScheduledTasksPanel.vue`]: 967,
   [`${MOD}features/workspace/components/WorkspacePanel.vue`]: 954,
-  [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1921,
-  [`${MOD}features/personnel/PersonnelManagement.vue`]: 1145,
+  [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1926,
+  [`${MOD}features/personnel/PersonnelManagement.vue`]: 1165,
   // 页面级深色覆盖（原 App.vue 非 scoped 样式块，只允许变短）
   [`${MOD}styles/theme-dark.css`]: 1195,
 }

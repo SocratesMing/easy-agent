@@ -1,4 +1,4 @@
-"""生产多副本的 checkpointer 校验、逃生门与共享 MySQL 快照 K8s 清单。"""
+"""生产多副本的 checkpointer 校验、逃生门与共享 MySQL checkpointer 的 K8s 清单。"""
 
 from pathlib import Path
 
@@ -23,7 +23,12 @@ def _per_pod(tmp_path=None, instance="easy-agent-0"):
 
 
 SHARED = ck.CheckpointSelection(ck.BACKEND_SQLITE, "shared", sqlite_path="data/checkpoints.db")
-MYSQL = ck.CheckpointSelection(ck.BACKEND_MYSQL, "shared mysql")
+MYSQL = ck.CheckpointSelection(
+    ck.BACKEND_MYSQL_SAVER,
+    "shared mysql",
+    # mysql_saver 分支要求带连接配置（真实启动还要能建池）；这里只校验部署规则
+    mysql=ck.MySQLCheckpointConfig(host="db", user="u", database="d"),
+)
 LEGACY = ck.CheckpointSelection(ck.BACKEND_LEGACY, "legacy")
 
 
@@ -37,8 +42,13 @@ def _validate(selection, **kwargs):
 
 
 class TestDeploymentValidation:
-    def test_mysql_snapshots_are_accepted_without_sticky_sessions(self):
+    def test_mysql_saver_is_accepted_without_sticky_sessions(self):
         assert _validate(MYSQL, sticky=False) is False
+
+    def test_mysql_saver_accepts_several_workers_per_pod(self):
+        """状态在共享库里，同 Pod 多 worker 也没有归属问题。"""
+        assert _validate(MYSQL, workers_per_pod=4) is False
+
     def test_per_pod_sqlite_with_sticky_sessions_is_accepted(self):
         assert _validate(_per_pod()) is True
 
@@ -130,7 +140,7 @@ class TestStartBackendGuard:
             raise OSError("disk full")
 
         monkeypatch.setattr(ck, "open_sqlite_checkpointer", _broken)
-        with pytest.raises(ck.CheckpointDeploymentError, match="不回退业务库快照"):
+        with pytest.raises(ck.CheckpointDeploymentError, match="不回退本地 saver"):
             await ck.start_checkpoint_backend(
                 _per_pod(tmp_path), agent_env="prod", replicas=2, workers_per_pod=1, sticky=True, allow_legacy=False
             )
@@ -176,7 +186,7 @@ def test_k8s_manifest_uses_shared_mysql_checkpoints(monkeypatch):
     assert replicas > 1
     assert config["EASY_REPLICA_COUNT"] == str(replicas)
     assert env["EASY_POD_NAME"]["valueFrom"]["fieldRef"]["fieldPath"] == "metadata.name"
-    assert config["EASY_CHECKPOINT_BACKEND"] == "mysql"
+    assert config["EASY_CHECKPOINT_BACKEND"] == "mysql_saver"
     assert not any(m["mountPath"] == "/qts/checkpoint" for m in container["volumeMounts"])
     assert not any(v["name"] == "checkpoint" for v in pod["volumes"])
     assert config["EASY_STICKY_SESSIONS"] == "1"
@@ -192,7 +202,8 @@ def test_k8s_manifest_uses_shared_mysql_checkpoints(monkeypatch):
         sqlite_path=None,
         db_type="mysql",
     )
-    assert selection.kind == ck.BACKEND_MYSQL
+    assert selection.kind == ck.BACKEND_MYSQL_SAVER
+    assert selection.mysql is not None
     assert ck.validate_checkpoint_deployment(
         selection,
         agent_env=config["AGENT_ENV"],

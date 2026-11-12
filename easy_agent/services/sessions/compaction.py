@@ -8,15 +8,16 @@ from pathlib import Path
 
 from fastapi import HTTPException
 from langchain_core.messages import RemoveMessage
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from easy_agent.agent.manual_compaction import compatibility_reason, estimate_context, prepare_compaction, terminal_update_node
 from easy_agent.agent.run_config import build_run_config
 from easy_agent.db.providers import get_session_runtime_repository, get_agent_run_repository
-from easy_agent.persistence.checkpoints import get_session_checkpointer, sqlite_checkpointer_active
+from easy_agent.persistence.checkpoints import get_session_checkpointer, shared_checkpointer_active
 from easy_agent.services.agents.manager import get_or_create_agent_for_session, is_session_streaming
 from easy_agent.services.sessions.thread import plan_turn, session_thread_active
-from easy_agent.utils.deployment import detect_worker_count, instance_owner
+from easy_agent.utils.deployment import instance_owner
 from easy_agent.services.usage import resolve_usage_identity
 from easy_agent.utils.usage_context import usage_scope
 from easy_agent.utils.blocking import run_blocking
@@ -28,9 +29,9 @@ _operations: dict[tuple[str, str], asyncio.Task] = {}
 
 
 async def independent_checkpoint(runtime, saver) -> bool:
-    """提交围栏持有业务库写锁，checkpoint 必须使用独立的数据库文件。"""
+    """两端均为 SQLite 时，提交围栏与 checkpoint 必须使用独立文件。"""
     db = runtime._db
-    if db.db_type != "sqlite":
+    if db.db_type != "sqlite" or not isinstance(saver, AsyncSqliteSaver):
         return True
     async with saver.conn.execute("PRAGMA database_list") as cursor:
         databases = await cursor.fetchall()
@@ -46,11 +47,12 @@ async def independent_checkpoint(runtime, saver) -> bool:
 
 
 def unsupported_reason(config) -> str | None:
+    """部署合法性由启动校验负责；此处检查共享持久化与摘要适配能力。"""
     if not (
         getattr(getattr(config, "agent", None), "session_thread", False)
-        and sqlite_checkpointer_active() and detect_worker_count() == 1
+        and shared_checkpointer_active()
     ):
-        return "当前运行模式不支持手动压缩（需要单实例、单 worker 的持久会话 checkpoint）"
+        return "当前运行模式不支持手动压缩（需要开启会话 thread 并启用持久化共享 checkpoint）"
     return compatibility_reason()
 
 
@@ -59,7 +61,7 @@ def supported(config) -> bool:
 
 
 async def records(session_id: str) -> list[dict]:
-    if not sqlite_checkpointer_active() or detect_worker_count() != 1:
+    if not shared_checkpointer_active():
         return []
     checkpoint = await get_session_checkpointer(session_id).aget_tuple(
         {"configurable": {"thread_id": session_id}}

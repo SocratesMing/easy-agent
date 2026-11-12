@@ -30,7 +30,7 @@ import {
   createStreamChunkHandler as createChunkHandler,
   resumeUsageBase,
 } from "../services/chunkHandler.js";
-import { hasAssistantReply } from "../services/streamResume.js";
+import { hasAssistantReply, probeStreamState } from "../services/streamResume.js";
 import streamLifecycle from "./streamLifecycle.js";
 import {
   applyApprovalRequests,
@@ -293,7 +293,7 @@ export default {
     // displayed=true：重建界面消息并持续更新（当前查看的会话）；
     // displayed=false：仅后台同步 token 用量、流结束时移除"进行中"标记，不触碰界面。
     async attachToStreamingSession(sessionId, opts = {}) {
-      const { switchTo = false, displayed = true } = opts;
+      const { switchTo = false, displayed = true, markActive = true } = opts;
       if (!sessionId) return;
       const mode = displayed ? "displayed" : "background";
       // 已展示挂载的会话无需重复挂载；后台挂载可被升级为展示挂载
@@ -308,7 +308,8 @@ export default {
       if (displayed) {
         this.loadedSessionId = sessionId;
       }
-      this.markStreaming(sessionId);
+      // markActive=false：只是回放已产生的过程（待审批/异常中断），不算「生成中」
+      if (markActive) this.markStreaming(sessionId);
 
       if (displayed) {
         this.sessionLoading = true;
@@ -718,6 +719,37 @@ export default {
         null
       );
     },
+    // 打开 / 切换会话时探一次后端流状态（与 sessionStorage 无关）。
+    //
+    // 为什么不能只靠刷新续接：那边的候选来自 sessionStorage 的「在飞」记录，换浏览器、
+    // 换标签页、重新登录后是空的，于是「后台还在跑、页面停在半截」的会话永远接不上。
+    // 这里直接问后端这一轮还在不在，在的话就按「进行中会话」挂上实时流。
+    //
+    // 失败（会话刚被删 / 网络抖动）静默忽略：探活绝不能影响打开会话本身。
+    async probeLiveStream(sessionId) {
+      if (!sessionId || isSessionDeleted(sessionId)) return;
+      const status = await probeStreamState(sessionId, getStreamStatus);
+      // active：这一轮还在跑；replayable：没在跑但过程事件比落库消息新（待审批/异常中断）
+      const attach = Boolean(status && (status.active || status.replayable));
+      // 探测期间用户可能已经切走或删掉会话，两种都不该再挂
+      if (
+        !attach ||
+        this.currentSessionId !== sessionId ||
+        isSessionDeleted(sessionId)
+      ) {
+        return;
+      }
+      // 只有真在跑才点亮「生成中」：停在审批/异常中断的会话只做一次回放补过程，
+      // 标成生成中会与「待审批」标识打架，回放结束后它本来也不是 active
+      const running = Boolean(status.active);
+      if (running) this.markStreaming(sessionId);
+      if (this.attachedStreamingSessions[sessionId] === "displayed") return;
+      this.attachToStreamingSession(sessionId, {
+        switchTo: false,
+        displayed: true,
+        markActive: running,
+      });
+    },
     clearPendingApprovalOf(sid) {
       if (!sid || sid === this.loadedSessionId) this.pendingApproval = null;
       else if (this.sessionStates[sid])
@@ -1003,6 +1035,8 @@ export default {
       if (this.restoreSessionState(sessionId)) {
         this.scrollTrigger++;
         await this.refreshSessionFiles(sessionId);
+        // 本地有缓存 ≠ 这一轮已经结束：后台可能还在跑，探一次再决定要不要挂实时流
+        this.probeLiveStream(sessionId);
         return;
       }
 
@@ -1048,6 +1082,8 @@ export default {
         this.scrollTrigger++;
 
         await this.refreshSessionFiles(sessionId);
+        // 历史加载完再探活：挂载会往消息列表里插占位消息，必须等历史就位
+        this.probeLiveStream(sessionId);
       } catch (e) {
         console.error("加载聊天历史失败:", e);
         if (this.currentSessionId !== sessionId) return;

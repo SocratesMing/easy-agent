@@ -35,4 +35,35 @@ def ordered_chunks(
     return sorted(chunks, key=lambda item: item[key]) if key else chunks
 
 
-__all__ = ["chunk_id", "chunk_text", "ordered_chunks"]
+async def collect_document_chunks(
+    client: Any,
+    dataset_id: str,
+    document_id: str,
+    *,
+    max_pages: int = 10,
+    page_size: int = 100,
+) -> list[dict[str, Any]]:
+    """分页拉取一篇文档的全部 chunk（RAGFlow 单页上限 100）。
+
+    结束条件：累计条数达到上游 total、某页不满、或已达 max_pages。
+    上游异常由调用方处理；本函数只负责分页与过滤非 dict 条目。
+    """
+
+    chunks: list[dict[str, Any]] = []
+    for page in range(1, max_pages + 1):
+        payload = await client.list_chunks(
+            dataset_id, document_id, page=page, page_size=page_size
+        )
+        batch = payload.get("chunks") if isinstance(payload, dict) else None
+        if not isinstance(batch, list) or not batch:
+            break
+        chunks.extend(item for item in batch if isinstance(item, dict))
+        total = payload.get("total")
+        if isinstance(total, int) and len(chunks) >= total:
+            break
+        if len(batch) < page_size:
+            break
+    return chunks
+
+
+__all__ = ["chunk_id", "chunk_text", "collect_document_chunks", "ordered_chunks"]

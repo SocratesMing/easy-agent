@@ -71,7 +71,11 @@ def test_api_rejects_busy_approval_empty_invalid_and_unsupported(client, db, set
     cfg.agent.session_thread = False
     assert client.post(url, json=body).status_code == 409
     cfg.agent.session_thread = True
+    # 已通过部署校验的共享 saver 不再按副本/worker 数禁用压缩；框架兼容检查仍保留。
     monkeypatch.setenv("EASY_REPLICA_COUNT", "2")
+    monkeypatch.setenv("WEB_CONCURRENCY", "4")
+    assert client.get(f"/agent/sessions/{sid}/context").json()["supported"]
+    monkeypatch.setattr(compaction, "shared_checkpointer_active", lambda: False)
     assert not client.get(f"/agent/sessions/{sid}/context").json()["supported"]
     assert client.post(url, json=body).status_code == 409
 

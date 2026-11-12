@@ -32,7 +32,7 @@ import yaml
 from pydantic import BaseModel, Field, SecretStr, ValidationError, model_validator
 
 from easy_agent.bootstrap.config import Config
-from easy_agent.bootstrap.env import env_str, is_unset_placeholder
+from easy_agent.bootstrap.env import is_unset_placeholder
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +55,38 @@ class KnowledgeConfigError(ValueError):
     """知识库配置不可用时抛出。"""
 
 
-class EmbeddingConfig(BaseModel):
-    # 可选；空字符串时 create_dataset 传 None，由 Ragflow 使用其默认 embedding
-    model: str = ""
-
-
 class AuditConfig(BaseModel):
     enabled: bool = True
     max_details_bytes: int = Field(default=4096, ge=256, le=65536)
+
+
+class RetrievalConfig(BaseModel):
+    """检索参数（全局生效）。
+
+    ``rerank_model`` 为空时行为与旧版一致（不传 rerank_id）；配置后先宽召回
+    ``page_size`` 条候选，再由 RAGFlow rerank 精排，最终仍只取 ``top_n`` 条证据。
+    """
+
+    # 主阈值：低于该分不进入证据（无关问题返回空证据）
+    similarity_threshold: float = Field(default=0.5, ge=0, le=1)
+    # 主阈值 0 命中时的降级阈值，与 minimum_evidence_score 保持一致
+    fallback_similarity_threshold: float = Field(default=0.4, ge=0, le=1)
+    # 计数/汇总类问题的召回阈值（名单容易被切碎，阈值需更低）
+    aggregation_similarity_threshold: float = Field(default=0.4, ge=0, le=1)
+    # 本地兜底过滤：低于该分的 chunk 直接丢弃
+    minimum_evidence_score: float = Field(default=0.4, ge=0, le=1)
+    # 向量/关键词混合权重（0=纯关键词，1=纯向量）
+    vector_similarity_weight: float = Field(default=0.5, ge=0, le=1)
+    # rerank 之前参与打分的候选 chunk 数
+    top_k: int = Field(default=1024, ge=1)
+    # 检索接口返回的候选条数（宽召回）；rerank 精排后仍只取 top_n 条证据
+    page_size: int = Field(default=30, ge=1, le=100)
+    # rerank 模型 ID，格式 "model_name"@"model_factory"；空 = 不启用 rerank
+    rerank_model: str = ""
+    # 每个知识库至少保留的证据条数（0 = 不做配额，纯按分数截断）
+    per_base_quota: int = Field(default=2, ge=0)
+    # 单轮最终进入提示词的证据条数
+    top_n: int = Field(default=8, ge=1, le=30)
 
 
 class LimitsConfig(BaseModel):
@@ -134,23 +158,22 @@ class SourceSyncConfig(BaseModel):
     base_id: str = ""
     base_name: str = "报告库"
     lookback_days: int = Field(default=7, ge=1, le=365)
-    # 首次回填起始日期（YYYY-MM-DD）；为空时只处理 lookback 窗口
-    start_date: str = ""
-    # 启动后延迟多少分钟执行第一次同步（0 = 启动即执行）
-    start_delay_minutes: int = Field(default=0, ge=0, le=1440)
+    # 首次触发时间（HH:MM:SS，24 小时制，服务器本地时间）；仅首次生效，
+    # 之后按 interval_minutes 触发。留空 = 启动后立即执行第一次。
+    start_time: str = ""
     interval_minutes: int = Field(default=60, ge=0)
     max_inflight: int = Field(default=10, ge=1, le=100)
-    poll_interval_seconds: float = Field(default=15.0, ge=1)
-    max_attempts: int = Field(default=3, ge=1, le=10)
     mysql: SourceSyncMySQLConfig = Field(default_factory=SourceSyncMySQLConfig)
 
     @model_validator(mode="after")
     def _validate_sync(self) -> "SourceSyncConfig":
-        if self.start_date:
+        if self.start_time:
             try:
-                datetime.strptime(self.start_date, "%Y-%m-%d")
+                datetime.strptime(self.start_time, "%H:%M:%S")
             except ValueError as exc:
-                raise ValueError("source_sync.start_date 必须为 YYYY-MM-DD") from exc
+                raise ValueError(
+                    "source_sync.start_time 必须为 HH:MM:SS（24 小时制）"
+                ) from exc
         staging = self.staging_dir.strip()
         if staging:
             if not Path(staging).is_absolute():
@@ -184,10 +207,10 @@ class KnowledgeConfig(BaseModel):
     # 指定既有共享数据集 ID（RAGFLOW_SHARED_DATASET_ID）：非空时共享库
     # 直接使用该数据集，不按名称查找、不自动创建；为空维持 find-or-create
     shared_dataset_id: str = ""
-    # 保留字段，始终为空字符串；真实模型由 KnowledgeService 在运行时解析
-    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    # 保留字段说明：embedding 模型不在配置里，运行时从上游共享数据集解析。
     audit: AuditConfig = Field(default_factory=AuditConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
+    retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     source_sync: SourceSyncConfig = Field(default_factory=SourceSyncConfig)
 
     @model_validator(mode="after")
@@ -201,7 +224,11 @@ class KnowledgeConfig(BaseModel):
 
     @classmethod
     def load(cls, config_path: str | Path | None = None) -> "KnowledgeConfig":
-        """从 EasyAgent 主配置 YAML 的 knowledge 段加载；文件缺失时退回纯环境变量构造。"""
+        """从 EasyAgent 主配置 YAML 的 knowledge 段加载。
+
+        所有字段均可被环境变量覆盖（优先级：环境变量 > YAML > 代码默认值）；
+        配置文件缺失时退回纯环境变量构造。
+        """
         if config_path is not None:
             path = Path(config_path)
             if not path.is_file():
@@ -222,35 +249,93 @@ class KnowledgeConfig(BaseModel):
 
     @classmethod
     def from_mapping(cls, section: Mapping[str, Any] | None) -> "KnowledgeConfig":
-        """从已展开占位符的 knowledge 配置段构造；未识别的键直接忽略。"""
+        """从已展开占位符的 knowledge 配置段构造；未识别的键直接忽略。
+
+        所有知识库参数都支持环境变量覆盖：环境变量显式设置且不是模板哨兵值时，
+        优先于 YAML 中的字面值（YAML 里继续保留 ``${VAR:-默认值}`` 写法兼容）。
+        """
         section = dict(section or {})
         source_section = _as_mapping(section.get("source_sync"))
-        if not source_section:
-            source_section = {
-                "enabled": _env_bool("KNOWLEDGE_SOURCE_SYNC_ENABLED", False),
-            }
-        else:
-            source_section["mysql"] = _as_mapping(source_section.get("mysql"))
+        mysql_section = _as_mapping(source_section.get("mysql"))
         limits_section = _as_mapping(section.get("limits"))
-        timeout_env = env_str("KNOWLEDGE_PARSE_TIMEOUT_SECONDS")
-        if "parse_timeout_seconds" not in limits_section and timeout_env:
-            limits_section["parse_timeout_seconds"] = timeout_env
-        payload = {
-            "enabled": section.get("enabled", _env_bool("KNOWLEDGE_ENABLED", False)),
-            "base_url": section.get("base_url") or _env_fallback("RAGFLOW_BASE_URL"),
-            "api_key": section.get("api_key") or _env_fallback("RAGFLOW_API_KEY"),
-            "shared_dataset_id": str(
-                section.get("shared_dataset_id")
-                or _env_fallback("RAGFLOW_SHARED_DATASET_ID")
-            ),
-            # embedding.model 始终为空：运行时由 KnowledgeService 从上游
-            # 数据集解析。兼容老配置里仍有写 embedding.model /
-            # RAGFLOW_EMBEDDING_MODEL 的情况——静默忽略，不报错。
-            "embedding": {"model": ""},
-            "audit": _as_mapping(section.get("audit")),
+        audit_section = _as_mapping(section.get("audit"))
+        retrieval_section = _as_mapping(section.get("retrieval"))
+
+        # ---- 知识库总开关与 RAGFlow 接入 ----
+        payload: dict[str, Any] = {
+            "enabled": section.get("enabled", False),
+            "base_url": str(section.get("base_url") or ""),
+            "api_key": str(section.get("api_key") or ""),
+            "shared_dataset_id": str(section.get("shared_dataset_id") or ""),
+            "audit": audit_section,
             "limits": limits_section,
+            "retrieval": retrieval_section,
             "source_sync": source_section,
         }
+        _env_scalar_overrides(payload, {"enabled": "KNOWLEDGE_ENABLED"})
+        _env_string_overrides(
+            payload,
+            {
+                "base_url": "RAGFLOW_BASE_URL",
+                "api_key": "RAGFLOW_API_KEY",
+                "shared_dataset_id": "RAGFLOW_SHARED_DATASET_ID",
+            },
+        )
+
+        # ---- 入库参数 ----
+        # allowed_extensions 允许 YAML 写成逗号分隔字符串，归一为列表
+        if isinstance(limits_section.get("allowed_extensions"), str):
+            limits_section["allowed_extensions"] = [
+                part.strip().lower()
+                for part in str(limits_section["allowed_extensions"]).split(",")
+                if part.strip()
+            ]
+
+        # ---- 检索参数 ----
+        _env_string_overrides(
+            retrieval_section, {"rerank_model": "RAGFLOW_RERANK_MODEL"}
+        )
+
+        # ---- 研报同步（文档 SQL → 知识库） ----
+        _env_scalar_overrides(
+            source_section,
+            {
+                "enabled": "KNOWLEDGE_SOURCE_SYNC_ENABLED",
+                "staging_retention_hours": (
+                    "KNOWLEDGE_SOURCE_SYNC_STAGING_RETENTION_HOURS"
+                ),
+                "lookback_days": "KNOWLEDGE_SOURCE_SYNC_LOOKBACK_DAYS",
+                "interval_minutes": "KNOWLEDGE_SOURCE_SYNC_INTERVAL_MINUTES",
+                "max_inflight": "KNOWLEDGE_SOURCE_SYNC_MAX_INFLIGHT",
+            },
+        )
+        _env_string_overrides(
+            source_section,
+            {
+                "owner_username": "KNOWLEDGE_SOURCE_SYNC_OWNER_USERNAME",
+                "file_root": "SOURCE_SYNC_FILE_ROOT",
+                "staging_dir": "SOURCE_SYNC_STAGING_DIR",
+                "base_id": "KNOWLEDGE_SOURCE_SYNC_BASE_ID",
+                "base_name": "KNOWLEDGE_SOURCE_SYNC_BASE_NAME",
+                "start_time": "KNOWLEDGE_SOURCE_SYNC_START_TIME",
+            },
+        )
+
+        # ---- 研报 SQL 源库连接 ----
+        _env_string_overrides(
+            mysql_section,
+            {
+                "host": "COL_SQL_HOST",
+                "user": "COL_SQL_USER",
+                "password": "COL_SQL_PASSWORD",
+                "database": "COL_SQL_DB",
+                "charset": "COL_SQL_CHARSET",
+                "table": "COL_SQL_TABLE",
+            },
+        )
+        _env_scalar_overrides(mysql_section, {"port": "COL_SQL_PORT"})
+        source_section["mysql"] = mysql_section
+
         # fail-closed：模块启用时禁止残留未解析的 ${VAR} 占位符
         # （防止 "${RAGFLOW_API_KEY}" 字面量被当作真实密钥静默放行）
         if payload.get("enabled"):
@@ -281,17 +366,37 @@ def _as_mapping(value: object) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-def _env_bool(name: str, default: bool) -> bool:
+def _env_value(name: str) -> str | None:
+    """读取环境变量：未设置、空值或模板哨兵值均视为未配置。"""
+
     raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    if raw is None or is_unset_placeholder(raw):
+        return None
+    return raw
 
 
-def _env_fallback(name: str) -> str:
-    """YAML 段之外的环境变量兜底：哨兵值视作未配置，避免占位值成为真实凭据。"""
-    raw = env_str(name, strip=False)
-    return "" if is_unset_placeholder(raw) else raw
+def _env_scalar_overrides(
+    section: dict[str, Any], mapping: Mapping[str, str]
+) -> None:
+    """环境变量覆盖数值/布尔字段（显式设置优先于 YAML）。"""
+
+    for key, env_name in mapping.items():
+        raw = _env_value(env_name)
+        if raw is None:
+            continue
+        section[key] = _parse_env_scalar(raw.strip())
+
+
+def _env_string_overrides(
+    section: dict[str, Any], mapping: Mapping[str, str]
+) -> None:
+    """环境变量覆盖字符串字段（密钥/路径保留原样）。"""
+
+    for key, env_name in mapping.items():
+        raw = _env_value(env_name)
+        if raw is None:
+            continue
+        section[key] = raw
 
 
 def _parse_env_scalar(value: str) -> object:
@@ -313,7 +418,8 @@ def _expand_env_string(value: str) -> object:
     full_match = _ENV_VAR_RE.fullmatch(value)
 
     def replace(match: re.Match[str]) -> str:
-        env_value = os.environ.get(match.group(1))
+        # 模板哨兵值（EASY_AGENT_SET_ME__*）视作未配置，避免占位值成为真实凭据
+        env_value = _env_value(match.group(1))
         if env_value is not None:
             return env_value
         default = match.group(2)
@@ -353,5 +459,6 @@ def _find_unresolved(value: object, path: str = "") -> set[str]:
 __all__ = [
     "KnowledgeConfig",
     "KnowledgeConfigError",
+    "RetrievalConfig",
     "UPSTREAM_DOCUMENT_STATUS_MAPPING",
 ]

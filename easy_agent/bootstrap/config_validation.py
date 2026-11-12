@@ -18,6 +18,7 @@ from easy_agent.bootstrap.config_models import (
     DistributedLockConfig,
     FileContextConfig,
     HitlConfig,
+    MySQLCheckpointSectionConfig,
     MySQLConfig,
     MySQLPoolConfig,
     PersonnelConfig,
@@ -96,6 +97,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
     "database.mysql": _fields(MySQLConfig),
     "database.mysql.pool": _fields(MySQLPoolConfig),
     "checkpoint": _fields(CheckpointConfig),
+    "checkpoint.mysql": _fields(MySQLCheckpointSectionConfig),
     "hitl": _fields(HitlConfig),
     "summarization": _fields(SummarizationConfig),
     "prompt_enhancement": _fields(PromptEnhancementConfig),
@@ -125,11 +127,25 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "embedding",
             "audit",
             "limits",
+            "retrieval",
             "source_sync",
         }
     ),
-    "knowledge.embedding": frozenset({"model"}),
     "knowledge.audit": frozenset({"enabled", "max_details_bytes"}),
+    "knowledge.retrieval": frozenset(
+        {
+            "similarity_threshold",
+            "fallback_similarity_threshold",
+            "aggregation_similarity_threshold",
+            "minimum_evidence_score",
+            "vector_similarity_weight",
+            "top_k",
+            "page_size",
+            "rerank_model",
+            "per_base_quota",
+            "top_n",
+        }
+    ),
     "knowledge.limits": frozenset(
         {
             "max_file_size_mb",
@@ -151,12 +167,9 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "base_id",
             "base_name",
             "lookback_days",
-            "start_date",
-            "start_delay_minutes",
+            "start_time",
             "interval_minutes",
             "max_inflight",
-            "poll_interval_seconds",
-            "max_attempts",
             "mysql",
         }
     ),
@@ -184,6 +197,9 @@ DEPRECATED_CONFIG_KEYS: dict[str, str] = {
     "system_prompt_path": "system_prompt_path 已由 prompt_path 取代，当前仍兼容读取",
     "log": "log 段不再由 Config 读取（日志由 initialization/log.py 管理）",
     "log_dir": "log_dir 不再由 Config 读取（日志由 initialization/log.py 管理）",
+    "knowledge.embedding": (
+        "knowledge.embedding 已废弃：embedding 模型由 RAGFlow 共享数据集决定，该键不再生效"
+    ),
 }
 
 

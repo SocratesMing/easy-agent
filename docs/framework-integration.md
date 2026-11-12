@@ -16,7 +16,7 @@
 | # | 位置 | 依赖的上游实现 | 失效后果 | 升级时需要做什么 |
 | --- | --- | --- | --- | --- |
 | 1 | `easy_agent/agent/hitl.py` `register_execute_description_profiles` | `HarnessProfile(tool_description_overrides=...)` + `register_harness_profile`（profiles beta API） | execute 工具描述不再注入 HITL 说明 | 对照 profiles API 的变化修正注册逻辑 |
-| 2 | `easy_agent/persistence/checkpoints.py` `PersistentMemorySaver`（仅显式 legacy 或 SQLite 打不开时使用） | `MemorySaver.storage/writes/blobs` 私有属性 + pickle；deepagents 的 `messages` 是 `DeltaChannel`（beta），读状态要沿父链重放增量，所以 thread 内的 checkpoint 不能裁剪 | 重启后 HITL 审批恢复失败（静默）；数据格式变化；裁剪 thread 内 checkpoint 会让 messages 重建成空列表 | FW-09 起默认已走官方 saver；升级时复核私有属性/pickle 格式与 `DeltaChannel` 契约（跑 `tests/db/test_checkpoint_pruning.py`），并推动 MySQL 用户迁移到 PG/SQLite |
+| 2 | `easy_agent/persistence/mysql_saver.py` `AsyncMySQLSaver`（`EASY_CHECKPOINT_BACKEND=mysql_saver` 时使用，实现官方 `BaseCheckpointSaver`） | `langgraph-checkpoint` 的 saver 协议：`aput` 收到的是 `_DeltaSnapshot`（deepagents 的 `messages` 是 beta `DeltaChannel`，`channel_values` 只含本步变更的 channel），读侧要按 `channel_versions` + blobs 逐个版本回填；`new_versions` 里每个 channel 都必须有一行 blob（无值写 `type='empty'`，否则读回时缺 channel）；`aput_writes` 的 `WRITES_IDX_MAP`（ERROR/SCHEDULED/INTERRUPT/RESUME → `-1..-4`）走覆盖写，普通 write 必须幂等保留首条 | `messages` 静默变空（历史丢失、HITL 恢复成新一轮）；审批 write 被覆盖成重复条目；升级后 `writes_sort_key` 等协议辅助函数改名会让读写顺序错乱 | 升级 langgraph 后跑 `tests/persistence/test_mysql_saver_unit.py` 与 `tests/persistence/test_mysql_saver_it.py`（真库，需 `EASY_TEST_MYSQL_DSN`）；重点复核「每个 channel 一行 blob」「特殊通道覆盖写」「`writes_sort_key` 是否存在」（本仓库已带 try/except 兜底） |
 | 3 | `easy_agent/backends/context.py` `ContextBackend`（两层 `CompositeBackend`，DA-05） | `CompositeBackend` 的 `default` / `routes` / `sorted_routes` / `artifacts_root` 语义：权限 `_resolve_real_path` 递归进会话 composite、带 execute 时权限路径须落在 `routes` 前缀下、route→宿主机路径提示读 `sorted_routes` | symlink 权限校验失效、建图期 NotImplementedError，或模型收到「改用宿主机路径」的错误提示 | 跑 `tests/agent/test_backend_routing.py` 与 `tests/agent/test_langsmith_sandbox.py`；复核上述字段名与读取方式 |
 | 4 | `easy_agent/agent/memory.py` `SessionMemoryMiddleware`（DA-03） | `MemoryMiddleware.before_agent` / `abefore_agent` 在 state 已有 `memory_contents` 时跳过加载；同名实例原位替换默认项 | 改成会话级 thread 后，记忆（会话 `memory.md`、长期 `AGENTS.md`、上传清单）停在会话第一轮 | 跑 `tests/agent/test_session_memory.py`；其中对照组若失败，说明上游已改成每次运行都重读，可去掉覆盖 |
 | 5 | `easy_agent/agent/turn_context.py` `TurnAwareSummarizationMiddleware`（DA-03） | 继承官方 `SummarizationMiddleware`（私有类 `_DeepAgentsSummarizationMiddleware` 的公开别名）：子类的 `name` 默认回落为类名，须覆盖成 `"SummarizationMiddleware"`；状态 schema 继承 `SummarizationState`；新增的自定义中间件排在摘要之后 | 默认摘要不被替换（出现两份摘要），或本轮渲染内容不计入摘要的 token | 跑 `tests/agent/test_turn_context.py` 与 `tests/agent/test_session_memory.py::test_main_agent_stack_uses_session_memory_and_turn_aware_summarization` |
@@ -77,17 +77,23 @@
   默认 transport 由旧 `sse` 改为 `streamable_http`；`streamable-http` / `http` 别名
   统一归一化为 `streamable_http`，显式 `sse` 保持兼容（`tests/services/test_mcp_transport.py`）。
 
-- **FW-09 已落地（默认官方 saver）**：`EASY_CHECKPOINT_BACKEND=auto|sqlite|legacy`
-  （默认 `auto`），选择规则集中在 `checkpoints.resolve_checkpoint_backend()`：
-  1. `auto` / `sqlite` → 官方 `AsyncSqliteSaver`，文件路径取 config.yaml 的
-     `checkpoint.sqlite_path`，没配时用旧环境变量 `EASY_CHECKPOINT_SQLITE_PATH`，
-     再没有就是 `/qts/checkpoint/{pod}.db`（相对路径按仓库根解析，`{pod}` 换成实例名）；
-  2. `EASY_CHECKPOINT_BACKEND=legacy` → 强制用自研 `PersistentMemorySaver`
-     （进程内，不写业务库，重启后待审批状态丢失）。
-  单 pod 时官方 saver 打开失败降级为进程内 checkpointer，不阻断启动；
-  `shutdown_checkpointers()` 负责关闭 saver 并清空自研缓存（测试隔离亦依赖）。
-  Postgres saver 曾是第一优先级，2026-10-21 移除（生产只有 MySQL，按单 pod 部署）。
-  见 `docs/archive/audit-reports/2026-10-17-increment38-fw09-report.md`。
+- **FW-09 已落地（官方 saver 协议 + 自研 MySQL 实现）**：
+  `EASY_CHECKPOINT_BACKEND=auto|sqlite|mysql_saver|legacy`（默认 `auto`）选择规则集中在
+  `checkpoints.resolve_checkpoint_backend()`：
+  1. `auto` → **只看配置不看连通性**：业务库是 MySQL 就选 `mysql_saver`，否则 `sqlite`
+     （避免"启动探活一次决定后端"，同一份配置在不同 Pod 上结果不一致）；
+  2. `sqlite` → 官方 `AsyncSqliteSaver`，路径取 config.yaml 的 `checkpoint.sqlite_path`，
+     没配时用旧环境变量 `EASY_CHECKPOINT_SQLITE_PATH`，再没有就是
+     `/qts/checkpoint/{pod}.db`（相对路径按仓库根解析，`{pod}` 换成实例名）；
+  3. `mysql_saver` → 自研 `AsyncMySQLSaver`（`persistence/mysql_saver.py`），4 张 `cp_*` 表，
+     连接参数留空即复用业务库，多副本共享，跨 Pod 恢复 HITL；`mysql` 是它的废弃别名；
+  4. `legacy` → 进程内 `MemorySaver`（不持久化，重启后待审批状态丢失，仅供排查）。
+  `sqlite` 打开失败降级为进程内 checkpointer；**`mysql_saver` 打开失败直接启动失败、
+  不降级**（静默降级会让多副本里的审批状态悄悄分裂），`shutdown_checkpointers()` 负责
+  关闭 saver 并清空缓存（测试隔离亦依赖）。
+  Postgres saver 2026-10-21 移除；旧的 `PersistentMemorySaver` / `agent_checkpoints`
+  全量快照链路 2026-11-11 整体删除（schema 18 退休该表）。
+  见 `docs/design/2026-11-11-self-hosted-mysql-saver-plan.md`。
 
 - **FW-11 部分落地**：`stores.SqlStore._search` 支持 BaseStore 常用 filter 操作符
   （`$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin`），并改为“先过滤、后分页”的有界扫描；

@@ -13,7 +13,6 @@ from easy_agent.db.schema import SCHEMA_VERSION
 # 全新库建出来的全部表。新增表要同时改这里，让表的数量变化在评审里看得见。
 FRESH_TABLES = {
     "agent_runs",
-    "agent_checkpoints",
     "distributed_locks",
     "expert_agents",
     "generated_files",
@@ -210,7 +209,8 @@ def test_upgrade_moves_the_migration_ledger_into_schema_meta(tmp_path):
     _init(path)  # 再启动一次（快速路径）：不重复导入、不重复执行
 
     with db.get_connection() as conn:
-        assert mig.applied_versions(db, conn.cursor()) == [5, 6]
+        expected = [mig.BASELINE_VERSION, *sorted(m.version for m in mig.MIGRATIONS)]
+        assert mig.applied_versions(db, conn.cursor()) == expected
 
 
 def test_upgrade_moves_original_access_audit_into_audit_events(tmp_path):

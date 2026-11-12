@@ -19,6 +19,7 @@ import {
   readStreamFlight,
   resolveResumeTargets,
   resumeCandidates,
+  shouldAttachOnOpen,
   turnCompleted,
   waitForActive,
 } from './streamResume.js'
@@ -308,4 +309,38 @@ test('异常兜底文案算「这一轮已收尾」：有 fallback_note 就不�
     ),
     false
   )
+})
+
+test('打开会话时的探活：只认后端 active，失败一律当不活跃', async () => {
+  // 这条判据不读 sessionStorage：换浏览器 / 换标签页 / 重新登录后本地在飞记录是空的，
+  // 但后台那一轮可能还在跑。只问后端，不问本地。
+  const asked = []
+  const active = await shouldAttachOnOpen('s-1', async (sid) => {
+    asked.push(sid)
+    return { session_id: sid, active: true }
+  })
+  assert.equal(active, true)
+  assert.deepEqual(asked, ['s-1'])
+
+  // inactive / 空响应 → 不挂
+  assert.equal(await shouldAttachOnOpen('s-1', async () => ({ active: false })), false)
+  assert.equal(await shouldAttachOnOpen('s-1', async () => null), false)
+  // 会话刚被删除、网络抖动：探活失败不能影响打开会话本身
+  assert.equal(
+    await shouldAttachOnOpen('s-1', async () => {
+      throw new Error('404')
+    }),
+    false
+  )
+  // 没有会话 id / 没有查询函数：直接不挂，也不发请求
+  let called = false
+  assert.equal(
+    await shouldAttachOnOpen('', async () => {
+      called = true
+      return { active: true }
+    }),
+    false
+  )
+  assert.equal(called, false)
+  assert.equal(await shouldAttachOnOpen('s-1', null), false)
 })

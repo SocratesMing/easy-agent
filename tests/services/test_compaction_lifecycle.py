@@ -19,8 +19,7 @@ def configure(monkeypatch, rt, a):
     monkeypatch.setattr(compaction, "get_session_runtime_repository", lambda: rt)
     monkeypatch.setattr(compaction, "get_agent_run_repository", lambda: SimpleNamespace(has_other_live_run=lambda *args: False))
     monkeypatch.setattr(compaction, "get_session_checkpointer", lambda sid: a.agent.checkpointer)
-    monkeypatch.setattr(compaction, "sqlite_checkpointer_active", lambda: True)
-    monkeypatch.setattr(compaction, "detect_worker_count", lambda: 1)
+    monkeypatch.setattr(compaction, "shared_checkpointer_active", lambda: True)
     monkeypatch.setattr(compaction, "is_session_streaming", lambda sid: False)
     async def create(*args, **kwargs):
         return a

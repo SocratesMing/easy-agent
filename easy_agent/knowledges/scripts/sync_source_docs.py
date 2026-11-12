@@ -33,11 +33,6 @@ from easy_agent.knowledges.runtime.source_sync import run_source_sync  # noqa: E
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="文档 SQL → 知识库增量同步")
-    parser.add_argument(
-        "--start-date",
-        default="",
-        help="首次回填起始日期（YYYY-MM-DD）；为空时使用配置 start_date / 最近窗口",
-    )
     parser.add_argument("--limit", type=int, default=0, help="本次最多扫描多少条（0=不限）")
     parser.add_argument(
         "--dry-run",
@@ -78,7 +73,6 @@ async def _run(args: argparse.Namespace) -> int:
     )
     stats = await run_source_sync(
         app,
-        start_date=args.start_date or None,
         limit=args.limit or None,
         dry_run=args.dry_run,
     )

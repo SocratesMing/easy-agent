@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import logging
 import re
@@ -24,7 +25,12 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Callable
 
 from starlette.concurrency import run_in_threadpool
 
-from easy_agent.knowledges.core.chunks import chunk_id, chunk_text, ordered_chunks
+from easy_agent.knowledges.core.chunks import (
+    chunk_id,
+    chunk_text,
+    collect_document_chunks,
+    ordered_chunks,
+)
 from easy_agent.knowledges.core.config import (
     KnowledgeConfig,
     UPSTREAM_DOCUMENT_STATUS_MAPPING,
@@ -89,9 +95,6 @@ if TYPE_CHECKING:  # 仅供类型注解（api 与 service 相互引用，运行�
 
 logger = logging.getLogger(__name__)
 
-# 证据最低得分阈值：低于该分的 chunk 不进证据列表，作为本地兜底过滤
-MINIMUM_EVIDENCE_SCORE = 0.4
-
 # 远端删除按批次调用，避免单次请求携带过多 document_id
 REMOTE_DELETE_BATCH = 100
 
@@ -111,21 +114,12 @@ PARSER_CONFIG: dict[str, object] = {
     "delimiter": "\n!?;。；！？",
     "raptor": {"use_raptor": False},
 }
-# 检索固定参数
-# 阈值 0.5：召回阶段即过滤无关 chunk（无关问题的混合分多在 0.3~0.5），
-# 让与知识库无关的问题返回空证据，而不是凑满 top_n 条弱相关依据。
-RETRIEVAL_SIMILARITY_THRESHOLD = 0.5
-# 主阈值 0 命中时降级重试；与本地最低证据分保持一致，避免相关问题的
-# 最高分恰好落在 0.4~0.5 边界时被整体丢弃。
-RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD = MINIMUM_EVIDENCE_SCORE
-# 向量权重 0.5：向量/关键词各占一半，提升语义相关性、降低表面用词匹配的干扰
-RETRIEVAL_VECTOR_SIMILARITY_WEIGHT = 0.5
-RETRIEVAL_TOP_K = 1024
+# 检索阈值 / 权重 / 候选数 / rerank 已迁移到 knowledge.retrieval
+# （KnowledgeConfig.retrieval）；这里只保留与 chunk 扩写相关的固定参数。
 # 相邻 chunk 重叠：命中块前后各拼接相邻块 10% 的文本（仅扩展检索证据，不改存储）
 RETRIEVAL_NEIGHBOR_OVERLAP_RATIO = 0.1
 # 计数/名单/汇总类问题：命中块额外带出完整后续 chunk；普通比例分析题不触发
 AGGREGATION_QUESTION_RE = re.compile(r"(几个|多少|几家|几户|哪些|数量|合计|总计|总共|前十|排名)")
-RETRIEVAL_AGGREGATION_THRESHOLD = 0.4
 # 聚合证据在问答上下文中的最大字符数（普通证据仍为 2400）
 AGGREGATION_SNIPPET_LIMIT = 6000
 # 后续 chunk 遇到新章节标题时停止，避免把下一节内容当作名单补进来
@@ -202,6 +196,12 @@ class KnowledgeServiceError(RuntimeError):
 
 def _map_upstream_status(run: object) -> str:
     return UPSTREAM_DOCUMENT_STATUS_MAPPING.get(str(run or "")) or DocumentStatus.UNKNOWN.value
+
+
+def _not_found(message: str = "知识资源不存在") -> KnowledgeServiceError:
+    """构造 404 业务错误：不区分「无权」与「不存在」，避免资源存在性泄露。"""
+
+    return KnowledgeServiceError("KNOWLEDGE_NOT_FOUND", message, status_code=404)
 
 
 def _split_folder_segments(path: str) -> list[str]:
@@ -319,17 +319,6 @@ class KnowledgeService:
             )
             return _shared_dataset_id
 
-    async def _resolve_embedding_model(self) -> str:
-        """返回共享数据集绑定的 embedding 模型；必要时先触发数据集就绪。
-
-        模型从上游 RAGFlow 数据集解析得到，不再通过配置显式指定。
-        空字符串是合法情况（数据集存在但上游暂未分配模型），调用方应
-        让上游在首次解析时自行决定。
-        """
-        if _effective_embedding_model is None:
-            await self._ensure_shared_dataset()
-        return _effective_embedding_model or ""
-
     async def _create_shared_dataset(self) -> str:
         """创建共享数据集：不指定 embedding_model，让 RAGFlow 用租户默认。"""
         try:
@@ -412,12 +401,13 @@ class KnowledgeService:
     def _document_meta_fields(
         base: Mapping[str, Any], document: Mapping[str, Any]
     ) -> dict[str, Any] | None:
-        """文档级 meta_fields：个人库归属标签 + 业务元数据（RAGFlow 副本）。
+        """文档级 meta_fields：知识库归属标签 + 个人标签 + 业务元数据（RAGFlow 副本）。
 
-        业务元数据以本地 SQL 为权威；这里写入 RAGFlow 仅用于后台追溯与外部
-        系统直连时的可见性，不作为检索过滤器。
+        ``base_id`` 让检索可以按知识库元数据过滤，不再把所有文档 ID 塞进
+        document_ids（超过 500 篇也不会截断）；业务元数据以本地 SQL 为权威。
         """
-        fields = dict(KnowledgeService._personal_meta_fields(base) or {})
+        fields: dict[str, Any] = {"base_id": str(base["id"])}
+        fields.update(KnowledgeService._personal_meta_fields(base) or {})
         for key in (
             "source",
             "source_record_id",
@@ -444,16 +434,7 @@ class KnowledgeService:
             )
         except RagflowError:
             return False
-        docs = data.get("docs") if isinstance(data, dict) else data
-        if isinstance(docs, list) and docs:
-            upstream_doc = self._match_upstream_document(docs, remote_id)
-            # 上游未按 id 过滤时（返回整页），不能拿 docs[0] 判断本文档状态
-            if upstream_doc is None and len(docs) == 1:
-                upstream_doc = docs[0]
-            if isinstance(upstream_doc, dict):
-                run = str(upstream_doc.get("run", "")).upper()
-                return run in {"RUNNING", "DONE"}
-        return False
+        return upstream_document_running(data, remote_id)
 
     @staticmethod
     def _match_upstream_document(
@@ -486,23 +467,17 @@ class KnowledgeService:
 
         base = await self._repo(self.repository.get_base, base_id)
         if base is None:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-            )
+            raise _not_found()
         permissions = await self._repo(self.repository.list_permissions, base_id)
         role = await self._effective_role(base, principal, permissions)
         if role is None:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-            )
+            raise _not_found()
         if action not in allowed_actions(role):
             raise KnowledgeServiceError(
                 "KNOWLEDGE_FORBIDDEN", "当前用户无权执行该操作", status_code=403
             )
         if str(base.get("status")) == KnowledgeBaseStatus.DELETED.value:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-            )
+            raise _not_found()
         return base, role
 
     async def _has_department_management_grant(
@@ -867,6 +842,8 @@ class KnowledgeService:
             owner_user_id=principal.user_id,
             department_id=target_department_id,
             embedding_model="",
+            # 新库没有历史文档：上传时就会写 base_id 元数据，直接走 meta 检索
+            meta_backfilled=1,
         )
         # 纯本地创建（同建文件夹）：不再调用 Ragflow 建数据集，
         # remote_dataset_id 保持 NULL 表示走共享数据集。
@@ -1042,6 +1019,14 @@ class KnowledgeService:
         text = str(exc).upper()
         return "UNIQUE" in text or "DUPLICATE" in text
 
+    @staticmethod
+    def _folder_conflict_error() -> KnowledgeServiceError:
+        """同级同名文件夹冲突（预检查命中或唯一约束冲突）统一 409。"""
+
+        return KnowledgeServiceError(
+            "KNOWLEDGE_FOLDER_EXISTS", "同名文件夹已存在", status_code=409
+        )
+
     async def create_folder(
         self,
         *,
@@ -1070,11 +1055,7 @@ class KnowledgeService:
                 self.repository.find_folder_by_name, base_id, name, parent_id
             )
             if existing is not None:
-                raise KnowledgeServiceError(
-                    "KNOWLEDGE_FOLDER_EXISTS",
-                    "同名文件夹已存在",
-                    status_code=409,
-                )
+                raise self._folder_conflict_error()
             row = await self._repo(
                 self.repository.create_folder,
                 base_id=base_id,
@@ -1085,11 +1066,7 @@ class KnowledgeService:
             raise
         except Exception as exc:
             if self._is_folder_conflict(exc):
-                raise KnowledgeServiceError(
-                    "KNOWLEDGE_FOLDER_EXISTS",
-                    "同名文件夹已存在",
-                    status_code=409,
-                ) from exc
+                raise self._folder_conflict_error() from exc
             raise
         return self._folder_summary(row, role)
 
@@ -1213,9 +1190,7 @@ class KnowledgeService:
 
         folder = await self._repo(self.repository.get_folder, folder_id)
         if folder is None:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-            )
+            raise _not_found()
         _, role = await self._authorized_base(
             str(folder["base_id"]), principal, AllowedAction.EDIT_FOLDER
         )
@@ -1228,11 +1203,7 @@ class KnowledgeService:
                     folder.get("parent_id"),
                 )
                 if existing is not None:
-                    raise KnowledgeServiceError(
-                        "KNOWLEDGE_FOLDER_EXISTS",
-                        "同名文件夹已存在",
-                        status_code=409,
-                    )
+                    raise self._folder_conflict_error()
             row = await self._repo(
                 self.repository.update_folder, folder_id, name=name
             )
@@ -1240,11 +1211,7 @@ class KnowledgeService:
             raise
         except Exception as exc:
             if self._is_folder_conflict(exc):
-                raise KnowledgeServiceError(
-                    "KNOWLEDGE_FOLDER_EXISTS",
-                    "同名文件夹已存在",
-                    status_code=409,
-                ) from exc
+                raise self._folder_conflict_error() from exc
             raise
         assert row is not None
         return self._folder_summary(row, role)
@@ -1278,9 +1245,7 @@ class KnowledgeService:
 
         folder = await self._repo(self.repository.get_folder, folder_id)
         if folder is None:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-            )
+            raise _not_found()
         base_id = str(folder["base_id"])
         base, _role = await self._authorized_base(
             base_id, principal, AllowedAction.DELETE_FOLDER
@@ -1457,14 +1422,17 @@ class KnowledgeService:
 
     # ---------------- 文档 ----------------
 
-    async def _require_document(self, document_id: str) -> dict[str, Any]:
-        """读取文档记录；不存在时按 404 处理（软删除状态由调用方决定）。"""
+    async def _require_document(
+        self, document_id: str, *, include_deleted: bool = True
+    ) -> dict[str, Any]:
+        """读取文档记录；不存在（或已软删除且 include_deleted=False）按 404 处理。"""
 
         document = await self._repo(self.repository.get_document, document_id)
-        if document is None:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-            )
+        if document is None or (
+            not include_deleted
+            and str(document.get("status")) == DocumentStatus.DELETED.value
+        ):
+            raise _not_found()
         return document
 
     async def refresh_base_documents(self, base: Mapping[str, Any]) -> None:
@@ -1692,6 +1660,82 @@ class KnowledgeService:
             str(local["id"]),
             **operation_values,
         )
+        if (
+            status == DocumentStatus.READY
+            and str(local.get("status")) != DocumentStatus.READY.value
+        ):
+            # 仅在新文档首次解析完成时写入 chunk 关键词；历史已 READY 文档
+            # 不会再次触发，批量回填另见 backfill_base_meta 脚本。
+            await self._apply_chunk_keywords(local)
+
+    async def _apply_chunk_keywords(self, document: Mapping[str, Any]) -> None:
+        """把业务元数据写入该文档各 chunk 的 important_keywords。
+
+        标题/标签进入关键词通道后，检索对专有名词、机构名、报告名的命中率
+        更高。失败只记日志，不影响文档解析状态。
+        """
+
+        keywords: list[str] = []
+        for key in ("report_title", "report_tag", "report_second_source"):
+            value = str(document.get(key) or "").strip()
+            if value and value not in keywords:
+                keywords.append(value[:127])
+        keywords = keywords[:8]
+        remote_id = str(document.get("remote_document_id") or "").strip()
+        if not keywords or not remote_id:
+            return
+        base = await self._repo(self.repository.get_base, str(document["base_id"]))
+        if base is None:
+            return
+        try:
+            dataset_id = await self._dataset_id_for(base)
+        except (RagflowError, KnowledgeServiceError) as exc:
+            logger.warning(
+                "写入 chunk 关键词前解析数据集失败 doc=%s: %s", remote_id, exc
+            )
+            return
+        semaphore = asyncio.Semaphore(_REFRESH_DOCUMENT_CONCURRENCY)
+
+        async def _update(chunk: Mapping[str, Any]) -> None:
+            chunk_key = chunk_id(chunk)
+            if not chunk_key:
+                return
+            async with semaphore:
+                try:
+                    await self.ragflow.update_chunk(
+                        dataset_id,
+                        remote_id,
+                        chunk_key,
+                        important_keywords=keywords,
+                    )
+                except RagflowError as exc:
+                    logger.warning(
+                        "写入 chunk 关键词失败 doc=%s chunk=%s: %s",
+                        remote_id,
+                        chunk_key,
+                        exc,
+                    )
+
+        try:
+            page = 1
+            while page <= 10:
+                payload = await self.ragflow.list_chunks(
+                    dataset_id, remote_id, page=page, page_size=100
+                )
+                batch = payload.get("chunks") if isinstance(payload, dict) else None
+                if not isinstance(batch, list) or not batch:
+                    return
+                await asyncio.gather(
+                    *(_update(chunk) for chunk in batch if isinstance(chunk, dict))
+                )
+                total = payload.get("total")
+                if isinstance(total, int) and page * 100 >= total:
+                    return
+                if len(batch) < 100:
+                    return
+                page += 1
+        except RagflowError as exc:
+            logger.warning("写入 chunk 关键词失败 doc=%s: %s", remote_id, exc)
 
     async def list_documents(
         self,
@@ -1862,6 +1906,20 @@ class KnowledgeService:
             status_code=502,
         )
 
+    @staticmethod
+    def _sha256_digest(source: BinaryIO) -> str:
+        """流式计算原文 sha256，并把指针复位到开头。"""
+
+        source.seek(0)
+        digest = hashlib.sha256()
+        while True:
+            block = source.read(1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+        source.seek(0)
+        return digest.hexdigest()
+
     async def upload_document(
         self,
         *,
@@ -1948,6 +2006,23 @@ class KnowledgeService:
         # 浏览器可能按宿主注册表报出旧版/新版 Office MIME；落库与上游统一用
         # 扩展名对应的标准 MIME，避免 RAGFlow 按声明类型拒收。
         content_type = canonical_content_type(safe_name, content_type)
+
+        # 同库重复内容拦截（仅人工上传；文档 SQL 同步有自己的业务幂等键）：
+        # 先算 sha256，已存在相同内容的未删除文档时直接拒绝，避免重复文档
+        # 挤占检索证据名额。哈希放线程池，避免大文件阻塞事件循环。
+        if metadata is None:
+            digest = await asyncio.to_thread(self._sha256_digest, content)
+            duplicate = await self._repo(
+                self.repository.find_duplicate_document,
+                base_id,
+                digest,
+            )
+            if duplicate is not None:
+                raise KnowledgeServiceError(
+                    "KNOWLEDGE_DUPLICATE_DOCUMENT",
+                    f"知识库中已存在相同内容的文档：{duplicate['name']}",
+                    status_code=409,
+                )
 
         document = await self._repo(
             self.repository.create_document,
@@ -2073,11 +2148,7 @@ class KnowledgeService:
     ) -> DocumentSummary:
         """移动文档到目标文件夹（目标须属于同一知识库）。"""
 
-        document = await self._require_document(document_id)
-        if str(document.get("status")) == DocumentStatus.DELETED.value:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-            )
+        document = await self._require_document(document_id, include_deleted=False)
         _, role = await self._authorized_base(
             str(document["base_id"]), principal, AllowedAction.MOVE_DOCUMENT
         )
@@ -2097,11 +2168,7 @@ class KnowledgeService:
         request_id: str,
     ) -> tuple[dict[str, Any], KnowledgeDocumentBinary]:
         """优先返回本地原文；不可用时回退下载上游副本。"""
-        document = await self._require_document(document_id)
-        if str(document.get("status")) == DocumentStatus.DELETED.value:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-            )
+        document = await self._require_document(document_id, include_deleted=False)
         base, _ = await self._authorized_base(
             str(document["base_id"]), principal, AllowedAction.DOWNLOAD
         )
@@ -2489,6 +2556,28 @@ class KnowledgeService:
                 return False
         return True
 
+    async def _list_ready_documents(
+        self, base_id: str, filter_kwargs: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """分页读取知识库全部已解析文档（本地查询无上限）。"""
+
+        page_size = 200
+        documents: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page = await self._repo(
+                self.repository.list_documents,
+                base_id,
+                status=DocumentStatus.READY.value,
+                limit=page_size,
+                offset=offset,
+                **filter_kwargs,
+            )
+            documents.extend(page)
+            if len(page) < page_size:
+                return documents
+            offset += page_size
+
     async def _retrieve_base_evidence(
         self,
         *,
@@ -2502,28 +2591,22 @@ class KnowledgeService:
     ) -> RetrieveResponse:
         """执行检索；无可检索文档时返回空证据与提示，不编造。
 
-        metadata_filter 为硬过滤：先缩小本地文档集，再只把这些文档的
-        remote_document_id 交给 RAGFlow，保证区间外文档不会被召回。
+        共享数据集且已回填 ``base_id`` 元数据的库按元数据过滤，否则用
+        ``document_ids`` 圈定范围；元数据无可用证据时回退 ``document_ids``。
+        ``metadata_filter`` 为硬过滤：区间外文档不会进入证据。
         """
         base, _ = await self._authorized_base(base_id, principal, AllowedAction.ASK)
         filter_kwargs = self._metadata_filter_kwargs(metadata_filter)
         if document_ids is None:
-            documents = await self._repo(
-                self.repository.list_documents,
-                base_id,
-                status=DocumentStatus.READY.value,
-                limit=self.config.limits.max_documents_per_query,
-                offset=0,
-                **filter_kwargs,
-            )
+            # 分页读取全部已解析文档（本地库查询无上限），避免超过 500 篇时
+            # 检索范围被静默截断；是否需要 document_ids 范围见下方 meta 分支。
+            documents = await self._list_ready_documents(base_id, filter_kwargs)
         else:
             documents = await self._repo(
                 self.repository.get_documents, base_id, document_ids
             )
             if len(documents) != len(set(document_ids)):
-                raise KnowledgeServiceError(
-                    "KNOWLEDGE_NOT_FOUND", "知识资源不存在", status_code=404
-                )
+                raise _not_found()
             documents = [
                 item for item in documents if item["status"] == DocumentStatus.READY.value
             ]
@@ -2539,87 +2622,157 @@ class KnowledgeService:
             )
         dataset_id = await self._dataset_id_for(base)
         aggregation = bool(AGGREGATION_QUESTION_RE.search(question))
-        try:
-            # 个人库走共享数据集时，检索携带个人标签过滤条件
-            # （与 document_ids 范围约束形成双重隔离；存量自有数据集库不打
-            # 标签、不过滤，保持原行为）
-            retrieval_meta: dict[str, Any] | None = None
-            if not str(base.get("remote_dataset_id") or "").strip():
-                retrieval_meta = self._personal_meta_fields(base)
-            retrieve_kwargs = {
-                "question": question,
-                "dataset_ids": [dataset_id],
-                "document_ids": [
-                    str(item["remote_document_id"]) for item in documents
-                ],
-                "page_size": min(max(top_n * 2, 20), 50) if aggregation else top_n,
-                "vector_similarity_weight": RETRIEVAL_VECTOR_SIMILARITY_WEIGHT,
-                "top_k": RETRIEVAL_TOP_K,
-                "meta_fields": retrieval_meta,
-            }
-            primary_threshold = (
-                RETRIEVAL_AGGREGATION_THRESHOLD
-                if aggregation
-                else RETRIEVAL_SIMILARITY_THRESHOLD
-            )
-            result = await self.ragflow.retrieve(
-                **retrieve_kwargs,
-                similarity_threshold=primary_threshold,
-            )
-            if not result.get("chunks") and not aggregation:
-                # 相关问题最高分可能恰好卡在 0.5 以下；用本地最低证据分再召回一次
-                fallback = await self.ragflow.retrieve(
-                    **retrieve_kwargs,
-                    similarity_threshold=RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD,
+        retrieval = self.config.retrieval
+        all_remote_ids = [str(item["remote_document_id"]) for item in documents]
+        # 共享数据集且已回填 base_id 元数据的库：按元数据过滤（不再受
+        # document_ids 长度限制）；存量库仍走 document_ids 范围以保持原行为。
+        use_meta_scope = (
+            document_ids is None
+            and not str(base.get("remote_dataset_id") or "").strip()
+            and int(base.get("meta_backfilled") or 0) == 1
+        )
+        retrieval_meta: dict[str, Any] | None = None
+        if use_meta_scope:
+            retrieval_meta = {"base_id": str(base["id"])}
+        elif not str(base.get("remote_dataset_id") or "").strip():
+            # 个人库走共享数据集时携带个人标签过滤（与 document_ids 双重隔离）
+            retrieval_meta = self._personal_meta_fields(base)
+        # rerank 前先宽召回；无 rerank 时多出的候选只用于按库配额挑选。
+        if aggregation:
+            page_size = min(max(retrieval.page_size, 20), 100)
+        else:
+            page_size = min(max(retrieval.page_size, top_n), 100)
+        retrieve_kwargs: dict[str, Any] = {
+            "question": question,
+            "dataset_ids": [dataset_id],
+            "meta_fields": retrieval_meta,
+            "page_size": page_size,
+            "vector_similarity_weight": retrieval.vector_similarity_weight,
+            "top_k": retrieval.top_k,
+            "rerank_id": retrieval.rerank_model.strip() or None,
+        }
+        if not use_meta_scope:
+            cap = self.config.limits.max_documents_per_query
+            retrieve_kwargs["document_ids"] = all_remote_ids[:cap]
+            if len(all_remote_ids) > cap:
+                logger.warning(
+                    "知识库文档数超过检索范围上限，本次仅检索前 %s 篇（建议执行 "
+                    "backfill_base_meta 脚本后改走元数据过滤） | base=%s total=%s",
+                    cap,
+                    base.get("id"),
+                    len(all_remote_ids),
                 )
-                if fallback.get("chunks"):
-                    logger.info(
-                        "检索主阈值无结果，降阈值重试命中 | base=%s primary=%.2f "
-                        "fallback=%.2f chunks=%s",
-                        base.get("id"),
-                        primary_threshold,
-                        RETRIEVAL_FALLBACK_SIMILARITY_THRESHOLD,
-                        len(fallback["chunks"]),
-                    )
-                    result = fallback
-        except RagflowError as exc:
-            raise self._upstream_error(exc) from exc
+        primary_threshold = (
+            retrieval.aggregation_similarity_threshold
+            if aggregation
+            else retrieval.similarity_threshold
+        )
         by_remote = {str(item["remote_document_id"]): item for item in documents}
-        candidates: list[dict[str, Any]] = []
-        for chunk in result.get("chunks", []):
-            if not isinstance(chunk, dict):
-                continue
-            local = by_remote.get(str(chunk.get("document_id")))
-            if local is None or local["status"] != DocumentStatus.READY.value:
-                continue
-            # 纵深防御：上游若意外返回范围外文档，这里再挡一次
-            if not self._matches_metadata_filter(local, metadata_filter):
-                continue
-            snippet = str(
-                chunk.get("content_with_weight") or chunk.get("content") or ""
-            ).strip()
-            if not snippet:
-                continue
-            raw_score = chunk.get("similarity", 0)
-            score = max(0.0, float(raw_score)) if isinstance(raw_score, (int, float)) else 0.0
-            if score < MINIMUM_EVIDENCE_SCORE:
-                continue
-            positions = chunk.get("positions")
-            candidates.append(
-                {
-                    "document": local,
-                    "chunk_id": str(chunk.get("chunk_id") or chunk.get("id") or ""),
-                    "snippet": snippet,
-                    "score": score,
-                    "position": positions[0] if isinstance(positions, list) and positions else None,
-                }
+
+        async def _retrieve(
+            kwargs: dict[str, Any], threshold: float
+        ) -> dict[str, Any]:
+            try:
+                return await self.ragflow.retrieve(
+                    **kwargs, similarity_threshold=threshold
+                )
+            except RagflowError as exc:
+                raise self._upstream_error(exc) from exc
+
+        def _collect(chunks: Any) -> list[dict[str, Any]]:
+            """把上游 chunk 映射为本地证据候选（范围/分数/状态兜底校验）。"""
+
+            collected: list[dict[str, Any]] = []
+            for chunk in chunks or []:
+                if not isinstance(chunk, dict):
+                    continue
+                local = by_remote.get(str(chunk.get("document_id")))
+                if local is None or local["status"] != DocumentStatus.READY.value:
+                    continue
+                # 纵深防御：上游若意外返回范围外文档，这里再挡一次
+                if not self._matches_metadata_filter(local, metadata_filter):
+                    continue
+                snippet = str(
+                    chunk.get("content_with_weight") or chunk.get("content") or ""
+                ).strip()
+                if not snippet:
+                    continue
+                raw_score = chunk.get("similarity", 0)
+                score = (
+                    max(0.0, float(raw_score))
+                    if isinstance(raw_score, (int, float))
+                    else 0.0
+                )
+                if score < retrieval.minimum_evidence_score:
+                    continue
+                positions = chunk.get("positions")
+                collected.append(
+                    {
+                        "document": local,
+                        "chunk_id": str(
+                            chunk.get("chunk_id") or chunk.get("id") or ""
+                        ),
+                        "snippet": snippet,
+                        "score": score,
+                        "weak": score < primary_threshold,
+                        "position": (
+                            positions[0]
+                            if isinstance(positions, list) and positions
+                            else None
+                        ),
+                    }
+                )
+            return collected
+
+        result = await _retrieve(retrieve_kwargs, primary_threshold)
+        raw_chunks = result.get("chunks") or []
+        candidates = _collect(raw_chunks)
+        if use_meta_scope and raw_chunks and not candidates:
+            # 上游返回了片段但本地全部被过滤：通常是不支持 meta 过滤（返回了其它
+            # 库的 chunk）。回退 document_ids 范围，保证不漏召回。
+            retrieve_kwargs = {
+                **retrieve_kwargs,
+                "document_ids": all_remote_ids[
+                    : self.config.limits.max_documents_per_query
+                ],
+            }
+            logger.info(
+                "元数据过滤返回的片段均不属于本库，回退 document_ids 重试 | base=%s",
+                base.get("id"),
             )
+            result = await _retrieve(retrieve_kwargs, primary_threshold)
+            candidates = _collect(result.get("chunks"))
+        if not candidates and not aggregation:
+            # 相关问题最高分可能恰好卡在主阈值以下；用降级阈值再召回一次
+            fallback_threshold = retrieval.fallback_similarity_threshold
+            fallback = await _retrieve(retrieve_kwargs, fallback_threshold)
+            fallback_candidates = _collect(fallback.get("chunks"))
+            if fallback_candidates:
+                logger.info(
+                    "检索主阈值无结果，降阈值重试命中 | base=%s primary=%.2f "
+                    "fallback=%.2f chunks=%s",
+                    base.get("id"),
+                    primary_threshold,
+                    fallback_threshold,
+                    len(fallback_candidates),
+                )
+                candidates = fallback_candidates
         await self._expand_neighbor_overlap(
             dataset_id=dataset_id,
             candidates=candidates,
             aggregation=aggregation,
         )
         candidates.sort(key=lambda item: item["score"], reverse=True)
+        # 同一文档只保留得分最高的 chunk（相邻块已拼进该 chunk 的证据文本），
+        # 避免同一篇文档挤占其它文档的证据名额。
+        seen_documents: set[str] = set()
+        unique_candidates: list[dict[str, Any]] = []
+        for item in candidates:
+            document_key = str(item["document"]["id"])
+            if document_key in seen_documents:
+                continue
+            seen_documents.add(document_key)
+            unique_candidates.append(item)
         return RetrieveResponse(
             evidence=[
                 Evidence(
@@ -2632,6 +2785,7 @@ class KnowledgeService:
                         "base_id": str(base["id"]),
                         "base_name": str(base["name"]),
                         "aggregation": aggregation,
+                        "weak": bool(item.get("weak")),
                         "source_record_id": item["document"].get("source_record_id"),
                         "report_title": item["document"].get("report_title"),
                         "report_tag": item["document"].get("report_tag"),
@@ -2641,7 +2795,7 @@ class KnowledgeService:
                         "publish_date": item["document"].get("publish_date"),
                     },
                 )
-                for item in candidates[:top_n]
+                for item in unique_candidates[:top_n]
             ],
             request_id=request_id,
         )
@@ -2666,24 +2820,11 @@ class KnowledgeService:
             remote_doc_id = str(item["document"]["remote_document_id"])
             by_document.setdefault(remote_doc_id, []).append(item)
         for remote_doc_id, items in by_document.items():
-            chunks: list[dict[str, Any]] = []
             try:
                 # RAGFlow list_chunks 单页上限 100，按页拉全文档后再定位相邻块
-                page = 1
-                while page <= 10:
-                    payload = await self.ragflow.list_chunks(
-                        dataset_id, remote_doc_id, page=page, page_size=100
-                    )
-                    batch = payload.get("chunks") if isinstance(payload, dict) else None
-                    if not isinstance(batch, list) or not batch:
-                        break
-                    chunks.extend(chunk for chunk in batch if isinstance(chunk, dict))
-                    total = payload.get("total")
-                    if isinstance(total, int) and len(chunks) >= total:
-                        break
-                    if len(batch) < 100:
-                        break
-                    page += 1
+                chunks = await collect_document_chunks(
+                    self.ragflow, dataset_id, remote_doc_id
+                )
             except RagflowError as exc:
                 logger.warning(
                     "检索相邻 chunk 拉取失败 doc=%s: %s", remote_doc_id, exc
@@ -2735,6 +2876,38 @@ class KnowledgeService:
     def _overlap_chars(text: str) -> int:
         return max(1, int(len(text) * RETRIEVAL_NEIGHBOR_OVERLAP_RATIO))
 
+    @staticmethod
+    def _merge_session_evidence(
+        results: list[RetrieveResponse],
+        *,
+        top_n: int,
+        per_base_quota: int,
+    ) -> list[Evidence]:
+        """合并多库检索结果：按库配额保底 + 全局分数补齐 + 同文档去重。"""
+
+        evidence: list[Evidence] = []
+        for result in results:
+            evidence.extend(result.evidence)
+        selected: list[Evidence] = []
+        seen_documents: set[str] = set()
+
+        def _take(item: Evidence) -> None:
+            if item.document_id in seen_documents:
+                return
+            seen_documents.add(item.document_id)
+            selected.append(item)
+
+        if per_base_quota > 0:
+            for result in results:
+                for item in result.evidence[:per_base_quota]:
+                    _take(item)
+        for item in sorted(evidence, key=lambda entry: entry.score, reverse=True):
+            if len(selected) >= top_n:
+                break
+            _take(item)
+        selected.sort(key=lambda item: item.score, reverse=True)
+        return selected[:top_n]
+
     async def retrieve_session_evidence(
         self,
         *,
@@ -2765,14 +2938,15 @@ class KnowledgeService:
                 for base_id in scope.base_ids
             )
         )
-        evidence: list[Evidence] = []
         warnings: list[str] = []
         for result in results:
-            evidence.extend(result.evidence)
             warnings.extend(result.warnings)
-        evidence.sort(key=lambda item: item.score, reverse=True)
         return RetrieveResponse(
-            evidence=evidence[:top_n],
+            evidence=self._merge_session_evidence(
+                results,
+                top_n=top_n,
+                per_base_quota=self.config.retrieval.per_base_quota,
+            ),
             warnings=list(dict.fromkeys(warnings)),
             request_id=request_id,
         )
@@ -2853,9 +3027,7 @@ class KnowledgeService:
 
         session = await self._repo(self.repository.db.get_session, session_id)
         if session is None or session.username != principal.username:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_NOT_FOUND", "会话不存在", status_code=404
-            )
+            raise _not_found("会话不存在")
         return session
 
     async def get_session_scope(
@@ -2917,44 +3089,28 @@ class KnowledgeService:
         )
         return SessionKnowledgeScopeResponse(session_id=session_id, base_ids=saved)
 
-    # ---------------- 知识库管理员 ----------------
 
-    async def list_department_managers(
-        self, *, department_id: str | None = None
-    ) -> list[dict[str, Any]]:
-        """列出知识库管理员（可选按部门过滤）。"""
-        return await self._repo(
-            self.repository.list_department_managers, department_id
-        )
+def upstream_document_running(payload: Any, remote_id: str) -> bool:
+    """上游文档响应中，指定文档的解析是否已实际启动（RUNNING/DONE）。
 
-    async def grant_department_manager(
-        self,
-        *,
-        user_id: str,
-        department_id: str,
-        granted_by: str,
-    ) -> dict[str, Any]:
-        """授予知识库管理员权限。"""
-        return await self._repo(
-            self.repository.grant_department_manager,
-            user_id=user_id,
-            department_id=department_id,
-            granted_by=granted_by,
-        )
+    ``payload`` 兼容 ``{"docs": [...]}`` 与直接列表；优先按 ID 精确匹配，
+    上游忽略过滤只返回一条时退化为该条。供解析触发竞态兜底与迁移脚本共用。
+    """
 
-    async def revoke_department_manager(
-        self, *, user_id: str, department_id: str
-    ) -> bool:
-        """撤销知识库管理员权限。"""
-        return await self._repo(
-            self.repository.revoke_department_manager,
-            user_id=user_id,
-            department_id=department_id,
-        )
+    docs = payload.get("docs") if isinstance(payload, dict) else payload
+    if not isinstance(docs, list) or not docs:
+        return False
+    matched = KnowledgeService._match_upstream_document(docs, remote_id)
+    if matched is None and len(docs) == 1:
+        matched = docs[0]
+    if not isinstance(matched, Mapping):
+        return False
+    return str(matched.get("run", "")).upper() in {"RUNNING", "DONE"}
 
 
 __all__ = [
     "KnowledgeService",
     "KnowledgeServiceError",
     "KnowledgeDocumentBinary",
+    "upstream_document_running",
 ]

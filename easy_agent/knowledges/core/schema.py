@@ -37,6 +37,8 @@ _BASE_P0_COLUMNS = (
     ("purge_after", "VARCHAR(50) DEFAULT NULL"),
     # 权限管理勾选名单模式：1=仅勾选人员可见（屏蔽公共空间默认同部门可见）
     ("access_restricted", "INTEGER NOT NULL DEFAULT 0"),
+    # 存量文档是否已回填 base_id 元数据：1=检索走 meta 过滤（不受 500 篇上限）
+    ("meta_backfilled", "INTEGER NOT NULL DEFAULT 0"),
 )
 _DOCUMENT_P0_COLUMNS = (
     ("deleted_at", "VARCHAR(50) DEFAULT NULL"),
@@ -81,7 +83,8 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
             deleted_at VARCHAR(50) DEFAULT NULL,
             deleted_by VARCHAR(255) DEFAULT NULL,
             purge_after VARCHAR(50) DEFAULT NULL,
-            access_restricted INTEGER NOT NULL DEFAULT 0
+            access_restricted INTEGER NOT NULL DEFAULT 0,
+            meta_backfilled INTEGER NOT NULL DEFAULT 0
         )
     """)
     for column, definition in _BASE_P0_COLUMNS:

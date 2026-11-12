@@ -25,10 +25,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from langchain_core.messages import AIMessage
+from langgraph.checkpoint.memory import MemorySaver
 
 from easy_agent.agent.run_config import build_run_config
 from easy_agent.persistence.checkpoints import (
-    PersistentMemorySaver,
     checkpoint_instance,
     per_pod_checkpoints_active,
 )
@@ -54,24 +54,32 @@ def session_thread_enabled(config) -> bool:
 
 
 def session_thread_in_use(config) -> bool:
-    """接口层（还没拿到 agent 时）的判断：开关打开，且在用官方 SQLite saver。
+    """接口层（还没拿到 agent 时）的判断：开关打开，且有一个进程级共享的 saver。
 
-    与 :func:`session_thread_active` 口径一致：legacy 快照 saver 下仍是每条消息一个 thread。
+    **这是"会话线程是否开启"的总闸**：判据必须问"saver 能不能跨会话复用"，而不是"是不是
+    官方 SQLite 文件"。以前写成 ``sqlite_checkpointer_active()``，一旦换后端（例如共享
+    MySQL）就返回 False，会话线程被静默关掉、退回每条消息一个 thread —— 跨 Pod 恢复
+    HITL 的整个前提就没了。
+
+    与 :func:`session_thread_active` 口径一致：进程内 MemorySaver 下仍是每条消息一个 thread。
     """
-    from easy_agent.persistence.checkpoints import sqlite_checkpointer_active  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
+    from easy_agent.persistence.checkpoints import (  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
+        shared_checkpointer_active,
+    )
 
-    return session_thread_enabled(config) and sqlite_checkpointer_active()
+    return session_thread_enabled(config) and shared_checkpointer_active()
 
 
 _legacy_warned = False
 
 
 def session_thread_active(agent) -> bool:
-    """本轮是否走会话 thread：开关打开，且 checkpointer 不是 legacy 快照 saver。
+    """本轮是否走会话 thread：开关打开，且 checkpointer 能跨轮持久化。
 
-    legacy ``PersistentMemorySaver``（显式 ``EASY_CHECKPOINT_BACKEND=legacy``，或 SQLite checkpoint
-    文件打不开时的回退）是进程内快照，会话 thread 越长越慢，因此仍按每条消息一个 thread。
-    要用会话 thread，请确认 config.yaml 的 ``checkpoint.sqlite_path`` 可写。
+    判据顺序：**先看进程级共享 saver 有没有打开**（``mysql_saver`` / ``sqlite``）——有就一定
+    能跨轮、跨 Pod 复用。没有共享 saver 时只剩两种情况：``legacy`` 的进程内 ``MemorySaver``
+    （不持久化，会话 thread 越长越慢且重启即丢，因此仍按每条消息一个 thread），以及调用方
+    自己注入的 saver（测试 / 特殊用法），后者放行。
     """
     global _legacy_warned
     if not session_thread_enabled(getattr(agent, "config", None)):
@@ -79,12 +87,19 @@ def session_thread_active(agent) -> bool:
     checkpointer = getattr(getattr(agent, "agent", None), "checkpointer", None)
     if checkpointer is None:
         return False
-    if isinstance(checkpointer, PersistentMemorySaver):
+    from easy_agent.persistence.checkpoints import (  # 延迟导入：测试 monkeypatch 语义
+        shared_checkpointer_active,
+    )
+
+    if shared_checkpointer_active():
+        return True
+    if isinstance(checkpointer, MemorySaver):
+        # 进程内 saver 不能跨会话 / 跨重启保存状态，会话 thread 会越用越慢且重启即丢
         if not _legacy_warned:
             _legacy_warned = True
             logger.warning(
-                "agent.session_thread 已打开，但当前是 legacy checkpoint 快照，仍按每条消息一个 thread；"
-                "去掉 EASY_CHECKPOINT_BACKEND=legacy、让 checkpoint.sqlite_path 可写后生效"
+                "agent.session_thread 已打开，但当前是进程内 MemorySaver，仍按每条消息一个 "
+                "thread；设置 EASY_CHECKPOINT_BACKEND=mysql_saver（或 sqlite）后生效"
             )
         return False
     return True

@@ -18,7 +18,7 @@
 | `backends/shell.py` | `LocalShellBackend` + 虚拟路径翻译 + bwrap/Landlock/fail-closed 策略 |
 | `sandboxing/sandbox.py` / `landlock.py` / `fs_safety.py` | 命令沙箱、Landlock 降级、外部目录挂载安全校验 |
 | `agent/hitl.py` | 破坏性命令识别、execute 工具描述、按 config.yaml 的 `hitl` 段构造 `interrupt_on` |
-| `persistence/checkpoints.py` | 官方 `AsyncSqliteSaver` 与自研 `PersistentMemorySaver`（可选 MySQL 共享快照） |
+| `persistence/checkpoints.py` / `mysql_saver.py` | checkpointer 选型与生命周期；官方 `AsyncSqliteSaver` 与自研 `AsyncMySQLSaver`（4 张 `cp_*` 表，多副本共享） |
 | `persistence/stores.py` | 自研 LangGraph `BaseStore`（SQLite/MySQL） |
 | `agent/summarization.py` | 建图期替换官方摘要工厂 + 缺失降级护栏 |
 | `agent/subagents.py` / `agent/skills.py` | 子代理定义；技能发现（根 `skills/` 为 canonical，包内副本回退） |
@@ -48,7 +48,7 @@
 
 模型协议：只支持 OpenAI 兼容协议（`protocol: openai`，`agent/model.py` 的 `ReasoningChatOpenAI`），Anthropic 协议已移除，配成其他协议时 `create_model` 直接报错。
 
-手动压缩：`POST /agent/sessions/{id}/context/compact` 经 `services/sessions/compaction.py` 使用与聊天/resume 共用的业务租约和提交围栏，摘要事件及幂等结果原子写入 checkpoint；原聊天记录不变。能力限单实例、单 worker、开启会话 thread、独立 SQLite checkpoint。适配层及安装声明共同限定 DeepAgents 0.7.28 / LangGraph 1.2.16；状态查询与执行共用版本/接口探测，不兼容环境在摘要前拒绝。官方工具对照及升级契约见 [手动压缩设计 §7](design/指令菜单于手动压缩设计.md)。
+手动压缩：`POST /agent/sessions/{id}/context/compact` 经 `services/sessions/compaction.py` 使用与聊天/resume 共用的业务租约和提交围栏，摘要事件及幂等结果原子写入 checkpoint；原聊天记录不变。需要开启会话 thread 并启用共享持久化 checkpoint（SQLite / MySQL saver）；部署合法性由启动校验负责，压缩不再额外限制单 worker。业务库和 checkpoint 均为 SQLite 时必须使用独立文件。适配层及安装声明共同限定 DeepAgents 0.7.28 / LangGraph 1.2.16；状态查询与执行共用版本/接口探测，不兼容环境在摘要前拒绝。官方工具对照及升级契约见 [手动压缩设计 §7](design/指令菜单于手动压缩设计.md)。
 
 思考回传：每条 assistant 消息的思考都随请求回传给模型，本轮和历史轮次、带不带工具调用一视同仁（DeepSeek 文档要求请求带 tools 时回传历史各轮的 `reasoning_content`）。`ReasoningChatOpenAI` 把 `additional_kwargs` 里的思考写成请求里的 `reasoning_content` 字段（`agent/model.py` 的 `inject_reasoning_content`）；会话 thread 的历史原样发出，`agent/turn_context.py` 只渲染本轮用户消息。从 DB 重建历史时按 step 把思考块放回对应的 AIMessage（`services/streaming/messages.py`）。`/agent/completion/chat` 的 assistant 消息可带 `thinking` 回传。摘要的 token 计数包含 `additional_kwargs` 里的思考（`agent/summarization.py` 的 `count_tokens_with_reasoning`）。
 
@@ -71,7 +71,7 @@
 - 会话消息行表 `session_messages`；`sessions.messages` 为 legacy 大字段（仅历史会话回退读取）。
 - 领域 schema 通过 `db/schema_registry.py` 注册，`Database.init_tables()` 统一执行。
 - Token 账本（schema 17）是核心表 `token_usage`，由 `db/schema.py` 直接建表；按 `event_id` 幂等、独立于会话删除/归档。`agent/model.py` 提取完整原始 usage，`agent/token_usage.py` 按每次模型调用回调写入；SDK 提示词增强在校验结果前捕获、业务超时外写入。`utils/usage_context.py` 的不可变身份随实际执行 scope 传递，后台流、压缩和记忆线程各自建立 scope。编译图键包含有效模型配置键，用户身份不进入模型实例或缓存键。`GET /agent/usage?days=7|30` 在一个显式读快照中聚合上海自然日四卡与逐日模型趋势，详见 [接口与统计规则](token-usage-api.md)。
-- LangGraph checkpointer：默认（`EASY_CHECKPOINT_BACKEND=auto`）用官方 `AsyncSqliteSaver`，文件路径取 config.yaml 的 `checkpoint.sqlite_path`（没配时用旧环境变量 `EASY_CHECKPOINT_SQLITE_PATH`，再没有是 `/qts/checkpoint/{pod}.db`；相对路径按仓库根解析，`synchronous=NORMAL`）；单机显式 `EASY_CHECKPOINT_BACKEND=legacy` 或 SQLite 打不开时使用进程内 `PersistentMemorySaver`。多副本生产显式设为 `EASY_CHECKPOINT_BACKEND=mysql`，`PersistentMemorySaver` 将 session 快照写入业务库 `agent_checkpoints`，Pod 重建或请求落到其他副本时从共享库恢复；新消息和 resume 前刷新缓存快照。所有 saver 快照限制 12 MiB、每 session 保留最近 3 个 thread，thread 内 checkpoint 全保留（`messages` 是增量存储）。删除会话时删除共享快照。Postgres checkpointer / Store 已移除（2026-10-21），LangGraph Store 固定为业务库 `SqlStore`。
+- LangGraph checkpointer：默认（`EASY_CHECKPOINT_BACKEND=auto`）只看配置不看连通性——业务库是 MySQL 就用自研 `AsyncMySQLSaver`（`persistence/mysql_saver.py`，4 张 `cp_checkpoint_*` 表，`auto_setup` 时用 `GET_LOCK` 串行建表），否则用官方 `AsyncSqliteSaver`，文件路径取 config.yaml 的 `checkpoint.sqlite_path`（没配时用旧环境变量 `EASY_CHECKPOINT_SQLITE_PATH`，再没有是 `/qts/checkpoint/{pod}.db`；相对路径按仓库根解析，`synchronous=NORMAL`）。显式 `mysql_saver`（别名 `mysql`）跨副本共享，Pod 重建或请求落到其他副本时从共享库恢复待审批状态；显式 `sqlite` 每 Pod 一个文件；`legacy` 是进程内 `MemorySaver`，仅供排查。`mysql_saver` 打不开时启动直接失败、不降级（降级会让多副本的审批状态分裂）；`sqlite` 打不开才降级为进程内 checkpointer。checkpoint 不做全量快照裁剪：`messages` 是 `DeltaChannel` 增量，thread 内按父链重放。表按 `record_ttl_days`（默认 0=不启用）与「会话已删除」两种口径清理，清理走 `DistributedLock` 的 `checkpoint-ttl` 互斥。Postgres checkpointer / Store 已移除（2026-10-21），LangGraph Store 固定为业务库 `SqlStore`；旧的 `PersistentMemorySaver` + `agent_checkpoints` 全量快照链路 2026-11-11 删除。
 
 ## 4. 前端
 
