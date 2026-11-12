@@ -3,8 +3,10 @@
  *
  * 纯函数，实时流与历史回放共用。前端派生 dsh 的 presentCall/presentResult：
  *   execute → terminal   read_file → read   write_file/edit_file → diff
- *   ls/glob → search(paths)   grep → search(matches)   其它 → generic
+ *   ls/glob → search(paths)   grep → search(matches)
+ *   带 chart 信封的数据类工具 → visual（图表卡片）   其它 → generic
  */
+import { parseChartEnvelope } from '../shared/visual/envelope.js'
 
 function oneLine(s) {
   return String(s == null ? '' : s).split('\n')[0]
@@ -104,7 +106,16 @@ export function toolCard(toolName, args, result, success = true) {
       }
     }
     default: {
-      // 其它工具（含返回图表信封的数据类 MCP 工具）一律走通用卡片，结果按原文展示
+      // 数据类工具的图表信封（chart 是现成的 ECharts option）：画成图表卡片，原始结果仍放在 body
+      const envelope = parseChartEnvelope(result)
+      if (envelope) {
+        return {
+          card: 'visual', kind: 'other', title: envelope.title || toolName || 'tool',
+          meta: [envelope.statDate, envelope.unit].filter(Boolean).join(' · '),
+          error: success === false, envelope, body: r,
+        }
+      }
+      // 其它工具一律走通用卡片，结果按原文展示
       return {
         card: 'generic', kind: 'other', title: toolName || 'tool',
         meta: short(JSON.stringify(a || {}), 56),

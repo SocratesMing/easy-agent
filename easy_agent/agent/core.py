@@ -50,6 +50,7 @@ from easy_agent.agent.workspace import (
 )
 from easy_agent.agent.subagents import DEFAULT_SUBAGENTS, apply_skill_gated_tools, resolve_subagent_tools
 from easy_agent.agent.summarization import build_summarization_middleware
+from easy_agent.agent.visual_prompt import build_visual_prompt
 from easy_agent.agent.memory import SessionMemoryMiddleware
 from easy_agent.agent.skills_middleware import EasySkillsMiddleware
 from easy_agent.tools.registry import (
@@ -323,6 +324,8 @@ class EasyAgent(AgentWorkspaceMixin):
             web_search_prompt=WEB_SEARCH_SYSTEM_PROMPT
             if self.enable_web_search
             else WEB_SEARCH_OFF_PROMPT_NOTE,
+            # 图表 / 流程图 / 交互组件的写法，随 visual 配置开关（关闭的类型不教给模型）
+            visual_note=build_visual_prompt(getattr(self.config, "visual", None)),
             extra=system_prompt_extra,
             hitl_note=HITL_SYSTEM_NOTE if self.enable_hitl else "",
         )

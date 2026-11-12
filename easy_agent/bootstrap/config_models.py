@@ -459,6 +459,22 @@ class FileContextConfig(BaseModel):
     """本轮上传文件注入模型的开头预览字符数（多文件合计）；0 = 不注入预览。"""
 
 
+class VisualConfig(BaseModel):
+    """对话内可视化（config.yaml 的 ``visual`` 段）：ECharts 图表、Mermaid 流程图、HTML 交互组件。
+
+    三类内容都在沙箱 iframe（``/agent/viz/frame.html``）里渲染，ECharts / Mermaid 由后端托管、
+    按需加载，不打进前端包。``enabled=False`` 时提示词不再教模型写可视化代码块，框架页拒绝渲染，
+    前端退回显示源码；``html_widgets=False`` 只关掉 HTML 交互组件（它要在沙箱里执行模型写的
+    脚本），图表与流程图照常。设计见 ``docs/design/2026-11-12-chat-visuals.md``。
+    """
+
+    enabled: bool = True
+    """总开关：false 时三类可视化都不渲染、提示词也不再提。"""
+
+    html_widgets: bool = True
+    """是否允许模型写的 HTML 交互组件在沙箱里运行（滑块、参数切换等需要脚本的演示）。"""
+
+
 class StreamingConfig(BaseModel):
     """SSE 流式响应配置（config.yaml 的 ``streaming`` 段）。
 

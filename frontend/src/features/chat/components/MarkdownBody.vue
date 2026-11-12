@@ -10,6 +10,9 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { highlighterVersion, renderMarkdownBlocks } from '../composables/useMarkdownRenderer.js'
 import { linkKnowledgeCitations } from '../../../shared/markdown/citations.js'
 import { patchMarkdownBlocks } from '../../../shared/markdown/blockDom.js'
+import { API_BASE_URL } from '../../../config.js'
+import { VISUAL_FRAME_PATH } from '../../../shared/visual/fence.js'
+import { mountVisuals } from '../../../shared/visual/mount.js'
 
 const props = defineProps({
   compactCitations: { type: Boolean, default: false },
@@ -47,7 +50,10 @@ function clearTimers() {
 }
 
 function flush() {
-  if (root.value) rendered = patchMarkdownBlocks(root.value, rendered, blocks)
+  if (!root.value) return
+  rendered = patchMarkdownBlocks(root.value, rendered, blocks)
+  // ```echarts / ```mermaid / ```widget 代码块挂成沙箱 iframe 卡片（幂等：已挂载、仍在流式中的跳过）
+  mountVisuals(root.value, { frameUrl: `${API_BASE_URL}${VISUAL_FRAME_PATH}` })
 }
 
 function render(partial) {
@@ -81,3 +87,5 @@ watch(highlighterVersion, () => { if (started) render(false) })
 onMounted(flush)
 onBeforeUnmount(clearTimers)
 </script>
+
+<style src="./visual.css"></style>

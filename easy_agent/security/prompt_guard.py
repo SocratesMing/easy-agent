@@ -72,13 +72,14 @@ def assemble_system_prompt(
     base_prompt: str,
     user_info: str = "",
     web_search_prompt: str = "",
+    visual_note: str = "",
     extra: str = "",
     hitl_note: str = "",
 ) -> str:
     """按安全顺序装配最终 system prompt。
 
     顺序固定为：基础系统提示词 → 当前用户/运行时上下文 → 联网搜索附加 →
-    从属补充内容（专家/会话）→ HITL 说明。HITL 说明是本函数产出的最后一段，
+    可视化说明（图表 / 流程图 / 交互组件，按 visual 配置）→ 从属补充内容（专家/会话）→ HITL 说明。HITL 说明是本函数产出的最后一段，
     但不是模型看到的最后一段：deepagents 的 write_todos、技能、记忆中间件会在
     请求时把各自的段落接在后面（技能段、记忆段的模板见 ``agent/skills_middleware.py``、
     ``agent/memory.py``）。
@@ -87,6 +88,7 @@ def assemble_system_prompt(
         (base_prompt or "").strip(),
         (user_info or "").strip(),
         (web_search_prompt or "").strip(),
+        (visual_note or "").strip(),
         wrap_expert_prompt(extra),
         (hitl_note or "").strip(),
     ]

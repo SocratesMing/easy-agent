@@ -86,6 +86,7 @@ from easy_agent.api import (
     scheduled_tasks_router,
     expert_router,
     usage_router,
+    viz_router,
 )
 from easy_agent.services.metrics import snapshot_metrics
 from easy_agent.services.health import ping_database, workspace_writable
@@ -560,6 +561,7 @@ _ACCESS_SKIP_PREFIXES = (
     "/openapi.json",
     "/static",
     "/assets",
+    "/agent/viz",
 )
 _ACCESS_SKIP_SUFFIXES = (
     ".js",
@@ -727,6 +729,8 @@ app.include_router(knowledge_router)
 app.include_router(personnel_router)
 app.include_router(expert_router)
 app.include_router(usage_router)
+# 对话内可视化的沙箱框架页与图表库（不需要登录，见 api/viz.py）
+app.include_router(viz_router)
 
 
 @app.get("/agent/live", summary="存活检查（liveness）", response_model=HealthResponse)

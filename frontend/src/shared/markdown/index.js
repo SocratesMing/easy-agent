@@ -33,6 +33,7 @@ import { CODE_COPY_ONCLICK, sanitizeHtml } from './sanitize.js'
 import { CODE_HOLDER_PREFIX, protectCodeRegions } from './codeRegions.js'
 import { MARKER_PREFIX, parseMarker, sourceCardMarker } from './markers.js'
 import { bufferStreamingTail } from './streamingTail.js'
+import { isFenceClosed, visualKindOfLang, visualPendingHtml, visualPlaceholderHtml } from '../visual/fence.js'
 
 // 预览组件（Excel 兜底表格、docx 链接）经 markdownSetup 同一出口拿消毒函数
 export { isSafeLinkUrl, neutralizeUnsafeLinks, sanitizeHtml } from './sanitize.js'
@@ -583,12 +584,16 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
   const state = { partial: false, rawHtml: 'escape' }
   RENDER_STATE.set(renderer, state)
 
-  renderer.code = function ({ text, lang }) {
+  renderer.code = function ({ text, lang, raw }) {
     const code = text || ''
     const rawLang = (lang || '').trim().split(/\s+/)[0]
+    // 可视化代码块（```echarts / ```mermaid / ```widget）：流式中还没闭合时先出骨架，
+    // 闭合后在普通代码块外包一层占位元素，由 MarkdownBody 挂成沙箱 iframe 卡片（见 ../visual/）
+    const visualKind = visualKindOfLang(rawLang)
+    if (visualKind && state.partial && !isFenceClosed(raw)) return visualPendingHtml(visualKind)
     const langLabel = escapeHtml(rawLang || 'text')
     const highlighted = typeof highlight === 'function' ? highlight(code, rawLang, state) : ''
-    return (
+    const block = (
       '<div class="code-block-wrapper">' +
       '<div class="code-header">' +
       `<span class="code-lang">${langLabel}</span>` +
@@ -597,6 +602,7 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
       highlighted +
       '</div>'
     )
+    return visualKind ? visualPlaceholderHtml(visualKind, block) : block
   }
 
   // 默认把模型写的原始 HTML 当文本显示，只放行小白名单；文件预览等可信场景传 rawHtml: 'allow'

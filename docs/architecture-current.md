@@ -24,7 +24,7 @@
 | `agent/subagents.py` / `agent/skills.py` | 子代理定义；技能发现（根 `skills/` 为 canonical，包内副本回退） |
 | `bootstrap/runtime_config.py` | 运行期配置 + Agent 失效回调注册（架构解耦用） |
 | `bootstrap/config.py` / `config_models.py` / `config_validation.py` | 配置加载（`Config.from_yaml` 把各段交给模型校验，只处理 YAML 写法与模型对不上的地方）与路径 helpers；Pydantic 配置模型（字段名与默认值的唯一来源）；未知/废弃键校验（已知键由模型字段生成）与 `${VAR}` 展开；`config.py` re-export 原有公开名字与兼容私有名 |
-| `api/` | chat / auth / sessions / files / expert / connectors / scheduled_tasks / settings / skill_center / completion / prompts / usage / terminal（POSIX，HITL 无关） |
+| `api/` | chat / auth / sessions / files / expert / connectors / scheduled_tasks / settings / skill_center / completion / prompts / usage / viz（可视化沙箱框架页与 ECharts / Mermaid 托管，免登录）/ terminal（POSIX，HITL 无关） |
 | `services/` | 7 个领域子包：agents（会话 Agent 缓存/流锁/每轮准备）、streaming（SSE 编排/事件/处理器/审批）、sessions（运行期/线程/上传）、mcp（连接器工具/会话/策略/证据）、memory、experts、skills；根下留 scheduler、health、metrics、document_convert |
 | `db/` | `database.py`（连接/迁移/核心表）、`session_messages.py`、`expert_store.py`、`schema_registry.py`、`login_state.py`（登录态校验与活跃时间，主鉴权与知识库鉴权共用） |
 | `middleware/` | JWT 鉴权依赖（`auth.py`，判定在 `db/login_state.py`）、进程内限流（`rate_limit.py`） |
@@ -78,6 +78,7 @@
   同步该目录（`npm run check:easy-agent` / `export:easy-agent`，见 `frontend-vue2/integration/README.md`）。
 - `frontend/`：Vue 3.5 + Vite（并行维护的第二基线）。
 - 两套设置页均提供“Token统计”：四卡、7/30日原生 SVG 趋势、可切换图例及键盘/触屏可访问的逐日精确明细。共享坐标和格式化源为 `frontend-shared/utils/tokenUsage.js`，由同步脚本分发；组件不引入图表运行时依赖。
+- 对话内可视化：` ```echarts ` / ` ```mermaid ` / ` ```widget ` 代码块与数据工具的 `chart` 信封，由 `frontend-shared/visual/` 挂成 `sandbox="allow-scripts"` 的 iframe 卡片，加载后端 `/agent/viz/frame.html`；图表库只在后端托管，不进前端包（设计见 `docs/design/2026-11-12-chat-visuals.md`，开关为 config 的 `visual` 段）。
 - 两者都**不是** `npm run dev` 自动代理到 8080 的旧 CLI 结构（已改为 Vite 脚本）；构建命令见各自 `package.json`。
 - 无路由/状态库（Vue2 侧）：视图由 `App.vue` 布尔开关切换；**SSE 解析已统一**为各基线的 `src/api/sse.js`（唯一 `readSSE`），chat/expert/knowledge 只注册回调（审计项 ARCH-05 第一步完成）。
 
