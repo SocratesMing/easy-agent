@@ -21,6 +21,13 @@ export async function getSystemPrompt() {
   )
 }
 
+export async function getVersionInfo() {
+  return request(
+    { url: '/agent/version', method: 'get' },
+    '获取版本信息失败'
+  )
+}
+
 export async function getSkills() {
   return request(
     { url: '/agent/settings/skills', method: 'get' },
