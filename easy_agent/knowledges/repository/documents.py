@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from easy_agent.knowledges.core.models import REFRESHABLE_DOCUMENT_STATUSES
-from easy_agent.knowledges.core.repository_base import _now
+from easy_agent.knowledges.repository.base import _now
 
 _DOCUMENT_UPDATE_FIELDS = {
     "remote_document_id", "folder_id", "status", "progress", "error_code",

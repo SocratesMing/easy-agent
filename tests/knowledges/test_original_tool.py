@@ -14,7 +14,7 @@ import pytest
 from easy_agent.knowledges.chat import original_tool as original_tool_module
 from easy_agent.knowledges.chat.original_tool import KnowledgeOriginalTool
 from easy_agent.knowledges.core.config import KnowledgeConfig
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.models.db import SessionModel, UserModel
 
 

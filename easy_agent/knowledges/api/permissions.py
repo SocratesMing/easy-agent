@@ -19,7 +19,7 @@ from easy_agent.knowledges.core.models import (
     PermissionListResponse,
     PermissionReplaceRequest,
 )
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.service import KnowledgeService
 from easy_agent.utils.auth import is_super_admin
 

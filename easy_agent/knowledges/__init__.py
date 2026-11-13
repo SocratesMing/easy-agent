@@ -1,7 +1,7 @@
 """知识库模块（按前端实际调用面精简）。
 
-基础层 core：config / models / schema / repository / operations_repository /
-permissions / original_store / file_validation / chunks；业务层 service 与
+基础层 core：config / models / schema / permissions / original_store /
+file_validation / chunks；数据访问在 repository；业务层 service 与
 HTTP 层 api；聊天集成在 chat；运行时在 runtime；上游客户端在 ragflow；
 人员子包 personnel（HTTP 前缀 ``/agent/personnel``，由 ``app.py`` 显式导入，
 导入即注册默认管理员策略与用户扩展字段读写）；运维脚本在 scripts。

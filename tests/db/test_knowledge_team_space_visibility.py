@@ -14,7 +14,7 @@ from easy_agent.knowledges.core.models import (
     PermissionEntry,
     PermissionListResponse,
 )
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.service import KnowledgeService, LocalOriginalStore
 
 

@@ -15,7 +15,7 @@ from typing import Callable
 from easy_agent.db import Database
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.ragflow import RagflowClient
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.core.original_store import LocalOriginalStore
 from easy_agent.knowledges.service import KnowledgeService
 from easy_agent.persistence.distributed_lock import get_distributed_lock

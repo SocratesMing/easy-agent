@@ -16,7 +16,7 @@ from easy_agent.knowledges.core.models import (
     RetrieveResponse,
     SessionKnowledgeScopeResponse,
 )
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.core.original_store import LocalOriginalStore
 from easy_agent.knowledges.ragflow import RagflowError
 from easy_agent.knowledges.service import (

@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from easy_agent.knowledges.core.repository_base import _now
+from easy_agent.knowledges.repository.base import _now
 
 _OPERATION_UPDATE_FIELDS = {
     "phase", "status", "current_count", "total_count", "progress",

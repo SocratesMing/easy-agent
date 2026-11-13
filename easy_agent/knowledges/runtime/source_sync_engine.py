@@ -17,7 +17,7 @@ from easy_agent.knowledges.core.models import (
     KnowledgeBaseVisibility,
     KnowledgePrincipal,
 )
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.runtime.source_sync_inflight import SourceSyncInflightMixin
 from easy_agent.knowledges.runtime.source_sync_staging import SourceSyncStagingMixin
 from easy_agent.knowledges.runtime.source_sync_upload import SourceSyncUploadMixin

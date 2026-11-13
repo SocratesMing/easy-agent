@@ -30,7 +30,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from easy_agent.bootstrap.initialization import initialize_runtime  # noqa: E402
 from easy_agent.db.database import Database, init_database  # noqa: E402
 from easy_agent.knowledges.core.config import KnowledgeConfig  # noqa: E402
-from easy_agent.knowledges.core.repository import KnowledgeRepository  # noqa: E402
+from easy_agent.knowledges.repository import KnowledgeRepository  # noqa: E402
 from easy_agent.knowledges.ragflow import RagflowClient, RagflowError  # noqa: E402
 from easy_agent.knowledges.service import KnowledgeService  # noqa: E402
 

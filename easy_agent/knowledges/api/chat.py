@@ -29,7 +29,7 @@ from easy_agent.knowledges.core.models import (
     SessionKnowledgeScopeRequest,
     SessionKnowledgeScopeResponse,
 )
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.service import KnowledgeService, KnowledgeServiceError
 from easy_agent.models.db import SessionModel
 from easy_agent.utils.usage_context import usage_scope

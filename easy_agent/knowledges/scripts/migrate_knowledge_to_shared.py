@@ -38,7 +38,7 @@ from easy_agent.db.database import Database, init_database  # noqa: E402
 from easy_agent.knowledges.core.config import KnowledgeConfig  # noqa: E402
 from easy_agent.knowledges.core.models import DocumentStatus  # noqa: E402
 from easy_agent.knowledges.ragflow import RagflowClient, RagflowError  # noqa: E402
-from easy_agent.knowledges.core.repository import KnowledgeRepository  # noqa: E402
+from easy_agent.knowledges.repository import KnowledgeRepository  # noqa: E402
 from easy_agent.knowledges.core.original_store import LocalOriginalStore  # noqa: E402
 from easy_agent.knowledges.service import (  # noqa: E402
     CHUNK_METHOD,

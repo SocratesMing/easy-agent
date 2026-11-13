@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Iterable
 from typing import Any
 
-from easy_agent.knowledges.core.repository_base import _now
+from easy_agent.knowledges.repository.base import _now
 
 _OBJECT_UPDATE_FIELDS = {
     "storage_key", "status", "size_bytes", "sha256", "error_code",

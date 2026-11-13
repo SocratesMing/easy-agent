@@ -58,7 +58,7 @@ from starlette.concurrency import run_in_threadpool
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.models import KnowledgePrincipal
 from easy_agent.knowledges.core.original_store import LocalOriginalStore  # 本地原文存储：保存上传过的文件原件
-from easy_agent.knowledges.core.repository import KnowledgeRepository  # 仓储层：所有数据库增删改查都封装在这里
+from easy_agent.knowledges.repository import KnowledgeRepository  # 仓储层：所有数据库增删改查都封装在这里
 from easy_agent.knowledges.runtime.source_sync_engine import SourceSyncEngine
 from easy_agent.knowledges.runtime.source_sync_support import (
     INFLIGHT_POLL_INTERVAL_SECONDS,

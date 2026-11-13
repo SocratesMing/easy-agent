@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 
-from easy_agent.knowledges.core.repository_base import _now
+from easy_agent.knowledges.repository.base import _now
 from easy_agent.utils.auth import is_super_admin
 
 _BASE_UPDATE_FIELDS = {

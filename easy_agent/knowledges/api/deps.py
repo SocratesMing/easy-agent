@@ -16,8 +16,8 @@ from easy_agent.db.login_state import LoginRejected, bearer_token, verify_login_
 from easy_agent.db.repositories.user_repository import UserRepository
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.models import KnowledgePrincipal
-from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.repository.operations import KnowledgeOperationsRepository
+from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.runtime.observability import resolve_request_id
 from easy_agent.knowledges.service import KnowledgeService, KnowledgeServiceError
 

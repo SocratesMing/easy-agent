@@ -15,7 +15,7 @@ from easy_agent.knowledges.core.models import (
     OperationPhase,
     OperationStatus,
 )
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.ragflow import RagflowError, RagflowNotFoundError
 
 from .test_shared_dataset import (
