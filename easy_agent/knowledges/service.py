@@ -518,6 +518,47 @@ class KnowledgeService:
             return True
         return False
 
+    async def _resolve_team_department_id(
+        self, principal: KnowledgePrincipal, requested_department_id: str | None
+    ) -> str:
+        """确定公共空间知识库的归属部门：超级管理员可选，其余账号固定本部门。"""
+
+        if is_super_admin(principal.username):
+            target_department_id = requested_department_id or principal.department_id
+            if not target_department_id:
+                raise KnowledgeServiceError(
+                    "KNOWLEDGE_DEPARTMENT_REQUIRED",
+                    "请选择公共空间所属部门",
+                    status_code=422,
+                )
+            active_departments = await self._repo(
+                self.repository.list_active_departments
+            )
+            active_department_ids = {
+                str(row.get("department_id") or "").strip()
+                for row in active_departments
+            }
+            if target_department_id not in active_department_ids:
+                raise KnowledgeServiceError(
+                    "KNOWLEDGE_DEPARTMENT_INVALID",
+                    "所选部门不存在或没有在职成员",
+                    status_code=422,
+                )
+            return target_department_id
+        if not principal.department_id:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_DEPARTMENT_REQUIRED",
+                "创建公共空间知识库需要有效部门",
+                status_code=422,
+            )
+        if requested_department_id and requested_department_id != principal.department_id:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_DEPARTMENT_FORBIDDEN",
+                "只能在当前账号所属部门创建公共空间",
+                status_code=403,
+            )
+        return principal.department_id
+
     async def _effective_role(
         self,
         base: Mapping[str, object],
@@ -804,41 +845,9 @@ class KnowledgeService:
                     "当前账号未获得公共空间创建与管理权限，请联系 admin 或部门管理员配置",
                     status_code=403,
                 )
-            if is_super_admin(principal.username):
-                target_department_id = requested_department_id or principal.department_id
-                if not target_department_id:
-                    raise KnowledgeServiceError(
-                        "KNOWLEDGE_DEPARTMENT_REQUIRED",
-                        "请选择公共空间所属部门",
-                        status_code=422,
-                    )
-                active_departments = await self._repo(
-                    self.repository.list_active_departments
-                )
-                active_department_ids = {
-                    str(row.get("department_id") or "").strip()
-                    for row in active_departments
-                }
-                if target_department_id not in active_department_ids:
-                    raise KnowledgeServiceError(
-                        "KNOWLEDGE_DEPARTMENT_INVALID",
-                        "所选部门不存在或没有在职成员",
-                        status_code=422,
-                    )
-            else:
-                if not principal.department_id:
-                    raise KnowledgeServiceError(
-                        "KNOWLEDGE_DEPARTMENT_REQUIRED",
-                        "创建公共空间知识库需要有效部门",
-                        status_code=422,
-                    )
-                if requested_department_id and requested_department_id != principal.department_id:
-                    raise KnowledgeServiceError(
-                        "KNOWLEDGE_DEPARTMENT_FORBIDDEN",
-                        "只能在当前账号所属部门创建公共空间",
-                        status_code=403,
-                    )
-                target_department_id = principal.department_id
+            target_department_id = await self._resolve_team_department_id(
+                principal, requested_department_id
+            )
         # create_base 是纯本地操作，不在此处触发 RAGFlow 调用；
         # 知识库表的 embedding_model 字段留空——真实模型由共享数据集统一决定。
         # 如果未来支持"每个知识库独立 RAGFlow 数据集"，再回填此处。
