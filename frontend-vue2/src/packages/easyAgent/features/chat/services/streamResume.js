@@ -157,6 +157,22 @@ export async function shouldAttachOnOpen(sessionId, getStatus) {
   }
 }
 
+/**
+ * 单个会话的流状态（`/stream/status` 的薄包装）。
+ *
+ * 调用方（`chatSession.js` 的 `probeLiveStream`）需要拿到 `active` 与 `replayable`
+ * 两个字段判断「挂实时流」还是「回放过程事件」，因此这里原样返回状态对象；
+ * 查询失败返回 `null`（探活失败绝不能影响打开会话）。
+ */
+export async function probeStreamState(sessionId, getStatus) {
+  if (!sessionId || typeof getStatus !== 'function') return null
+  try {
+    return await getStatus(sessionId)
+  } catch (e) {
+    return null
+  }
+}
+
 /** 逐个问后端「这一轮还在跑吗」，返回确实活跃的会话。 */
 export async function probeActive(ids, getStatus) {
   const active = []

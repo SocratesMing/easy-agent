@@ -59,3 +59,27 @@ export async function getUploadLimits() {
     '获取上传限额失败'
   )
 }
+
+/**
+ * 获取当前用户的审批模式（设置 → 权限设置）。
+ * 返回 { mode, available, locked_reason, auto_approved_tools, revision, updated_at, path }。
+ * available=false 表示服务端 config.yaml 关了 hitl.enabled，两个选项都无效。
+ */
+export async function getApprovalSettings() {
+  return request(
+    { url: '/agent/settings/approval', method: 'get' },
+    '获取权限设置失败'
+  )
+}
+
+/**
+ * 更新审批模式。mode 只接受 'manual' | 'auto'；服务端原子写文件，下一条消息装配 Agent 时生效
+ * （保存时故意不驱逐缓存：清掉缓存会把正挂着审批卡片的会话一起丢掉，恢复即 409）。
+ * 返回结构与 getApprovalSettings 一致（含保存后的 revision / updated_at）。
+ */
+export async function updateApprovalSettings(mode) {
+  return request(
+    { url: '/agent/settings/approval', method: 'put', data: { mode } },
+    '保存权限设置失败'
+  )
+}

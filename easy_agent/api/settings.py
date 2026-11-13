@@ -23,7 +23,12 @@ from easy_agent.models.api import (
     WebSearchStatusResponse,
 )
 from easy_agent.agent.skills import discover_skills
+from easy_agent.agent.hitl import APPROVAL_MODES, auto_approved_tool_names
 from easy_agent.services.agents.manager import get_agent_config
+from easy_agent.services.approval_settings import (
+    read_approval_settings,
+    write_approval_settings,
+)
 from easy_agent.services.agents.prompts import load_system_prompt
 from easy_agent.services.memory.manager import MAX_LONG_TERM_MEMORY_CHARS, write_memory
 from easy_agent.utils.blocking import run_blocking
@@ -112,6 +117,120 @@ def _truncate_memory(content: str, max_chars: int) -> str:
         truncated = truncated[:max_chars]
 
     return truncated
+
+
+# ── 权限设置（审批模式） ──────────────────────────────────────────────
+
+
+class ApprovalSettingsResponse(BaseModel):
+    """用户级审批模式。
+
+    ``available=False`` 表示部署方在 config.yaml 里关了 ``hitl.enabled``：此时没有审批可免，
+    前端应把两个选项置灰并展示 ``locked_reason``，而不是让用户白点一次保存。
+    ``auto_approved_tools`` 由服务端下发（与 ``agent/hitl.py`` 的放行名单同源），
+    避免前端文案与后端实际行为漂移。
+    """
+
+    mode: str
+    available: bool = True
+    locked_reason: str = ""
+    auto_approved_tools: list[str] = []
+    revision: int = 0
+    updated_at: str = ""
+    path: str = ""
+
+
+class UpdateApprovalRequest(BaseModel):
+    mode: str
+
+
+def _current_agent_config():
+    """运行期 Config；未初始化时返回 None（调用方按默认值处理，不抛 500）。"""
+    _cfg = get_agent_config()
+    return _cfg["config"] if _cfg and _cfg.get("config") else None
+
+
+def _approval_availability(config) -> tuple[bool, str]:
+    """部署方是否允许用户自选审批模式（``hitl.enabled=false`` 时用户选什么都没有意义）。"""
+    if config is None:
+        return True, ""
+    enabled = bool(getattr(getattr(config, "hitl", None), "enabled", True))
+    if enabled:
+        return True, ""
+    return False, "服务端已关闭人工审批（config.yaml 的 hitl.enabled=false），当前所有操作均不审批"
+
+
+def _approval_payload(settings: dict, config) -> dict:
+    available, reason = _approval_availability(config)
+    hitl_tools = getattr(getattr(config, "hitl", None), "tools", None)
+    return {
+        "mode": settings.get("mode", "manual"),
+        "available": available,
+        "locked_reason": reason,
+        "auto_approved_tools": auto_approved_tool_names(hitl_tools),
+        "revision": settings.get("revision", 0),
+        "updated_at": settings.get("updated_at", ""),
+        "path": settings.get("path", ""),
+    }
+
+
+@router.get(
+    "/approval",
+    summary="获取当前用户的审批模式（设置 → 权限设置）",
+    response_model=ApprovalSettingsResponse,
+)
+async def get_approval_settings(username: Annotated[str, Depends(get_current_username)]):
+    """读 ``{workspace_dir}/.settings/{user}.json``；文件不存在/损坏时返回 ``manual``。
+
+    每次打开设置页都直接读文件，前端不做本地缓存——换台设备改过设置这边也能立刻看到。
+    """
+    config = _current_agent_config()
+    settings = await run_blocking(read_approval_settings, username, config)
+    return _approval_payload(settings, config)
+
+
+@router.put(
+    "/approval",
+    summary="更新当前用户的审批模式（设置 → 权限设置）",
+    response_model=ApprovalSettingsResponse,
+)
+async def update_approval_settings(
+    request: UpdateApprovalRequest,
+    username: Annotated[str, Depends(get_current_username)],
+):
+    """原子写审批模式。**故意不驱逐本进程的 Agent 缓存。**
+
+    生效靠两条既有机制，不靠这次驱逐：
+
+    1. 每轮装配 Agent 前都会读一次文件（``services/agents/manager.py``），下一个正常
+       提问就会带着新模式走到 ``_try_reuse_cached_agent`` 的 ``approval_changed`` 分支，
+       自动驱逐并重建；
+    2. 跨副本一致同样靠这次读文件，而不是广播。
+
+    反过来，如果在这里调 ``invalidate_user_agents``，会把这个用户**所有会话**的 Agent
+    与编译图一起清掉——包括「审批卡片正挂着」的会话。那种会话恢复时必须沿用原来的
+    ``interrupt_on``（``prepare_resume`` 传 ``approval_mode=None`` 就是为了这个），
+    缓存被清掉后会按新设置重建图，checkpointer 里的中断态对不上，点「继续」直接 409。
+    """
+    mode = str(request.mode or "").strip().lower()
+    if mode not in APPROVAL_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"非法审批模式: {request.mode}（可选 {' / '.join(APPROVAL_MODES)}）",
+        )
+    config = _current_agent_config()
+    try:
+        settings = await run_blocking(write_approval_settings, username, mode, config)
+    except OSError as exc:
+        logger.error(f"审批设置保存失败 | 用户: {username} | mode: {mode} | {exc}")
+        raise HTTPException(status_code=500, detail=f"保存失败：{exc}") from exc
+
+    logger.info(
+        f"审批设置已更新 | 用户: {username} | mode: {mode} | "
+        f"revision: {settings.get('revision')} | 下一条消息装配时生效 | "
+        f"{settings.get('path')}"
+    )
+    return _approval_payload(settings, config)
 
 
 # ── 系统提示词 ────────────────────────────────────────────────────────

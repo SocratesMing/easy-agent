@@ -24,11 +24,15 @@ from easy_agent.backends.context import ContextBackend
 from easy_agent.persistence.checkpoints import get_session_checkpointer
 from easy_agent.bootstrap.config import Config
 from easy_agent.agent.hitl import (
+    APPROVAL_MODE_MANUAL,
     EXECUTE_HITL_TOOL_DESCRIPTION,
+    HITL_AUTO_SYSTEM_NOTE,
     HITL_SYSTEM_NOTE,
     HITL_WHEN_PREDICATES,
     build_interrupt_config,
     execute_description_installed,
+    is_auto_approval,
+    normalize_approval_mode,
     register_execute_description_profiles,
 )
 from easy_agent.persistence.stores import get_agent_store
@@ -311,6 +315,16 @@ class EasyAgent(AgentWorkspaceMixin):
             + f"{self._get_os_info()}\n"
         )
 
+    def _hitl_system_note(self) -> str:
+        """HITL 提示词段落：关闭时为空；自动审批时换成「已全部放行」的版本。
+
+        工具描述（execute / delete / save_expert）是按模型全局注册的，没法按用户改，
+        所以「这些操作已不再暂停等批准」只能由这里的提示词覆盖。
+        """
+        if not self.enable_hitl:
+            return ""
+        return HITL_AUTO_SYSTEM_NOTE if is_auto_approval(self.approval_mode) else HITL_SYSTEM_NOTE
+
     def _assemble_system_prompt(self, system_prompt: str, system_prompt_extra: str) -> str:
         """按 prompt_guard 的固定顺序组装终稿系统提示词，并记录可观测日志。"""
         # 组装顺序由 prompt_guard 统一保证：
@@ -327,7 +341,7 @@ class EasyAgent(AgentWorkspaceMixin):
             if self.enable_web_search
             else WEB_SEARCH_OFF_PROMPT_NOTE,
             extra=system_prompt_extra,
-            hitl_note=HITL_SYSTEM_NOTE if self.enable_hitl else "",
+            hitl_note=self._hitl_system_note(),
         )
 
         # ── 系统提示词可观测日志（专家 Agent 提示词链路校验，可观测点 ③） ──
@@ -365,6 +379,7 @@ class EasyAgent(AgentWorkspaceMixin):
         mcp_tools: list | None = None,
         organization_id: str = "",
        enable_hitl: bool = True,
+       approval_mode: str = APPROVAL_MODE_MANUAL,
        model_name: str | None = None,
         enable_web_search: bool = False,
         system_prompt_extra: str = "",
@@ -390,6 +405,11 @@ class EasyAgent(AgentWorkspaceMixin):
             enable_web_search: 是否开启联网搜索。为 True 时在系统提示词中加入
                 联网搜索行为约束（web_search 工具本身由 agent_manager 注入，
                 仅在 web_search 配置了 api_key 时才为 True）。
+            approval_mode: 用户级审批模式（``manual`` / ``auto``）。``auto`` 把
+                ``AUTO_APPROVED_APPROVAL_TOOLS``（execute / delete / save_expert /
+                create_scheduled_task / access_knowledge_original 与 MCP 工具）全部从审批
+                名单里摘掉，**不改** ``enable_hitl``——总开关一关，定时任务工具注入与
+                恢复语义都会变。
             skill_whitelist: 技能作用域（专家技能硬隔离）。``None``（默认）= 全量可见，
                 与改造前逐字一致；``[]`` = 显式无技能；非空 = 只有这些技能目录进技能
                 清单、且其内容可读（``backends/scoped_skills.py``）。
@@ -405,6 +425,8 @@ class EasyAgent(AgentWorkspaceMixin):
         self.mcp_tools = mcp_tools or []
         self.organization_id = organization_id or ""
         self.enable_hitl = enable_hitl
+        # 用户级审批模式：只影响「审批名单里摘掉哪几项」，不影响 enable_hitl 总开关
+        self.approval_mode = normalize_approval_mode(approval_mode)
         self.enable_web_search = enable_web_search
         self.safe_username = Config.sanitize_username(username)
         # 注入给 shell 执行环境的变量（LocalShellBackend 默认 inherit_env=False，
@@ -540,6 +562,7 @@ class EasyAgent(AgentWorkspaceMixin):
             getattr(self, "mcp_tools", None) or [],
             enable_hitl=bool(getattr(self, "enable_hitl", True)),
             approval_tools=getattr(hitl, "tools", None),
+            approval_mode=getattr(self, "approval_mode", APPROVAL_MODE_MANUAL),
             sid=getattr(self, "sid", ""),
         )
 
@@ -782,6 +805,10 @@ class EasyAgent(AgentWorkspaceMixin):
             hitl={
                 "enabled": bool(inputs.interrupt_on_config),
                 "tools": sorted((inputs.interrupt_on_config or {}).keys()),
+                # 审批模式也进指纹：auto 下「空 interrupt_on」与「配置里 hitl.tools 为空」
+                # 会算出同一个 hitl 指纹，但两者的审计中间件行为不同（一个补跳过日志、
+                # 一个不补），不能共用编译图。
+                "mode": getattr(self, "approval_mode", ""),
             },
             subagents=inputs.subagents,
             skills=inputs.skills_paths,
@@ -907,8 +934,18 @@ class EasyAgent(AgentWorkspaceMixin):
         )
 
     def _build_middleware(self) -> list:
-        """构建自定义中间件列表（实现见 :func:`easy_agent.agent.middleware.build_agent_middleware`）。"""
-        return build_agent_middleware(self.config, self.max_steps)
+        """构建自定义中间件列表（实现见 :func:`easy_agent.agent.middleware.build_agent_middleware`）。
+
+        审批模式一并下传：auto 模式下没有 ``HumanInTheLoopMiddleware``，只能靠审计
+        中间件在工具执行前补「用户已选择自动审批，跳过人工审批」日志。
+        ``enable_hitl=False``（定时任务 / 总开关关闭）时传 ``None``：审批根本没启用，
+        与用户选哪种模式无关，不能打「跳过人工审批」误导排查。
+        """
+        return build_agent_middleware(
+            self.config,
+            self.max_steps,
+            approval_mode=self.approval_mode if self.enable_hitl else None,
+        )
 
     async def run(self, user_input: str) -> str:
         """Execute agent with streaming output (CLI mode).

@@ -32,12 +32,14 @@ def framework_provides_todolist() -> bool:
         return False
 
 
-def build_agent_middleware(config, max_steps) -> list:
+def build_agent_middleware(config, max_steps, *, approval_mode: str | None = None) -> list:
     """构建自定义中间件列表。
 
     Args:
-        config: 应用配置对象（读取 ``tools.result_log_truncate``）。
+        config: 应用配置对象（读取 ``tools.result_log_truncate`` 与 ``hitl.tools``）。
         max_steps: Agent 最大步数，用于推导 Model/Tool 调用上限。
+        approval_mode: 用户级审批模式（``manual`` / ``auto``）。只给审批审计中间件用；
+            ``None`` 按 ``manual`` 处理（不打印「跳过人工审批」）。
 
     Returns:
         按固定顺序排列的中间件列表。
@@ -99,6 +101,18 @@ def build_agent_middleware(config, max_steps) -> list:
     # 超限时显式报错，避免「模型步数用尽但前端以为正常结束」；
     # 错误会经 streaming 的异常分支转成 SSE error。
     middleware.extend(build_call_limit_middleware(max_steps, exit_behavior="error"))
+    # 审批审计：auto 模式下框架不装 HumanInTheLoopMiddleware，靠它补
+    # 「用户已选择自动审批，跳过人工审批」日志。名单与 build_interrupt_config
+    # 同源（config.hitl.tools），名单外的只读工具本来就不进审批，不该记日志。
+    from easy_agent.agent.approval_audit import ApprovalAuditMiddleware  # 延迟导入：导入期重依赖：避免加载 langchain/deepagents 等重依赖
+
+    hitl_cfg = getattr(config, "hitl", None)
+    middleware.append(
+        ApprovalAuditMiddleware(
+            approval_mode=approval_mode or "",
+            approval_tools=getattr(hitl_cfg, "tools", None),
+        )
+    )
     return middleware
 
 

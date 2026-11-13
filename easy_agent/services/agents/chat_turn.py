@@ -825,11 +825,15 @@ async def prepare_resume(
     # 行为与引入专家模块之前逐字一致。
     # 连接器无需传参：agent_manager 直接读该会话的开关记录，缓存失效时按同一套集合重建。
     # 不刷新 checkpointer：saver 是进程级共享对象，resume 直接读同一份 checkpoint。
+    # approval_mode=None：本轮的审批模式**沿用缓存 Agent**，不重新读用户设置。
+    # 用户如果在审批卡片挂着的时候切换了「权限设置」，按新值重建会让 interrupt_on 变化 →
+    # 图重建 → 中断态丢失 → 恢复 409；恢复完成后下一条消息再按新设置生效。
     agent = await get_or_create_agent_for_session(
         session_id,
         username,
         workspace_name,
         expert_agent_id=agent_manager.get_session_expert(session_id),
+        approval_mode=None,
     )
 
     # DA-03：句柄映射到真正要恢复的 thread（会话 thread 模式下是 session_id）；
