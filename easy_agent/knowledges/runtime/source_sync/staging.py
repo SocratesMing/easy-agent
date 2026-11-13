@@ -8,7 +8,7 @@ from typing import Any
 
 from starlette.concurrency import run_in_threadpool
 
-from easy_agent.knowledges.runtime.source_sync_support import (
+from easy_agent.knowledges.runtime.source_sync.support import (
     SourceRow,
     _STAGED_KEEP_STATUSES,
     build_staged_name,

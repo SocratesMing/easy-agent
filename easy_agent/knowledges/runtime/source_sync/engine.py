@@ -18,10 +18,10 @@ from easy_agent.knowledges.core.models import (
     KnowledgePrincipal,
 )
 from easy_agent.knowledges.repository import KnowledgeRepository
-from easy_agent.knowledges.runtime.source_sync_inflight import SourceSyncInflightMixin
-from easy_agent.knowledges.runtime.source_sync_staging import SourceSyncStagingMixin
-from easy_agent.knowledges.runtime.source_sync_upload import SourceSyncUploadMixin
-from easy_agent.knowledges.runtime.source_sync_support import (
+from easy_agent.knowledges.runtime.source_sync.inflight import SourceSyncInflightMixin
+from easy_agent.knowledges.runtime.source_sync.staging import SourceSyncStagingMixin
+from easy_agent.knowledges.runtime.source_sync.upload import SourceSyncUploadMixin
+from easy_agent.knowledges.runtime.source_sync.support import (
     INFLIGHT_POLL_INTERVAL_SECONDS,
     MAX_UPLOAD_ATTEMPTS,
     SOURCE_SYNC_SOURCE,

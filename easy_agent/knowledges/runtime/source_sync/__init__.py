@@ -59,8 +59,8 @@ from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.models import KnowledgePrincipal
 from easy_agent.knowledges.files.original_store import LocalOriginalStore  # 本地原文存储：保存上传过的文件原件
 from easy_agent.knowledges.repository import KnowledgeRepository  # 仓储层：所有数据库增删改查都封装在这里
-from easy_agent.knowledges.runtime.source_sync_engine import SourceSyncEngine
-from easy_agent.knowledges.runtime.source_sync_support import (
+from easy_agent.knowledges.runtime.source_sync.engine import SourceSyncEngine
+from easy_agent.knowledges.runtime.source_sync.support import (
     INFLIGHT_POLL_INTERVAL_SECONDS,
     MAX_UPLOAD_ATTEMPTS,
     SOURCE_SYNC_SOURCE,

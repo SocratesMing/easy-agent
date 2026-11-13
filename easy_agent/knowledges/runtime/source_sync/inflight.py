@@ -7,7 +7,7 @@ import logging
 from typing import Any
 
 from easy_agent.knowledges.core.models import DocumentStatus
-from easy_agent.knowledges.runtime.source_sync_support import (
+from easy_agent.knowledges.runtime.source_sync.support import (
     INFLIGHT_POLL_INTERVAL_SECONDS,
     MAX_UPLOAD_ATTEMPTS,
     _RETRYABLE_DOCUMENT_STATUSES,

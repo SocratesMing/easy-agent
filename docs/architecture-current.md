@@ -28,7 +28,7 @@
 | `services/` | 7 个领域子包：agents（会话 Agent 缓存/流锁/每轮准备）、streaming（SSE 编排/事件/处理器/审批）、sessions（运行期/线程/上传）、mcp（连接器工具/会话/策略/证据）、memory、experts、skills；根下留 scheduler、health、metrics、document_convert |
 | `db/` | `database.py`（连接/迁移/核心表）、`session_messages.py`、`expert_store.py`、`schema_registry.py`、`login_state.py`（登录态校验与活跃时间，主鉴权与知识库鉴权共用） |
 | `middleware/` | JWT 鉴权依赖（`auth.py`，判定在 `db/login_state.py`）、进程内限流（`rate_limit.py`） |
-| `knowledges/` | 知识库 v2：service / api / ragflow client / runtime worker、catalog sync、observability；`runtime/source_sync.py` 负责研报 SQL 增量同步（可选 `staging_dir`：先批量拷贝、READY 后删暂存副本）；`personnel/` 子包负责知识库域的人员管理、Excel 导入、用户扩展字段 |
+| `knowledges/` | 知识库 v2：service / api / ragflow client / runtime worker、catalog sync、observability；`runtime/source_sync/` 负责研报 SQL 增量同步（可选 `staging_dir`：先批量拷贝、READY 后删暂存副本）；`personnel/` 子包负责知识库域的人员管理、Excel 导入、用户扩展字段 |
 | `bootstrap/initialization/` | 环境/日志/运行期初始化（config/log/environment/runtime）。日志级别默认 INFO，`EASY_LOG_LEVEL` / `easy-web --log-level` 覆盖；DEBUG 时 proc 日志记录大模型请求 / 返回报文（`easy_agent.llm_wire`），第三方噪声 logger 仍停在 INFO |
 | `tools/` | web_search、scheduled_task、expert_writer、session_file_reader |
 | `models/` | API / DB Pydantic 模型 |

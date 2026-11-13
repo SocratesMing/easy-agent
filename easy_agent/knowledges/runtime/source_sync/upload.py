@@ -10,7 +10,7 @@ from typing import Any
 from starlette.concurrency import run_in_threadpool
 
 from easy_agent.knowledges.core.models import DocumentMetadata
-from easy_agent.knowledges.runtime.source_sync_support import (
+from easy_agent.knowledges.runtime.source_sync.support import (
     SourceRow,
     build_staged_name,
     date_folder_segments,
