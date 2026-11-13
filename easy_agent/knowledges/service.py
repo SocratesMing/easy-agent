@@ -2558,21 +2558,6 @@ class KnowledgeService:
     # ---------------- 检索与问答 ----------------
 
     @staticmethod
-    def _metadata_filter_kwargs(
-        metadata_filter: DocumentMetadataFilter | None,
-    ) -> dict[str, Any]:
-        """把过滤器转成 repository._document_filters 的关键字参数。"""
-        if metadata_filter is None:
-            return {}
-        return {
-            "publish_date_from": metadata_filter.publish_date_from,
-            "publish_date_to": metadata_filter.publish_date_to,
-            "report_tags": metadata_filter.report_tags or None,
-            "report_second_sources": metadata_filter.report_second_sources or None,
-            "report_title_contains": metadata_filter.report_title_contains,
-        }
-
-    @staticmethod
     def _matches_metadata_filter(
         document: Mapping[str, Any], metadata_filter: DocumentMetadataFilter | None
     ) -> bool:
@@ -2605,7 +2590,7 @@ class KnowledgeService:
         return True
 
     async def _list_ready_documents(
-        self, base_id: str, filter_kwargs: dict[str, Any]
+        self, base_id: str, metadata_filter: DocumentMetadataFilter | None = None
     ) -> list[dict[str, Any]]:
         """分页读取知识库全部已解析文档（本地查询无上限）。"""
 
@@ -2619,7 +2604,7 @@ class KnowledgeService:
                 status=DocumentStatus.READY.value,
                 limit=page_size,
                 offset=offset,
-                **filter_kwargs,
+                metadata_filter=metadata_filter,
             )
             documents.extend(page)
             if len(page) < page_size:
@@ -2644,11 +2629,10 @@ class KnowledgeService:
         ``metadata_filter`` 为硬过滤：区间外文档不会进入证据。
         """
         base, _ = await self._authorized_base(base_id, principal, AllowedAction.ASK)
-        filter_kwargs = self._metadata_filter_kwargs(metadata_filter)
         if document_ids is None:
             # 分页读取全部已解析文档（本地库查询无上限），避免超过 500 篇时
             # 检索范围被静默截断；是否需要 document_ids 范围见下方 meta 分支。
-            documents = await self._list_ready_documents(base_id, filter_kwargs)
+            documents = await self._list_ready_documents(base_id, metadata_filter)
         else:
             documents = await self._repo(
                 self.repository.get_documents, base_id, document_ids

@@ -9,7 +9,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from easy_agent.db.database import Database
-from easy_agent.knowledges.core.models import REFRESHABLE_DOCUMENT_STATUSES
+from easy_agent.knowledges.core.models import (
+    REFRESHABLE_DOCUMENT_STATUSES,
+    DocumentMetadataFilter,
+)
 from easy_agent.utils.auth import is_super_admin
 
 logger = logging.getLogger(__name__)
@@ -141,11 +144,7 @@ class KnowledgeRepository:
         direct_only: bool = False,
         status: str | None = None,
         query: str | None = None,
-        publish_date_from: str | None = None,
-        publish_date_to: str | None = None,
-        report_tags: list[str] | None = None,
-        report_second_sources: list[str] | None = None,
-        report_title_contains: str | None = None,
+        metadata_filter: DocumentMetadataFilter | None = None,
     ) -> tuple[str, list[object]]:
         clauses = ["d.base_id=?", "d.status!='deleted'"]
         parameters: list[object] = [base_id]
@@ -162,23 +161,26 @@ class KnowledgeRepository:
             clauses.append("LOWER(d.name) LIKE ?")
             parameters.append(f"%{query.lower()}%")
         # 元数据硬过滤：publish_date 为 NULL 的文档不会命中任何日期区间
-        if publish_date_from:
-            clauses.append("d.publish_date >= ?")
-            parameters.append(publish_date_from)
-        if publish_date_to:
-            clauses.append("d.publish_date <= ?")
-            parameters.append(publish_date_to)
-        if report_tags:
-            placeholders = ",".join("?" for _ in report_tags)
-            clauses.append(f"d.report_tag IN ({placeholders})")
-            parameters.extend(report_tags)
-        if report_second_sources:
-            placeholders = ",".join("?" for _ in report_second_sources)
-            clauses.append(f"d.report_second_source IN ({placeholders})")
-            parameters.extend(report_second_sources)
-        if report_title_contains:
-            clauses.append("LOWER(COALESCE(d.report_title, d.name)) LIKE ?")
-            parameters.append(f"%{report_title_contains.lower()}%")
+        if metadata_filter is not None:
+            if metadata_filter.publish_date_from:
+                clauses.append("d.publish_date >= ?")
+                parameters.append(metadata_filter.publish_date_from)
+            if metadata_filter.publish_date_to:
+                clauses.append("d.publish_date <= ?")
+                parameters.append(metadata_filter.publish_date_to)
+            if metadata_filter.report_tags:
+                placeholders = ",".join("?" for _ in metadata_filter.report_tags)
+                clauses.append(f"d.report_tag IN ({placeholders})")
+                parameters.extend(metadata_filter.report_tags)
+            if metadata_filter.report_second_sources:
+                placeholders = ",".join(
+                    "?" for _ in metadata_filter.report_second_sources
+                )
+                clauses.append(f"d.report_second_source IN ({placeholders})")
+                parameters.extend(metadata_filter.report_second_sources)
+            if metadata_filter.report_title_contains:
+                clauses.append("LOWER(COALESCE(d.report_title, d.name)) LIKE ?")
+                parameters.append(f"%{metadata_filter.report_title_contains.lower()}%")
         return " AND ".join(clauses), parameters
 
     def _select_documents_where(self, where: str, params: tuple) -> list[dict[str, Any]]:
@@ -652,11 +654,7 @@ class KnowledgeRepository:
         direct_only: bool = False,
         status: str | None = None,
         query: str | None = None,
-        publish_date_from: str | None = None,
-        publish_date_to: str | None = None,
-        report_tags: list[str] | None = None,
-        report_second_sources: list[str] | None = None,
-        report_title_contains: str | None = None,
+        metadata_filter: DocumentMetadataFilter | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
@@ -666,11 +664,7 @@ class KnowledgeRepository:
             direct_only=direct_only,
             status=status,
             query=query,
-            publish_date_from=publish_date_from,
-            publish_date_to=publish_date_to,
-            report_tags=report_tags,
-            report_second_sources=report_second_sources,
-            report_title_contains=report_title_contains,
+            metadata_filter=metadata_filter,
         )
         return self._select_documents_where(
             f"{where} ORDER BY d.updated_at DESC LIMIT ? OFFSET ?",
@@ -698,11 +692,7 @@ class KnowledgeRepository:
         direct_only: bool = False,
         status: str | None = None,
         query: str | None = None,
-        publish_date_from: str | None = None,
-        publish_date_to: str | None = None,
-        report_tags: list[str] | None = None,
-        report_second_sources: list[str] | None = None,
-        report_title_contains: str | None = None,
+        metadata_filter: DocumentMetadataFilter | None = None,
     ) -> int:
         where, parameters = self._document_filters(
             base_id,
@@ -710,11 +700,7 @@ class KnowledgeRepository:
             direct_only=direct_only,
             status=status,
             query=query,
-            publish_date_from=publish_date_from,
-            publish_date_to=publish_date_to,
-            report_tags=report_tags,
-            report_second_sources=report_second_sources,
-            report_title_contains=report_title_contains,
+            metadata_filter=metadata_filter,
         )
         return self._count(
             f"SELECT COUNT(*) AS count FROM knowledge_documents d WHERE {where}",
