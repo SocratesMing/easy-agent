@@ -1811,15 +1811,13 @@ export default {
         }
       }
 
-      // 重试同样遵循“发送时才上传”：已有会话可立即重传；新对话回到待发送状态，
-      // 等用户点发送时再建会话并上传。
-      item.uploadStatus = this.sessionId ? 'uploading' : 'pending'
+      // 重试同样遵循「发送时才上传」：回到待发送状态，用户点发送时再上传。
+      item.uploadStatus = 'pending'
       item.uploadProgress = 0
       item.errorMessage = ''
       item.retryable = false
       item.cancelled = false
       this.uploadedFiles = [...this.uploadedFiles]
-      if (this.sessionId) this.uploadOneFile(item)
     },
     /**
      * 确保会话存在并返回 sessionId（并行上传共享同一个创建 Promise，
@@ -1937,16 +1935,15 @@ export default {
         this.showUploadNotice(this.buildRejectNotice(result, result.accepted.length))
       }
 
-      // 新对话不立即上传：先以待发送状态留在前端，发送时创建会话再上传；
-      // 已有会话按原有体验立即上传。
-      const uploadNow = Boolean(this.sessionId)
+      // 统一「发送时上传」：无论新对话还是已有会话，选完文件都只留在前端（pending），
+      // 点发送时 preparePendingFiles 才真正落盘（已有会话直接用当前 sessionId）。
       for (const file of result.accepted) {
         // 创建文件项
         const fileItem = {
           file: file,
           filename: file.name,
           size: file.size,
-          uploadStatus: uploadNow ? 'uploading' : 'pending',
+          uploadStatus: 'pending',
           uploadProgress: 0,
           cancelled: false,
           abortController: null,
@@ -1959,8 +1956,6 @@ export default {
 
         // 强制触发初始渲染
         this.uploadedFiles = [...this.uploadedFiles]
-
-        if (uploadNow) this.uploadOneFile(fileItem)
       }
 
       event.target.value = ''
