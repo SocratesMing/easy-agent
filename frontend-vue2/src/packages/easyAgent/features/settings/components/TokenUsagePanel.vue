@@ -17,7 +17,7 @@
       <div class="usage-cards">
         <div v-for="card in cards" :key="card.key" class="usage-card">
           <span>{{ card.label }}</span>
-          <strong :title="exact(usage.summary[card.key]) + ' Token'" :aria-label="card.label + ' ' + exact(usage.summary[card.key]) + ' Token'">{{ compact(usage.summary[card.key]) }}</strong>
+          <strong :title="exact(usage.summary[card.key]) + ' Token'" :aria-label="card.label + ' ' + exact(usage.summary[card.key]) + ' Token'">{{ exact(usage.summary[card.key]) }}</strong>
           <small>{{ card.hint }}</small>
         </div>
       </div>
