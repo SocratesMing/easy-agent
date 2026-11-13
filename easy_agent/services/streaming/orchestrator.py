@@ -44,6 +44,7 @@ from easy_agent.services.streaming.approvals import (
 )
 from easy_agent.services.streaming.sse import SSEEvent
 from easy_agent.services.streaming.emitter import SSEEmitter
+from easy_agent.services.streaming.outcome import StreamOutcome
 from easy_agent.services.streaming.messages import (
     _partial_message_dict,
     _tool_call_tuples,
@@ -1037,6 +1038,7 @@ async def chat_stream_generator(
     pinned_skills: list[str] | None = None,
     *,
     usage_identity: UsageIdentity | None | _UnresolvedUsageIdentity = _UNRESOLVED_USAGE_IDENTITY,
+    outcome: StreamOutcome | None = None,
 ) -> AsyncGenerator[str, None]:
     """消费时绑定服务端身份；省略时解析，显式 ``None`` 禁用采集。"""
     identity = usage_identity
@@ -1046,6 +1048,7 @@ async def chat_stream_generator(
         async with aclosing(_chat_stream_impl(
             request, db, agent, session_id, message_id, username,
             http_request, parsed_content, session_logger, pinned_skills,
+            outcome=outcome,
         )) as stream:
             async for frame in stream:
                 yield frame
@@ -1062,10 +1065,12 @@ async def _chat_stream_impl(
     parsed_content: str | None = None,
     session_logger=None,
     pinned_skills: list[str] | None = None,
+    *,
+    outcome: StreamOutcome | None = None,
 ) -> AsyncGenerator[str, None]:
     start_time = time.time()
     sid = session_id[-5:] if session_id else "new"
-    emitter = SSEEmitter(session_id)
+    emitter = SSEEmitter(session_id, outcome=outcome)
 
     message_content = parsed_content or request.message
     # 保存原始用户输入（记忆/工作区前缀注入前），供日志明确打印用户实际提问。
@@ -1216,6 +1221,8 @@ async def resume_stream_generator(
     session_logger: SessionLogger | None = None,
     message_id: str = "",
     handle: str | None = None,
+    *,
+    outcome: StreamOutcome | None = None,
 ) -> AsyncGenerator[str, None]:
     """HITL 恢复流：用户审批后继续执行 Agent。
 
@@ -1230,6 +1237,7 @@ async def resume_stream_generator(
         async with aclosing(_resume_stream_impl(
             db, agent, session_id, thread_id, decisions, username,
             session_logger, message_id, handle,
+            outcome=outcome,
         )) as stream:
             async for frame in stream:
                 yield frame
@@ -1245,11 +1253,13 @@ async def _resume_stream_impl(
     session_logger: SessionLogger | None = None,
     message_id: str = "",
     handle: str | None = None,
+    *,
+    outcome: StreamOutcome | None = None,
 ) -> AsyncGenerator[str, None]:
     handle = handle or thread_id
     start_time = time.time()
     sid = session_id[-5:] if session_id else "resume"
-    emitter = SSEEmitter(session_id)
+    emitter = SSEEmitter(session_id, outcome=outcome)
 
     yield emitter.start()
 

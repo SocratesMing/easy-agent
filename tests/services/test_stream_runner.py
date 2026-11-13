@@ -19,6 +19,7 @@ import pytest
 
 from easy_agent.models.api import ChatRequest
 from easy_agent.services.streaming import orchestrator
+from easy_agent.services.streaming.outcome import StreamOutcome
 from tests.services.test_stream_split_golden import (
     FakeDB,
     FakeGraph,
@@ -121,9 +122,11 @@ def _types(events):
 async def test_chat_prep_error_emits_error_frame_and_writes_nothing():
     """准备阶段异常：补统一文案的 error 帧，不落任何 assistant 消息。"""
     db = _FailingDB()
+    outcome = StreamOutcome()
     frames = await _frames(
         orchestrator.chat_stream_generator(
-            ChatRequest(message="hi"), db, _agent(FakeGraph([])), "s1", "m1", "tester"
+            ChatRequest(message="hi"), db, _agent(FakeGraph([])), "s1", "m1", "tester",
+            outcome=outcome,
         )
     )
     events = _events(frames)
@@ -131,6 +134,7 @@ async def test_chat_prep_error_emits_error_frame_and_writes_nothing():
     assert _types(events) == ["start", "error"]
     assert events[-1]["content"] == "处理失败: db down"
     assert db.persisted == []
+    assert outcome.error == events[-1]["content"]
 
 
 @pytest.mark.parametrize("resume", [False, True])
@@ -392,6 +396,7 @@ async def test_resume_error_keeps_approval_status_and_matching_message(timed_out
     graph.astream = _astream
     graph.states = [_hitl_state()]
     db = FakeDB(_resume_messages())
+    outcome = StreamOutcome()
 
     frames = await _frames(
         orchestrator.resume_stream_generator(
@@ -402,11 +407,13 @@ async def test_resume_error_keeps_approval_status_and_matching_message(timed_out
             [{"type": "approve"}],
             session_logger=FakeLogger(),
             message_id="m1",
+            outcome=outcome,
         )
     )
     events = _events(frames)
 
     assert _types(events)[-1] == "error"
+    assert outcome.error == events[-1]["content"]
     partial = db.persisted[-1]
     if timed_out:
         assert events[-1]["code"] == "timeout"

@@ -1,6 +1,6 @@
 # 截图中 6 项潜在问题核查
 
-> 更新（2026-11-13）：第 1 项已修复并完成回归验证，详见第 4 节；第 2 项已统一当前行为契约、修复关联回归并完成验证，详见第 5 节；第 3 项已修复发布包收集边界并完成回归验证，详见第 2.3 节。第 1～3 节的原始核查记录保留，新增修复记录以当前行为为准。
+> 更新（2026-11-13）：第 1 项已修复并完成回归验证，详见第 4 节；第 2 项已统一当前行为契约、修复关联回归并完成验证，详见第 5 节；第 3 项已修复发布包收集边界并完成回归验证，详见第 2.3 节；第 4 项已移除驱动层 SSE 反解析并完成定向验证，详见第 6 节（扩大回归的既有失败也在该节说明）。第 1～3 节的原始核查记录保留，新增修复记录以当前行为为准。
 
 - 核查日期：2026-11-12（Asia/Shanghai）。
 - 代码基线：分支 `audit-improvements-2026-10-18_llf`，提交 `7351eaf5`；开始核查时工作区干净。
@@ -161,6 +161,8 @@ easy_agent/.ruff_cache/probe          included
 - 实际运行 `.venv/bin/python scripts/release/publish_zip.py` 收集 805 个文件并生成 9.89 MB zip；检查 zip 清单确认 `easy_agent/config/config.yaml`、缓存未收录，`easy_agent/config/config-example.yaml` 和 `frontend-vue2/dist/index.html` 已收录。定向测试 5 项通过，Ruff 检查通过，临时发布物已删除。
 
 ### 2.4 通过反解析 SSE 判断运行结果
+
+> 修复更新（2026-11-13）：已通过共享 `StreamOutcome` 移除 `chat.py` 的逐帧反解析，修复与验证记录见第 6 节。以下保留修复前的核查依据。
 
 **结论：反序列化确实发生；属于结构改进点，尚无性能瓶颈证据。**
 
@@ -492,3 +494,34 @@ node --test \
   frontend-vue2/src/packages/easyAgent/features/chat/services/chunkHandler.usage.test.js \
   frontend-vue2/src/packages/easyAgent/features/chat/services/streamReplay.test.js
 ```
+
+## 6. 第 4 项修复与验证（2026-11-13）
+
+### 当前实现
+
+- 新增 `services/streaming/outcome.py::StreamOutcome`，每次普通聊天或审批恢复独立创建，由 `TurnPlan` / `ResumePlan` 同时传给编排器和后台驱动。
+- `SSEEmitter.frame()` 在序列化前从结构化事件记录失败原因，兼顾快捷 `error()`、processor 直接产出的错误和空错误文案兜底。后续 `done` 不会覆盖已记录的失败。
+- `_drive_stream()` 的热循环只转发帧，正常耗尽后读取共享结果；删除 `chat.py` 对 `parse_sse_frame` 的依赖。生成器直接抛异常仍走原有失败兜底。
+- 用户取消仍优先记为 `cancelled`；流锁租约丢失优先记为 `failed`，包括编排器捕获取消、保存部分回复并正常返回的路径。原来该路径会误记为 `cancelled`，此次补齐判定及回归。
+- SSE 文本格式、错误帧、部分回复和中性说明持久化、锁释放及审批续跑保留旧事件的行为保持原契约。事件落库和断线回放按需解析持久化 SSE 的能力仍保留。
+
+### 回归依据
+
+先加入禁止驱动反解析的真实异常用例，修复前该用例失败；修复后覆盖：模型断连、普通异常、超时标识和提示、部分内容保存及锁释放。新增用例同时验证：正文提到 `error` 不误判、单个工具失败不把整轮判失败、审批暂停正常收尾、空错误有默认原因、错误后 `done` 不抹掉失败、注释帧原样转发，以及取消传播 / 被捕获时的租约丢失终态。
+
+```bash
+.venv/bin/pytest tests/api/test_run_lifecycle.py \
+  tests/services/test_stream_runner.py tests/services/test_sse_contract.py -q
+.venv/bin/pytest tests/api tests/services tests/knowledges tests/db -q
+```
+
+本次改动文件的 Ruff 检查通过；`git diff --check` 通过。`uvx pyright` 报告 3 个错误和 1 个警告，已通过导出原始 HEAD 到独立临时目录并链接相同 `.venv` 复现：`db/repositories/sessions.py` 的列表类型、`orchestrator.py` 的计费身份哨兵类型、`side_effects.py` 的可空配置，以及缺少 `olefile` 的警告均为原有问题，本次未新增类型诊断。
+
+实际测试结果：
+
+- 上述 3 个文件的定向回归：**64 passed**，10.33 秒。
+- 扩大至 API / services / knowledges / DB：**2049 passed、5 skipped、1 failed**，469.91 秒。唯一失败为 `tests/api/test_stream_live_cross_pod.py::test_stream_status_uses_db_stream_owner`：测试精确期望响应只有 `session_id` / `active`，现有端点另返回 `replayable: false`。
+- 在独立临时目录导出原始 HEAD 并复跑该失败用例，得到相同的额外 `replayable` 字段断言失败（1 failed，1.02 秒）。本次不调整这项既有测试契约，不能把扩大回归表述为全部通过。
+- 两组测试均有 5 条第三方 SWIG 弃用警告。
+
+验证边界：使用模拟模型和临时 SQLite，不调用真实供应商；未做吞吐 / CPU 基准测试，因此只确认移除驱动层的重复 JSON 解析，不给出性能提升百分比。
