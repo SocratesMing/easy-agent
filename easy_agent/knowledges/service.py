@@ -1041,9 +1041,7 @@ class KnowledgeService:
 
         folder = await self._repo(self.repository.get_folder, folder_id)
         if folder is None or str(folder["base_id"]) != base_id:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_FOLDER_NOT_FOUND", missing_message, status_code=404
-            )
+            raise _folder_missing_error(missing_message)
         return folder
 
     @staticmethod
