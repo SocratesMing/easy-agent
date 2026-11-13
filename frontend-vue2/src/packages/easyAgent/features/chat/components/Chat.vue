@@ -306,6 +306,20 @@ export default {
     topbarFloating() {
       return !this.showSessionTime && this.todos.length === 0 && this.showWorkspaceBtn
     },
+    // 流式跟随滚动的轻量签名：只读最后一条消息（正在生成的那条），不遍历整个会话。
+    // 覆盖不经 splice 的原地改动（正文 / 思考增长、工具结果到达、参数分片增长等）。
+    tailSignature() {
+      const list = this.messages || []
+      const last = list[list.length - 1]
+      if (!last) return '0'
+      const blocks = last.blocks || []
+      let size = (last.content || '').length + (last.thinking || '').length
+      for (const b of blocks) {
+        size += (b.content || '').length + (b.result ? 1 : 0) + (b.duration != null ? 1 : 0)
+        if (b.streaming && b.arguments) size += typeof b.arguments === 'string' ? b.arguments.length : JSON.stringify(b.arguments).length
+      }
+      return [list.length, last.id, blocks.length, size, last.loading ? 1 : 0, last.error ? 1 : 0, last.pending_approval ? 1 : 0].join('|')
+    },
     canGoToPrevUserMessage() {
       return this.userMessageIndices.length > 0 && this.currentUserMessageIndex < this.userMessageIndices.length - 1
     },
@@ -326,7 +340,9 @@ export default {
         }
       },
       {
-        deep: true,
+        // 不用 deep：深度监听每次刷新都要遍历整个会话（工具参数/结果/blocks），长会话一次十几毫秒，
+        // 且后台会话的流事件经 runInSession 换入换出 messages 时也会连带触发。流式状态机的写入都走
+        // setReactive（splice）整条替换，非深度监听已能感知；原地改动由下方 tailSignature 兜底。
         handler(newMessages, oldMessages) {
           // 流式更新或新增消息时，仅在用户贴底时自动滚动；用户向上查看历史时不打断
           if (this.isStreaming || (newMessages?.length || 0) > (oldMessages?.length || 0)) {
@@ -338,6 +354,9 @@ export default {
         }
       }
     ],
+    tailSignature() {
+      if (this.isStreaming) this.scrollToBottom()
+    },
     sessionLoading(loading) {
       // 加载历史期间贴底，避免居中布局随后跳动
       this.composerMode = (this.messages.length === 0 && !loading && !this.isSidebar) ? 'center' : 'bottom'
