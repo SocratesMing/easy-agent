@@ -941,19 +941,35 @@ class KnowledgeService:
             deleted_by=principal.user_id,
         )
 
-    async def _delete_remote_documents(
+    async def _delete_remote_documents_quietly(
         self, dataset_id: str, document_ids: list[str]
-    ) -> None:
-        """删除远端文档副本；远端已不存在按成功处理（幂等）。"""
+    ) -> RagflowError | None:
+        """删除远端文档副本；远端已不存在视为成功。
+
+        不吞掉真实的上游异常，而是返回给调用方决定策略：删除主路径映射为
+        业务错误抛出，兜底清理场景只记日志后继续。
+        """
 
         try:
             await self.ragflow.delete_documents(
                 dataset_id=dataset_id, document_ids=document_ids
             )
         except RagflowNotFoundError:
-            pass
+            return None
         except RagflowError as exc:
-            raise self._upstream_error(exc) from exc
+            return exc
+        return None
+
+    async def _delete_remote_documents(
+        self, dataset_id: str, document_ids: list[str]
+    ) -> None:
+        """删除远端文档副本；远端已不存在按成功处理（幂等）。"""
+
+        error = await self._delete_remote_documents_quietly(
+            dataset_id, document_ids
+        )
+        if error is not None:
+            raise self._upstream_error(error) from error
 
     async def _delete_remote_in_batches(
         self, dataset_id: str, remote_ids: list[str]
@@ -2333,18 +2349,14 @@ class KnowledgeService:
             if not dataset_id:
                 # 共享数据集模式：路由到 EA_SHARED（含进程级缓存）
                 dataset_id = await self._ensure_shared_dataset()
-            try:
-                await self.ragflow.delete_documents(
-                    dataset_id=dataset_id,
-                    document_ids=[str(row["remote_document_id"])],
-                )
-            except RagflowNotFoundError:
-                pass  # 远端已不存在：视为已清理，落本地防重扫
-            except RagflowError as exc:
+            error = await self._delete_remote_documents_quietly(
+                dataset_id, [str(row["remote_document_id"])]
+            )
+            if error is not None:
                 logger.warning(
                     "清理到期文档远端副本失败（下轮重试） | doc=%s: %s",
                     row["document_id"],
-                    exc,
+                    error,
                 )
                 continue
             await self._repo(
@@ -2533,22 +2545,17 @@ class KnowledgeService:
         # 新文档已提交成功，再尽力清理旧副本。删除失败不影响新文档，
         # 只记 warning；后台 purge_deleted_documents 兜底。
         if remote_id and str(document.get("remote_document_id") or "") != str(remote_id):
-            try:
-                await self.ragflow.delete_documents(
-                    dataset_id=dataset_id,
-                    document_ids=[str(remote_id)],
-                )
-            except RagflowNotFoundError:
-                # 旧副本已不存在：正常，忽略
-                pass
-            except RagflowError as exc:
+            error = await self._delete_remote_documents_quietly(
+                dataset_id, [str(remote_id)]
+            )
+            if error is not None:
                 logger.warning(
                     "重试后清理 RAGFlow 旧副本失败（不影响新文档） | doc=%s "
                     "dataset=%s old_remote=%s code=%s",
                     document_id,
                     dataset_id,
                     remote_id,
-                    getattr(exc, "code", type(exc).__name__),
+                    getattr(error, "code", type(error).__name__),
                 )
         return DocumentUploadAccepted(
             document=self._document_summary(document, role, request_id),
