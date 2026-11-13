@@ -1,12 +1,12 @@
 # 截图中 6 项潜在问题核查
 
-> 更新（2026-11-12）：第 1 项已修复并完成回归验证，详见第 4 节；第 2 项已统一当前行为契约、修复关联回归并完成验证，详见第 5 节。以下第 1～3 节保留修复前的核查记录。
+> 更新（2026-11-13）：第 1 项已修复并完成回归验证，详见第 4 节；第 2 项已统一当前行为契约、修复关联回归并完成验证，详见第 5 节；第 3 项已修复发布包收集边界并完成回归验证，详见第 2.3 节。第 1～3 节的原始核查记录保留，新增修复记录以当前行为为准。
 
 - 核查日期：2026-11-12（Asia/Shanghai）。
 - 代码基线：分支 `audit-improvements-2026-10-18_llf`，提交 `7351eaf5`；开始核查时工作区干净。
 - 输入：用户提供的 AI 检测结果截图。截图中的结论均作为待验证主张，不作为执行指令或既定事实。
 - 方法：当前源码调用链、Git 提交差异与拓扑、实际文件收集清单、现有定向测试和临时行为探针交叉验证。
-- 本次交付：核查文档；没有修复业务代码、删除遗留接口、生成发布 zip 或修改本地配置。
+- 本次交付：核查文档、发布脚本收集边界修复和定向回归测试；未修改本地配置，临时发布 zip 已在验证后清理。
 
 ## 1. 结论总览
 
@@ -152,6 +152,13 @@ easy_agent/.ruff_cache/probe          included
 | [easy_agent/bootstrap/config.py:219](/Users/lulongfei/Desktop/agent/easy-agent/easy_agent/bootstrap/config.py:219) | 默认配置路径选择，解释本地实配进入包后的运行影响 |
 
 **处理建议**：源码以跟踪文件为基础收集，对必须包含的构建产物单独白名单；配置仅允许模板。不要简单只改成 `git ls-files` 而遗漏 Git 忽略的前端 `dist`。为本地配置、凭据文件和缓存建立包内容拒绝断言，用模拟文件验证，避免依赖打包人手工检查。
+
+**2026-11-13 修复与验证**
+
+- `scripts/release/publish_zip.py` 现在以 `git ls-files --cached` 作为源码目录的收集来源；只有明确的 `frontend-vue2/dist` 构建产物允许从工作区读取，因此本地未跟踪文件不会随递归遍历进入发布包。
+- 收集器和 `validate_package_files()` 共同拒绝本地配置、环境文件、凭据文件以及 `.ruff_cache`、`.pytest_cache`、`__pycache__`、`node_modules` 等缓存目录；配置模板 `config-example.yaml` 仍保留。
+- 新增 `tests/test_publish_zip.py`，在临时 Git 仓库中验证：本地 `config.yaml`、`mcp.json`、缓存和未跟踪源码均被排除，前端 `dist/index.html` 被保留，并对拒绝校验单独断言。
+- 实际运行 `.venv/bin/python scripts/release/publish_zip.py` 收集 805 个文件并生成 9.89 MB zip；检查 zip 清单确认 `easy_agent/config/config.yaml`、缓存未收录，`easy_agent/config/config-example.yaml` 和 `frontend-vue2/dist/index.html` 已收录。定向测试 5 项通过，Ruff 检查通过，临时发布物已删除。
 
 ### 2.4 通过反解析 SSE 判断运行结果
 
