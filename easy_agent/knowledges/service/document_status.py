@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from easy_agent.knowledges.core.chunks import chunk_id
+from easy_agent.knowledges.files.chunks import chunk_id
 from easy_agent.knowledges.core.config import UPSTREAM_DOCUMENT_STATUS_MAPPING
 from easy_agent.knowledges.core.models import (
     DocumentStatus,

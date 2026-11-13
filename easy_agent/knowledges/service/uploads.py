@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from easy_agent.knowledges.core.config import UploadSecurityConfig
-from easy_agent.knowledges.core.file_validation import (
+from easy_agent.knowledges.files.file_validation import (
     UploadValidationError,
     canonical_content_type,
     validate_upload,
@@ -25,7 +25,7 @@ from easy_agent.knowledges.core.models import (
     OperationStatus,
     OperationType,
 )
-from easy_agent.knowledges.core.original_store import OriginalStorageError
+from easy_agent.knowledges.files.original_store import OriginalStorageError
 from easy_agent.knowledges.ragflow import RagflowError
 from easy_agent.knowledges.service.contracts import KnowledgeServiceError
 from easy_agent.knowledges.service.folders import _split_folder_segments

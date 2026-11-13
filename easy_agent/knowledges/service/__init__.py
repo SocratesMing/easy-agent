@@ -25,7 +25,7 @@ from easy_agent.knowledges.core.models import (
     PageInfo,
 )
 from easy_agent.knowledges.repository.operations import KnowledgeOperationsRepository
-from easy_agent.knowledges.core.original_store import LocalOriginalStore
+from easy_agent.knowledges.files.original_store import LocalOriginalStore
 from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.service.contracts import (
     KnowledgeDocumentBinary,

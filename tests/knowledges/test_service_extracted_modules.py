@@ -1,4 +1,4 @@
-"""批次 1B 拆分回归：core.original_store / core.permissions 行为测试。
+"""批次 1B 拆分回归：files.original_store / core.permissions 行为测试。
 
 覆盖点：
 * 原文存储的原子写读、幂等重传、路径穿越/符号链接拒绝、health 探测；
@@ -15,13 +15,14 @@ from pathlib import Path
 
 import pytest
 
-from easy_agent.knowledges.core import original_store, permissions
+from easy_agent.knowledges.core import permissions
+from easy_agent.knowledges.files import original_store
 from easy_agent.knowledges.core.models import (
     AllowedAction,
     KnowledgeBaseRole,
     KnowledgePrincipal,
 )
-from easy_agent.knowledges.core.original_store import (
+from easy_agent.knowledges.files.original_store import (
     DEFAULT_ORIGINALS_ROOT,
     LocalOriginalStore,
     OriginalReadHandle,

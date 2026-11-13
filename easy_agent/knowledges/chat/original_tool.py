@@ -21,7 +21,7 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from easy_agent.db import get_database
-from easy_agent.knowledges.core.chunks import (
+from easy_agent.knowledges.files.chunks import (
     chunk_text,
     collect_document_chunks,
     ordered_chunks,
@@ -29,7 +29,7 @@ from easy_agent.knowledges.core.chunks import (
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.models import AllowedAction, KnowledgePrincipal
 from easy_agent.knowledges.repository.operations import KnowledgeOperationsRepository
-from easy_agent.knowledges.core.original_store import LocalOriginalStore, OriginalStorageError
+from easy_agent.knowledges.files.original_store import LocalOriginalStore, OriginalStorageError
 from easy_agent.knowledges.core.permissions import allowed_actions, resolve_role
 from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.ragflow import RagflowClient, RagflowError
