@@ -1,13 +1,7 @@
-"""office 技能 canonical/副本一致性 + 三格式共享脚本全量 hash（A3）。
+"""xlsx office 脚本集合冻结 + canonical/副本一致性。
 
-office 脚本在 ``docx`` / ``pptx`` / ``xlsx`` 三格式下各有一份 ``scripts/office/``，
-每份又要与包内 ``easy_agent/skills/`` 同步。本文件守护两个轴：
-
-1. 每个格式的整棵技能树与 canonical 逐文件 sha256 一致（含 schema/模板/LICENCE）；
-2. 三格式共享的 12 个 office Python 脚本逐字节一致（全量 hash，不只 base.py）。
-
-注意：``test_skills_single_source.py`` 负责 7 个技能的全量镜像；这里只聚焦 office，
-因为 office 是“3 格式 × 2 棵树”多副本最容易漂移的部分。
+Node 版 ``docx`` / ``pptx`` 已删除，共享的 12 个 office Python 脚本只留在 ``xlsx``。
+``test_skills_single_source.py`` 负责全部技能的镜像；这里只冻结 xlsx 的 office 脚本集合。
 """
 
 import hashlib
@@ -16,9 +10,9 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-FORMATS = ("docx", "pptx", "xlsx")
+FORMATS = ("xlsx",)
 
-# 三格式共享的 12 个 office Python 脚本（相对 <format>/scripts/office/）。
+# xlsx/scripts/office/ 下冻结的 12 个 Python 脚本。
 OFFICE_SCRIPT_FILES = (
     "helpers/__init__.py",
     "helpers/merge_runs.py",
@@ -70,7 +64,7 @@ def test_packaged_skill_tree_matches_canonical(name):
         )
 
 
-def test_office_shared_scripts_use_only_the_frozen_12_files():
+def test_office_script_file_set_is_frozen():
     for fmt in FORMATS:
         office = _office_dir(fmt)
         actual = {
@@ -80,18 +74,8 @@ def test_office_shared_scripts_use_only_the_frozen_12_files():
         }
         assert actual == set(OFFICE_SCRIPT_FILES), (
             f"{fmt}/scripts/office 的 Python 脚本集合变化：{sorted(actual)}；"
-            "如确需增删，请同步更新 OFFICE_SCRIPT_FILES 与三格式副本"
+            "如确需增删，请同步更新 OFFICE_SCRIPT_FILES"
         )
-
-
-def test_office_shared_scripts_are_identical_across_formats():
-    baseline = {rel: _sha256(_office_dir("docx") / rel) for rel in OFFICE_SCRIPT_FILES}
-    for fmt in ("pptx", "xlsx"):
-        for rel in OFFICE_SCRIPT_FILES:
-            other = _sha256(_office_dir(fmt) / rel)
-            assert other == baseline[rel], (
-                f"{fmt}/scripts/office/{rel} 与 docx 副本不一致（12 个 office 脚本必须全量一致）"
-            )
 
 
 def test_sync_script_check_mode_passes():

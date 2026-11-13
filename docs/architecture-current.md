@@ -57,7 +57,7 @@
 - 子代理（office-writer / knowledge-researcher）显式声明与主代理相同的技能源（`/skills/builtin/`、`/user-skills/`）+ 异常兜底 middleware。
 
 ### 技能
-- canonical：仓库根 `skills/`（7 个运行时技能：docx/pptx/xlsx/pdf/mcp-builder/skill-creator/expert-creator）。
+- canonical：仓库根 `skills/`（7 个运行时技能：xlsx/pdf/microsoft-office/document-to-action-items/mcp-builder/skill-creator/expert-creator）。
 - 包内 `easy_agent/skills/` 为 pip 安装回退副本；`scripts/skills/sync_skills.py` 同步，`--check` 可在 CI 校验。
 - 用户技能：`workspace/{username}/skills/` → 虚拟路径 `/user-skills/`。
 - 公共技能只读共享（DA-13 S2）：技能中心「添加」只在 `workspace/{username}/builtin-skills.json` 里记一条（`agent/builtin_skills.py`），不再复制；agent 经 `/skills/builtin/` 直接读 canonical 目录，只看得到该用户已添加且启用的（视图 backend `backends/builtin_skills.py`），写入一律拒绝（backend 与 deny write 规则两层）；execute 沙箱 bwrap 只读挂载已启用的那几个，Landlock 把整个 canonical 目录设为只读。
