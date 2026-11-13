@@ -2,6 +2,7 @@
   <div class="settings-overlay" @click="$emit('close')">
     <div
       class="settings-modal"
+      :class="{ 'settings-modal--usage': activeTab === 'usage' }"
       role="dialog"
       aria-modal="true"
       aria-labelledby="settings-title"
@@ -465,6 +466,16 @@ onBeforeUnmount(() => {
   padding: 2rem;
 }
 
+/* Token 概览优先利用首屏空间，保留卡片和图表的正常比例。 */
+.settings-modal--usage .settings-header {
+  padding-top: 0.75rem;
+  padding-bottom: 0.75rem;
+}
+
+.settings-modal--usage .settings-content {
+  padding: 1.25rem 1.5rem;
+}
+
 .content-panel {
   height: 100%;
   min-height: 0;
@@ -871,7 +882,8 @@ onBeforeUnmount(() => {
     white-space: nowrap;
   }
 
-  .settings-content {
+  .settings-content,
+  .settings-modal--usage .settings-content {
     padding: 1rem;
   }
 }
