@@ -2,7 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-EASY_AGENT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+EASY_AGENT_DIR="$PROJECT_ROOT/easy_agent/knowledges"
 RAGFLOW_DIR="$(cd -- "$EASY_AGENT_DIR/../ragflow-v0.17.2" && pwd)"
 RAGFLOW_DOCKER_DIR="$RAGFLOW_DIR/docker"
 OLLAMA_LOG_DIR="$EASY_AGENT_DIR/logs"
@@ -52,5 +53,5 @@ for _ in {1..60}; do
   sleep 5
 done
 
-echo "RAGFlow 在 5 分钟内未就绪，请运行 scripts/status.dev.ragflow.local.sh 检查。" >&2
+echo "RAGFlow 在 5 分钟内未就绪，请运行 scripts/knowledge/status.dev.ragflow.local.sh 检查。" >&2
 exit 1

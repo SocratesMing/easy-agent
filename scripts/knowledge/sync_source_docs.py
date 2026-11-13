@@ -1,9 +1,9 @@
 """文档 SQL 增量同步手动入口（运维/回填用）。
 
 用法：
-    uv run python easy_agent/knowledges/scripts/sync_source_docs.py --dry-run --limit 20
-    uv run python easy_agent/knowledges/scripts/sync_source_docs.py --start-date 2026-01-01
-    uv run python easy_agent/knowledges/scripts/sync_source_docs.py
+    uv run python scripts/knowledge/sync_source_docs.py --dry-run --limit 20
+    uv run python scripts/knowledge/sync_source_docs.py --start-date 2026-01-01
+    uv run python scripts/knowledge/sync_source_docs.py
 
 依赖配置：config.yaml / .env.{AGENT_ENV} 的 ``knowledge.source_sync`` 段；
 自动同步由后端启动钩子按 ``interval_minutes`` 调度，本脚本用于预检与补跑。
@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 

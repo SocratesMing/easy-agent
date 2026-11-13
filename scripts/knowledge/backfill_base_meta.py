@@ -7,9 +7,9 @@
 ``knowledge_bases.meta_backfilled`` 置 1，让检索切换到 meta 范围。
 
 用法：
-    uv run python easy_agent/knowledges/scripts/backfill_base_meta.py            # 预览（dry-run）
-    uv run python easy_agent/knowledges/scripts/backfill_base_meta.py --apply    # 执行回填
-    uv run python easy_agent/knowledges/scripts/backfill_base_meta.py --apply --base-id <id>
+    uv run python scripts/knowledge/backfill_base_meta.py            # 预览（dry-run）
+    uv run python scripts/knowledge/backfill_base_meta.py --apply    # 执行回填
+    uv run python scripts/knowledge/backfill_base_meta.py --apply --base-id <id>
 
 幂等可重跑：已回填的库（meta_backfilled=1）自动跳过；单篇失败只影响该库，
 修复后重跑即可。回填只更新 RAGFlow 的元数据副本，不改本地库与原文。
@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 

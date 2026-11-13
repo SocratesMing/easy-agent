@@ -13,8 +13,8 @@
 4. 汇总原数据集，交互确认后批量删除（有失败文档的库保留原数据集）。
 
 用法：
-    uv run python easy_agent/knowledges/scripts/migrate_knowledge_to_shared.py            # 预览（dry-run）
-    uv run python easy_agent/knowledges/scripts/migrate_knowledge_to_shared.py --apply    # 执行迁移
+    uv run python scripts/knowledge/migrate_knowledge_to_shared.py            # 预览（dry-run）
+    uv run python scripts/knowledge/migrate_knowledge_to_shared.py --apply    # 执行迁移
 
 幂等可重跑：文档迁移成功后本地 remote_document_id 已指向共享数据集，
 重跑时自动跳过；有失败文档的库修复后重跑即可。
@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 

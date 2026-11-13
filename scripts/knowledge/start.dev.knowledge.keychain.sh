@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ACCOUNT_NAME="${EASY_AGENT_KEYCHAIN_ACCOUNT:-$USER}"
 DEEPSEEK_SERVICE="${EASY_AGENT_KEYCHAIN_SERVICE:-easy-agent-deepseek-api-key}"
 RAGFLOW_SERVICE="${RAGFLOW_KEYCHAIN_SERVICE:-easy-agent-ragflow-api-key}"
