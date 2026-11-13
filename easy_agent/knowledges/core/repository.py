@@ -97,6 +97,30 @@ class KnowledgeRepository:
 
     # ---------------- 通用内部辅助 ----------------
 
+    def _fetch_one(self, sql: str, params: tuple = ()) -> dict[str, Any] | None:
+        """执行单条查询并返回首行；无结果返回 None。"""
+
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            self.db._execute(cursor, sql, params)
+            return _row_dict(cursor.fetchone())
+
+    def _fetch_all(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
+        """执行单条查询并返回全部行。"""
+
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            self.db._execute(cursor, sql, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def _execute_write(self, sql: str, params: tuple = ()) -> int:
+        """执行单条写语句并返回受影响行数。"""
+
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            self.db._execute(cursor, sql, params)
+            return int(cursor.rowcount or 0)
+
     @staticmethod
     def _filter_update_fields(
         fields: Mapping[str, object], allowed: set[str], *, coerce_retryable: bool = False
@@ -118,20 +142,14 @@ class KnowledgeRepository:
         if not updates:
             return
         assignments = ", ".join(f"{column}=?" for column in updates)
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                f"UPDATE {table} SET {assignments} WHERE id=?",
-                (*updates.values(), row_id),
-            )
+        self._execute_write(
+            f"UPDATE {table} SET {assignments} WHERE id=?",
+            (*updates.values(), row_id),
+        )
 
     def _count(self, sql: str, params: tuple) -> int:
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(cursor, sql, params)
-            row = cursor.fetchone()
-            return int(row["count"] if isinstance(row, dict) else row[0])
+        row = self._fetch_one(sql, params)
+        return int(row["count"]) if row is not None else 0
 
     @staticmethod
     def _document_filters(
@@ -182,10 +200,7 @@ class KnowledgeRepository:
         return " AND ".join(clauses), parameters
 
     def _select_documents_where(self, where: str, params: tuple) -> list[dict[str, Any]]:
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(cursor, f"{_DOCUMENT_SELECT} WHERE {where}", params)
-            return [dict(row) for row in cursor.fetchall()]
+        return self._fetch_all(f"{_DOCUMENT_SELECT} WHERE {where}", params)
 
     # ---------------- 知识库（个人/公共空间） ----------------
 
@@ -204,43 +219,33 @@ class KnowledgeRepository:
     ) -> dict[str, Any]:
         base_id = base_id or str(uuid.uuid4())
         timestamp = _now()
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                """
-                INSERT INTO knowledge_bases
-                    (id, remote_dataset_id, name, description, space_type,
-                     owner_user_id, department_id, embedding_model, status,
-                     meta_backfilled, created_at, updated_at)
-                VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    base_id, name, description, space_type, owner_user_id,
-                    department_id, embedding_model, status, meta_backfilled,
-                    timestamp, timestamp,
-                ),
-            )
+        self._execute_write(
+            """
+            INSERT INTO knowledge_bases
+                (id, remote_dataset_id, name, description, space_type,
+                 owner_user_id, department_id, embedding_model, status,
+                 meta_backfilled, created_at, updated_at)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                base_id, name, description, space_type, owner_user_id,
+                department_id, embedding_model, status, meta_backfilled,
+                timestamp, timestamp,
+            ),
+        )
         return self.get_base(base_id)
 
     def get_base(self, base_id: str) -> dict[str, Any] | None:
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(cursor, "SELECT * FROM knowledge_bases WHERE id=?", (base_id,))
-            return _row_dict(cursor.fetchone())
+        return self._fetch_one("SELECT * FROM knowledge_bases WHERE id=?", (base_id,))
 
     def find_base_by_name(self, name: str) -> dict[str, Any] | None:
         """按名称查找未删除的知识库（同步任务幂等查找）。"""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                "SELECT * FROM knowledge_bases WHERE name=? "
-                "AND status NOT IN ('deleted', 'deleting') "
-                "ORDER BY created_at LIMIT 1",
-                (name,),
-            )
-            return _row_dict(cursor.fetchone())
+        return self._fetch_one(
+            "SELECT * FROM knowledge_bases WHERE name=? "
+            "AND status NOT IN ('deleted', 'deleting') "
+            "ORDER BY created_at LIMIT 1",
+            (name,),
+        )
 
     def list_candidate_bases(
         self,
@@ -264,28 +269,24 @@ class KnowledgeRepository:
             )
             parameters.append(department_id)
         admin_sql = " OR b.space_type='team'" if include_all_team_spaces else ""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                f"""
-                SELECT DISTINCT b.*,
-                       (SELECT COUNT(*) FROM knowledge_documents d
-                        WHERE d.base_id=b.id AND d.status!='deleted') AS document_count
-                FROM knowledge_bases b
-                LEFT JOIN knowledge_permissions p ON p.base_id=b.id
-                WHERE b.status!='deleted' AND (b.owner_user_id=?
-                   OR (p.subject_type='user' AND p.subject_id=?)
-                   OR (b.space_type='team' AND COALESCE(b.access_restricted, 0)=0 AND EXISTS (
-                        SELECT 1 FROM users du
-                        WHERE du.user_id=?
-                          AND COALESCE(NULLIF(du.department_id, ''), du.organization_id)=b.department_id))
-                   {department_sql}{admin_sql})
-                ORDER BY b.updated_at DESC
-                """,
-                tuple(parameters),
-            )
-            return [dict(row) for row in cursor.fetchall()]
+        return self._fetch_all(
+            f"""
+            SELECT DISTINCT b.*,
+                   (SELECT COUNT(*) FROM knowledge_documents d
+                    WHERE d.base_id=b.id AND d.status!='deleted') AS document_count
+            FROM knowledge_bases b
+            LEFT JOIN knowledge_permissions p ON p.base_id=b.id
+            WHERE b.status!='deleted' AND (b.owner_user_id=?
+               OR (p.subject_type='user' AND p.subject_id=?)
+               OR (b.space_type='team' AND COALESCE(b.access_restricted, 0)=0 AND EXISTS (
+                    SELECT 1 FROM users du
+                    WHERE du.user_id=?
+                      AND COALESCE(NULLIF(du.department_id, ''), du.organization_id)=b.department_id))
+               {department_sql}{admin_sql})
+            ORDER BY b.updated_at DESC
+            """,
+            tuple(parameters),
+        )
 
     def update_base(self, base_id: str, **fields: object) -> dict[str, Any] | None:
         self._update_by_id("knowledge_bases", base_id, _BASE_UPDATE_FIELDS, fields)
@@ -303,39 +304,32 @@ class KnowledgeRepository:
     def list_active_departments(self) -> list[dict[str, Any]]:
         """列出至少有一名在职账号的部门（人员表为第一阶段的权威来源）。"""
         expression = "COALESCE(NULLIF(department_id, ''), NULLIF(organization_id, ''))"
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                f"""
-                SELECT {expression} AS department_id,
-                       MAX(COALESCE(department_name, '')) AS department_name
-                FROM users
-                WHERE account_status='active' AND {expression} IS NOT NULL
-                GROUP BY {expression}
-                ORDER BY department_name, department_id
-                """,
-            )
-            return [dict(row) for row in cursor.fetchall()]
+        return self._fetch_all(
+            f"""
+            SELECT {expression} AS department_id,
+                   MAX(COALESCE(department_name, '')) AS department_name
+            FROM users
+            WHERE account_status='active' AND {expression} IS NOT NULL
+            GROUP BY {expression}
+            ORDER BY department_name, department_id
+            """
+        )
 
     # ---------------- 知识库管理员 ----------------
 
     def is_department_manager(self, user_id: str, department_id: str) -> bool:
         """用户是否是指定部门（且账号仍在该部门）的知识库管理员。"""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                """
-                SELECT 1 FROM knowledge_department_managers m
-                JOIN users u ON u.user_id = m.user_id
-                WHERE m.user_id=? AND m.department_id=?
-                  AND u.account_status='active'
-                  AND COALESCE(u.department_id, u.organization_id, '') = m.department_id
-                """,
-                (user_id, department_id),
-            )
-            return cursor.fetchone() is not None
+        row = self._fetch_one(
+            """
+            SELECT 1 FROM knowledge_department_managers m
+            JOIN users u ON u.user_id = m.user_id
+            WHERE m.user_id=? AND m.department_id=?
+              AND u.account_status='active'
+              AND COALESCE(u.department_id, u.organization_id, '') = m.department_id
+            """,
+            (user_id, department_id),
+        )
+        return row is not None
 
     def grant_department_manager(
         self, *, user_id: str, department_id: str, granted_by: str
@@ -399,29 +393,26 @@ class KnowledgeRepository:
             return _normalize_manager_row(row)
 
     def revoke_department_manager(self, user_id: str, department_id: str) -> bool:
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
+        return (
+            self._execute_write(
                 "DELETE FROM knowledge_department_managers WHERE user_id=? AND department_id=?",
                 (user_id, department_id),
             )
-            return cursor.rowcount > 0
+            > 0
+        )
 
     def list_department_managers(
         self, department_id: str | None = None
     ) -> list[dict[str, Any]]:
         """列出知识库管理员；不传 department_id 时返回全部。"""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            base_sql = _MANAGER_SELECT
-            if department_id:
-                base_sql += " WHERE m.department_id=? ORDER BY u.display_name, u.username"
-                self.db._execute(cursor, base_sql, (department_id,))
-            else:
-                base_sql += " ORDER BY m.department_id, u.display_name, u.username"
-                self.db._execute(cursor, base_sql)
-            return [_normalize_manager_row(row) for row in cursor.fetchall()]
+        base_sql = _MANAGER_SELECT
+        if department_id:
+            base_sql += " WHERE m.department_id=? ORDER BY u.display_name, u.username"
+            rows = self._fetch_all(base_sql, (department_id,))
+        else:
+            base_sql += " ORDER BY m.department_id, u.display_name, u.username"
+            rows = self._fetch_all(base_sql)
+        return [_normalize_manager_row(row) for row in rows]
 
     # ---------------- 文件夹 ----------------
 
@@ -430,24 +421,18 @@ class KnowledgeRepository:
     ) -> dict[str, Any]:
         folder_id = str(uuid.uuid4())
         timestamp = _now()
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                """
-                INSERT INTO knowledge_folders
-                    (id, base_id, parent_id, name, sort_order, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (folder_id, base_id, parent_id, name, sort_order, timestamp, timestamp),
-            )
+        self._execute_write(
+            """
+            INSERT INTO knowledge_folders
+                (id, base_id, parent_id, name, sort_order, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (folder_id, base_id, parent_id, name, sort_order, timestamp, timestamp),
+        )
         return self.get_folder(folder_id)
 
     def get_folder(self, folder_id: str) -> dict[str, Any] | None:
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(cursor, "SELECT * FROM knowledge_folders WHERE id=?", (folder_id,))
-            return _row_dict(cursor.fetchone())
+        return self._fetch_one("SELECT * FROM knowledge_folders WHERE id=?", (folder_id,))
 
     def find_folder_by_name(
         self, base_id: str, name: str, parent_id: str | None = None
@@ -458,50 +443,37 @@ class KnowledgeRepository:
         根级同名不再受数据库唯一性保护（NULL 不参与唯一判断），由本方法
         供服务层显式查重兜底。
         """
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            if parent_id is None:
-                self.db._execute(
-                    cursor,
-                    "SELECT * FROM knowledge_folders "
-                    "WHERE base_id=? AND name=? AND parent_id IS NULL",
-                    (base_id, name),
-                )
-            else:
-                self.db._execute(
-                    cursor,
-                    "SELECT * FROM knowledge_folders WHERE base_id=? AND name=? AND parent_id=?",
-                    (base_id, name, parent_id),
-                )
-            return _row_dict(cursor.fetchone())
+        if parent_id is None:
+            return self._fetch_one(
+                "SELECT * FROM knowledge_folders "
+                "WHERE base_id=? AND name=? AND parent_id IS NULL",
+                (base_id, name),
+            )
+        return self._fetch_one(
+            "SELECT * FROM knowledge_folders WHERE base_id=? AND name=? AND parent_id=?",
+            (base_id, name, parent_id),
+        )
 
     def list_folders(self, base_id: str) -> list[dict[str, Any]]:
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                """
-                SELECT f.*, COUNT(DISTINCT d.id) AS document_count,
-                       COUNT(DISTINCT child.id) AS child_count
-                FROM knowledge_folders f
-                LEFT JOIN knowledge_documents d ON d.folder_id=f.id AND d.status!='deleted'
-                LEFT JOIN knowledge_folders child ON child.parent_id=f.id
-                WHERE f.base_id=?
-                GROUP BY f.id
-                ORDER BY f.sort_order, f.name
-                """,
-                (base_id,),
-            )
-            return [dict(row) for row in cursor.fetchall()]
+        return self._fetch_all(
+            """
+            SELECT f.*, COUNT(DISTINCT d.id) AS document_count,
+                   COUNT(DISTINCT child.id) AS child_count
+            FROM knowledge_folders f
+            LEFT JOIN knowledge_documents d ON d.folder_id=f.id AND d.status!='deleted'
+            LEFT JOIN knowledge_folders child ON child.parent_id=f.id
+            WHERE f.base_id=?
+            GROUP BY f.id
+            ORDER BY f.sort_order, f.name
+            """,
+            (base_id,),
+        )
 
     def update_folder(self, folder_id: str, *, name: str) -> dict[str, Any] | None:
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                "UPDATE knowledge_folders SET name=?, updated_at=? WHERE id=?",
-                (name, _now(), folder_id),
-            )
+        self._execute_write(
+            "UPDATE knowledge_folders SET name=?, updated_at=? WHERE id=?",
+            (name, _now(), folder_id),
+        )
         return self.get_folder(folder_id)
 
     def delete_folder_tree(
@@ -565,27 +537,24 @@ class KnowledgeRepository:
     ) -> dict[str, Any]:
         document_id = document_id or str(uuid.uuid4())
         timestamp = _now()
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                """
-                INSERT INTO knowledge_documents
-                    (id, remote_document_id, base_id, folder_id, name,
-                     content_type, size_bytes, status, progress, error_code,
-                     error_message, created_by, created_at, updated_at,
-                     source, source_record_id, batch_id, report_title, report_tag,
-                     report_second_source, publish_date)
-                VALUES (?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    document_id, base_id, folder_id, name, content_type,
-                    size_bytes, status, created_by, timestamp, timestamp,
-                    source, source_record_id, batch_id, report_title, report_tag,
-                    report_second_source, publish_date,
-                ),
-            )
+        self._execute_write(
+            """
+            INSERT INTO knowledge_documents
+                (id, remote_document_id, base_id, folder_id, name,
+                 content_type, size_bytes, status, progress, error_code,
+                 error_message, created_by, created_at, updated_at,
+                 source, source_record_id, batch_id, report_title, report_tag,
+                 report_second_source, publish_date)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                document_id, base_id, folder_id, name, content_type,
+                size_bytes, status, created_by, timestamp, timestamp,
+                source, source_record_id, batch_id, report_title, report_tag,
+                report_second_source, publish_date,
+            ),
+        )
         return self.get_document(document_id)
 
     def find_document_by_source_record(
@@ -610,39 +579,28 @@ class KnowledgeRepository:
             parameters.append(base_id)
         if not include_deleted:
             clauses.append("d.status!='deleted'")
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                f"{_DOCUMENT_SELECT} WHERE {' AND '.join(clauses)} "
-                "ORDER BY d.created_at DESC LIMIT 1",
-                tuple(parameters),
-            )
-            return _row_dict(cursor.fetchone())
+        return self._fetch_one(
+            f"{_DOCUMENT_SELECT} WHERE {' AND '.join(clauses)} "
+            "ORDER BY d.created_at DESC LIMIT 1",
+            tuple(parameters),
+        )
 
     def find_duplicate_document(
         self, base_id: str, sha256: str
     ) -> dict[str, Any] | None:
         """同一知识库内按原文 sha256 查找未删除文档（重复上传拦截）。"""
 
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                f"{_DOCUMENT_SELECT} "
-                "WHERE d.base_id=? AND d.status!='deleted' AND o.sha256=? "
-                "ORDER BY d.created_at LIMIT 1",
-                (base_id, sha256),
-            )
-            return _row_dict(cursor.fetchone())
+        return self._fetch_one(
+            f"{_DOCUMENT_SELECT} "
+            "WHERE d.base_id=? AND d.status!='deleted' AND o.sha256=? "
+            "ORDER BY d.created_at LIMIT 1",
+            (base_id, sha256),
+        )
 
     def get_document(self, document_id: str) -> dict[str, Any] | None:
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor, f"{_DOCUMENT_SELECT} WHERE d.id=?", (document_id,)
-            )
-            return _row_dict(cursor.fetchone())
+        return self._fetch_one(
+            f"{_DOCUMENT_SELECT} WHERE d.id=?", (document_id,)
+        )
 
     def list_documents(
         self,
@@ -739,19 +697,13 @@ class KnowledgeRepository:
         """
 
         placeholders = ", ".join("?" for _ in REFRESHABLE_DOCUMENT_STATUSES)
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                "SELECT DISTINCT base_id FROM knowledge_documents "
-                "WHERE remote_document_id IS NOT NULL AND remote_document_id != '' "
-                f"AND status IN ({placeholders}) ORDER BY base_id",
-                REFRESHABLE_DOCUMENT_STATUSES,
-            )
-            return [
-                str(row["base_id"] if isinstance(row, dict) else row[0])
-                for row in cursor.fetchall()
-            ]
+        rows = self._fetch_all(
+            "SELECT DISTINCT base_id FROM knowledge_documents "
+            "WHERE remote_document_id IS NOT NULL AND remote_document_id != '' "
+            f"AND status IN ({placeholders}) ORDER BY base_id",
+            REFRESHABLE_DOCUMENT_STATUSES,
+        )
+        return [str(row["base_id"]) for row in rows]
 
     def list_refreshable_documents(
         self, base_id: str, *, limit: int = 500
@@ -786,10 +738,7 @@ class KnowledgeRepository:
             ORDER BY d.updated_at
             LIMIT ?
         """
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(cursor, sql, (limit,))
-            return [dict(row) for row in cursor.fetchall()]
+        return self._fetch_all(sql, (limit,))
 
     def update_document(self, document_id: str, **fields: object) -> dict[str, Any] | None:
         self._update_by_id("knowledge_documents", document_id, _DOCUMENT_UPDATE_FIELDS, fields)
@@ -804,18 +753,15 @@ class KnowledgeRepository:
         item_id = str(uuid.uuid4())
         timestamp = _now()
         try:
-            with self.db.get_connection() as conn:
-                cursor = conn.cursor()
-                self.db._execute(
-                    cursor,
-                    """
-                    INSERT INTO knowledge_source_sync_items
-                        (id, source, source_record_id, document_id, status,
-                         attempts, last_error, publish_date, created_at, updated_at)
-                    VALUES (?, ?, ?, NULL, 'queued', 0, NULL, ?, ?, ?)
-                    """,
-                    (item_id, source, source_record_id, publish_date, timestamp, timestamp),
-                )
+            self._execute_write(
+                """
+                INSERT INTO knowledge_source_sync_items
+                    (id, source, source_record_id, document_id, status,
+                     attempts, last_error, publish_date, created_at, updated_at)
+                VALUES (?, ?, ?, NULL, 'queued', 0, NULL, ?, ?, ?)
+                """,
+                (item_id, source, source_record_id, publish_date, timestamp, timestamp),
+            )
         except Exception:  # noqa: BLE001 — UNIQUE 冲突：并发/重跑时复用已有行
             existing = self.get_sync_item(source, source_record_id)
             if existing is None:
@@ -824,15 +770,11 @@ class KnowledgeRepository:
         return self.get_sync_item(source, source_record_id) or {}
 
     def get_sync_item(self, source: str, source_record_id: str) -> dict[str, Any] | None:
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                "SELECT * FROM knowledge_source_sync_items "
-                "WHERE source=? AND source_record_id=?",
-                (source, source_record_id),
-            )
-            return _row_dict(cursor.fetchone())
+        return self._fetch_one(
+            "SELECT * FROM knowledge_source_sync_items "
+            "WHERE source=? AND source_record_id=?",
+            (source, source_record_id),
+        )
 
     def update_sync_item(self, item_id: str, **fields: object) -> None:
         self._update_by_id(
@@ -849,33 +791,21 @@ class KnowledgeRepository:
         if not statuses:
             return []
         placeholders = ",".join("?" for _ in statuses)
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                "SELECT * FROM knowledge_source_sync_items "
-                f"WHERE source=? AND status IN ({placeholders}) "
-                "ORDER BY updated_at LIMIT ?",
-                (source, *statuses, limit),
-            )
-            return [dict(row) for row in cursor.fetchall()]
+        return self._fetch_all(
+            "SELECT * FROM knowledge_source_sync_items "
+            f"WHERE source=? AND status IN ({placeholders}) "
+            "ORDER BY updated_at LIMIT ?",
+            (source, *statuses, limit),
+        )
 
     def count_sync_items(self, *, source: str) -> dict[str, int]:
         """按状态统计同步台账（用于完整性核对：总数 = 各状态之和）。"""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                "SELECT status, COUNT(*) AS count FROM knowledge_source_sync_items "
-                "WHERE source=? GROUP BY status",
-                (source,),
-            )
-            return {
-                str(row["status"] if isinstance(row, dict) else row[0]): int(
-                    row["count"] if isinstance(row, dict) else row[1]
-                )
-                for row in cursor.fetchall()
-            }
+        rows = self._fetch_all(
+            "SELECT status, COUNT(*) AS count FROM knowledge_source_sync_items "
+            "WHERE source=? GROUP BY status",
+            (source,),
+        )
+        return {str(row["status"]): int(row["count"]) for row in rows}
 
     # ---------------- 原始文件对象 ----------------
 
@@ -892,37 +822,30 @@ class KnowledgeRepository:
     ) -> dict[str, Any]:
         object_id = str(uuid.uuid4())
         timestamp = _now()
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                """
-                INSERT INTO knowledge_document_objects
-                    (id, document_id, object_version, provider, storage_key,
-                     status, original_name, content_type, size_bytes, sha256,
-                     error_code, error_message, created_by, created_at)
-                VALUES (?, ?, 1, ?, ?, 'staging', ?, ?, ?, NULL, NULL, NULL, ?, ?)
-                """,
-                (
-                    object_id, document_id, provider, storage_key,
-                    original_name, content_type, size_bytes, created_by, timestamp,
-                ),
-            )
+        self._execute_write(
+            """
+            INSERT INTO knowledge_document_objects
+                (id, document_id, object_version, provider, storage_key,
+                 status, original_name, content_type, size_bytes, sha256,
+                 error_code, error_message, created_by, created_at)
+            VALUES (?, ?, 1, ?, ?, 'staging', ?, ?, ?, NULL, NULL, NULL, ?, ?)
+            """,
+            (
+                object_id, document_id, provider, storage_key,
+                original_name, content_type, size_bytes, created_by, timestamp,
+            ),
+        )
         return self.get_original_object(document_id)
 
     def get_original_object(self, document_id: str) -> dict[str, Any] | None:
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                """
-                SELECT * FROM knowledge_document_objects
-                WHERE document_id=?
-                ORDER BY object_version DESC LIMIT 1
-                """,
-                (document_id,),
-            )
-            return _row_dict(cursor.fetchone())
+        return self._fetch_one(
+            """
+            SELECT * FROM knowledge_document_objects
+            WHERE document_id=?
+            ORDER BY object_version DESC LIMIT 1
+            """,
+            (document_id,),
+        )
 
     def update_original_object(self, document_id: str, **fields: object) -> dict[str, Any] | None:
         current = self.get_original_object(document_id)
@@ -936,14 +859,10 @@ class KnowledgeRepository:
     # ---------------- 权限 ----------------
 
     def list_permissions(self, base_id: str) -> list[dict[str, Any]]:
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                "SELECT * FROM knowledge_permissions WHERE base_id=? ORDER BY subject_type, subject_id",
-                (base_id,),
-            )
-            return [dict(row) for row in cursor.fetchall()]
+        return self._fetch_all(
+            "SELECT * FROM knowledge_permissions WHERE base_id=? ORDER BY subject_type, subject_id",
+            (base_id,),
+        )
 
     def list_permissions_for_bases(self, base_ids: Iterable[str]) -> list[dict[str, Any]]:
         """批量查询多个知识库的授权行，避免列表页逐库查询。"""
@@ -952,15 +871,11 @@ class KnowledgeRepository:
         if not ids:
             return []
         placeholders = ",".join("?" for _ in ids)
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                f"SELECT * FROM knowledge_permissions WHERE base_id IN ({placeholders}) "
-                "ORDER BY base_id, subject_type, subject_id",
-                tuple(ids),
-            )
-            return [dict(row) for row in cursor.fetchall()]
+        return self._fetch_all(
+            f"SELECT * FROM knowledge_permissions WHERE base_id IN ({placeholders}) "
+            "ORDER BY base_id, subject_type, subject_id",
+            tuple(ids),
+        )
 
     def replace_permissions(
         self,
@@ -999,26 +914,22 @@ class KnowledgeRepository:
         """
 
         department_expr = "COALESCE(NULLIF(department_id, ''), NULLIF(organization_id, ''))"
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                f"""
-                SELECT user_id,
-                       COALESCE(username, '') AS username,
-                       COALESCE(NULLIF(display_name, ''), username, '') AS display_name,
-                       COALESCE({department_expr}, '') AS department_id,
-                       COALESCE(NULLIF(department_name, ''), {department_expr}, '') AS department_name,
-                       COALESCE(division_name, '') AS division_name,
-                       COALESCE(team_name, '') AS team_name
-                FROM users
-                WHERE account_status='active' AND username<>'admin'
-                  AND (?='' OR user_id<>?)
-                ORDER BY department_name, division_name, team_name, display_name
-                """,
-                (exclude_user_id, exclude_user_id),
-            )
-            return [dict(row) for row in cursor.fetchall()]
+        return self._fetch_all(
+            f"""
+            SELECT user_id,
+                   COALESCE(username, '') AS username,
+                   COALESCE(NULLIF(display_name, ''), username, '') AS display_name,
+                   COALESCE({department_expr}, '') AS department_id,
+                   COALESCE(NULLIF(department_name, ''), {department_expr}, '') AS department_name,
+                   COALESCE(division_name, '') AS division_name,
+                   COALESCE(team_name, '') AS team_name
+            FROM users
+            WHERE account_status='active' AND username<>'admin'
+              AND (?='' OR user_id<>?)
+            ORDER BY department_name, division_name, team_name, display_name
+            """,
+            (exclude_user_id, exclude_user_id),
+        )
 
     # ---------------- 操作记录 ----------------
 
@@ -1035,29 +946,25 @@ class KnowledgeRepository:
     ) -> dict[str, Any]:
         operation_id = str(uuid.uuid4())
         timestamp = _now()
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                """
-                INSERT INTO knowledge_operations
-                    (id, type, resource_type, resource_id, phase, status,
-                     current_count, total_count, progress, retryable, error_code,
-                     error_message, created_by, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, 0, 1, NULL, ?, NULL, NULL, ?, ?, ?)
-                """,
-                (
-                    operation_id, operation_type, resource_type, resource_id,
-                    phase, status, int(retryable), created_by, timestamp, timestamp,
-                ),
-            )
+        self._execute_write(
+            """
+            INSERT INTO knowledge_operations
+                (id, type, resource_type, resource_id, phase, status,
+                 current_count, total_count, progress, retryable, error_code,
+                 error_message, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 0, 1, NULL, ?, NULL, NULL, ?, ?, ?)
+            """,
+            (
+                operation_id, operation_type, resource_type, resource_id,
+                phase, status, int(retryable), created_by, timestamp, timestamp,
+            ),
+        )
         return self.get_operation(operation_id)
 
     def get_operation(self, operation_id: str) -> dict[str, Any] | None:
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(cursor, "SELECT * FROM knowledge_operations WHERE id=?", (operation_id,))
-            return _row_dict(cursor.fetchone())
+        return self._fetch_one(
+            "SELECT * FROM knowledge_operations WHERE id=?", (operation_id,)
+        )
 
     def update_operation(self, operation_id: str, **fields: object) -> dict[str, Any] | None:
         self._update_operation_rows(
@@ -1085,25 +992,18 @@ class KnowledgeRepository:
         if not updates:
             return 0
         assignments = ", ".join(f"{column}=?" for column in updates)
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor, sql_template.format(assignments=assignments), (*updates.values(), *where)
-            )
-            return cursor.rowcount
+        return self._execute_write(
+            sql_template.format(assignments=assignments), (*updates.values(), *where)
+        )
 
     def list_operations(
         self, *, created_by: str, limit: int = 50, offset: int = 0
     ) -> list[dict[str, Any]]:
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                "SELECT * FROM knowledge_operations WHERE created_by=? "
-                "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-                (created_by, limit, offset),
-            )
-            return [dict(row) for row in cursor.fetchall()]
+        return self._fetch_all(
+            "SELECT * FROM knowledge_operations WHERE created_by=? "
+            "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            (created_by, limit, offset),
+        )
 
     def count_operations(self, *, created_by: str) -> int:
         return self._count(
@@ -1138,33 +1038,24 @@ class KnowledgeRepository:
         return self.get_session_scope(session_id=session_id, user_id=user_id)
 
     def get_session_scope(self, *, session_id: str, user_id: str) -> list[str]:
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                """
-                SELECT base_id FROM session_knowledge_scopes
-                WHERE session_id=? AND user_id=?
-                ORDER BY sort_order, created_at, base_id
-                """,
-                (session_id, user_id),
-            )
-            return [
-                row["base_id"] if isinstance(row, dict) else row[0]
-                for row in cursor.fetchall()
-            ]
+        rows = self._fetch_all(
+            """
+            SELECT base_id FROM session_knowledge_scopes
+            WHERE session_id=? AND user_id=?
+            ORDER BY sort_order, created_at, base_id
+            """,
+            (session_id, user_id),
+        )
+        return [row["base_id"] for row in rows]
 
     def has_session_scope(self, *, session_id: str) -> bool:
         """会话是否保存过任何知识选择（fail-closed 开关：一旦存在，
         读取所选知识前必须持有严格 Bearer 身份）。"""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                "SELECT 1 FROM session_knowledge_scopes WHERE session_id=? LIMIT 1",
-                (session_id,),
-            )
-            return cursor.fetchone() is not None
+        row = self._fetch_one(
+            "SELECT 1 FROM session_knowledge_scopes WHERE session_id=? LIMIT 1",
+            (session_id,),
+        )
+        return row is not None
 
     def list_chat_session_rows(
         self, *, user_id: str, base_id: str
@@ -1174,25 +1065,18 @@ class KnowledgeRepository:
         供面板问答定位「当前轮」会话：同一用户对同一知识库可能存在多轮
         隐藏会话（开启新对话会轮换），created_at 最新者即当前轮。
         """
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                """
-                SELECT s.session_id, s.username, s.title
-                FROM sessions s
-                JOIN session_knowledge_scopes sc ON sc.session_id = s.session_id
-                WHERE sc.user_id=? AND sc.base_id=?
-                ORDER BY s.created_at DESC
-                """,
-                (user_id, base_id),
-            )
-            rows = cursor.fetchall()
+        rows = self._fetch_all(
+            """
+            SELECT s.session_id, s.username, s.title
+            FROM sessions s
+            JOIN session_knowledge_scopes sc ON sc.session_id = s.session_id
+            WHERE sc.user_id=? AND sc.base_id=?
+            ORDER BY s.created_at DESC
+            """,
+            (user_id, base_id),
+        )
         return [
-            (row["session_id"], row["username"], row["title"])
-            if isinstance(row, dict)
-            else (row[0], row[1], row[2])
-            for row in rows
+            (row["session_id"], row["username"], row["title"]) for row in rows
         ]
 
 
