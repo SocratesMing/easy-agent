@@ -18,7 +18,7 @@
 | 2 | 金融限制、Token 统计、错误展示来回反复 | **部分成立**。金融门禁加入后撤回、消息内错误从 5 秒消失改为常驻均有提交证据；Token 部分主要是不同统计范围和缺陷修复，未找到相同功能反复撤回再加入的证据 | 属于历史变更与需求一致性问题；不能由此认定当前功能错误 |
 | 3 | 发布脚本把 Git 忽略的本地配置和缓存打进 zip | **核心风险成立**。本机 `config.yaml` 实际进入收集清单；缓存是否进入取决于位置，根目录 `.ruff_cache/` 不在白名单内 | 配置随构建机漂移，并存在条件性凭据外带风险，P1 |
 | 4 | `chat.py` 为识别失败，对每个 SSE 重新 JSON 解析 | **机制成立，严重程度需收窄**。每帧确实反序列化一次，原因是编排器已捕获异常并转成 error 帧；没有性能测量支持“已构成瓶颈” | 领域结果依赖传输格式，P3；现有失败判定不能直接删除 |
-| 5 | 引用卡片提交约 1200 行只是搬 CSS，功能改动很少且混杂 | **样式搬迁成立，整体评价夸大**。搬出 1179 行主体样式，同时新增引用编号、浮层、定位及测试；提交并非只搬样式 | 审查成本与提交组织，P3；未据此发现功能故障 |
+| 5 | 引用卡片提交约 1200 行只是搬 CSS，功能改动很少且混杂 | **样式搬迁成立，整体评价夸大**。搬出 1179 行主体样式，同时新增引用编号、浮层、定位及测试；提交并非只搬样式 | P3；已补充提交拆分规则、审查范围和引用交互回归，验证结果及构建限制见第 2.5 节 |
 | 6 | 双前端共维护四份约 470 行的 SSE 处理代码 | **成立，且有可复现的逻辑漂移**。当前为 466 / 487 / 477 / 533 行，共 1963 行；工具临时 ID 转正式 ID 时两个侧栏产生重复卡片，而两个主页面正确合并 | 重复工具卡片，P2；通用状态机重复维护也是结构问题 |
 
 建议先处理 **3 → 6 → 1 / 4**。第 2 项应区分需求撤回和功能回归，第 5 项优先改善后续提交组织。
@@ -218,6 +218,48 @@ easy_agent/.ruff_cache/probe          included
 | 共享副本生成 | [scripts/dev/sync-frontend-shared.mjs](/Users/lulongfei/Desktop/agent/easy-agent/scripts/dev/sync-frontend-shared.mjs)；生成副本不等于又维护一套手写引用逻辑 |
 
 **处理建议**：今后把可独立验证的样式提取先提交，再提交功能；Vue2 前缀变化应明确列为样式作用域变更。既有提交无需仅为缩小历史 diff 撤回功能。
+
+#### 第 5 项处理与验证（2026-11-13）
+
+**状态：提交组织问题已落实到贡献规则，引用功能专项验证通过；Vue3 全量构建仍有既有阻塞。** 历史提交 `0ae04e87` 的混合差异保留，当前没有证据支持为此撤回引用功能或重新搬迁 CSS。本项变更只包含贡献规则、验证记录和回归测试。
+
+- `AGENTS.md` 新增规则：可独立验证的 CSS 提取 / 文件搬迁与功能 / 修复分开提交；搬迁需比较前后内容。选择器前缀、`scoped` / `:deep()` 及导入顺序属于行为变化，单独说明和验证。
+- 双前端改动需说明 `frontend-shared/` 手写源与生成副本的关系，执行共享同步检查，分别报告两侧构建结果。
+- 新增 `frontend-shared/citations/popover.test.js`，由现有同步脚本生成两侧副本；测试直接执行生产 mixin 的事件处理和生命周期，补齐此前编号 / 定位测试未覆盖的交互。副本不作为额外手写实现维护。
+
+历史提交的审查顺序如下，避免把 1179 行搬迁与功能增量混在一起评估：
+
+| 审查范围 | 重点 | 本次复核 |
+| --- | --- | --- |
+| `Chat.vue` → `styles/chat.css` | 搬迁内容、引入顺序和 scoped 属性 | Vue3 557 行逐行相同；Vue2 622 行去掉 `.easy-agent-root ` 后与迁移前相同；当前两份 CSS 与历史提交后的内容逐字节一致，两侧仍使用 scoped 外部样式 |
+| Vue2 根选择器前缀 | 宿主中的作用域变化 | 与纯搬迁区别记录；补充 scoped 编译探针确认输出仍含根前缀与 scope 属性，不等同于浏览器视觉验收 |
+| `frontend-shared/markdown/{citations,markers,index}.js` | 引用识别、首次出现顺序、忽略代码 / 无效编号、数字与文字展示 | 现有两侧引用测试通过 |
+| `frontend-shared/citations/popover.js` | 悬停 / 聚焦入口、延迟关闭、键盘退出、事件监听清理 | 新增两侧交互测试通过 |
+| 两侧 `Chat.vue` / `ChatMessage.vue` / `MarkdownBody.vue` / `CitationPopover.vue` / `citationNumbers.css` | 主聊天浮层与侧栏文字展示、事件及组件接入 | 检查接入代码；Vue2 构建通过，Vue3 构建结果见下方限制 |
+
+专项回归命令（Node v20.19.0）：
+
+```bash
+node --test \
+  frontend-vue2/src/packages/easyAgent/shared/markdown/citations.test.js \
+  frontend-vue2/src/packages/easyAgent/shared/citations/popover.test.js \
+  frontend/src/shared/markdown/citations.test.js \
+  frontend/src/shared/citations/popover.test.js
+node scripts/dev/sync-frontend-shared.mjs --check
+npm --prefix frontend-vue2 run lint:vue2
+npm --prefix frontend-vue2 run check:easy-agent
+npm --prefix frontend-vue2 run build
+npm --prefix frontend run build
+git diff --check
+```
+
+结果：**专项 20 passed、0 failed、0 skipped**（10 个行为用例在两个生成目标分别执行）。覆盖首次引用排序、代码 / 无效编号过滤、文字展示、边缘定位和可见视口，以及证据映射、旧 aria 关联清理、180ms 延迟关闭 / 取消、Escape 恢复焦点且不重开、卡片内外点击 / 滚动、切会话 / 消息变化、锚点移除、卸载清理监听和计时器。测试使用最小宿主和模拟计时，不声称挂载完整 Chat 页面。
+
+共享同步检查、Vue2 语法检查（188 文件）、模块检查（139 受管文件）、`git diff --check` 均通过。Vue2 生产构建成功，输出 54 条样式导出 / 产物体积等警告；另有 Browserslist 数据陈旧提示。CSS scoped 编译探针通过，Vue2 旧 `::v-deep` 写法触发弃用提示。
+
+**Vue3 生产构建失败**：`src/App.vue` 导入的 `probeStreamState` 未由 `src/features/chat/services/streamResume.js` 导出。这两个生产文件未在本项修改，且第 5 节已记录同一 HEAD 阻塞；本次不将其混入引用功能处理，也不表述为双构建全绿。
+
+验证边界：未运行前后端全量测试、真实浏览器视觉验收或真实模型；未提交、推送或部署。工作区同时存在发布包与流终态等其他改动，本节仅对上述引用专项和贡献规则负责。
 
 ### 2.6 四套流式状态机与已复现的行为分叉
 
