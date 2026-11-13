@@ -154,15 +154,7 @@
                 <button :class="{ active: viewMode === 'grid' }" title="卡片视图" @click="viewMode = 'grid'"><IconLayoutGrid /></button>
                 <button :class="{ active: viewMode === 'list' }" title="列表视图" @click="viewMode = 'list'"><IconList /></button>
               </div>
-              <div v-if="can('upload')" class="ke-import-wrap">
-                <button type="button" class="ke-button primary upload" title="选择文件或文件夹导入">
-                  <IconUpload />导入资料<IconChevronDown class="ke-import-caret" />
-                </button>
-                <div class="ke-import-menu">
-                  <label class="ke-import-option"><IconFileText />选择文件<input type="file" multiple hidden @change="handleFiles" /></label>
-                  <label class="ke-import-option"><IconFolder />选择文件夹（含子目录）<input type="file" webkitdirectory hidden @change="handleFolderFiles" /></label>
-                </div>
-              </div>
+              <KnowledgeImportMenu v-if="can('upload')" @files="handleFiles" @folder="handleFolderFiles" />
               <div v-if="can('create_folder')" class="ke-folder-actions">
                 <button title="在当前位置新建文件夹" @click="addFolder"><IconFolderPlus />新建文件夹</button>
               </div>
@@ -223,13 +215,7 @@
               <div class="ke-empty-icon"><IconFiles /></div>
               <h3>{{ search || statusFilter ? '没有找到匹配资料' : '添加第一篇资料' }}</h3>
               <p>{{ search || statusFilter ? '换个关键词或筛选条件试试。' : '支持批量选择文件，也可以直接拖拽到这里。' }}</p>
-              <div v-if="can('upload') && !search && !statusFilter" class="ke-import-wrap">
-                <button type="button" class="ke-button primary upload" title="选择文件或文件夹导入"><IconUpload />导入资料<IconChevronDown class="ke-import-caret" /></button>
-                <div class="ke-import-menu">
-                  <label class="ke-import-option"><IconFileText />选择文件<input type="file" multiple hidden @change="handleFiles" /></label>
-                  <label class="ke-import-option"><IconFolder />选择文件夹（含子目录）<input type="file" webkitdirectory hidden @change="handleFolderFiles" /></label>
-                </div>
-              </div>
+              <KnowledgeImportMenu v-if="can('upload') && !search && !statusFilter" @files="handleFiles" @folder="handleFolderFiles" />
               <button v-else-if="search || statusFilter" class="ke-button quiet" @click="clearFilters">清除筛选</button>
             </div>
           </section>
@@ -325,54 +311,7 @@
               <div class="ke-perm-toolbar">
                 <span>已选 <strong>{{ createPermSelectedTotal }}</strong> / {{ createPermDirectoryTotal }} 人</span>
               </div>
-              <div class="ke-perm-tree ke-create-perm-tree">
-                <section v-for="dept in createPermTree" :key="dept.key" class="ke-perm-branch">
-                  <div class="ke-perm-row level-dept">
-                    <button type="button" class="ke-perm-caret" title="展开/收起" @click="toggleCreatePermExpand(dept.key)"><IconChevronDown :class="{ rotated: isCreatePermCollapsed(dept.key) }" /></button>
-                    <input type="checkbox" v-indeterminate="permNodeIndeterminate(dept)" :checked="permNodeChecked(dept)" @change="togglePermNode(dept, $event.target.checked)" />
-                    <span class="ke-perm-name">{{ dept.name }}</span>
-                    <small class="ke-perm-count">{{ permSelectedCount(dept) }}/{{ dept.allUsers.length }}</small>
-                  </div>
-                  <div v-show="!isCreatePermCollapsed(dept.key)" class="ke-perm-children">
-                    <label v-for="user in dept.users" :key="user.user_id" class="ke-perm-user">
-                      <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
-                      <span>{{ user.display_name }}</span>
-                      <small>{{ user.username }}</small>
-                    </label>
-                    <section v-for="division in dept.divisions" :key="division.key" class="ke-perm-branch">
-                      <div class="ke-perm-row level-division">
-                        <button type="button" class="ke-perm-caret" title="展开/收起" @click="toggleCreatePermExpand(division.key)"><IconChevronDown :class="{ rotated: isCreatePermCollapsed(division.key) }" /></button>
-                        <input type="checkbox" v-indeterminate="permNodeIndeterminate(division)" :checked="permNodeChecked(division)" @change="togglePermNode(division, $event.target.checked)" />
-                        <span class="ke-perm-name">{{ division.name }}</span>
-                        <small class="ke-perm-count">{{ permSelectedCount(division) }}/{{ division.allUsers.length }}</small>
-                      </div>
-                      <div v-show="!isCreatePermCollapsed(division.key)" class="ke-perm-children">
-                        <label v-for="user in division.users" :key="user.user_id" class="ke-perm-user">
-                          <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
-                          <span>{{ user.display_name }}</span>
-                          <small>{{ user.username }}</small>
-                        </label>
-                        <section v-for="team in division.teams" :key="team.key" class="ke-perm-branch">
-                          <div class="ke-perm-row level-team">
-                            <button type="button" class="ke-perm-caret" title="展开/收起" @click="toggleCreatePermExpand(team.key)"><IconChevronDown :class="{ rotated: isCreatePermCollapsed(team.key) }" /></button>
-                            <input type="checkbox" v-indeterminate="permNodeIndeterminate(team)" :checked="permNodeChecked(team)" @change="togglePermNode(team, $event.target.checked)" />
-                            <span class="ke-perm-name">{{ team.name }}</span>
-                            <small class="ke-perm-count">{{ permSelectedCount(team) }}/{{ team.allUsers.length }}</small>
-                          </div>
-                          <div v-show="!isCreatePermCollapsed(team.key)" class="ke-perm-children">
-                            <label v-for="user in team.users" :key="user.user_id" class="ke-perm-user">
-                              <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
-                              <span>{{ user.display_name }}</span>
-                              <small>{{ user.username }}</small>
-                            </label>
-                          </div>
-                        </section>
-                      </div>
-                    </section>
-                  </div>
-                </section>
-                <p v-if="!createPermTree.length" class="ke-perm-empty">暂无可选人员，请先在人员与部门中导入账号。</p>
-              </div>
+              <KnowledgePermissionTree class="ke-create-perm-tree" :tree="createPermTree" :collapsed="createPermCollapsed" :is-collapsed="isCreatePermCollapsed" empty-text="暂无可选人员，请先在人员与部门中导入账号。" @toggle-expand="toggleCreatePermExpand" @toggle-node="togglePermNode" />
               <p class="ke-permission-note">
                 <template v-if="createPermSelectedTotal > 0">创建后，该知识库仅勾选人员及所有者、空间管理员可见；未勾选人员（含本部门其他成员）不可见。</template>
                 <template v-else>未勾选任何人员，创建后仅所有者与空间管理员可见。</template>
@@ -426,54 +365,7 @@
             <label v-for="user in permissionSearchResults" :key="user.user_id" class="ke-perm-user"><input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" /><span>{{ user.display_name }}</span><small>{{ user.username }}</small></label>
             <p v-if="!permissionSearchResults.length" class="ke-perm-empty">没有匹配的人员</p>
           </div>
-          <div v-else class="ke-perm-tree">
-            <section v-for="dept in permissionTree" :key="dept.key" class="ke-perm-branch">
-              <div class="ke-perm-row level-dept">
-                <button type="button" class="ke-perm-caret" title="展开/收起" @click="togglePermExpand(dept.key)"><IconChevronDown :class="{ rotated: isPermCollapsed(dept.key) }" /></button>
-                <input type="checkbox" v-indeterminate="permNodeIndeterminate(dept)" :checked="permNodeChecked(dept)" @change="togglePermNode(dept, $event.target.checked)" />
-                <span class="ke-perm-name">{{ dept.name }}</span>
-                <small class="ke-perm-count">{{ permSelectedCount(dept) }}/{{ dept.allUsers.length }}</small>
-              </div>
-              <div v-show="!isPermCollapsed(dept.key)" class="ke-perm-children">
-                <label v-for="user in dept.users" :key="user.user_id" class="ke-perm-user">
-                  <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
-                  <span>{{ user.display_name }}</span>
-                  <small>{{ user.username }}</small>
-                </label>
-                <section v-for="division in dept.divisions" :key="division.key" class="ke-perm-branch">
-                  <div class="ke-perm-row level-division">
-                    <button type="button" class="ke-perm-caret" title="展开/收起" @click="togglePermExpand(division.key)"><IconChevronDown :class="{ rotated: isPermCollapsed(division.key) }" /></button>
-                    <input type="checkbox" v-indeterminate="permNodeIndeterminate(division)" :checked="permNodeChecked(division)" @change="togglePermNode(division, $event.target.checked)" />
-                    <span class="ke-perm-name">{{ division.name }}</span>
-                    <small class="ke-perm-count">{{ permSelectedCount(division) }}/{{ division.allUsers.length }}</small>
-                  </div>
-                  <div v-show="!isPermCollapsed(division.key)" class="ke-perm-children">
-                    <label v-for="user in division.users" :key="user.user_id" class="ke-perm-user">
-                      <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
-                      <span>{{ user.display_name }}</span>
-                      <small>{{ user.username }}</small>
-                    </label>
-                    <section v-for="team in division.teams" :key="team.key" class="ke-perm-branch">
-                      <div class="ke-perm-row level-team">
-                        <button type="button" class="ke-perm-caret" title="展开/收起" @click="togglePermExpand(team.key)"><IconChevronDown :class="{ rotated: isPermCollapsed(team.key) }" /></button>
-                        <input type="checkbox" v-indeterminate="permNodeIndeterminate(team)" :checked="permNodeChecked(team)" @change="togglePermNode(team, $event.target.checked)" />
-                        <span class="ke-perm-name">{{ team.name }}</span>
-                        <small class="ke-perm-count">{{ permSelectedCount(team) }}/{{ team.allUsers.length }}</small>
-                      </div>
-                      <div v-show="!isPermCollapsed(team.key)" class="ke-perm-children">
-                        <label v-for="user in team.users" :key="user.user_id" class="ke-perm-user">
-                          <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
-                          <span>{{ user.display_name }}</span>
-                          <small>{{ user.username }}</small>
-                        </label>
-                      </div>
-                    </section>
-                  </div>
-                </section>
-              </div>
-            </section>
-            <p v-if="!permissionTree.length" class="ke-perm-empty">暂无可选人员，请先在人员与部门中导入账号。</p>
-          </div>
+          <KnowledgePermissionTree v-else :tree="permissionTree" :collapsed="permissionCollapsed" :is-collapsed="isPermCollapsed" empty-text="暂无可选人员，请先在人员与部门中导入账号。" @toggle-expand="togglePermExpand" @toggle-node="togglePermNode" />
           <p class="ke-permission-note">
             <template v-if="permSelectedTotal > 0">保存后，该知识库仅勾选人员及所有者、空间管理员可见；未勾选人员（含本部门其他成员）不可见。</template>
             <template v-else>未勾选任何人员，保存后恢复默认可见范围（公共空间对本部门成员可见）。</template>
@@ -559,6 +451,8 @@ import ExcelPreview from '../../shared/preview/ExcelPreview.vue'
 import FileIcon from '../../shared/components/FileIcon.vue'
 import ChatMessage from '../chat/components/ChatMessage.vue'
 import KnowledgeAskFilter from './KnowledgeAskFilter.vue'
+import KnowledgeImportMenu from './KnowledgeImportMenu.vue'
+import KnowledgePermissionTree from './KnowledgePermissionTree.vue'
 import { attachStream, getChatHistory, sendMessage } from '../../api/chat.js'
 import { cancelMessage } from './api.js'
 import { filterPermissionUsers } from './utils/permissions.js'
@@ -587,6 +481,8 @@ export default {
     DocxPreview,
     ExcelPreview,
     FileIcon,
+    KnowledgeImportMenu,
+    KnowledgePermissionTree,
     IconArrowLeft,
     IconArrowUp,
     IconArrowUpRight,
@@ -629,13 +525,6 @@ export default {
     IconX,
   },
   emits: ['close', 'manage-personnel', 'chat-session-prepared'],
-  // Vue 3 模板无法直接绑定 checkbox 的 indeterminate 属性，用指令补齐
-  directives: {
-    indeterminate: {
-      mounted(el, binding) { el.indeterminate = Boolean(binding.value) },
-      updated(el, binding) { el.indeterminate = Boolean(binding.value) },
-    },
-  },
   setup(_props, { emit }) {
 
 const spaces = [
@@ -654,7 +543,6 @@ const selectedBaseId = ref('')
 const folders = ref([])
 const selectedFolderId = ref('')
 const documents = ref([])
-const documentsPage = ref({ total: 0 })
 const loadingDocuments = ref(false)
 const search = ref(''); let searchTimer = 0
 const statusFilter = ref('')
@@ -810,7 +698,7 @@ const createPermRestricted = ref(false)
 const createPermCollapsed = ref({})
 let createPermLoadSeq = 0
 const toast = ref(null)
-const preview = reactive({ open: false, loading: false, name: '', kind: '', url: '', text: '', buffer: null })
+const preview = reactive({ open: false, loading: false, name: '', kind: '', url: '', text: '' })
 let pollTimer = null
 let toastTimer = null
 let confirmResolver = null
@@ -891,7 +779,7 @@ async function selectBase(baseId) {
   if (asking.value && selectedBaseId.value !== baseId) stopQuestion('switch')
   if (selectedBaseId.value !== baseId) { documents.value = []; folders.value = [] }
   selectedBaseId.value = baseId; selectedFolderId.value = ''; agentMessage.value = null; askError.value = ''; askHistory.value = []; askHistoryBaseId.value = ''; lastQuestion.value = ''
-  await Promise.all([loadFolders(), loadDocuments({ initial: true }), loadStatusOptions()])
+  await Promise.all([loadDocuments({ initial: true }), loadStatusOptions()])
   await loadOperations()
 }
 // 状态筛选选项：整个知识库实际存在的文档状态（不随当前文件夹/搜索窄化）
@@ -936,7 +824,6 @@ async function loadDocuments({ initial = false } = {}) {
         preserve: !query && !statusFilter.value,
       }
     )
-    documentsPage.value = response.page || { total: serverDocuments.length }
     await loadFolders()
   } catch (error) { handleError(error) } finally {
     if (requestSequence === documentRequestSequence) loadingDocuments.value = false
@@ -1012,7 +899,7 @@ async function saveFolder() {
 }
 async function removeFolder(folder) {
   if (!folder || !await askConfirmation({ title: `是否确认删除「${folder.name}」？`, description: '文件夹中的文档和子文件夹将一并删除，此操作无法撤销。', confirmLabel: '删除文件夹' })) return
-  try { const parentId = folder.parent_id || ''; await deleteFolder(folder.id); if (selectedFolderId.value === folder.id) selectedFolderId.value = parentId; await Promise.all([loadFolders(), loadDocuments()]); notify('文件夹已删除') } catch (error) { handleError(error) }
+  try { const parentId = folder.parent_id || ''; await deleteFolder(folder.id); if (selectedFolderId.value === folder.id) selectedFolderId.value = parentId; await loadDocuments(); notify('文件夹已删除') } catch (error) { handleError(error) }
 }
 
 async function handleFiles(event) { const files = Array.from(event.target.files || []); event.target.value = ''; await uploadFiles(files.map(file => ({ file, relativePath: '' }))) }
@@ -1026,11 +913,8 @@ async function handleFolderFiles(event) {
   await uploadFiles(picked.map(file => ({ file, relativePath: file.webkitRelativePath || '' })))
 }
 function isFolderImportableFile(file) {
-  const relativePath = file.webkitRelativePath || ''
-  const segments = relativePath.split('/').filter(Boolean)
-  if (segments.some(part => part.startsWith('.') || part === '__MACOSX' || part === 'node_modules')) return false
-  if (file.name.startsWith('~$') || file.name === 'Thumbs.db' || file.name === 'desktop.ini') return false
-  return true
+  const segments = (file.webkitRelativePath || '').split('/').filter(Boolean)
+  return !segments.some(isHiddenDirSegment) && !isJunkFileName(file.name)
 }
 function isHiddenDirSegment(segment) { return segment.startsWith('.') || segment === '__MACOSX' || segment === 'node_modules' }
 function isJunkFileName(name) { return name.startsWith('.') || name.startsWith('~$') || name === 'Thumbs.db' || name === 'desktop.ini' }
@@ -1142,7 +1026,6 @@ async function uploadFiles(items) {
     const optimisticId = `upload-${genQueueId()}`
     if (selectedBaseId.value === uploadBaseId && selectedFolderId.value === uploadFolderId && !search.value.trim() && !statusFilter.value) {
       documents.value = [createOptimisticUploadDocument(file, { optimisticId, baseId: uploadBaseId, folderId: uploadFolderId }), ...documents.value]
-      documentsPage.value = { ...documentsPage.value, total: Number(documentsPage.value.total || 0) + 1 }
     }
     return { file, relativePath, optimisticId }
   })
@@ -1160,13 +1043,11 @@ async function uploadFiles(items) {
       else if (optimisticIndex >= 0) {
         // 文档按相对路径落入了子文件夹，当前视图不再展示
         documents.value.splice(optimisticIndex, 1)
-        documentsPage.value = { ...documentsPage.value, total: Math.max(0, Number(documentsPage.value.total || 1) - 1) }
       }
     } catch (error) {
       const optimisticIndex = documents.value.findIndex(doc => doc.id === optimisticId)
       if (optimisticIndex >= 0) {
         documents.value.splice(optimisticIndex, 1)
-        documentsPage.value = { ...documentsPage.value, total: Math.max(0, Number(documentsPage.value.total || 1) - 1) }
       }
       handleError(error)
     }
@@ -1177,10 +1058,10 @@ async function uploadFiles(items) {
       while (queue.length) await uploadOne(queue.shift())
     })
   )
-  if (selectedBaseId.value === uploadBaseId) await Promise.all([loadDocuments(), loadFolders(), loadStatusOptions()])
+  if (selectedBaseId.value === uploadBaseId) await Promise.all([loadDocuments(), loadStatusOptions()])
   await Promise.all([loadOperations(), refreshBaseCounts()])
 }
-async function moveDoc(doc, folderId) { try { await moveDocument(doc.id, folderId); await Promise.all([loadDocuments(), loadFolders()]); notify('文档已移动') } catch (error) { handleError(error) } }
+async function moveDoc(doc, folderId) { try { await moveDocument(doc.id, folderId); await loadDocuments(); notify('文档已移动') } catch (error) { handleError(error) } }
 function openMoveDocument(doc) { movingDocument.value = doc; moveTargetFolderId.value = doc.folder_id || ''; showMoveModal.value = true }
 async function confirmMoveDocument() {
   if (!movingDocument.value) return
@@ -1215,7 +1096,7 @@ async function previewDocument(doc) {
   } catch (error) { closePreview(); handleError(error) }
   finally { preview.loading = false }
 }
-function closePreview() { if (preview.url) URL.revokeObjectURL(preview.url); Object.assign(preview, { open: false, loading: false, name: '', kind: '', url: '', text: '', buffer: null }) }
+function closePreview() { if (preview.url) URL.revokeObjectURL(preview.url); Object.assign(preview, { open: false, loading: false, name: '', kind: '', url: '', text: '' }) }
 async function downloadDocument(doc) {
   try {
     notify('正在准备下载…')
@@ -1293,16 +1174,6 @@ function buildPermissionTree(users) {
   return tree
 }
 
-function permSelectedCount(node) {
-  return node.allUsers.reduce((count, user) => count + (user.checked ? 1 : 0), 0)
-}
-function permNodeChecked(node) {
-  return node.allUsers.length > 0 && node.allUsers.every(user => user.checked)
-}
-function permNodeIndeterminate(node) {
-  const selected = permSelectedCount(node)
-  return selected > 0 && selected < node.allUsers.length
-}
 function togglePermNode(node, checked) {
   node.allUsers.forEach(user => { user.checked = checked })
 }
@@ -1555,7 +1426,7 @@ async function startNewChat() {
   } catch (error) {
     // peek 404 = 本就没有问答记录，仅清空本地即可；其他错误必须提示并中止，
     // 否则服务端仍是旧会话，下次提问会继续在旧会话里进行
-    if (error?.response?.status !== 404) { handleError(error); return }
+    if (error?.status !== 404) { handleError(error); return }
   }
   // 作废在途的历史拉取：其响应可能在轮换之后到达，会把旧历史写回界面
   askHistoryResetCount += 1
@@ -1731,9 +1602,7 @@ function documentStatusText(doc) {
 function processingElapsed(doc) {
   return processingElapsedText(doc, operations.value)
 }
-function statusLabel(status) { return ({ pending: '排队中', processing: '解析中', cancel_requested: '取消中', ready: '已就绪', failed: '失败', cancelled: '已取消', paused: '已暂停', deleting: '删除中', unknown: '未知' })[status] || status }
-function operationStatusLabel(status) { return ({ accepted: '已受理', running: '进行中', succeeded: '成功', failed: '失败', partial_failed: '部分失败' })[status] || status }
-function operationLabel(type) { return ({ dataset_create: '创建知识库', document_upload: '上传文档', document_parse: '解析文档' })[type] || type }
+function statusLabel(status) { return STATUS_LABELS[status] || status }
 
 function formatSize(size = 0) { if (size < 1024) return `${size} B`; if (size < 1048576) return `${(size / 1024).toFixed(1)} KB`; return `${(size / 1048576).toFixed(1)} MB` }
 function formatDate(value) { return value ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-' }
@@ -1766,6 +1635,7 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
       closePreview,
       confirmation,
       confirmMoveDocument,
+      createPermCollapsed,
       createPermDirectoryTotal,
       createPermLoading,
       createPermRestricted,
@@ -1776,7 +1646,6 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
       currentFolder,
       currentFolders,
       documents,
-      documentsPage,
       documentStatusText,
       downloadDocument,
       dragging,
@@ -1807,16 +1676,12 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
       openCreateBase,
       openMoveDocument,
       openPermissions,
-      operationLabel,
       operations,
-      operationStatusLabel,
+      permissionCollapsed,
       permissionDirectoryLoading,
       permissionRestricted,
       permissionTree,
       permDirectoryTotal,
-      permNodeChecked,
-      permNodeIndeterminate,
-      permSelectedCount,
       permSelectedTotal,
       preview,
       previewable,
@@ -1876,19 +1741,11 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
 .ke-shell{--ke-accent:var(--accent-color);--ke-accent-dark:var(--accent-color);--ke-accent-soft:color-mix(in srgb,var(--accent-color) 12%,transparent);--ke-ink:var(--text-primary);--ke-muted:var(--text-secondary);--ke-line:var(--border-color);--ke-bg:var(--bg-primary);position:relative;overflow:hidden;container:ke-shell/inline-size;flex:1;min-width:0;height:100%;display:flex;flex-direction:column;background:var(--ke-bg);color:var(--ke-ink);font-family:inherit}.ke-shell button,.ke-shell input,.ke-shell select,.ke-shell textarea{font:inherit}.ke-shell svg{width:16px;height:16px;flex:none}.ke-topbar{height:64px;flex:none;background:var(--bg-secondary);border-bottom:1px solid var(--ke-line);display:flex;align-items:center;justify-content:space-between;padding:0 20px;z-index:5}.ke-topbar-title,.ke-topbar-actions,.ke-inline-actions,.ke-title-row,.ke-base-meta,.ke-tool-row{display:flex;align-items:center}.ke-topbar-title{gap:10px}.ke-topbar-title h1{font-size:17px;line-height:1.2;margin:0;font-weight:650}.ke-topbar-title span{display:block;margin-top:3px;color:var(--text-secondary);font-size:11px}.ke-topbar-actions{gap:8px}.ke-button{height:34px;border:1px solid var(--border-color);background:var(--bg-secondary);border-radius:9px;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;gap:6px;color:var(--text-secondary);font-size:12px;cursor:pointer;transition:.18s ease;box-sizing:border-box}.ke-button:hover{background:var(--bg-tertiary);border-color:var(--border-color)}.ke-button.primary{background:var(--ke-accent);border-color:var(--ke-accent);color:#fff;box-shadow:0 3px 10px color-mix(in srgb,var(--ke-accent) 22%,transparent)}.ke-button.primary:hover{background:var(--ke-accent-dark);border-color:var(--ke-accent-dark);transform:translateY(-1px)}.ke-button.quiet{background:var(--bg-secondary)}.ke-button.danger{background:#d94b4b;border-color:#d94b4b;color:#fff}.ke-button.icon-only{width:34px;padding:0}.ke-button:disabled,.ke-icon-button:disabled{opacity:.45;cursor:not-allowed;transform:none}.ke-icon-button{width:32px;height:32px;border:1px solid var(--border-color);background:var(--bg-secondary);border-radius:9px;display:grid;place-items:center;color:var(--text-secondary);cursor:pointer;transition:.18s}.ke-icon-button:hover{background:var(--bg-tertiary);color:var(--text-primary)}.ke-icon-button.subtle{border-color:transparent;background:transparent}.danger-hover:hover,.danger-text{color:#cc4545!important;background:#fff3f2!important;border-color:#f3cdca!important}.ke-health{display:inline-flex;align-items:center;gap:6px;color:var(--text-secondary);font-size:11px;margin-right:4px}.ke-health i,.ke-status i{width:7px;height:7px;border-radius:50%;background:#e2a22e}.ke-health.ready i,.ke-status.ready i,.ke-status.succeeded i{background:var(--ke-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--ke-accent) 12%,transparent)}
 .ke-workspace{position:relative;flex:1;min-height:0;display:grid;grid-template-columns:var(--ke-library-width,252px) 6px minmax(490px,1fr) 6px var(--ke-ask-width,344px);gap:0}.ke-workspace.ask-closed{grid-template-columns:var(--ke-library-width,252px) 6px minmax(540px,1fr)}.ke-library-panel,.ke-content-panel,.ke-ask-panel{min-height:0;background:#fff}.ke-library-panel{border-right:1px solid var(--ke-line);display:flex;flex-direction:column;padding:18px 12px 12px}.ke-resizer{position:relative;width:6px;min-width:6px;cursor:col-resize;touch-action:none;z-index:25;outline:none;background:var(--bg-secondary)}.ke-resizer:after{content:"";position:absolute;inset:0 2px;background:transparent;transition:.15s}.ke-resizer:hover:after,.ke-resizer:focus-visible:after,:global(body.ke-layout-resizing) .ke-resizer:after{background:var(--accent-color);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent-color) 14%,transparent)}.ke-library-heading{display:flex;align-items:center;justify-content:space-between;padding:0 4px 14px}.ke-library-heading>div{display:flex;flex-direction:column;gap:3px}.ke-library-heading strong{font-size:14px}.ke-library-heading small{font-size:10px;color:#9aa09c}.ke-search-box{height:34px;border:1px solid #e1e5e2;background:#fafbfa;border-radius:9px;display:flex;align-items:center;gap:7px;padding:0 9px;color:#9ba29e;transition:.18s}.ke-search-box:focus-within{border-color:#9fd8c0;background:#fff;box-shadow:0 0 0 3px rgba(37,161,111,.08)}.ke-search-box input{min-width:0;flex:1;border:0;outline:0;background:transparent;color:#303632;font-size:12px}.ke-search-box button{border:0;background:transparent;color:#9aa19c;display:grid;place-items:center;padding:0;cursor:pointer}.sidebar-search{margin-bottom:14px}.ke-space-tabs{display:flex;flex-direction:column;gap:3px}.ke-space-tabs button{height:36px;border:0;background:transparent;border-radius:9px;padding:0 10px;display:grid;grid-template-columns:18px 1fr auto;gap:8px;text-align:left;align-items:center;color:#68716b;font-size:12px;cursor:pointer}.ke-space-tabs button:hover{background:#f5f7f5}.ke-space-tabs button.active{background:var(--ke-accent-soft);color:var(--ke-accent-dark);font-weight:600}.ke-space-tabs b{font-weight:500;font-size:10px;color:#9aa19d}.ke-base-list{flex:1;min-height:0;overflow:auto;padding-top:14px;margin-top:12px;border-top:1px solid #f0f2f0}.ke-base-card{width:100%;border:1px solid transparent;background:transparent;border-radius:11px;padding:8px;display:flex;gap:9px;align-items:center;text-align:left;color:inherit;cursor:pointer;transition:.18s}.ke-base-card:hover{background:#f8faf8}.ke-base-card.active{background:#f2f8f5;border-color:#d9eee4}.ke-base-cover,.ke-hero-cover{display:grid;place-items:center;background:linear-gradient(145deg,#45bd8a,#229568);color:#fff;box-shadow:inset 0 0 0 1px rgba(255,255,255,.18)}.ke-base-cover{width:34px;height:40px;border-radius:5px 9px 9px 5px}.ke-base-cover.team,.ke-hero-cover.team{background:linear-gradient(145deg,#5d9ee8,#557bc8)}.ke-base-cover.shared,.ke-hero-cover.shared{background:linear-gradient(145deg,#a788e7,#795fc4)}.ke-base-copy{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px}.ke-base-copy strong{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-base-copy small{font-size:10px;color:#959c97}.ke-chevron{width:13px!important;color:#bec3bf;opacity:0}.ke-base-card:hover .ke-chevron,.ke-base-card.active .ke-chevron{opacity:1}.ke-empty-small{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#a2a9a4;text-align:center;font-size:11px;padding:32px 12px}.ke-empty-small svg{width:25px;height:25px}.ke-empty-small button{border:0;background:transparent;color:var(--ke-accent-dark);font-size:11px;cursor:pointer}.ke-library-tip{display:flex;align-items:flex-start;gap:7px;background:#f8faf8;border-radius:9px;padding:10px;color:#929994;font-size:9px;line-height:1.45}.ke-library-tip svg{width:14px;height:14px;color:#72a78e}
 .ke-content-panel{position:relative;display:flex;flex-direction:column;overflow:hidden;background:#fff;container:ke-content/inline-size}.ke-base-hero{flex:none;padding:24px 26px 20px;display:flex;justify-content:space-between;gap:18px;border-bottom:1px solid var(--ke-line)}.ke-base-identity{display:flex;gap:15px;min-width:0}.ke-hero-cover{width:48px;height:58px;border-radius:7px 12px 12px 7px}.ke-hero-cover svg{width:22px;height:22px}.ke-title-row{gap:9px}.ke-title-row h2{margin:0;font-size:20px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-role{padding:3px 7px;background:#f1f4f2;border-radius:5px;color:#768078;font-size:9px}.ke-base-identity p{max-width:620px;margin:6px 0 10px;color:#868e89;font-size:11px;line-height:1.55;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-base-meta{gap:14px;color:#9aa09c;font-size:9px}.ke-base-meta span{display:flex;align-items:center;gap:4px}.ke-base-meta svg{width:12px;height:12px}.ke-inline-actions{gap:6px;align-self:flex-start}.ke-content-toolbar{flex:none;padding:13px 20px 12px;border-bottom:1px solid var(--ke-line)}.ke-folder-tabs{display:flex;align-items:center;gap:4px;overflow-x:auto;padding-bottom:11px}.ke-folder-tabs button{height:28px;border:0;background:transparent;border-radius:7px;padding:0 8px;display:flex;align-items:center;gap:5px;color:#777f7a;font-size:10px;white-space:nowrap;cursor:pointer}.ke-folder-tabs button:hover{background:#f5f7f5}.ke-folder-tabs button.active{background:#edf7f2;color:var(--ke-accent-dark);font-weight:600}.ke-folder-tabs button span{color:#9ca39e;font-size:9px}.ke-folder-tabs svg{width:12px;height:12px}.ke-folder-tabs .folder-add{color:var(--ke-accent-dark);margin-left:3px}.ke-folder-tabs .folder-manage{width:27px;padding:0;justify-content:center}.ke-tool-row{gap:7px}.ke-tool-row>.ke-search-box{flex:1;max-width:300px}.ke-select-wrap{height:34px;border:1px solid #e1e5e2;background:#fff;border-radius:9px;padding:0 8px;display:flex;align-items:center;color:#929a94}.ke-select-wrap select,.ke-folder-select select{border:0;outline:0;background:transparent;color:#636b66;font-size:10px}.ke-view-switch{height:34px;background:#f3f5f3;border-radius:9px;padding:3px;display:flex}.ke-view-switch button{width:28px;border:0;background:transparent;color:#9aa19c;border-radius:7px;display:grid;place-items:center;cursor:pointer}.ke-view-switch button.active{background:#fff;color:#3d4640;box-shadow:0 1px 4px rgba(30,45,35,.1)}
-.ke-import-wrap{position:relative;display:inline-flex}
-.ke-import-caret{width:13px!important;height:13px;transition:transform .15s ease}
-.ke-import-wrap:hover .ke-import-caret,.ke-import-wrap:focus-within .ke-import-caret{transform:rotate(180deg)}
-.ke-import-menu{position:absolute;top:calc(100% + 6px);right:0;z-index:60;min-width:180px;display:none;flex-direction:column;padding:5px;background:#fff;border:1px solid #e3e8e4;border-radius:11px;box-shadow:0 14px 36px rgba(23,35,27,.16)}
-.ke-import-wrap:hover .ke-import-menu,.ke-import-wrap:focus-within .ke-import-menu{display:flex}
-.ke-import-option{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;color:#3d4640;font-size:11px;cursor:pointer;white-space:nowrap}
-.ke-import-option:hover{background:#f2f8f5;color:var(--ke-accent-dark)}
-.ke-import-option svg{width:14px;height:14px;color:#69726c}
 .ke-documents{flex:1;min-height:0;overflow:auto;padding:18px 20px 28px}.ke-documents.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));align-content:start;gap:10px}.ke-document-card{position:relative;border:1px solid #e6eae7;border-radius:12px;background:#fff;padding:10px 12px;min-width:0;transition:.18s}.grid .ke-document-card{display:flex;flex-direction:column}.ke-document-card:hover{border-color:#ccd8d1;box-shadow:0 8px 24px rgba(39,64,48,.07);transform:translateY(-1px)}.ke-doc-open{width:100%;border:0;background:transparent;padding:0;display:grid;grid-template-columns:30px minmax(0,1fr);align-items:start;column-gap:8px;text-align:left;min-width:0;color:inherit;cursor:pointer}.ke-doc-open:disabled{cursor:default}.ke-file-icon{width:30px;min-width:30px;height:34px;box-sizing:border-box;display:grid;place-items:center;border-radius:8px;background:#f7f9f7;overflow:hidden}.ke-document-copy{width:100%;min-width:0;overflow:hidden;display:flex;flex-direction:column;gap:3px}.ke-doc-title{display:flex;flex-direction:column;gap:2px;min-width:0;max-width:100%}.ke-document-copy strong{min-width:0;font-size:11px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-document-copy small{color:#9aa19c;font-size:9px;white-space:normal;word-break:break-word}.ke-document-details{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}.grid .ke-document-details{margin-top:auto;padding-top:8px}.ke-status{display:inline-flex;align-items:center;gap:5px;color:#6e7771;font-size:9px;white-space:nowrap}.ke-status i{width:6px;height:6px}.ke-status em{font-style:normal;color:#9aa19c}.ke-status.processing i,.ke-status.running i{background:#4b91e4;animation:ke-pulse 1.2s infinite}.ke-status.failed i,.ke-status.partial_failed i{background:#e25555}.ke-folder-select{min-width:0;display:flex;align-items:center;gap:3px;color:#9aa19c}.ke-folder-select svg{width:11px;height:11px}.ke-folder-select select{max-width:80px;text-overflow:ellipsis}.ke-error-text{font-size:9px;color:#cc4b4b;line-height:1.4;margin:7px 0 0}.ke-row-actions{position:absolute;right:9px;bottom:9px;display:flex;align-items:center;gap:2px;background:rgba(255,255,255,.96);border-radius:8px;padding:2px;opacity:0;transform:translateY(3px);transition:.16s;box-shadow:0 -2px 10px rgba(30,45,35,.08)}.ke-document-card:hover .ke-row-actions,.ke-row-actions:focus-within{opacity:1;transform:none}.ke-row-actions button{height:22px;border:0;background:transparent;border-radius:6px;padding:0 5px;display:flex;align-items:center;gap:3px;color:#69726c;font-size:9px;cursor:pointer}.ke-row-actions button:hover{background:#f2f5f3;color:#26312a}.ke-row-actions svg{width:11px;height:11px}.list.ke-documents{padding-top:8px}.list .ke-document-card{border-width:0 0 1px;border-radius:0;padding:7px 8px;display:grid;grid-template-columns:minmax(0,1fr) 240px 145px;align-items:center;gap:10px}.list .ke-doc-open{align-items:center}
 .list .ke-document-card:hover{transform:none;box-shadow:none;background:#fafbfa}.list .ke-document-details{margin:0 -10px 0 0;align-self:center;justify-content:flex-end}.list .ke-row-actions{position:static;opacity:1;transform:none;box-shadow:none;justify-content:flex-end;align-self:center}.list .ke-row-actions button span{display:none}.list .ke-error-text{grid-column:1/-1}.ke-document-loading{grid-column:1/-1;min-height:220px;display:flex;align-items:center;justify-content:center;color:var(--text-secondary);font-size:12px}.ke-document-loading p{margin:0;display:inline-flex;align-items:center}.ke-dot{width:4px;height:4px;margin-left:4px;border-radius:50%;background:currentColor;animation:ke-dot-pulse 1.2s infinite}.ke-dot:nth-child(2){animation-delay:.2s}.ke-dot:nth-child(3){animation-delay:.4s}.ke-empty-documents{grid-column:1/-1;align-self:center;margin:auto;display:flex;flex-direction:column;align-items:center;text-align:center;padding:45px 20px}.ke-empty-icon,.ke-empty-illustration{width:60px;height:60px;border-radius:18px;background:var(--ke-accent-soft);color:var(--ke-accent);display:grid;place-items:center}.ke-empty-icon svg,.ke-empty-illustration svg{width:27px;height:27px}.ke-empty-documents .ke-import-wrap{width:auto;height:auto}.ke-empty-documents h3{margin:14px 0 5px;font-size:14px}.ke-empty-documents p{margin:0 0 15px;color:#929994;font-size:11px}.ke-drop-mask{position:absolute;inset:10px;z-index:15;border:2px dashed #71c39f;border-radius:16px;background:rgba(237,250,244,.94);display:grid;place-items:center;pointer-events:none}.ke-drop-mask>div{display:flex;flex-direction:column;align-items:center;gap:7px;color:var(--ke-accent-dark)}.ke-drop-mask svg{width:36px;height:36px}.ke-drop-mask strong{font-size:15px}.ke-drop-mask span{color:#7b8c82;font-size:11px}
 .ke-ask-panel{border-left:1px solid var(--ke-line);display:flex;flex-direction:column;overflow:hidden;background:#fcfdfc}.ke-ask-header{height:67px;flex:none;padding:0 14px;display:flex;align-items:center;gap:9px;border-bottom:1px solid var(--ke-line);background:#fff}.ke-ai-avatar{width:31px;height:31px;border-radius:10px;background:linear-gradient(145deg,#32b981,#21865f);color:#fff;display:grid;place-items:center;box-shadow:0 4px 12px rgba(37,161,111,.2)}.ke-ai-avatar.small{width:23px;height:23px;border-radius:7px}.ke-ai-avatar.small svg{width:12px;height:12px}.ke-ask-header>div:nth-child(2){display:flex;flex:1;min-width:0;flex-direction:column;gap:3px}.ke-ask-header strong{font-size:12px}.ke-ask-header small{font-size:9px;color:#969d98;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-answer{flex:1;min-height:0;overflow:auto;padding:18px}.ke-history-entry{display:flex;flex-direction:column;gap:8px;padding-bottom:12px;margin-bottom:12px;border-bottom:1px dashed #e8ece9}.ke-history-entry:last-of-type{border-bottom:0}.ke-answer-welcome{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.ke-answer-orb{width:52px;height:52px;border-radius:18px;background:radial-gradient(circle at 30% 25%,#fff 0,#e4f7ee 35%,#cceede 100%);color:var(--ke-accent);display:grid;place-items:center;box-shadow:0 8px 25px rgba(38,126,88,.12)}.ke-answer-orb svg{width:24px;height:24px}.ke-answer-welcome h3{font-size:14px;margin:15px 0 6px}.ke-answer-welcome>p{max-width:235px;margin:0;color:#8d9690;font-size:10px;line-height:1.7}.ke-question-suggestions{width:100%;margin-top:19px;display:flex;flex-direction:column;gap:7px}.ke-question-suggestions button{border:1px solid #e3e8e4;background:#fff;border-radius:10px;padding:10px 11px;display:flex;justify-content:space-between;align-items:center;color:#626b65;text-align:left;font-size:10px;cursor:pointer;transition:.16s}.ke-question-suggestions button:hover{border-color:#b9ddcb;background:#f5fbf8;color:var(--ke-accent-dark)}.ke-question-suggestions svg{width:12px;height:12px}.ke-answer-loading{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#8b948e;font-size:10px}.ke-question-bubble{margin-left:auto;width:fit-content;max-width:100%;padding:9px 11px;border-radius:11px 3px 11px 11px;background:#eef7f3;color:#3f4d45;font-size:11px;line-height:1.55}.ke-answer-label{display:flex;align-items:center;gap:7px;margin:18px 0 10px;font-size:10px}.ke-answer-text{font-size:11px;line-height:1.85;color:#3e4741;white-space:pre-wrap}.ke-evidence-title{display:flex;align-items:center;gap:5px;margin:18px 0 7px;color:#737d76;font-size:10px;font-weight:600}.ke-evidence-title svg{width:13px;height:13px}.ke-evidence{width:100%;margin-top:7px;padding:10px;border:1px solid #e3e8e4;border-radius:10px;background:#fff;text-align:left;color:inherit;cursor:pointer}.ke-evidence:hover{border-color:#c6ddd1;background:#fbfdfc}.ke-evidence>div{display:flex;gap:7px;align-items:center;font-size:9px}.ke-evidence b{width:18px;height:18px;border-radius:5px;background:var(--ke-accent-soft);color:var(--ke-accent-dark);display:grid;place-items:center}.ke-evidence strong{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-evidence span{margin-left:auto;color:#9aa19c}.ke-evidence p{font-size:9px;line-height:1.55;color:#747d77;margin:7px 0 0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.ke-warning{display:flex;gap:6px;color:#a56a14;font-size:9px;line-height:1.5}.ke-warning svg{width:13px;height:13px}.ke-ask-form{flex:none;padding:12px 14px 13px}.ke-composer{border:1px solid #dce3de;background:#fff;border-radius:13px;padding:8px 9px;box-shadow:0 5px 18px rgba(42,62,49,.06);transition:.18s}.ke-composer:focus-within{border-color:#91ceb2;box-shadow:0 0 0 3px rgba(37,161,111,.08)}.ke-composer.disabled{background:#f7f8f7}.ke-composer textarea{width:100%;min-height:50px;box-sizing:border-box;border:0;outline:0;resize:none;background:transparent;color:#303733;font-size:11px;line-height:1.55}.ke-composer>div{display:flex;align-items:center;justify-content:space-between}.ke-composer>div span{display:flex;align-items:center;gap:4px;color:#9aa19c;font-size:8px}.ke-composer>div span svg{width:11px;height:11px}.ke-composer>div button{width:28px;height:28px;border:0;border-radius:9px;background:var(--ke-accent);color:#fff;display:grid;place-items:center;cursor:pointer}.ke-composer>div button:disabled{background:#d8ddda;cursor:not-allowed}.ke-ask-form>small{display:block;margin-top:6px;text-align:center;color:#a1a7a3;font-size:8px}.ke-ask-fab{position:absolute;right:0;top:50%;transform:translate(50%,-50%);height:40px;border:0;border-radius:20px;background:var(--ke-accent);color:#fff;padding:0 15px;display:flex;align-items:center;gap:7px;box-shadow:0 8px 24px rgba(37,161,111,.25);cursor:pointer;z-index:10}.ke-ask-fab span{font-size:11px}
 .ke-loading-page,.ke-empty-page{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#858e88}.ke-loading-page p{font-size:11px}.ke-empty-page h2{font-size:17px;color:#303632;margin:15px 0 6px}.ke-empty-page p{font-size:11px;margin:0 0 16px}.ke-empty-page.compact{height:100%}.ke-spinner{width:22px;height:22px;border:2px solid #dce9e2;border-top-color:var(--ke-accent);border-radius:50%;animation:ke-spin .75s linear infinite}
-.ke-modal-mask,.ke-drawer-mask{position:fixed;inset:0;background:rgba(26,31,28,.38);z-index:1200;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(2px)}.ke-modal{width:min(430px,calc(100vw - 32px));max-height:90vh;overflow:auto;background:#fff;border-radius:16px;padding:21px;box-shadow:0 24px 65px rgba(23,35,27,.2)}.ke-modal.small{width:min(360px,calc(100vw - 32px))}.ke-modal.wide{width:min(600px,calc(100vw - 32px))}.ke-modal header,.ke-preview-modal header,.ke-drawer header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.ke-modal header h3,.ke-preview-modal h3,.ke-drawer h2{margin:0;font-size:16px}.ke-modal header p,.ke-drawer header p{margin:4px 0 0;color:#929a95;font-size:10px;line-height:1.5}.ke-modal header>button,.ke-preview-modal header>button,.ke-drawer header>button{width:30px;height:30px;border:0;background:transparent;border-radius:8px;display:grid;place-items:center;color:#7d8580;cursor:pointer}.ke-modal header>button:hover,.ke-preview-modal header>button:hover,.ke-drawer header>button:hover{background:#f3f5f3}.ke-modal>label:not(.ke-search-box){display:flex;flex-direction:column;gap:6px;margin-top:16px;color:#59615c;font-size:11px}.ke-modal input,.ke-modal select,.ke-modal textarea{width:100%;box-sizing:border-box;border:1px solid #dfe4e0;border-radius:9px;background:#fff;padding:9px 10px;color:#303632;outline:0;font-size:11px}.ke-modal input:focus,.ke-modal select:focus,.ke-modal textarea:focus{border-color:#91ceb2;box-shadow:0 0 0 3px rgba(37,161,111,.07)}.ke-modal textarea{min-height:82px;resize:vertical}.ke-modal label>small{color:#9ba19d;font-size:9px;line-height:1.5}.ke-modal-shortcut{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.ke-modal-shortcut button{border:0;background:transparent;padding:0;color:var(--ke-accent-dark);font-size:inherit;cursor:pointer;text-decoration:underline}.ke-modal footer{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}.ke-perm-loading{margin-top:18px;padding:26px 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text-secondary);font-size:11px}.ke-perm-loading p{margin:0}.ke-perm-loading .ke-spinner{flex:none}.ke-perm-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:16px;padding:8px 12px;border:1px solid #e3e7e4;border-radius:10px;background:#f8faf8;color:#7d8580;font-size:10px}.ke-perm-toolbar strong{color:var(--ke-accent-dark);font-size:12px}.ke-perm-tree{margin-top:7px;border:1px solid #e3e7e4;border-radius:10px;max-height:340px;overflow:auto;padding:6px 10px;background:#fff}.ke-perm-branch+.ke-perm-branch{margin-top:4px}.ke-perm-row{display:grid;grid-template-columns:24px 18px 1fr auto;gap:7px;align-items:center;padding:7px 4px;border-radius:8px}.ke-perm-row:hover{background:#f7faf8}.ke-perm-row.level-dept>.ke-perm-name{font-weight:650;font-size:12px;color:#3d4640}.ke-perm-row.level-division>.ke-perm-name{font-weight:600;font-size:11px;color:#4a544d;padding-left:2px}.ke-perm-row.level-team>.ke-perm-name{font-weight:500;font-size:11px;color:#59615c;padding-left:2px}.ke-perm-name{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-perm-count{color:#9aa19c;font-size:9px}.ke-perm-caret{width:22px;height:22px;padding:0;border:0;background:transparent;border-radius:6px;display:grid;place-items:center;color:#9aa19c;cursor:pointer}.ke-perm-caret:hover{background:#eef3ef;color:#59615c}.ke-perm-caret svg{width:13px;height:13px;transition:transform .15s ease}.ke-perm-caret svg.rotated{transform:rotate(-90deg)}.ke-perm-children{margin-left:24px;border-left:1px dashed #dfe4e0;padding-left:8px}.ke-perm-user{display:grid;grid-template-columns:18px 1fr auto;gap:8px;align-items:center;padding:5px 4px;border-radius:8px;cursor:pointer;color:#3d4640;font-size:11px}.ke-perm-user:hover{background:#f7faf8}.ke-perm-user span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-perm-user small{color:#9aa19c;font-size:9px}.ke-perm-empty{margin:0;padding:22px 10px;color:#9aa19c;text-align:center;font-size:10px}.ke-perm-tree input[type=checkbox]{width:15px;height:15px;flex:none;box-sizing:border-box;margin:0;padding:0;border:0;background:transparent;accent-color:var(--ke-accent);cursor:pointer}.ke-modal.confirm{text-align:center;width:min(360px,calc(100vw - 32px));overflow:visible}.ke-confirm-icon{width:45px;height:45px;margin:0 auto 12px;border-radius:14px;background:#fff1ef;color:#d34c4c;display:grid;place-items:center}.ke-confirm-icon svg{width:22px;height:22px}.ke-modal.confirm h3{font-size:16px;margin:0}.ke-modal.confirm>p{font-size:10px;color:#838b86;line-height:1.65;margin:8px 10px}.ke-modal.confirm footer{justify-content:center}.preview-mask{padding:24px}.ke-preview-modal{width:min(1080px,94vw);height:min(820px,90vh);background:#fff;border-radius:15px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 70px rgba(18,29,22,.24)}.ke-preview-modal header{height:55px;flex:none;align-items:center;padding:0 16px;border-bottom:1px solid var(--ke-line)}.ke-preview-modal header>div{display:flex;align-items:center;gap:8px;min-width:0}.ke-preview-modal h3{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-preview-modal iframe,.ke-preview-modal img,.ke-preview-modal pre{flex:1;min-height:0;width:100%;border:0;object-fit:contain;background:#f5f7f5;overflow:auto;box-sizing:border-box;padding:16px}.ke-drawer-mask{justify-content:flex-end;align-items:stretch}.ke-drawer{width:min(400px,90vw);background:#fff;padding:20px;overflow:auto;box-shadow:-18px 0 50px rgba(28,38,31,.13)}.ke-drawer .refresh{margin:15px 0;width:100%}.ke-operation{padding:12px 0;border-top:1px solid #edf0ed}.ke-operation>div:first-child{display:grid;grid-template-columns:30px 1fr auto;gap:8px;align-items:center;margin-bottom:9px}.ke-operation-icon{width:28px;height:28px;background:#f2f6f3;color:#6f7c74;border-radius:8px;display:grid;place-items:center}.ke-operation>div:first-child>div{display:flex;flex-direction:column;gap:2px}.ke-operation strong{font-size:10px}.ke-operation small{color:#949c97;font-size:8px}.ke-operation p{color:#c94a4a;font-size:9px}.ke-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:#26342c;color:#fff;border-radius:10px;padding:10px 14px;z-index:1600;display:flex;align-items:center;gap:7px;font-size:11px;box-shadow:0 9px 28px rgba(22,36,27,.24)}.ke-toast.error{background:#b83f43}.ke-toast svg{width:14px;height:14px}.ke-toast-enter-active,.ke-toast-leave-active{transition:.2s}.ke-toast-enter-from,.ke-toast-leave-to{opacity:0;transform:translate(-50%,8px)}
+.ke-modal-mask,.ke-drawer-mask{position:fixed;inset:0;background:rgba(26,31,28,.38);z-index:1200;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(2px)}.ke-modal{width:min(430px,calc(100vw - 32px));max-height:90vh;overflow:auto;background:#fff;border-radius:16px;padding:21px;box-shadow:0 24px 65px rgba(23,35,27,.2)}.ke-modal.small{width:min(360px,calc(100vw - 32px))}.ke-modal.wide{width:min(600px,calc(100vw - 32px))}.ke-modal header,.ke-preview-modal header,.ke-drawer header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.ke-modal header h3,.ke-preview-modal h3,.ke-drawer h2{margin:0;font-size:16px}.ke-modal header p,.ke-drawer header p{margin:4px 0 0;color:#929a95;font-size:10px;line-height:1.5}.ke-modal header>button,.ke-preview-modal header>button,.ke-drawer header>button{width:30px;height:30px;border:0;background:transparent;border-radius:8px;display:grid;place-items:center;color:#7d8580;cursor:pointer}.ke-modal header>button:hover,.ke-preview-modal header>button:hover,.ke-drawer header>button:hover{background:#f3f5f3}.ke-modal>label:not(.ke-search-box){display:flex;flex-direction:column;gap:6px;margin-top:16px;color:#59615c;font-size:11px}.ke-modal input,.ke-modal select,.ke-modal textarea{width:100%;box-sizing:border-box;border:1px solid #dfe4e0;border-radius:9px;background:#fff;padding:9px 10px;color:#303632;outline:0;font-size:11px}.ke-modal input:focus,.ke-modal select:focus,.ke-modal textarea:focus{border-color:#91ceb2;box-shadow:0 0 0 3px rgba(37,161,111,.07)}.ke-modal textarea{min-height:82px;resize:vertical}.ke-modal label>small{color:#9ba19d;font-size:9px;line-height:1.5}.ke-modal-shortcut{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.ke-modal-shortcut button{border:0;background:transparent;padding:0;color:var(--ke-accent-dark);font-size:inherit;cursor:pointer;text-decoration:underline}.ke-modal footer{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}.ke-perm-loading{margin-top:18px;padding:26px 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text-secondary);font-size:11px}.ke-perm-loading p{margin:0}.ke-perm-loading .ke-spinner{flex:none}.ke-perm-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:16px;padding:8px 12px;border:1px solid #e3e7e4;border-radius:10px;background:#f8faf8;color:#7d8580;font-size:10px}.ke-perm-toolbar strong{color:var(--ke-accent-dark);font-size:12px}.ke-perm-tree{margin-top:7px;border:1px solid #e3e7e4;border-radius:10px;max-height:340px;overflow:auto;padding:6px 10px;background:#fff}.ke-perm-user{display:grid;grid-template-columns:18px 1fr auto;gap:8px;align-items:center;padding:5px 4px;border-radius:8px;cursor:pointer;color:#3d4640;font-size:11px}.ke-perm-user:hover{background:#f7faf8}.ke-perm-user span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-perm-user small{color:#9aa19c;font-size:9px}.ke-perm-empty{margin:0;padding:22px 10px;color:#9aa19c;text-align:center;font-size:10px}.ke-perm-tree input[type=checkbox]{width:15px;height:15px;flex:none;box-sizing:border-box;margin:0;padding:0;border:0;background:transparent;accent-color:var(--ke-accent);cursor:pointer}.ke-modal.confirm{text-align:center;width:min(360px,calc(100vw - 32px));overflow:visible}.ke-confirm-icon{width:45px;height:45px;margin:0 auto 12px;border-radius:14px;background:#fff1ef;color:#d34c4c;display:grid;place-items:center}.ke-confirm-icon svg{width:22px;height:22px}.ke-modal.confirm h3{font-size:16px;margin:0}.ke-modal.confirm>p{font-size:10px;color:#838b86;line-height:1.65;margin:8px 10px}.ke-modal.confirm footer{justify-content:center}.preview-mask{padding:24px}.ke-preview-modal{width:min(1080px,94vw);height:min(820px,90vh);background:#fff;border-radius:15px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 70px rgba(18,29,22,.24)}.ke-preview-modal header{height:55px;flex:none;align-items:center;padding:0 16px;border-bottom:1px solid var(--ke-line)}.ke-preview-modal header>div{display:flex;align-items:center;gap:8px;min-width:0}.ke-preview-modal h3{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-preview-modal iframe,.ke-preview-modal img,.ke-preview-modal pre{flex:1;min-height:0;width:100%;border:0;object-fit:contain;background:#f5f7f5;overflow:auto;box-sizing:border-box;padding:16px}.ke-drawer-mask{justify-content:flex-end;align-items:stretch}.ke-drawer{width:min(400px,90vw);background:#fff;padding:20px;overflow:auto;box-shadow:-18px 0 50px rgba(28,38,31,.13)}.ke-drawer .refresh{margin:15px 0;width:100%}.ke-operation{padding:12px 0;border-top:1px solid #edf0ed}.ke-operation>div:first-child{display:grid;grid-template-columns:30px 1fr auto;gap:8px;align-items:center;margin-bottom:9px}.ke-operation-icon{width:28px;height:28px;background:#f2f6f3;color:#6f7c74;border-radius:8px;display:grid;place-items:center}.ke-operation>div:first-child>div{display:flex;flex-direction:column;gap:2px}.ke-operation strong{font-size:10px}.ke-operation small{color:#949c97;font-size:8px}.ke-operation p{color:#c94a4a;font-size:9px}.ke-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:#26342c;color:#fff;border-radius:10px;padding:10px 14px;z-index:1600;display:flex;align-items:center;gap:7px;font-size:11px;box-shadow:0 9px 28px rgba(22,36,27,.24)}.ke-toast.error{background:#b83f43}.ke-toast svg{width:14px;height:14px}.ke-toast-enter-active,.ke-toast-leave-active{transition:.2s}.ke-toast-enter-from,.ke-toast-leave-to{opacity:0;transform:translate(-50%,8px)}
 .ke-workspace{grid-template-columns:var(--ke-library-width,252px) 6px minmax(490px,1fr) 6px var(--ke-ask-width,344px)}.ke-workspace.ask-closed{grid-template-columns:var(--ke-library-width,252px) 6px minmax(540px,1fr)}
 .sidebar-search{margin-bottom:12px}.ke-space-list{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:4px}.ke-space-group{border-radius:11px;overflow:hidden}.ke-space-group.active{background:#f8faf8}.ke-space-trigger{width:100%;min-height:48px;border:0;background:transparent;border-radius:10px;padding:7px 8px;display:grid;grid-template-columns:19px minmax(0,1fr) auto 14px;gap:8px;align-items:center;text-align:left;color:#5f6862;cursor:pointer}.ke-space-trigger:hover{background:#f4f7f5}.ke-space-group.active>.ke-space-trigger{color:var(--ke-accent-dark);background:#eef7f3}.ke-space-trigger>span{display:flex;min-width:0;flex-direction:column;gap:2px}.ke-space-trigger strong{font-size:11px}.ke-space-trigger small{font-size:8px;color:#999f9b;font-weight:400}.ke-space-trigger b{font-size:9px;font-weight:500;color:#979f99}.ke-space-trigger>svg:last-child{width:12px;height:12px;transition:transform .18s}.ke-space-trigger>svg.rotated{transform:rotate(180deg)}.ke-space-bases{margin:5px 0 8px 17px;padding-left:9px;border-left:2px solid #d9e9e0;display:flex;flex-direction:column;gap:2px}.ke-space-bases .ke-base-card{border-radius:9px;padding:6px 7px;gap:8px}.ke-space-bases .ke-base-card.active{background:#fff;box-shadow:0 2px 8px rgba(31,68,47,.05)}.ke-space-bases .ke-base-cover{width:26px;height:30px;flex:none}.ke-space-bases .ke-base-copy{gap:1px}.ke-space-bases .ke-base-copy strong{font-size:11px;line-height:1.3}.ke-space-bases .ke-base-copy small{font-size:9px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ke-space-empty{padding:10px 6px;color:#9ba29d;font-size:9px;display:flex;align-items:center;justify-content:space-between;gap:6px}.ke-space-empty>small{display:block;max-width:105px;text-align:right;color:#9ba29d;line-height:1.35}.ke-space-empty button{border:0;background:transparent;color:var(--ke-accent-dark);display:flex;align-items:center;gap:3px;cursor:pointer}
 .ke-folder-breadcrumbs{min-height:30px;display:flex;align-items:center;gap:3px;padding-bottom:11px;overflow-x:auto}.ke-folder-breadcrumbs>svg,.ke-folder-crumb>svg{width:12px;height:12px;color:#b3b8b5}.ke-folder-breadcrumbs>button,.ke-folder-crumb>button{height:28px;border:0;background:transparent;border-radius:7px;padding:0 7px;color:#8b928e;font-size:10px;white-space:nowrap;cursor:pointer}.ke-folder-breadcrumbs>button:hover,.ke-folder-breadcrumbs>button.current,.ke-folder-crumb>button:hover,.ke-folder-crumb>button.current{background:#f1f6f3;color:#27312b;font-weight:600}.ke-folder-crumb{display:inline-flex;align-items:center;gap:3px}.ke-folder-breadcrumbs .ke-folder-back{width:28px;padding:0;display:grid;place-items:center}.ke-folder-actions{display:flex;align-items:center;gap:3px;margin-left:auto}.ke-folder-actions button{height:34px;border:0;background:#f5f7f5;border-radius:9px;padding:0 12px;display:flex;align-items:center;gap:5px;color:#6e7771;font-size:12px;white-space:nowrap;cursor:pointer}.ke-folder-actions button:hover{background:#eef3ef}.ke-folder-actions button:first-child{color:var(--ke-accent-dark);background:#edf7f2}.ke-folder-actions svg{width:13px;height:13px}

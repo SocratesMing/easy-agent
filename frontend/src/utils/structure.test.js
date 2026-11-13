@@ -38,6 +38,7 @@ const MAX_NEW_FILE_LINES = 800
  *  2026-11-11 打开会话时探一次流状态（shouldAttachOnOpen / probeLiveStream，
  *  §14.4-D）后按实测值更新：App.vue 3349 → 3370；
  *  2026-11-11 存量校正（SessionList 在合并后即为 1040 行、预算未同步）：1038 → 1040。
+ *  2026-11-13 知识库工作台精简后按实测值下调：KnowledgeWorkbench 1922 → 1779。
  */
 const LINE_BUDGET = {
   'App.vue': 3370,
@@ -52,7 +53,7 @@ const LINE_BUDGET = {
   'features/chat/components/SessionList.vue': 1040,
   'features/workspace/components/WorkspacePanel.vue': 978,
   'features/tasks/components/ScheduledTasksPanel.vue': 842,
-  'features/knowledge/KnowledgeWorkbench.vue': 1922,
+  'features/knowledge/KnowledgeWorkbench.vue': 1779,
 }
 
 /** 组件里已经存在的 api 直连（存量，只允许删） */

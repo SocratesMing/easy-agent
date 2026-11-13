@@ -152,7 +152,7 @@ _SOURCE_COLUMNS = {
     "report_second_source": "reportSecondSource",
 }
 # 查询的列清单（写死，不用 SELECT *，避免表结构变化时把无关的大字段也查出来）
-_SOURCE_SELECT = "id, publishDate, batchid, reportTitle, reportTag, reportSecondSource"
+_SOURCE_SELECT = ", ".join(_SOURCE_COLUMNS.values())
 
 
 def resolve_table_name(sync_config: SourceSyncConfig) -> str:
@@ -651,11 +651,36 @@ class SourceSyncEngine:
 
         await self._repo(self.repository.update_sync_item, item_id, **fields)
 
+    async def _find_document(
+        self,
+        record_id: str,
+        base_id: str | None,
+        *,
+        include_deleted: bool = True,
+    ) -> dict[str, Any] | None:
+        """按“来源 + 源记录 ID”查本地文档（可限定知识库）。
+
+        include_deleted 默认 True：同步判定要连软删除行一起看，
+        避免“删了又建”的死循环。
+        """
+        return await self._repo(
+            self.repository.find_document_by_source_record,
+            self.source,
+            record_id,
+            base_id=base_id,
+            include_deleted=include_deleted,
+        )
+
     @staticmethod
     def _merge_stats(stats: dict[str, int], batch: dict[str, int]) -> None:
         """把一轮批次统计累加进本次同步的总统计。"""
         for key, value in batch.items():
             stats[key] += value
+
+    @staticmethod
+    def _next_attempt(item: dict[str, Any]) -> int:
+        """本次尝试序号：台账里已记录的失败次数 + 1。"""
+        return int(item.get("attempts") or 0) + 1
 
     async def _fail_item(
         self,
@@ -669,11 +694,12 @@ class SourceSyncEngine:
     ) -> None:
         """把台账置为 failed，统一记录原因/次数，避免各处重复拼字段。
 
+        attempts 为本次尝试序号（``_next_attempt`` 的结果）。
         suppress_log=True 时不打单条 warning，由调用方在批量场景下统一汇总。
         """
         fields: dict[str, object] = {
             "status": "failed",
-            "attempts": attempts + 1,
+            "attempts": attempts,
             "last_error": str(reason)[:1000],
         }
         if document_id is not None:
@@ -873,46 +899,46 @@ class SourceSyncEngine:
             )
         return staged, errors, stage_stats
 
-    async def _delete_staged_file(self, path: Path) -> str:
-        """删除暂存文件；返回 deleted / missing / failed，删除失败不阻断同步。"""
+    async def _cleanup_staged(
+        self,
+        path: Path | None = None,
+        *,
+        document: dict[str, Any] | None = None,
+        stats: dict[str, int] | None = None,
+    ) -> None:
+        """删除暂存副本（按路径或文档上传名定位），删除失败不阻断同步。
+
+        READY / DELETED 时调用方手里只有 ``knowledge_documents.name``
+        （上传名），暂存文件与它同名，因此传 ``document`` 即可反推路径，
+        不需要给台账加 ``staged_path`` 字段。``stats`` 非空时按删除结果
+        累加 staged_deleted / staged_cleanup_failed。
+        """
+        if document is not None:
+            if self._staging_dir is None:
+                return
+            name = str(document.get("name") or "")
+            if not name:
+                return
+            path = self._staging_dir / Path(name).name
+        if path is None:
+            return
         try:
             deleted = await run_in_threadpool(remove_file_if_exists, path)
         except Exception as exc:  # noqa: BLE001
             logger.warning("暂存文件删除失败 | path=%s err=%s", path, exc)
-            return "failed"
-        if deleted:
-            logger.info("暂存文件已删除 | path=%s", path)
-            return "deleted"
-        return "missing"
-
-    async def _delete_staged_and_count(
-        self, path: Path, stats: dict[str, int]
-    ) -> None:
-        """删除暂存文件并按结果累加统计（删除失败不阻断同步）。"""
-        result = await self._delete_staged_file(path)
+            result = "failed"
+        else:
+            if deleted:
+                logger.info("暂存文件已删除 | path=%s", path)
+                result = "deleted"
+            else:
+                result = "missing"
+        if stats is None:
+            return
         if result == "deleted":
             stats["staged_deleted"] += 1
         elif result == "failed":
             stats["staged_cleanup_failed"] += 1
-
-    async def _cleanup_staged_for_document(
-        self, document: dict[str, Any], stats: dict[str, int] | None = None
-    ) -> None:
-        """按文档上传名反推暂存路径并删除（READY / DELETED 时调用）。
-
-        数据库里只存上传名 ``knowledge_documents.name``，暂存文件与它同名，
-        因此不需要给台账加 ``staged_path`` 字段，也不用做数据库迁移。
-        """
-        if self._staging_dir is None:
-            return
-        name = str(document.get("name") or "")
-        if not name:
-            return
-        path = self._staging_dir / Path(name).name
-        if stats is None:
-            await self._delete_staged_file(path)
-        else:
-            await self._delete_staged_and_count(path, stats)
 
     # ---------------- 单条入库 ----------------
 
@@ -935,6 +961,92 @@ class SourceSyncEngine:
         - 成功提交上传：返回“刷新后的台账行”（dict），调用方据此判断是否进入在途列表；
         - 跳过或失败：返回 None（失败原因已经写进台账的 last_error 字段）。
         """
+        # ---- 第 1~6 步：校验主键、本地去重、台账行、待上传文件 ----
+        resolved = await self._resolve_upload_source(
+            base_id=base_id,
+            row=row,
+            staged_file=staged_file,
+            stage_error=stage_error,
+        )
+        if resolved is None:
+            return None
+        record_id = row.record_id
+        item_id, attempts, source_file, publish_date = resolved
+
+        # ---- 第 7~8 步：日期目录、上传名、Content-Type、业务元数据 ----
+        folder_id, upload_name, content_type, metadata = await self._build_upload_spec(
+            base_id, row, source_file, publish_date
+        )
+        # ---- 第 9 步：台账先标记“上传中”，然后真正上传文件 ----
+        await self._update_item(item_id, status="uploading")
+        try:
+            # with open(...) as f：文件用完会自动关闭（即使中途报错也会关）
+            with source_file.open("rb") as content:
+                accepted = await self.service.upload_document(
+                    base_id=base_id,
+                    folder_id=folder_id,
+                    filename=upload_name,
+                    content_type=content_type,
+                    size_bytes=source_file.stat().st_size,  # 文件大小（字节）
+                    content=content,  # 文件内容（二进制流）
+                    principal=self.principal,
+                    # request_id 会写进审计日志，方便按“源记录”追溯这次操作
+                    request_id=f"source-sync:{record_id}",
+                    metadata=metadata,
+                )
+        except Exception as exc:  # noqa: BLE001 — 单条失败不阻断整批
+            # 上传异常不代表“什么都没发生”：可能本地记录/原文已经建好，
+            # 只是调用远端失败。这里再查一次，把已有文档 ID 记到台账上，
+            # 后续重试就能直接复用本地原文，避免重复建记录。
+            document = await self._find_document(record_id, base_id)
+            await self._update_item(
+                item_id,
+                document_id=str(document["id"]) if document else None,
+                status="failed",
+                attempts=attempts,
+                # 截断到 1000 字符，防止异常信息过长把数据库字段撑爆
+                last_error=str(exc)[:1000],
+            )
+            logger.error(
+                "文档同步失败 | id=%s file=%s err=%s", record_id, source_file, exc
+            )
+            return None
+
+        # ---- 第 10 步：上传成功，台账改为 parsing（等待知识库解析完成）----
+        document = accepted.document
+        await self._update_item(
+            item_id,
+            document_id=str(document.id),
+            status="parsing",
+            publish_date=publish_date,
+            last_error=None,  # 清掉历史错误信息
+        )
+        logger.info(
+            "文档同步已提交解析 | id=%s name=%s date=%s doc=%s",
+            record_id,
+            upload_name,
+            publish_date,
+            document.id,
+        )
+        # 重新读一次台账行再返回：期间状态可能已经被别处更新（比如解析秒完成），
+        # 返回最新数据，调用方才能正确判断它是否还需要继续跟踪。
+        return await self._repo(
+            self.repository.get_sync_item, self.source, record_id
+        )
+
+    async def _resolve_upload_source(
+        self,
+        *,
+        base_id: str,
+        row: SourceRow,
+        staged_file: Path | None,
+        stage_error: str | None,
+    ) -> tuple[str, int, Path, str] | None:
+        """校验主键与本地去重、创建台账行，并定位待上传文件。
+
+        返回 ``(台账行 ID, 本次尝试序号, 待上传文件, 发布日期)``；
+        跳过或已记失败时返回 None（失败原因已经写进台账的 last_error）。
+        """
         # ---- 第 1 步：校验主键 ----
         if not row.record_id:
             # 没有主键就无法去重（不知道是不是同一条），只能跳过
@@ -943,24 +1055,16 @@ class SourceSyncEngine:
         record_id = row.record_id
         publish_date = row.publish_date
         batch_id = row.batch_id
-        title = row.title
-        report_tag = row.report_tag
-        second_source = row.second_source
 
         # ---- 第 2 步：本地是否已有这条源记录对应的文档？----
         # 兜底：同一源记录已存在本地文档时不再新建，避免触发唯一约束冲突
-        existing = await self._repo(
-            self.repository.find_document_by_source_record,
-            self.source,
-            record_id,
-            base_id=base_id,
-            include_deleted=True,  # 连已删除的也算上，避免“删了又建”的死循环
-        )
+        # include_deleted=True：连已删除的也算上，避免“删了又建”的死循环
+        existing = await self._find_document(record_id, base_id)
         if existing is not None:
             # 并发/重跑兜底：批量暂存时可能已经拷贝过，但这次不需要再上传，
             # 顺手删掉暂存副本，避免留下孤儿文件。
             if staged_file is not None:
-                await self._delete_staged_file(staged_file)
+                await self._cleanup_staged(staged_file)
             logger.info(
                 "文档同步跳过：本地已有记录 | id=%s doc=%s status=%s",
                 record_id,
@@ -979,7 +1083,7 @@ class SourceSyncEngine:
             publish_date=publish_date,
         )
         item_id = str(item["id"])  # 台账行 ID，之后所有状态更新都靠它
-        attempts = int(item.get("attempts") or 0)  # 之前已经失败过几次
+        attempts = self._next_attempt(item)  # 本次是第几次尝试
 
         # ---- 第 4 步：发布日期必须能解析出 YYYY-MM-DD ----
         if not publish_date:
@@ -1036,86 +1140,31 @@ class SourceSyncEngine:
                     record_id,
                     source_file,
                 )
+        return item_id, attempts, source_file, publish_date
 
+    async def _build_upload_spec(
+        self, base_id: str, row: SourceRow, source_file: Path, publish_date: str
+    ) -> tuple[str | None, str, str, DocumentMetadata]:
+        """确保日期目录存在，并组装上传文件名 / Content-Type / 业务元数据。"""
+        record_id = row.record_id
         # ---- 第 7 步：确保日期目录存在，拿到“日”目录 ID ----
         folder_id = await self.ensure_date_folder(base_id, publish_date)
         # ---- 第 8 步：拼上传文件名、猜 Content-Type、组装业务元数据 ----
         # 复用暂存命名函数，保证上传名与暂存文件名完全一致（READY 后靠它反推路径）。
-        upload_name = build_staged_name(title, record_id, source_file)
+        upload_name = build_staged_name(row.title, record_id, source_file)
         content_type = (
             mimetypes.guess_type(upload_name)[0] or "application/octet-stream"
         )
         metadata = DocumentMetadata(
             source=self.source,
             source_record_id=record_id,
-            batch_id=batch_id,
-            report_title=sanitize_title(title),
-            report_tag=report_tag,
-            report_second_source=second_source,
+            batch_id=row.batch_id,
+            report_title=sanitize_title(row.title),
+            report_tag=row.report_tag,
+            report_second_source=row.second_source,
             publish_date=publish_date,
         )
-        # ---- 第 9 步：台账先标记“上传中”，然后真正上传文件 ----
-        await self._update_item(item_id, status="uploading")
-        try:
-            # with open(...) as f：文件用完会自动关闭（即使中途报错也会关）
-            with source_file.open("rb") as content:
-                accepted = await self.service.upload_document(
-                    base_id=base_id,
-                    folder_id=folder_id,
-                    filename=upload_name,
-                    content_type=content_type,
-                    size_bytes=source_file.stat().st_size,  # 文件大小（字节）
-                    content=content,  # 文件内容（二进制流）
-                    principal=self.principal,
-                    # request_id 会写进审计日志，方便按“源记录”追溯这次操作
-                    request_id=f"source-sync:{record_id}",
-                    metadata=metadata,
-                )
-        except Exception as exc:  # noqa: BLE001 — 单条失败不阻断整批
-            # 上传异常不代表“什么都没发生”：可能本地记录/原文已经建好，
-            # 只是调用远端失败。这里再查一次，把已有文档 ID 记到台账上，
-            # 后续重试就能直接复用本地原文，避免重复建记录。
-            document = await self._repo(
-                self.repository.find_document_by_source_record,
-                self.source,
-                record_id,
-                base_id=base_id,
-                include_deleted=True,
-            )
-            await self._update_item(
-                item_id,
-                document_id=str(document["id"]) if document else None,
-                status="failed",
-                attempts=attempts + 1,
-                # 截断到 1000 字符，防止异常信息过长把数据库字段撑爆
-                last_error=str(exc)[:1000],
-            )
-            logger.error(
-                "文档同步失败 | id=%s file=%s err=%s", record_id, source_file, exc
-            )
-            return None
-
-        # ---- 第 10 步：上传成功，台账改为 parsing（等待知识库解析完成）----
-        document = accepted.document
-        await self._update_item(
-            item_id,
-            document_id=str(document.id),
-            status="parsing",
-            publish_date=publish_date,
-            last_error=None,  # 清掉历史错误信息
-        )
-        logger.info(
-            "文档同步已提交解析 | id=%s name=%s date=%s doc=%s",
-            record_id,
-            upload_name,
-            publish_date,
-            document.id,
-        )
-        # 重新读一次台账行再返回：期间状态可能已经被别处更新（比如解析秒完成），
-        # 返回最新数据，调用方才能正确判断它是否还需要继续跟踪。
-        return await self._repo(
-            self.repository.get_sync_item, self.source, record_id
-        )
+        return folder_id, upload_name, content_type, metadata
 
     # ---------------- 在途回收 ----------------
 
@@ -1156,109 +1205,110 @@ class SourceSyncEngine:
         }
         remaining: list[dict[str, Any]] = []  # 本轮结束后仍需继续跟踪的台账行
         for item in items:
-            item_id = str(item["id"])
-            record_id = str(item["source_record_id"])
-            document_id = str(item.get("document_id") or "")
-            # 优先按台账里记录的文档 ID 查；没有就按“来源 + 源记录 ID”反查
-            document = (
-                await self._repo(self.repository.get_document, document_id)
-                if document_id
-                else await self._repo(
-                    self.repository.find_document_by_source_record,
-                    self.source,
-                    record_id,
-                    base_id=base_id,
-                    include_deleted=True,
-                )
+            if await self._refresh_one_item(item, base_id=base_id, stats=stats):
+                remaining.append(item)
+        return remaining, stats
+
+    async def _refresh_one_item(
+        self, item: dict[str, Any], *, base_id: str | None, stats: dict[str, int]
+    ) -> bool:
+        """回收单条在途台账行；返回 True 表示留在 remaining 继续跟踪。"""
+        item_id = str(item["id"])
+        record_id = str(item["source_record_id"])
+        document_id = str(item.get("document_id") or "")
+        # 优先按台账里记录的文档 ID 查；没有就按“来源 + 源记录 ID”反查
+        document = (
+            await self._repo(self.repository.get_document, document_id)
+            if document_id
+            else await self._find_document(record_id, base_id)
+        )
+        if document is not None and base_id and str(document.get("base_id")) != base_id:
+            # 台账指向旧库（已删除）的历史文档：按“未入库”处理，重新入当前库
+            document = None
+        if document is None:
+            # 上传过程中进程中断且没有落库：重新排队
+            await self._update_item(item_id, status="failed")
+            stats["failed"] += 1
+            return False  # 本轮不再跟踪这一行，下一轮会重新上传
+        status = str(document.get("status") or "")
+        if status == DocumentStatus.DELETED.value:
+            # 文档在当前库内已被删除：尊重删除动作，不再重传；暂存副本已无用
+            await self._update_item(
+                item_id,
+                status="deleted",
+                last_error="文档已被删除，不再重传",
             )
-            if document is not None and base_id and str(document.get("base_id")) != base_id:
-                # 台账指向旧库（已删除）的历史文档：按“未入库”处理，重新入当前库
-                document = None
-            if document is None:
-                # 上传过程中进程中断且没有落库：重新排队
-                await self._update_item(item_id, status="failed")
-                stats["failed"] += 1
-                continue  # 本轮不再跟踪这一行，下一轮会重新上传
-            status = str(document.get("status") or "")
-            if status == DocumentStatus.DELETED.value:
-                # 文档在当前库内已被删除：尊重删除动作，不再重传；暂存副本已无用
-                await self._update_item(
-                    item_id,
-                    status="deleted",
-                    last_error="文档已被删除，不再重传",
-                )
-                await self._cleanup_staged_for_document(document, stats)
-                stats["failed"] += 1
-                continue
-            if status == DocumentStatus.READY.value:
-                # 解析完成：台账收尾为 ready，结束跟踪；删除暂存副本
-                await self._update_item(
-                    item_id,
-                    document_id=str(document["id"]),
-                    status="ready",
-                )
-                await self._cleanup_staged_for_document(document, stats)
-                stats["ready"] += 1
-                continue
-            if (
-                status == DocumentStatus.PENDING.value
-                and not str(document.get("remote_document_id") or "")
-            ):
-                # 上次上传在“已建本地记录、还没拿到远端 ID”之间中断：
-                # 标记失败等待重试（状态机不允许 PENDING 直接重试）
-                await self._update_item(
-                    item_id,
-                    status="failed",
-                    attempts=int(item.get("attempts") or 0) + 1,
-                    last_error="上次上传未完成",
-                )
-                stats["failed"] += 1
-                continue
-            if status in _RETRYABLE_DOCUMENT_STATUSES:
-                attempts = int(item.get("attempts") or 0) + 1  # 这次算第几次尝试
-                if attempts <= MAX_UPLOAD_ATTEMPTS:
-                    try:
-                        # 让知识库服务重新提交解析（复用本地原文，不重新上传文件）
-                        await self.service.retry_document(
-                            document_id=str(document["id"]),
-                            principal=self.principal,
-                            # 带上次数，审计日志里能区分是第几次重试
-                            request_id=f"source-sync-retry:{record_id}:{attempts}",
-                        )
-                        # 重试成功：台账改为 parsing，并加回 remaining 继续跟踪
-                        await self._update_item(
-                            item_id,
-                            status="parsing",
-                            attempts=attempts,
-                            last_error=str(document.get("error_message") or "")[:1000],
-                        )
-                        item["attempts"] = attempts
-                        item["status"] = "parsing"
-                        remaining.append(item)
-                        stats["retried"] += 1
-                    except Exception as exc:  # noqa: BLE001
-                        # 重试动作本身又失败了：记下错误，等下一轮
-                        await self._update_item(
-                            item_id,
-                            status="failed",
-                            attempts=attempts,
-                            last_error=str(exc)[:1000],
-                        )
-                        stats["failed"] += 1
-                else:
-                    # 超过最大重试次数：彻底放弃，保留最后一次的错误信息方便排查
+            await self._cleanup_staged(document=document, stats=stats)
+            stats["failed"] += 1
+            return False
+        if status == DocumentStatus.READY.value:
+            # 解析完成：台账收尾为 ready，结束跟踪；删除暂存副本
+            await self._update_item(
+                item_id,
+                document_id=str(document["id"]),
+                status="ready",
+            )
+            await self._cleanup_staged(document=document, stats=stats)
+            stats["ready"] += 1
+            return False
+        if (
+            status == DocumentStatus.PENDING.value
+            and not str(document.get("remote_document_id") or "")
+        ):
+            # 上次上传在“已建本地记录、还没拿到远端 ID”之间中断：
+            # 标记失败等待重试（状态机不允许 PENDING 直接重试）
+            await self._update_item(
+                item_id,
+                status="failed",
+                attempts=self._next_attempt(item),
+                last_error="上次上传未完成",
+            )
+            stats["failed"] += 1
+            return False
+        if status in _RETRYABLE_DOCUMENT_STATUSES:
+            attempts = self._next_attempt(item)  # 这次算第几次尝试
+            if attempts <= MAX_UPLOAD_ATTEMPTS:
+                try:
+                    # 让知识库服务重新提交解析（复用本地原文，不重新上传文件）
+                    await self.service.retry_document(
+                        document_id=str(document["id"]),
+                        principal=self.principal,
+                        # 带上次数，审计日志里能区分是第几次重试
+                        request_id=f"source-sync-retry:{record_id}:{attempts}",
+                    )
+                    # 重试成功：台账改为 parsing，并加回 remaining 继续跟踪
+                    await self._update_item(
+                        item_id,
+                        status="parsing",
+                        attempts=attempts,
+                        last_error=str(document.get("error_message") or "")[:1000],
+                    )
+                    item["attempts"] = attempts
+                    item["status"] = "parsing"
+                    stats["retried"] += 1
+                    return True
+                except Exception as exc:  # noqa: BLE001
+                    # 重试动作本身又失败了：记下错误，等下一轮
                     await self._update_item(
                         item_id,
                         status="failed",
                         attempts=attempts,
-                        last_error=str(document.get("error_message") or "超过重试次数")[:1000],
+                        last_error=str(exc)[:1000],
                     )
                     stats["failed"] += 1
-                continue
-            # 其余状态（解析中 / 暂停 / 已拿到远端 ID 的 PENDING）：
-            # 还没结束，原样留在 remaining，下一轮继续检查
-            remaining.append(item)
-        return remaining, stats
+            else:
+                # 超过最大重试次数：彻底放弃，保留最后一次的错误信息方便排查
+                await self._update_item(
+                    item_id,
+                    status="failed",
+                    attempts=attempts,
+                    last_error=str(document.get("error_message") or "超过重试次数")[:1000],
+                )
+                stats["failed"] += 1
+            return False
+        # 其余状态（解析中 / 暂停 / 已拿到远端 ID 的 PENDING）：
+        # 还没结束，原样留在 remaining，下一轮继续检查
+        return True
 
     async def _wait_for_inflight_slot(
         self,
@@ -1403,15 +1453,7 @@ class SourceSyncEngine:
                 )
                 # 先查本地是否已有这条源记录对应的文档（用于“跳过”或“重试”判断）
                 document = (
-                    await self._repo(
-                        self.repository.find_document_by_source_record,
-                        self.source,
-                        record_id,
-                        base_id=base_id,
-                        include_deleted=True,
-                    )
-                    if record_id
-                    else None
+                    await self._find_document(record_id, base_id) if record_id else None
                 )
                 if document is not None:
                     status = str(document.get("status") or "")
@@ -1451,7 +1493,7 @@ class SourceSyncEngine:
                             publish_date=publish_date,
                         )
                         retry_item_id = str(retry_item["id"])
-                        attempts = int(retry_item.get("attempts") or 0) + 1
+                        attempts = self._next_attempt(retry_item)
                         if attempts > MAX_UPLOAD_ATTEMPTS:
                             # 次数用完了：不再重试，记下失败原因
                             await self._update_item(
@@ -1563,7 +1605,7 @@ class SourceSyncEngine:
                     stats["ready"] += 1
                     staged_file = staged_files.get(record_id)
                     if staged_file is not None:
-                        await self._delete_staged_and_count(staged_file, stats)
+                        await self._cleanup_staged(staged_file, stats=stats)
             # 外层循环也要检查 limit（一次窗口可能有多条记录）
             if limit is not None and stats["scanned"] >= limit:
                 break

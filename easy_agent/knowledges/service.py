@@ -18,6 +18,7 @@ import io
 import logging
 import re
 from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -69,7 +70,6 @@ from easy_agent.knowledges.core.models import (
     PermissionDirectoryUser,
     PermissionEntry,
     PermissionListResponse,
-    REFRESHABLE_DOCUMENT_STATUSES,
     RetrieveResponse,
     SessionKnowledgeScopeResponse,
     TeamSpaceDepartmentSummary,
@@ -84,7 +84,7 @@ from easy_agent.knowledges.core.original_store import (
 from easy_agent.knowledges.core.permissions import (
     _base_access_restricted,
     allowed_actions,
-    effective_role,
+    resolve_role,
 )
 from easy_agent.knowledges.core.repository import KnowledgeRepository
 from easy_agent.knowledges.ragflow import RagflowClient, RagflowError, RagflowNotFoundError
@@ -202,6 +202,18 @@ def _not_found(message: str = "知识资源不存在") -> KnowledgeServiceError:
     """构造 404 业务错误：不区分「无权」与「不存在」，避免资源存在性泄露。"""
 
     return KnowledgeServiceError("KNOWLEDGE_NOT_FOUND", message, status_code=404)
+
+
+def _folder_missing_error(message: str = "文件夹不存在") -> KnowledgeServiceError:
+    return KnowledgeServiceError("KNOWLEDGE_FOLDER_NOT_FOUND", message, status_code=404)
+
+
+def _folder_depth_error() -> KnowledgeServiceError:
+    return KnowledgeServiceError(
+        "KNOWLEDGE_FOLDER_DEPTH_LIMIT",
+        "文件夹最多支持 5 层",
+        status_code=409,
+    )
 
 
 def _split_folder_segments(path: str) -> list[str]:
@@ -514,22 +526,18 @@ class KnowledgeService:
     ) -> KnowledgeBaseRole | None:
         """在单库授权之上叠加超级管理员全局权限。
 
-        超级管理员（admin / liufengbao）对所有公共库直通 MANAGER；owner 由
-        effective_role 直接判 MANAGER（owner 权限不落 knowledge_permissions）；
-        其余账号维持本部门默认只读、勾选名单与单库授权逻辑。
+        规则统一由 ``core.permissions.resolve_role`` 提供，与 Agent 原文工具
+        共用同一口径：超级管理员（admin / liufengbao）对所有公共库直通
+        MANAGER；owner 由 effective_role 直接判 MANAGER（owner 权限不落
+        knowledge_permissions）；其余账号维持本部门默认只读、勾选名单与
+        单库授权逻辑。
         """
-        permission_rows = list(permissions)
-        if str(base.get("space_type")) != KnowledgeBaseVisibility.TEAM.value:
-            return effective_role(base, principal, permission_rows)
-        if is_super_admin(principal.username):
-            return KnowledgeBaseRole.MANAGER
-        same_department = bool(principal.department_id) and (
-            principal.department_id == str(base.get("department_id") or "").strip()
+        return resolve_role(
+            base,
+            principal,
+            permissions,
+            super_admin=is_super_admin(principal.username),
         )
-        # 公共空间默认对本部门账号只读可见；勾选名单（access_restricted）
-        # 模式下默认可见让位于勾选人员。
-        team_viewer = same_department and not _base_access_restricted(base)
-        return effective_role(base, principal, permission_rows, team_viewer=team_viewer)
 
     # ---------------- 摘要构造 ----------------
 
@@ -947,6 +955,16 @@ class KnowledgeService:
         except RagflowError as exc:
             raise self._upstream_error(exc) from exc
 
+    async def _delete_remote_in_batches(
+        self, dataset_id: str, remote_ids: list[str]
+    ) -> None:
+        """按 REMOTE_DELETE_BATCH 分批删除远端副本（远端缺失视为已删）。"""
+
+        for start in range(0, len(remote_ids), REMOTE_DELETE_BATCH):
+            await self._delete_remote_documents(
+                dataset_id, remote_ids[start : start + REMOTE_DELETE_BATCH]
+            )
+
     async def _delete_base_remote_documents(self, base: Mapping[str, Any]) -> None:
         """同步删除知识库下全部远端文档（分批调用，远端缺失视为已删除）。
 
@@ -1027,6 +1045,20 @@ class KnowledgeService:
             "KNOWLEDGE_FOLDER_EXISTS", "同名文件夹已存在", status_code=409
         )
 
+    @staticmethod
+    @contextmanager
+    def _folder_conflict_as_409() -> Iterator[None]:
+        """把同级同名文件夹的唯一约束冲突统一翻译为 409。"""
+
+        try:
+            yield
+        except KnowledgeServiceError:
+            raise
+        except Exception as exc:
+            if KnowledgeService._is_folder_conflict(exc):
+                raise KnowledgeService._folder_conflict_error() from exc
+            raise
+
     async def create_folder(
         self,
         *,
@@ -1045,12 +1077,8 @@ class KnowledgeService:
                 base_id, parent_id, missing_message="上级文件夹不存在"
             )
             if await self._folder_chain_depth(base_id, parent_id) >= 5:
-                raise KnowledgeServiceError(
-                    "KNOWLEDGE_FOLDER_DEPTH_LIMIT",
-                    "文件夹最多支持 5 层",
-                    status_code=409,
-                )
-        try:
+                raise _folder_depth_error()
+        with self._folder_conflict_as_409():
             existing = await self._repo(
                 self.repository.find_folder_by_name, base_id, name, parent_id
             )
@@ -1062,12 +1090,6 @@ class KnowledgeService:
                 name=name,
                 parent_id=parent_id,
             )
-        except KnowledgeServiceError:
-            raise
-        except Exception as exc:
-            if self._is_folder_conflict(exc):
-                raise self._folder_conflict_error() from exc
-            raise
         return self._folder_summary(row, role)
 
     async def _folder_chain_depth(
@@ -1083,25 +1105,10 @@ class KnowledgeService:
             seen.add(current)
             folder = await self._repo(self.repository.get_folder, current)
             if folder is None or str(folder["base_id"]) != base_id:
-                raise KnowledgeServiceError(
-                    "KNOWLEDGE_FOLDER_NOT_FOUND", "文件夹不存在", status_code=404
-                )
+                raise _folder_missing_error()
             depth += 1
             current = str(folder.get("parent_id") or "") or None
         return depth
-
-    async def _ensure_folder_chain(
-        self, base_id: str, folder_id: str | None, relative_path: str
-    ) -> str | None:
-        """按上传相对路径逐级 find-or-create 文件夹，返回叶子文件夹 ID。
-
-        relative_path 形如「资料/报告/2026/q1.pdf」（浏览器 webkitRelativePath），
-        最后一段视为文件名，其余段自 folder_id（或库根）起逐级创建，保留上传
-        时的目录层级。
-        """
-        segments = _split_folder_segments(relative_path)
-        dirs = segments[:-1] if len(segments) > 1 else []
-        return await self._ensure_folder_dirs(base_id, folder_id, dirs)
 
     async def _ensure_folder_dirs(
         self, base_id: str, folder_id: str | None, dirs: list[str]
@@ -1125,11 +1132,7 @@ class KnowledgeService:
                 self.repository.find_folder_by_name, base_id, segment, current
             )
             if existing is None and depth >= 5:
-                raise KnowledgeServiceError(
-                    "KNOWLEDGE_FOLDER_DEPTH_LIMIT",
-                    "文件夹最多支持 5 层",
-                    status_code=409,
-                )
+                raise _folder_depth_error()
             if existing is None:
                 try:
                     row = await self._repo(
@@ -1194,7 +1197,7 @@ class KnowledgeService:
         _, role = await self._authorized_base(
             str(folder["base_id"]), principal, AllowedAction.EDIT_FOLDER
         )
-        try:
+        with self._folder_conflict_as_409():
             if str(folder["name"]) != name:
                 existing = await self._repo(
                     self.repository.find_folder_by_name,
@@ -1207,12 +1210,6 @@ class KnowledgeService:
             row = await self._repo(
                 self.repository.update_folder, folder_id, name=name
             )
-        except KnowledgeServiceError:
-            raise
-        except Exception as exc:
-            if self._is_folder_conflict(exc):
-                raise self._folder_conflict_error() from exc
-            raise
         assert row is not None
         return self._folder_summary(row, role)
 
@@ -1262,10 +1259,7 @@ class KnowledgeService:
         ]
         if remote_ids:
             dataset_id = await self._dataset_id_for(base)
-            for start in range(0, len(remote_ids), REMOTE_DELETE_BATCH):
-                await self._delete_remote_documents(
-                    dataset_id, remote_ids[start : start + REMOTE_DELETE_BATCH]
-                )
+            await self._delete_remote_in_batches(dataset_id, remote_ids)
         await self._repo(
             self.repository.delete_folder_tree,
             folder_ids=folder_ids,
@@ -1438,50 +1432,16 @@ class KnowledgeService:
     async def refresh_base_documents(self, base: Mapping[str, Any]) -> None:
         """用上游文档状态刷新本地投影；仅后台解析轮询 worker 调用。
 
-        共享数据集（remote_dataset_id 为空）逐篇查询本库 pending/processing
-        文档；存量自有数据集走全量列表，但也只应用仍在 pending/processing 的
-        本地文档。终态文档不再轮询，稳态零上游调用。
+        共享数据集（remote_dataset_id 为空）需先解析共享数据集 ID，存量自有
+        数据集直接用自己的 remote_dataset_id；随后逐篇查询本库
+        pending/processing 文档。终态文档不再轮询，稳态零上游调用，也不受
+        上游列表分页（page_size 上限 100）影响。
         """
 
         remote_dataset_id = str(base.get("remote_dataset_id") or "").strip()
-        if not remote_dataset_id:
-            await self._refresh_shared_base_documents(base)
+        if remote_dataset_id:
+            await self._refresh_documents_by_id(base, remote_dataset_id)
             return
-        try:
-            upstream = await self.ragflow.list_documents(
-                remote_dataset_id,
-                page=1,
-                page_size=self.config.limits.max_documents_per_query,
-            )
-        except RagflowError as exc:
-            # 轮询失败只跳过本轮，但必须留痕，否则状态不回传时无从排查
-            logger.warning(
-                "刷新上游文档状态失败 base=%s dataset=%s: %s",
-                base.get("id"), remote_dataset_id, exc,
-            )
-            return
-        docs = upstream.get("docs", []) if isinstance(upstream, dict) else []
-        remote_ids = [str(item.get("id")) for item in docs if item.get("id")]
-        local_docs = await self._repo(
-            self.repository.get_documents_by_remote_ids,
-            str(base["id"]),
-            remote_ids,
-        )
-        by_remote = {str(item["remote_document_id"]): item for item in local_docs}
-        for upstream_doc in docs:
-            if not isinstance(upstream_doc, dict):
-                continue
-            local = by_remote.get(str(upstream_doc.get("id")))
-            if (
-                local is None
-                or str(local.get("status")) not in REFRESHABLE_DOCUMENT_STATUSES
-            ):
-                continue
-            await self._apply_upstream_doc_status(local, upstream_doc)
-
-    async def _refresh_shared_base_documents(self, base: Mapping[str, Any]) -> None:
-        """共享数据集库的状态刷新：逐篇轮询本库 pending/processing 文档。"""
-
         try:
             dataset_id = await self._dataset_id_for(base)
         except RagflowError as exc:
@@ -1489,6 +1449,13 @@ class KnowledgeService:
                 "共享数据集解析失败 base=%s: %s", base.get("id"), exc
             )
             return
+        await self._refresh_documents_by_id(base, dataset_id)
+
+    async def _refresh_documents_by_id(
+        self, base: Mapping[str, Any], dataset_id: str
+    ) -> None:
+        """逐篇轮询本库 pending/processing 文档的上游状态。"""
+
         active_docs = await self._repo(
             self.repository.list_refreshable_documents,
             str(base["id"]),
@@ -1513,12 +1480,12 @@ class KnowledgeService:
                         await self._apply_upstream_doc_status(local, upstream_doc)
                 except RagflowError as exc:
                     logger.warning(
-                        "刷新共享库文档状态失败 base=%s doc=%s: %s",
+                        "刷新文档状态失败 base=%s doc=%s: %s",
                         base.get("id"), local.get("id"), exc,
                     )
                 except Exception as exc:  # noqa: BLE001 - 单篇失败不能拖累同批其它文档
                     logger.warning(
-                        "刷新共享库文档状态异常 base=%s doc=%s: %s",
+                        "刷新文档状态异常 base=%s doc=%s: %s",
                         base.get("id"), local.get("id"), exc,
                     )
 
@@ -1543,53 +1510,96 @@ class KnowledgeService:
         parse_started_changed = bool(
             parse_started_at and parse_started_at != local.get("parse_started_at")
         )
+        # 超时判定先于“无变化跳过”：进度停滞的文档也必须能被发现
+        if await self._fail_parse_timeout(local, status, parse_started_at):
+            return
         changed = (
             str(local.get("status")) != status.value
             or local.get("progress") != progress
             or parse_started_changed
         )
-        # 超时判定先于“无变化跳过”：进度停滞的文档也必须能被发现
+        # 状态、进度与解析计时均无变化：跳过后续 DB 写入（稳态轮询省往返）
+        if not changed:
+            return
+        await self._repo(
+            self.repository.update_document,
+            local["id"],
+            **self._document_status_values(
+                status, progress, parse_started_at, parse_started_changed, failure_message
+            ),
+        )
+        await self._repo(
+            self.repository.update_active_document_operations,
+            str(local["id"]),
+            **self._operation_status_values(status, progress, failure_message),
+        )
+        if (
+            status == DocumentStatus.READY
+            and str(local.get("status")) != DocumentStatus.READY.value
+        ):
+            # 仅在新文档首次解析完成时写入 chunk 关键词；历史已 READY 文档
+            # 不会再次触发，批量回填另见 backfill_base_meta 脚本。
+            await self._apply_chunk_keywords(local)
+
+    async def _fail_parse_timeout(
+        self,
+        local: Mapping[str, Any],
+        status: DocumentStatus,
+        parse_started_at: object,
+    ) -> bool:
+        """解析超时则写失败终态并返回 True（先于“无变化跳过”判定）。"""
+
         timeout_seconds = float(self.config.limits.parse_timeout_seconds or 0)
         is_sync_source = str(local.get("source") or "") == "source_sync"
-        if (
+        if not (
             status == DocumentStatus.PROCESSING
             and not is_sync_source
             and timeout_seconds > 0
             and parse_started_at
         ):
-            try:
-                started = datetime.fromisoformat(str(parse_started_at))
-                if started.tzinfo is None:
-                    started = started.replace(tzinfo=UTC)
-                elapsed = (datetime.now(UTC) - started).total_seconds()
-            except (TypeError, ValueError):
-                elapsed = 0.0
-            if elapsed > timeout_seconds:
-                timeout_message = (
-                    f"解析超过 {int(timeout_seconds)} 秒仍未完成，请拆分文件后重试"
-                )
-                await self._repo(
-                    self.repository.update_document,
-                    str(local["id"]),
-                    status=DocumentStatus.FAILED.value,
-                    progress=None,
-                    error_code=_PARSE_TIMEOUT_ERROR_CODE,
-                    error_message=timeout_message,
-                )
-                await self._repo(
-                    self.repository.update_active_document_operations,
-                    str(local["id"]),
-                    phase=OperationPhase.FAILED.value,
-                    status=OperationStatus.FAILED.value,
-                    progress=None,
-                    retryable=True,
-                    error_code=_PARSE_TIMEOUT_ERROR_CODE,
-                    error_message=timeout_message,
-                )
-                return
-        # 状态、进度与解析计时均无变化：跳过后续 DB 写入（稳态轮询省往返）
-        if not changed:
-            return
+            return False
+        try:
+            started = datetime.fromisoformat(str(parse_started_at))
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=UTC)
+            elapsed = (datetime.now(UTC) - started).total_seconds()
+        except (TypeError, ValueError):
+            elapsed = 0.0
+        if elapsed <= timeout_seconds:
+            return False
+        timeout_message = (
+            f"解析超过 {int(timeout_seconds)} 秒仍未完成，请拆分文件后重试"
+        )
+        await self._repo(
+            self.repository.update_document,
+            str(local["id"]),
+            status=DocumentStatus.FAILED.value,
+            progress=None,
+            error_code=_PARSE_TIMEOUT_ERROR_CODE,
+            error_message=timeout_message,
+        )
+        await self._repo(
+            self.repository.update_active_document_operations,
+            str(local["id"]),
+            phase=OperationPhase.FAILED.value,
+            status=OperationStatus.FAILED.value,
+            progress=None,
+            retryable=True,
+            error_code=_PARSE_TIMEOUT_ERROR_CODE,
+            error_message=timeout_message,
+        )
+        return True
+
+    @staticmethod
+    def _document_status_values(
+        status: DocumentStatus,
+        progress: object,
+        parse_started_at: object,
+        parse_started_changed: bool,
+        failure_message: str,
+    ) -> dict[str, object]:
+        """文档投影字段：状态/进度/计时 + 各终态的错误码与错误信息。"""
+
         values: dict[str, object] = {"status": status.value, "progress": progress}
         if parse_started_changed:
             values["parse_started_at"] = parse_started_at
@@ -1603,26 +1613,25 @@ class KnowledgeService:
             )
         elif status == DocumentStatus.READY:
             values.update(
-                {
-                    "progress": 1.0,
-                    "error_code": None,
-                    "error_message": None,
-                }
+                {"progress": 1.0, "error_code": None, "error_message": None}
             )
         elif status == DocumentStatus.CANCELLED:
             values.update(
-                {
-                    "progress": None,
-                    "error_code": None,
-                    "error_message": None,
-                }
+                {"progress": None, "error_code": None, "error_message": None}
             )
         elif status in {DocumentStatus.PENDING, DocumentStatus.PROCESSING}:
             values.update({"error_code": None, "error_message": None})
-        await self._repo(self.repository.update_document, local["id"], **values)
-        operation_values: dict[str, object] = {"progress": progress}
+        return values
+
+    @staticmethod
+    def _operation_status_values(
+        status: DocumentStatus, progress: object, failure_message: str
+    ) -> dict[str, object]:
+        """操作投影字段：与文档终态保持一致的操作阶段与重试标记。"""
+
+        values: dict[str, object] = {"progress": progress}
         if status == DocumentStatus.READY:
-            operation_values.update(
+            values.update(
                 {
                     "phase": OperationPhase.COMPLETED.value,
                     "status": OperationStatus.SUCCEEDED.value,
@@ -1634,7 +1643,7 @@ class KnowledgeService:
                 }
             )
         elif status == DocumentStatus.FAILED:
-            operation_values.update(
+            values.update(
                 {
                     "phase": OperationPhase.FAILED.value,
                     "status": OperationStatus.FAILED.value,
@@ -1645,7 +1654,7 @@ class KnowledgeService:
                 }
             )
         elif status == DocumentStatus.CANCELLED:
-            operation_values.update(
+            values.update(
                 {
                     "phase": OperationPhase.COMPLETED.value,
                     "status": OperationStatus.CANCELLED.value,
@@ -1655,18 +1664,7 @@ class KnowledgeService:
                     "error_message": None,
                 }
             )
-        await self._repo(
-            self.repository.update_active_document_operations,
-            str(local["id"]),
-            **operation_values,
-        )
-        if (
-            status == DocumentStatus.READY
-            and str(local.get("status")) != DocumentStatus.READY.value
-        ):
-            # 仅在新文档首次解析完成时写入 chunk 关键词；历史已 READY 文档
-            # 不会再次触发，批量回填另见 backfill_base_meta 脚本。
-            await self._apply_chunk_keywords(local)
+        return values
 
     async def _apply_chunk_keywords(self, document: Mapping[str, Any]) -> None:
         """把业务元数据写入该文档各 chunk 的 important_keywords。
@@ -1943,86 +1941,14 @@ class KnowledgeService:
         base, role = await self._authorized_base(
             base_id, principal, AllowedAction.UPLOAD
         )
-        if folder_id:
-            await self._require_folder(base_id, folder_id)
-        if relative_path:
-            folder_id = await self._ensure_folder_chain(
-                base_id, folder_id, relative_path
-            )
-        max_per_base = self.config.limits.max_documents_per_base
-        if (
-            max_per_base > 0
-            and await self._repo(self.repository.count_documents, base_id)
-            >= max_per_base
-        ):
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_DOCUMENT_LIMIT",
-                f"知识库文档数量已达上限（{max_per_base}）",
-                status_code=409,
-            )
-        if size_bytes > self.config.limits.max_file_size_mb * 1024 * 1024:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_FILE_TOO_LARGE", "文件超过大小限制", status_code=413
-            )
-        safe_name = Path(filename).name
-        if (
-            not safe_name
-            or len(safe_name.encode("utf-8")) > self.config.limits.max_filename_utf8_bytes
-        ):
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_INVALID_FILENAME", "文件名无效或过长", status_code=422
-            )
-        extension = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
-        if extension in UNSUPPORTED_PRESENTATION_EXTENSIONS:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_FILE_TYPE_NOT_ALLOWED",
-                UNSUPPORTED_PRESENTATION_MESSAGE,
-                status_code=422,
-            )
-        if extension not in {
-            value.lower() for value in self.config.limits.allowed_extensions
-        }:
-            raise KnowledgeServiceError(
-                "KNOWLEDGE_FILE_TYPE_NOT_ALLOWED",
-                f"不支持该文件类型（后缀 .{extension or '无'}）",
-                status_code=422,
-            )
-        try:
-            await self._repo(
-                validate_upload,
-                content,
-                filename=safe_name,
-                content_type=content_type or "application/octet-stream",
-                size_bytes=size_bytes,
-                config=_UPLOAD_SECURITY,
-            )
-        except UploadValidationError as exc:
-            raise KnowledgeServiceError(
-                exc.code,
-                exc.message,
-                status_code=503 if exc.retryable else 422,
-                retryable=exc.retryable,
-            ) from exc
-        # 浏览器可能按宿主注册表报出旧版/新版 Office MIME；落库与上游统一用
-        # 扩展名对应的标准 MIME，避免 RAGFlow 按声明类型拒收。
-        content_type = canonical_content_type(safe_name, content_type)
-
-        # 同库重复内容拦截（仅人工上传；文档 SQL 同步有自己的业务幂等键）：
-        # 先算 sha256，已存在相同内容的未删除文档时直接拒绝，避免重复文档
-        # 挤占检索证据名额。哈希放线程池，避免大文件阻塞事件循环。
+        folder_id = await self._resolve_upload_folder(base_id, folder_id, relative_path)
+        safe_name = await self._validate_upload_request(base_id, filename, size_bytes)
+        content_type = await self._validate_upload_content(
+            safe_name, content_type, size_bytes, content
+        )
+        # 同库重复内容拦截（仅人工上传；文档 SQL 同步有自己的业务幂等键）
         if metadata is None:
-            digest = await asyncio.to_thread(self._sha256_digest, content)
-            duplicate = await self._repo(
-                self.repository.find_duplicate_document,
-                base_id,
-                digest,
-            )
-            if duplicate is not None:
-                raise KnowledgeServiceError(
-                    "KNOWLEDGE_DUPLICATE_DOCUMENT",
-                    f"知识库中已存在相同内容的文档：{duplicate['name']}",
-                    status_code=409,
-                )
+            await self._reject_duplicate_content(base_id, content)
 
         document = await self._repo(
             self.repository.create_document,
@@ -2137,6 +2063,115 @@ class KnowledgeService:
             document=self._document_summary(document, role, request_id),
             operation=self._operation_summary(operation, request_id),
         )
+
+    async def _resolve_upload_folder(
+        self, base_id: str, folder_id: str | None, relative_path: str | None
+    ) -> str | None:
+        """校验目标文件夹；文件夹上传时按相对路径逐级 find-or-create。"""
+
+        if folder_id:
+            await self._require_folder(base_id, folder_id)
+        if relative_path:
+            return await self._ensure_folder_dirs(
+                base_id, folder_id, _split_folder_segments(relative_path)[:-1]
+            )
+        return folder_id
+
+    async def _validate_upload_request(
+        self, base_id: str, filename: str, size_bytes: int
+    ) -> str:
+        """文档数量/大小/文件名/后缀校验，返回安全文件名。
+
+        校验顺序即错误码优先级：文档上限 → 文件大小 → 文件名 → 后缀。
+        """
+
+        max_per_base = self.config.limits.max_documents_per_base
+        if (
+            max_per_base > 0
+            and await self._repo(self.repository.count_documents, base_id)
+            >= max_per_base
+        ):
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_DOCUMENT_LIMIT",
+                f"知识库文档数量已达上限（{max_per_base}）",
+                status_code=409,
+            )
+        if size_bytes > self.config.limits.max_file_size_mb * 1024 * 1024:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_FILE_TOO_LARGE", "文件超过大小限制", status_code=413
+            )
+        safe_name = Path(filename).name
+        if (
+            not safe_name
+            or len(safe_name.encode("utf-8")) > self.config.limits.max_filename_utf8_bytes
+        ):
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_INVALID_FILENAME", "文件名无效或过长", status_code=422
+            )
+        extension = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
+        if extension in UNSUPPORTED_PRESENTATION_EXTENSIONS:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_FILE_TYPE_NOT_ALLOWED",
+                UNSUPPORTED_PRESENTATION_MESSAGE,
+                status_code=422,
+            )
+        if extension not in {
+            value.lower() for value in self.config.limits.allowed_extensions
+        }:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_FILE_TYPE_NOT_ALLOWED",
+                f"不支持该文件类型（后缀 .{extension or '无'}）",
+                status_code=422,
+            )
+        return safe_name
+
+    async def _validate_upload_content(
+        self,
+        safe_name: str,
+        content_type: str,
+        size_bytes: int,
+        content: BinaryIO,
+    ) -> str:
+        """运行上传安全校验，并返回按扩展名归一后的内容类型。"""
+
+        try:
+            await self._repo(
+                validate_upload,
+                content,
+                filename=safe_name,
+                content_type=content_type or "application/octet-stream",
+                size_bytes=size_bytes,
+                config=_UPLOAD_SECURITY,
+            )
+        except UploadValidationError as exc:
+            raise KnowledgeServiceError(
+                exc.code,
+                exc.message,
+                status_code=503 if exc.retryable else 422,
+                retryable=exc.retryable,
+            ) from exc
+        # 浏览器可能按宿主注册表报出旧版/新版 Office MIME；落库与上游统一用
+        # 扩展名对应的标准 MIME，避免 RAGFlow 按声明类型拒收。
+        return canonical_content_type(safe_name, content_type)
+
+    async def _reject_duplicate_content(
+        self, base_id: str, content: BinaryIO
+    ) -> None:
+        """同库重复内容拒绝：已存在相同 sha256 的未删除文档时直接 409。
+
+        哈希放线程池，避免大文件阻塞事件循环。
+        """
+
+        digest = await asyncio.to_thread(self._sha256_digest, content)
+        duplicate = await self._repo(
+            self.repository.find_duplicate_document, base_id, digest
+        )
+        if duplicate is not None:
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_DUPLICATE_DOCUMENT",
+                f"知识库中已存在相同内容的文档：{duplicate['name']}",
+                status_code=409,
+            )
 
     async def move_document(
         self,
@@ -2762,6 +2797,25 @@ class KnowledgeService:
             candidates=candidates,
             aggregation=aggregation,
         )
+        return self._evidence_response(
+            base=base,
+            candidates=candidates,
+            top_n=top_n,
+            aggregation=aggregation,
+            request_id=request_id,
+        )
+
+    @staticmethod
+    def _evidence_response(
+        *,
+        base: Mapping[str, Any],
+        candidates: list[dict[str, Any]],
+        top_n: int,
+        aggregation: bool,
+        request_id: str,
+    ) -> RetrieveResponse:
+        """同一文档只保留最高分 chunk 后，构造带业务元数据的证据响应。"""
+
         candidates.sort(key=lambda item: item["score"], reverse=True)
         # 同一文档只保留得分最高的 chunk（相邻块已拼进该 chunk 的证据文本），
         # 避免同一篇文档挤占其它文档的证据名额。

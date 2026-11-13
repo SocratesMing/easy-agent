@@ -48,6 +48,24 @@ _DOCUMENT_SELECT = """
       ON o.document_id=d.id AND o.object_version=1
 """
 
+_MANAGER_SELECT = """
+    SELECT m.id,
+           m.user_id,
+           m.department_id,
+           m.granted_by AS granted_by_user_id,
+           m.granted_at,
+           m.updated_at,
+           u.username,
+           u.display_name,
+           u.account_status,
+           u.department_name,
+           g.username     AS granted_by_username,
+           g.display_name AS granted_by_display_name
+      FROM knowledge_department_managers m
+      JOIN users u ON u.user_id = m.user_id
+      LEFT JOIN users g ON g.user_id = m.granted_by
+"""
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -55,6 +73,20 @@ def _now() -> str:
 
 def _row_dict(row: object | None) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
+
+
+def _normalize_manager_row(row: Mapping[str, object]) -> dict[str, Any]:
+    """补前端展示字段：granted_by 优先姓名，department_name 兜底用 id。"""
+
+    d = dict(row)
+    d["granted_by"] = (
+        d.get("granted_by_display_name")
+        or d.get("granted_by_username")
+        or d.get("granted_by_user_id", "")
+    )
+    if not d.get("department_name"):
+        d["department_name"] = d.get("department_id", "")
+    return d
 
 
 class KnowledgeRepository:
@@ -65,14 +97,26 @@ class KnowledgeRepository:
 
     # ---------------- 通用内部辅助 ----------------
 
+    @staticmethod
+    def _filter_update_fields(
+        fields: Mapping[str, object], allowed: set[str], *, coerce_retryable: bool = False
+    ) -> dict[str, object]:
+        """按白名单过滤更新字段，补 updated_at，并可选把 retryable 归一为 0/1。"""
+        updates = {key: value for key, value in fields.items() if key in allowed}
+        if not updates:
+            return {}
+        if coerce_retryable and "retryable" in updates:
+            updates["retryable"] = int(bool(updates["retryable"]))
+        updates["updated_at"] = _now()
+        return updates
+
     def _update_by_id(
         self, table: str, row_id: str, allowed: set[str], fields: Mapping[str, object]
     ) -> None:
         """按白名单过滤字段后更新单行，并刷新 updated_at。"""
-        updates = {key: value for key, value in fields.items() if key in allowed}
+        updates = self._filter_update_fields(fields, allowed)
         if not updates:
             return
-        updates["updated_at"] = _now()
         assignments = ", ".join(f"{column}=?" for column in updates)
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
@@ -345,36 +389,14 @@ class KnowledgeRepository:
                 )
             self.db._execute(
                 cursor,
-                """SELECT m.id,
-                          m.user_id,
-                          m.department_id,
-                          m.granted_by AS granted_by_user_id,
-                          m.granted_at,
-                          m.updated_at,
-                          u.username,
-                          u.display_name,
-                          u.account_status,
-                          u.department_name,
-                          g.username     AS granted_by_username,
-                          g.display_name AS granted_by_display_name
-                   FROM knowledge_department_managers m
-                   JOIN users u ON u.user_id = m.user_id
-                   LEFT JOIN users g ON g.user_id = m.granted_by
+                f"""{_MANAGER_SELECT}
                    WHERE m.user_id=? AND m.department_id=?""",
                 (user_id, department_id),
             )
             row = cursor.fetchone()
             if row is None:
                 raise RuntimeError("知识库管理员权限保存失败")
-            d = dict(row)
-            d["granted_by"] = (
-                d.get("granted_by_display_name")
-                or d.get("granted_by_username")
-                or d.get("granted_by_user_id", "")
-            )
-            if not d.get("department_name"):
-                d["department_name"] = d.get("department_id", "")
-            return d
+            return _normalize_manager_row(row)
 
     def revoke_department_manager(self, user_id: str, department_id: str) -> bool:
         with self.db.get_connection() as conn:
@@ -392,44 +414,14 @@ class KnowledgeRepository:
         """列出知识库管理员；不传 department_id 时返回全部。"""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
-            base_sql = """
-                SELECT m.id,
-                       m.user_id,
-                       m.department_id,
-                       m.granted_by AS granted_by_user_id,
-                       m.granted_at,
-                       m.updated_at,
-                       u.username,
-                       u.display_name,
-                       u.account_status,
-                       u.department_name,
-                       g.username   AS granted_by_username,
-                       g.display_name AS granted_by_display_name
-                  FROM knowledge_department_managers m
-                  JOIN users u ON u.user_id = m.user_id
-                  LEFT JOIN users g ON g.user_id = m.granted_by
-            """
+            base_sql = _MANAGER_SELECT
             if department_id:
                 base_sql += " WHERE m.department_id=? ORDER BY u.display_name, u.username"
                 self.db._execute(cursor, base_sql, (department_id,))
             else:
                 base_sql += " ORDER BY m.department_id, u.display_name, u.username"
                 self.db._execute(cursor, base_sql)
-            rows = cursor.fetchall()
-            result: list[dict[str, Any]] = []
-            for row in rows:
-                d = dict(row)
-                # 前端统一字段：department_name 兜底用 id
-                if not d.get("department_name"):
-                    d["department_name"] = d.get("department_id", "")
-                # granted_by 优先显示姓名，没有就显示账号
-                d["granted_by"] = (
-                    d.get("granted_by_display_name")
-                    or d.get("granted_by_username")
-                    or d.get("granted_by_user_id", "")
-                )
-                result.append(d)
-            return result
+            return [_normalize_manager_row(row) for row in cursor.fetchall()]
 
     # ---------------- 文件夹 ----------------
 
@@ -730,12 +722,14 @@ class KnowledgeRepository:
         )
 
     def get_documents(self, base_id: str, document_ids: Iterable[str]) -> list[dict[str, Any]]:
-        return self._get_documents_by_column(base_id, "d.id", document_ids)
-
-    def get_documents_by_remote_ids(
-        self, base_id: str, remote_document_ids: Iterable[str]
-    ) -> list[dict[str, Any]]:
-        return self._get_documents_by_column(base_id, "d.remote_document_id", remote_document_ids)
+        document_ids = list(dict.fromkeys(document_ids))
+        if not document_ids:
+            return []
+        placeholders = ",".join("?" for _ in document_ids)
+        return self._select_documents_where(
+            f"d.base_id=? AND d.id IN ({placeholders}) AND d.status!='deleted'",
+            (base_id, *document_ids),
+        )
 
     def list_refreshable_base_ids(self) -> list[str]:
         """仍有待刷新解析状态文档的知识库 ID。
@@ -771,18 +765,6 @@ class KnowledgeRepository:
             f"AND d.status IN ({placeholders}) "
             "ORDER BY d.updated_at DESC LIMIT ?",
             (base_id, *REFRESHABLE_DOCUMENT_STATUSES, limit),
-        )
-
-    def _get_documents_by_column(
-        self, base_id: str, column: str, values: Iterable[str]
-    ) -> list[dict[str, Any]]:
-        values = list(dict.fromkeys(values))
-        if not values:
-            return []
-        placeholders = ",".join("?" for _ in values)
-        return self._select_documents_where(
-            f"d.base_id=? AND {column} IN ({placeholders}) AND d.status!='deleted'",
-            (base_id, *values),
         )
 
     def list_purgeable_documents(self, *, limit: int = 100) -> list[dict[str, Any]]:
@@ -1097,12 +1079,11 @@ class KnowledgeRepository:
         )
 
     def _update_operation_rows(self, sql_template: str, fields: Mapping[str, object], where: tuple) -> int:
-        updates = {key: value for key, value in fields.items() if key in _OPERATION_UPDATE_FIELDS}
+        updates = self._filter_update_fields(
+            fields, _OPERATION_UPDATE_FIELDS, coerce_retryable=True
+        )
         if not updates:
             return 0
-        if "retryable" in updates:
-            updates["retryable"] = int(bool(updates["retryable"]))
-        updates["updated_at"] = _now()
         assignments = ", ".join(f"{column}=?" for column in updates)
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
