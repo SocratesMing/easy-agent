@@ -16,6 +16,8 @@ from easy_agent.agent import token_usage
 from easy_agent.bootstrap.config import Config
 from easy_agent.db.repositories.token_usage import TokenUsageRepository
 from easy_agent.services.streaming.processor import StreamProcessor
+from easy_agent.services import usage as usage_service
+from easy_agent.services.streaming.sse import format_sse, parse_sse_frame
 from easy_agent.utils.usage_context import get_usage_identity, usage_scope
 
 
@@ -265,6 +267,47 @@ async def test_stream_latest_call_usage_and_personal_ledger_have_distinct_scopes
     assert done["usage"]["input_tokens"] == 200
     assert done["usage"]["output_tokens"] == 20
     assert done["usage"]["context_tokens"] == 200
+
+
+async def test_public_chat_counts_all_calls_and_turns_while_context_stays_current(db, graph_model, monkeypatch):
+    user = db.register_user("graph-user", "secret123")
+    repo = TokenUsageRepository(db)
+    monkeypatch.setattr(usage_service, "get_token_usage_repository", lambda: repo)
+    _, requests, llm, _ = graph_model([
+        call("measured_echo", {"text": "echo"}, "echo-1"),
+        {"role": "assistant", "content": "first answer"},
+        {"role": "assistant", "content": "second answer"},
+    ])
+    graph = create_deep_agent(model=llm, tools=[measured_echo], backend=StateBackend())
+
+    async def turn():
+        processor = StreamProcessor(sid="chat", session_id="chat")
+        with usage_scope(user.user_id, "chat"):
+            async for mode, item in graph.astream(
+                {"messages": [{"role": "user", "content": "question"}]},
+                stream_mode=["messages", "updates"],
+            ):
+                for event in processor.handle(mode, item):
+                    yield format_sse(event)
+        for event in processor.finalize(session_id="chat", elapsed_time=1):
+            yield format_sse(event)
+
+    first = [parse_sse_frame(frame) async for frame in usage_service.with_session_token_totals(
+        turn(), "graph-user", "chat",
+    )]
+    assert [(event["input_tokens"], event["output_tokens"]) for event in first
+            if event["type"] == "token_usage"] == [(100, 10), (300, 30)]
+    done = next(event for event in first if event["type"] == "done")
+    assert (done["usage"]["input_tokens"], done["usage"]["output_tokens"]) == (300, 30)
+    assert done["usage"]["context_tokens"] == 200
+
+    second = [parse_sse_frame(frame) async for frame in usage_service.with_session_token_totals(
+        turn(), "graph-user", "chat",
+    )]
+    done = next(event for event in second if event["type"] == "done")
+    assert len(requests) == 3
+    assert (done["usage"]["input_tokens"], done["usage"]["output_tokens"]) == (600, 60)
+    assert done["usage"]["context_tokens"] == 300
 
 
 @pytest.mark.parametrize("after_usage", [False, True])
