@@ -3,6 +3,8 @@
 // 同步：npm run sync:shared（frontend-vue2 / frontend 各自目录下执行）
 import { protectCodeRegions } from './codeRegions.js'
 import { citationMarker } from './markers.js'
+import { externalSources } from '../citations/sources.js'
+import { rewriteReferences } from './sourceReferences.js'
 
 const CITATION = /\[知识(?:库)?依据\s*(\d+)\]/g
 
@@ -13,23 +15,27 @@ export function relatedEvidence(message) {
   const text = blocks.length
     ? [...blocks].sort((a, b) => (a.order || 0) - (b.order || 0)).map(block => block.content || '').join('\n')
     : message.content || ''
+  const sources = externalSources(message)
+  evidence.forEach((item, index) => sources.set(String(index + 1), item))
   const numbers = new Set()
-  protectCodeRegions(text, part => {
-    for (const match of part.matchAll(CITATION)) {
-      const number = Number(match[1])
-      if (number > 0 && number <= evidence.length) numbers.add(number)
-    }
-    return part
-  })
+  const collect = (key, raw) => {
+    if (sources.has(key)) numbers.add(key)
+    return raw
+  }
+  rewriteReferences(text, collect, collect)
   return {
-    numberMap: Object.fromEntries([...numbers].map((number, index) => [number, index + 1])),
-    items: numbers.size ? [...numbers].map(number => evidence[number - 1]) : evidence,
+    numberMap: Object.fromEntries([...numbers].map((key, index) => [key, index + 1])),
+    items: numbers.size ? [...numbers].map(key => sources.get(key)) : evidence,
   }
 }
 
 export function linkKnowledgeCitations(content, citeMap, compact = false) {
   if (typeof content !== 'string') return content
   const map = citeMap || {}
+  if (compact) {
+    const replace = (key, raw) => map[key] ? citationMarker(map[key], true) : raw
+    return rewriteReferences(content, replace, replace)
+  }
   return protectCodeRegions(content, text =>
     text.replace(CITATION, (match, digits) => {
       const number = Number(digits)
