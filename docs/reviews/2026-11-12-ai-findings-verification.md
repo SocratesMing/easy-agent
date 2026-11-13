@@ -1,6 +1,6 @@
 # 截图中 6 项潜在问题核查
 
-> 更新（2026-11-13）：第 1 项已修复并完成回归验证，详见第 4 节；第 2 项已统一当前行为契约、修复关联回归并完成验证，详见第 5 节；第 3 项已修复发布包收集边界并完成回归验证，详见第 2.3 节；第 4 项已移除驱动层 SSE 反解析并完成定向验证，详见第 6 节（扩大回归的既有失败也在该节说明）。第 1～3 节的原始核查记录保留，新增修复记录以当前行为为准。
+> 更新（2026-11-13）：第 1 项已修复并完成回归验证，详见第 4 节；第 2 项已统一当前行为契约、修复关联回归并完成验证，详见第 5 节；第 3 项已修复发布包收集边界并完成回归验证，详见第 2.3 节；第 4 项已移除驱动层 SSE 反解析并完成定向验证，详见第 6 节（扩大回归的既有失败也在该节说明）。第 6 项已统一双前端 SSE 状态机、修复工具卡片重复并完成验证，详见第 7 节。第 1～3 节的原始核查记录保留，新增修复记录以当前行为为准。
 
 - 核查日期：2026-11-12（Asia/Shanghai）。
 - 代码基线：分支 `audit-improvements-2026-10-18_llf`，提交 `7351eaf5`；开始核查时工作区干净。
@@ -525,3 +525,52 @@ node --test \
 - 两组测试均有 5 条第三方 SWIG 弃用警告。
 
 验证边界：使用模拟模型和临时 SQLite，不调用真实供应商；未做吞吐 / CPU 基准测试，因此只确认移除驱动层的重复 JSON 解析，不给出性能提升百分比。
+
+
+## 7. 第 6 项修复与验证（2026-11-13）
+
+**状态：已修复。** 四个入口共用 `frontend-shared/chat/streamChunkHandler.js`，不再分别维护事件分支。
+
+### 维护边界
+
+- `frontend-shared/chat/streamChunkHandler.js` 是唯一事件状态机源码，负责正文 / 思考分块、知识证据、工具生命周期、消息及会话用量、审批、错误和回放；`streamError.js`、`streamUsage.js` 共享错误展示和审批续跑基数计算。
+- 经已有 `scripts/dev/sync-frontend-shared.mjs` 自动生成 Vue2 / Vue3 的 `shared/chat/` 副本。副本带生成头，开发 / 构建会同步，`--check` 和 Vue2 模块检查校验来源一致性；内网 Vue2 模块仍可整体导出，不依赖仓库外路径。
+- 原四个入口降为 **22 / 12 / 19 / 39 行，共 92 行**的适配层，共享状态机为 **462 行**（均含注释和空行）。Vue2 使用原响应式 setter；Vue3 主页面通过 getter / setter 读取当前 refs，使 `runInSession` 换入后台会话后仍写向正确状态。
+- 侧栏广播、专家最近会话映射、主页面在飞记录及 Vue2 侧栏完成后刷新列表保留为显式回调；回放不重新广播或覆盖新流在飞记录。四个入口采用相同的工具处理、错误分流和 `done` 用量归约规则，消息累计字段不会被简化为仅三项 token 值。
+
+### 行为修复
+
+- 临时 `tool-<name>` ID 可在完整 `tool_call` 或后续 delta 中升级为正式 ID，块与 `message.tool_calls` 同步更新，后续结果落到同一条记录。
+- 同名回退仅匹配**同 step、仍在 streaming、ID 仍为临时值**的占位；已有不同正式 ID 的并行同名调用保持独立，不跨 step 吞并。
+- 缺失完整 `tool_call` 时，`tool_result` 仍可升级并完成临时卡片，写入结果并清除 streaming。相邻的两个工具 delta 必须创建不同块。
+- 保留回放 checkpoint、审批续跑、后台会话隔离、超时灰条和普通错误提示；新增真实 Vue2 观察者用例，确认 ID 升级后的完成状态可响应式更新。
+
+### 验证结果
+
+先对四个原处理器加入相同的 20 项契约用例，得到 **6 passed / 14 failed**，确认侧栏重复卡片、工具记录漂移以及同名并行调用边界。修复后扩充为 **28 项契约用例，全部通过**；覆盖普通流 / 审批续跑、完整调用 / delta 升级、结果先于完整调用、回放、同名并行调用和 step 隔离。
+
+最终回归：
+
+```bash
+# Vue2：全部前端单元测试
+(cd frontend-vue2 && npm run test:unit)
+# Vue3：显式枚举全部测试文件（本机 Node 20.19 不展开 npm 脚本中的带引号 glob）
+(cd frontend && node --test $(rg --files src -g '*.test.js'))
+# 两套生产构建
+(cd frontend-vue2 && npm run build)
+(cd frontend && npm run build)
+# 共享副本和 Vue2 模块边界 / 语法
+node scripts/dev/sync-frontend-shared.mjs --check
+(cd frontend-vue2 && npm run check:easy-agent && npm run lint:vue2)
+# 后端 SSE 契约及事件生产回归
+.venv/bin/python -m pytest -q tests/services/test_sse_contract.py tests/services/test_stream_processor.py --tb=short --show-capture=no
+```
+
+- Vue2：**416 passed，0 failed**；Vue3：**209 passed，0 failed**。
+- 两套生产构建均通过；Vue2 仍有样式模块默认导出和资源体积告警，Vue3 仍有大资源包提示，无构建错误。
+- 共享源码一致性、Vue2 模块闭包检查、Vue2 语法检查和 `git diff --check` 均通过。
+- 后端定向回归：**72 passed**，仅 5 条第三方 SWIG 弃用警告。
+
+完整验证时还发现既有构建阻塞：两套入口已导入 `probeStreamState`，但 `streamResume.js` 没有导出。补齐安全探测函数并保留 `shouldAttachOnOpen` 的布尔兼容接口，增加 inactive / replayable、查询失败和无参数的回归；删除两处重复说明注释，使既有大文件重新满足原行数预算，未提高预算。
+
+验证使用本地模拟 SSE 事件、真实 Vue2 响应式观察者及宿主会话切换函数；未调用真实模型，也未执行浏览器视觉验收或部署。

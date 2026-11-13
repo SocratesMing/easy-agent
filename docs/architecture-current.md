@@ -44,6 +44,12 @@
 
 事件契约：`docs/sse-events.md`（15 个事件，契约测试 `tests/services/test_sse_contract.py`）。
 
+前端事件状态机以 `frontend-shared/chat/streamChunkHandler.js` 为唯一维护源，
+经 `scripts/dev/sync-frontend-shared.mjs` 生成两侧 `shared/chat/` 副本。
+Vue2 / Vue3 主页面和侧栏的四个入口仅适配响应式写入、refs 和宿主副作用；
+正文、思考、工具 ID 合并、用量归属、错误分流与回放由共享状态机处理。
+修改共享源码后运行同步脚本，`--check` 校验生成副本。
+
 图输入（DA-03）：默认每条消息一个 thread（`{session_id}-{message_id}`），历史每轮从 DB 重建；`agent.session_thread: true` 时在官方 saver 上一个会话一个 thread（`thread_id = session_id`），每轮只输入本轮消息，thread 为空时从 DB 水合、DB 多出的轮次补进输入（`services/sessions/thread.py`），审批句柄仍是 `{session_id}-{message_id}`。本轮 `HumanMessage` 只存用户原话（`id` = message_id，DB 用户行同时记 `turn_id`），工作区前缀、知识库 / 页面上下文、上传预览等本轮注入随 `turn_context` 传入，由主代理摘要中间件在计 token 前渲染进本次请求，不写回历史（`agent/turn_context.py`）；记忆每次运行都重新加载（`agent/memory.py`）。会话级 thread 方案见 `docs/archive/design/2026-10-19-da03-session-thread.md`。
 
 模型协议：只支持 OpenAI 兼容协议（`protocol: openai`，`agent/model.py` 的 `ReasoningChatOpenAI`），Anthropic 协议已移除，配成其他协议时 `create_model` 直接报错。
