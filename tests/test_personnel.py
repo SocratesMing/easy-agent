@@ -352,7 +352,11 @@ def test_template_is_admin_only_and_valid_xlsx(client):
     assert response.content.startswith(b"PK")
     assert "personnel_import_template.xlsx" in response.headers["content-disposition"]
     sheet = load_workbook(BytesIO(response.content)).active
-    assert [cell.value for cell in sheet[1]] == ["姓名", "sso账号", "部门", "处室", "团队"]
+    assert [cell.value for cell in sheet[1]] == [
+        "姓名*", "sso账号*", "员工编号", "账号状态*",
+        "部门编号*", "部门名称*", "处室*", "团队*",
+        "岗位", "手机号", "邮箱",
+    ]
 
 
 def test_structure_excel_import_builds_org_path(client, db):
@@ -390,6 +394,51 @@ def test_structure_excel_import_builds_org_path(client, db):
     assert zhaoliu.department_name == "信息技术部"
     assert zhaoliu.division_name == ""
     assert zhaoliu.team_name == ""
+
+
+def test_structure_excel_imports_every_personnel_field(client, db):
+    """模板表头带 * 时仍可导入，且覆盖人员管理界面的全部字段。"""
+    client = _as_admin(client)
+    content = _xlsx(
+        [
+            "姓名*", "sso账号*", "员工编号", "账号状态*",
+            "部门编号*", "部门名称*", "处室*", "团队*",
+            "岗位", "手机号", "邮箱",
+        ],
+        [
+            [
+                "张三", "full_field_user", "E2001", "启用",
+                "dept-market", "金融市场部", "交易一处", "固收团队",
+                "分析师", "13800000000", "zhangsan@example.com",
+            ],
+            [
+                "李四", "disabled_field_user", "E2002", "停用",
+                "dept-risk", "风险管理部", "风控一处", "计量团队",
+                "经理", "13900000000", "lisi@example.com",
+            ],
+        ],
+    )
+    response = client.post(
+        "/agent/personnel/import",
+        data={"source": "全字段模板"},
+        files={"file": ("全字段.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["created"] == 2
+
+    user = db.get_user_by_username("full_field_user")
+    assert user.employee_id == "E2001"
+    assert user.department_id == "dept-market"
+    assert user.department_name == "金融市场部"
+    assert user.division_name == "交易一处"
+    assert user.team_name == "固收团队"
+    assert user.position == "分析师"
+    assert user.mobile == "13800000000"
+    assert user.email == "zhangsan@example.com"
+    assert user.account_status == "active"
+
+    disabled = db.get_user_by_username("disabled_field_user")
+    assert disabled.account_status == "disabled"
 
 
 def test_template_has_single_marked_example_row(client):

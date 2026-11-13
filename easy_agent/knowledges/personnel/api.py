@@ -213,16 +213,24 @@ def download_import_template(_: Annotated[str, Depends(require_personnel_editor)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "部门结构"
-    # 部门结构模板：部门 > 处室 > 团队 > 个人。列序：姓名、sso账号、部门、处室、团队。
-    headers = ["姓名", "sso账号", "部门", "处室", "团队"]
+    # 模板列与人员管理界面保持一致；表头 * 对应界面中的必填项。
+    headers = [
+        "姓名*", "sso账号*", "员工编号", "账号状态*",
+        "部门编号*", "部门名称*", "处室*", "团队*",
+        "岗位", "手机号", "邮箱",
+    ]
     sheet.append(headers)
-    # 仅一行示例，姓名标注「示例」；导入时请删除本行后填写真实数据。
-    sheet.append(["张三（示例）", "zhangsan", "金融市场部", "交易一处", "固收团队"])
+    # 仅一行示例，姓名标注「示例」；导入时请删除本行或覆盖为真实数据。
+    sheet.append([
+        "张三（示例）", "zhangsan", "E0001", "启用",
+        "dept-market", "金融市场部", "交易一处", "固收团队",
+        "分析师", "13800000000", "zhangsan@example.com",
+    ])
     for cell in sheet[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="2563EB")
-    for column in "ABCDE":
-        sheet.column_dimensions[column].width = 20
+    for column in "ABCDEFGHIJK":
+        sheet.column_dimensions[column].width = 18
     output = BytesIO()
     workbook.save(output)
     workbook.close()

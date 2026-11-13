@@ -23,17 +23,36 @@ LEGACY_EXCEL_COLUMNS = {
     "手机号": "mobile",
     "状态": "account_status",
 }
-LEGACY_REQUIRED_HEADERS = {"账号", "姓名", "部门编号", "部门名称"}
+LEGACY_REQUIRED_FIELDS = {"username", "display_name", "department_id", "department_name"}
+LEGACY_FIELD_LABELS = {
+    "username": "账号",
+    "display_name": "姓名",
+    "department_id": "部门编号",
+    "department_name": "部门名称",
+}
 
-# 新版部门结构模板（列序即下载模板顺序）：姓名、sso账号、部门、处室、团队。
+# 新版部门结构模板：覆盖人员管理界面的全部字段（列序即下载模板顺序）。
+# 「部门」是上一版模板中「部门名称」的别名，保留以兼容存量文件。
 STRUCTURE_EXCEL_COLUMNS = {
     "姓名": "display_name",
     "sso账号": "username",
+    "员工编号": "employee_id",
+    "账号状态": "account_status",
+    "部门编号": "department_id",
+    "部门名称": "department_name",
     "部门": "department_name",
     "处室": "division_name",
     "团队": "team_name",
+    "岗位": "position",
+    "手机号": "mobile",
+    "邮箱": "email",
 }
-STRUCTURE_REQUIRED_HEADERS = {"姓名", "sso账号", "部门"}
+STRUCTURE_REQUIRED_FIELDS = {"display_name", "username", "department_name"}
+STRUCTURE_FIELD_LABELS = {
+    "display_name": "姓名",
+    "username": "sso账号",
+    "department_name": "部门名称",
+}
 MAX_IMPORT_ROWS = 5000
 MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 1000
@@ -43,6 +62,12 @@ class PersonnelExcelError(ValueError):
     def __init__(self, errors: list[str]):
         super().__init__("；".join(errors))
         self.errors = errors
+
+
+def _normalize_header(value: object) -> str:
+    """表头允许用 * 标注界面必填项，匹配时忽略空白、星号和英文大小写。"""
+
+    return str(value or "").strip().rstrip("*＊").strip().casefold()
 
 
 def _validate_xlsx_container(content: bytes) -> None:
@@ -102,15 +127,19 @@ def parse_personnel_excel(content: bytes, source: str) -> list[PersonnelCreateRe
         if not raw_headers:
             raise PersonnelExcelError(["Excel 不能为空"])
 
-        headers = [str(value or "").strip() for value in raw_headers]
-        # 按表头选择格式：新版部门结构模板（姓名/sso账号/部门/处室/团队）含
+        headers = [_normalize_header(value) for value in raw_headers]
+        # 按表头选择格式：新版部门结构模板（含界面全部字段）带
         # 「sso账号/部门/处室/团队」任一特征列即按新格式校验；否则按旧版列式
         # 模板解析，存量 Excel 仍可导入。
-        if any(marker in headers for marker in ("sso账号", "部门", "处室", "团队")):
-            columns, required = STRUCTURE_EXCEL_COLUMNS, STRUCTURE_REQUIRED_HEADERS
+        if any(marker in set(headers) for marker in ("sso账号", "部门", "处室", "团队")):
+            source_columns = STRUCTURE_EXCEL_COLUMNS
+            required, labels = STRUCTURE_REQUIRED_FIELDS, STRUCTURE_FIELD_LABELS
         else:
-            columns, required = LEGACY_EXCEL_COLUMNS, LEGACY_REQUIRED_HEADERS
-        missing = sorted(required - set(headers))
+            source_columns = LEGACY_EXCEL_COLUMNS
+            required, labels = LEGACY_REQUIRED_FIELDS, LEGACY_FIELD_LABELS
+        columns = {_normalize_header(key): field for key, field in source_columns.items()}
+        present = {columns[header] for header in headers if header in columns}
+        missing = [labels[field] for field in sorted(required - present)]
         unknown = [header for header in headers if header and header not in columns]
         header_errors = []
         if missing:

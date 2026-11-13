@@ -304,24 +304,26 @@
           <div class="pm-import-body">
             <section class="pm-format-card">
               <header>
-                <div><strong>Excel 格式说明</strong><small>首行必须使用下列中文列名</small></div>
+                <div><strong>Excel 格式说明</strong><small>首行必须与模板列名完全一致</small></div>
                 <button class="pm-text-btn" type="button" :disabled="downloadingTemplate" @click="downloadTemplate">{{ downloadingTemplate ? '下载中…' : '下载标准模板' }}</button>
               </header>
               <div class="pm-column-group">
                 <b>必填列</b>
-                <span>账号</span><span>姓名</span><span>部门编号</span><span>部门名称</span>
+                <span>姓名</span><span>sso账号</span><span>账号状态</span><span>部门编号</span><span>部门名称</span><span>处室</span><span>团队</span>
               </div>
               <div class="pm-column-group optional">
                 <b>选填列</b>
-                <span>员工编号</span><span>邮箱</span><span>岗位</span><span>手机号</span><span>状态</span>
+                <span>员工编号</span><span>岗位</span><span>手机号</span><span>邮箱</span>
               </div>
               <ul id="personnel-import-format-help">
-                <li>状态可填“启用 / 停用”或“active / disabled”，不填默认启用。</li>
+                <li>表头带 <code>*</code> 的列与人员管理界面必填项一致；部门编号留空时自动取部门名称。</li>
+                <li>账号状态可填“启用 / 停用”或“active / disabled”，不填默认启用。</li>
                 <li>Excel 不包含密码列；新增账号的默认密码为 <code>123456</code>。</li>
                 <li>单个文件不超过 5 MB，最多 5000 个数据行。</li>
                 <li>只允许上方列名；不能添加额外列，列名也不能重复。</li>
                 <li>同一文件内账号不能重复；<code>admin</code> 账号不可通过导入覆盖。</li>
                 <li>工作簿不能包含公式、隐藏行、隐藏列或隐藏工作表。</li>
+                <li>模板中的「（示例）」行会被自动跳过；旧版列式模板（账号、姓名、部门编号、部门名称等）仍可导入。</li>
               </ul>
             </section>
 
