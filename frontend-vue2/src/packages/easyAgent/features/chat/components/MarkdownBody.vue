@@ -9,6 +9,9 @@
 import { linkKnowledgeCitations } from '../../../shared/markdown/citations.js'
 import { patchMarkdownBlocks } from '../../../shared/markdown/blockDom.js'
 import { renderMarkdownBlocks } from '../../../shared/markdown/render.js'
+import { VISUAL_FRAME_PATH } from '../../../shared/visual/fence.js'
+import { mountVisuals } from '../../../shared/visual/mount.js'
+import { resolveUrl } from '../../../utils/request.js'
 
 // 流式期间每帧最多一次中间帧；分片停止 150ms 后按原文做一次最终渲染
 const FRAME_MS = 80
@@ -88,7 +91,11 @@ export default {
     flush() {
       if (!this.$el || this.$el.nodeType !== 1) return
       this.md.rendered = patchMarkdownBlocks(this.$el, this.md.rendered, this.md.blocks)
+      // ```echarts / ```mermaid / ```widget 代码块挂成沙箱 iframe 卡片（幂等：已挂载、仍在流式中的跳过）
+      mountVisuals(this.$el, { frameUrl: resolveUrl(VISUAL_FRAME_PATH) })
     },
   },
 }
 </script>
+
+<style src="./visual.css"></style>

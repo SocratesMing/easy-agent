@@ -54,6 +54,7 @@ from easy_agent.models.exceptions import (
     NotFoundError,
 )
 from easy_agent.utils.paths import PROJECT_ROOT
+from easy_agent.utils.version_info import get_version_info
 from easy_agent.services.agents.manager import (
     drain_stream_tasks,
     get_agent_config,
@@ -86,6 +87,7 @@ from easy_agent.api import (
     scheduled_tasks_router,
     expert_router,
     usage_router,
+    viz_router,
 )
 from easy_agent.services.metrics import snapshot_metrics
 from easy_agent.services.health import ping_database, workspace_writable
@@ -226,6 +228,7 @@ def _log_startup_banner(agent_env: str, config_path) -> None:
     logger.info(f"项目目录: {PROJECT_ROOT}")
     logger.info(f"操作系统: {platform.system()} {platform.release()}")
     logger.info(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"版本: {get_version_info()['version']}")
     logger.info("=" * 60)
 
     # 打印环境信息和配置文件
@@ -579,6 +582,7 @@ _ACCESS_SKIP_PREFIXES = (
     "/openapi.json",
     "/static",
     "/assets",
+    "/agent/viz",
 )
 _ACCESS_SKIP_SUFFIXES = (
     ".js",
@@ -746,12 +750,20 @@ app.include_router(knowledge_router)
 app.include_router(personnel_router)
 app.include_router(expert_router)
 app.include_router(usage_router)
+# 对话内可视化的沙箱框架页与图表库（不需要登录，见 api/viz.py）
+app.include_router(viz_router)
 
 
 @app.get("/agent/live", summary="存活检查（liveness）", response_model=HealthResponse)
 @app.get("/api/live", summary="存活检查（liveness）", response_model=HealthResponse)
 async def liveness():
     return HealthResponse(status="live")
+
+
+@app.get("/agent/version", summary="部署版本")
+@app.get("/api/version", summary="部署版本")
+async def version_info():
+    return get_version_info()
 
 
 @app.get("/agent/health", summary="健康检查", response_model=HealthResponse)

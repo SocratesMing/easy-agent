@@ -57,15 +57,16 @@ test('任何 target 都改成新标签页并断开 opener', () => {
   )
 })
 
-test('渲染器自己的结构完整保留：外链、来源卡片、知识依据锚点、emoji', () => {
+test('渲染器自己的结构完整保留：外链、来源链接、知识依据锚点、emoji', () => {
   const NEW_TAB = 'target="_blank" rel="noopener noreferrer"'
   assert.equal(
     render('见[文档](https://example.com/doc)说明'),
     `<p>见<a href="https://example.com/doc" ${NEW_TAB}>文档</a>说明</p>`
   )
-  const card = render('东方财富收评 https://finance.eastmoney.com/a/1.html')
-  assert.ok(card.includes(`<a class="msg-source-card" href="https://finance.eastmoney.com/a/1.html" ${NEW_TAB}`), card)
-  assert.ok(card.includes('<svg') && card.includes('<span class="msg-source-card-title">东方财富收评</span>'), card)
+  assert.equal(
+    render('东方财富收评 https://finance.eastmoney.com/a/1.html').trim(),
+    `<p><a href="https://finance.eastmoney.com/a/1.html" ${NEW_TAB}>东方财富收评</a></p>`
+  )
   assert.equal(
     render(linkKnowledgeCitations('依据 [知识依据2] 如上', { 2: 1 })),
     '<p>依据 <a class="ke-cite" data-cite="1">[知识依据1]</a> 如上</p>'

@@ -1,0 +1,113 @@
+/* 对话内可视化卡片（shared/visual/mount.js 生成的 DOM）：markdown 代码块占位与工具卡片里的图表共用。
+   挂载后隐藏原代码块，「源码」按钮再展开；没挂载的场景（文件预览）不受影响，照常显示代码块。 */
+.easy-agent-root .ea-visual {
+  margin: 12px 0;
+}
+
+.easy-agent-root .ea-visual[data-visual-state] > .code-block-wrapper,
+.easy-agent-root .ea-visual[data-visual-state] > .ea-visual-source {
+  display: none;
+}
+
+.easy-agent-root .ea-visual.show-source > .code-block-wrapper,
+.easy-agent-root .ea-visual.show-source > .ea-visual-source {
+  display: block;
+  margin-top: 8px;
+}
+
+.easy-agent-root .ea-visual-source {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 320px;
+  overflow: auto;
+  border-radius: 8px;
+  background: #0d1117;
+  color: #e6edf3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.easy-agent-root .ea-visual-card {
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 12px;
+  background: var(--bg-primary, #ffffff);
+  overflow: hidden;
+}
+
+.easy-agent-root .ea-visual-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary, #64748b);
+}
+
+.easy-agent-root .ea-visual-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.easy-agent-root .ea-visual-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+}
+
+.easy-agent-root .ea-visual-btn {
+  padding: 2px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+  cursor: pointer;
+}
+
+.easy-agent-root .ea-visual-btn:hover {
+  background: var(--bg-tertiary, #f1f5f9);
+  color: var(--text-primary, #1e293b);
+}
+
+.easy-agent-root .ea-visual-stage {
+  padding: 8px 12px;
+}
+
+.easy-agent-root .ea-visual-frame {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+}
+
+.easy-agent-root .ea-visual-status {
+  padding: 18px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+}
+
+.easy-agent-root .ea-visual-status.is-error {
+  padding: 8px 0;
+  text-align: left;
+  color: #dc2626;
+}
+
+.easy-agent-root .ea-visual.is-pending {
+  padding: 18px 12px;
+  border: 1px dashed var(--border-color, #e2e8f0);
+  border-radius: 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+}

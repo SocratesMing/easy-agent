@@ -1,0 +1,13 @@
+<!doctype html>
+<!-- 对话内可视化的沙箱框架页（/agent/viz/frame.html）：外层页面用 sandbox="allow-scripts" 的 iframe
+     加载本页，再用 postMessage 发来要渲染的内容。data-enabled / data-widgets 由后端按 visual 配置改写。 -->
+<html lang="zh-CN" data-enabled="0" data-widgets="0" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>visual</title>
+<link rel="stylesheet" href="frame.css">
+<script src="frame.js" defer></script>
+</head>
+<body><div id="root"></div></body>
+</html>
