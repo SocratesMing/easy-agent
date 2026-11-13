@@ -42,7 +42,7 @@
 
 所有 OpenAI 兼容 LangChain 模型由工厂安装一次 `TokenUsageCallback`。只有供应商显式上报合法的非负整数 `prompt_tokens` 和 `completion_tokens` 才采集，完整的 0 有效，缺失、null、bool 和负数均跳过。不能用 LangChain 补零后的 `usage_metadata` 修补原始数据。
 
-非流式在适配层创建结果之前提取完整 usage；流式使用完整尾块或完整 finish 块的最终快照，重复累计快照取最后一份，不相加。在 `generation_info.easy_agent_usage` 中以无 index 的列表传递计数和观测完成时间，结束时移除最终消息中的内部字段。`lc:{run_id}` 是模型调用 ID，一轮聊天可以产生多条账目。SDK 增强使用独立的 `sdk:{uuid}` 事件，在结果校验前捕获用量，在业务 timeout 之外确认写库。
+非流式在适配层创建结果之前提取完整 usage；流式使用完整尾块或完整 finish 块的最终快照，重复累计快照取最后一份，不相加。在 `generation_info.easy_agent_usage` 中以无 index 的列表传递计数和观测完成时间，结束时移除最终消息中的内部字段。`lc:{run_id}` 是模型调用 ID，一轮聊天可以产生多条账目。提示词增强使用当前生效的后端模型，通过统一模型工厂与 `TokenUsageCallback` 记录 `lc:{run_id}` 事件，业务层 JSON 校验失败仍保留已发生的消耗，不再手动创建 `sdk:{uuid}` 事件。
 
 真实用户 ID 由服务端用户查询或知识库鉴权主体产生。专家预检、后台聊天/HITL、摘要、专家生成、知识问答、公共补全、增强、定时任务及记忆更新均在各自实际执行处建立身份 scope。普通聊天在准备阶段只解析一次 `UsageIdentity`，经知识适配层传入实际流；普通聊天金融领域分类已撤回，不再产生分类调用。显式 `None` 禁用采集，省略参数的独立流入口仍自行解析。chat/resume 在消费期建立 scope，并在关闭内部生成器后复位。线程队列捕获自身的不可变快照，禁止继承上一个任务的用户。启动探测和无用户维护操作不记个人用量。
 
