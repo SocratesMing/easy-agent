@@ -1429,24 +1429,6 @@ class KnowledgeService:
             raise _not_found()
         return document
 
-    async def _authorized_document(
-        self,
-        document_id: str,
-        principal: KnowledgePrincipal,
-        action: AllowedAction = AllowedAction.VIEW,
-        *,
-        include_deleted: bool = True,
-    ) -> tuple[dict[str, Any], dict[str, Any], KnowledgeBaseRole]:
-        """读取文档并校验其所属知识库的操作权限，返回 (文档, 库记录, 角色)。"""
-
-        document = await self._require_document(
-            document_id, include_deleted=include_deleted
-        )
-        base, role = await self._authorized_base(
-            str(document["base_id"]), principal, action
-        )
-        return document, base, role
-
     async def refresh_base_documents(self, base: Mapping[str, Any]) -> None:
         """用上游文档状态刷新本地投影；仅后台解析轮询 worker 调用。
 
@@ -2201,8 +2183,9 @@ class KnowledgeService:
     ) -> DocumentSummary:
         """移动文档到目标文件夹（目标须属于同一知识库）。"""
 
-        document, _, role = await self._authorized_document(
-            document_id, principal, AllowedAction.MOVE_DOCUMENT, include_deleted=False
+        document = await self._require_document(document_id, include_deleted=False)
+        _, role = await self._authorized_base(
+            str(document["base_id"]), principal, AllowedAction.MOVE_DOCUMENT
         )
         if folder_id:
             await self._require_folder(str(document["base_id"]), folder_id)
@@ -2220,8 +2203,9 @@ class KnowledgeService:
         request_id: str,
     ) -> tuple[dict[str, Any], KnowledgeDocumentBinary]:
         """优先返回本地原文；不可用时回退下载上游副本。"""
-        document, base, _ = await self._authorized_document(
-            document_id, principal, AllowedAction.DOWNLOAD, include_deleted=False
+        document = await self._require_document(document_id, include_deleted=False)
+        base, _ = await self._authorized_base(
+            str(document["base_id"]), principal, AllowedAction.DOWNLOAD
         )
         original = await self._repo(
             self.repository.get_original_object, document_id
@@ -2366,8 +2350,9 @@ class KnowledgeService:
     ) -> Mapping[str, Any]:
         """暂停未就绪文档的解析任务：退出解析队列，保留原文可随时恢复。"""
         del request_id
-        document, base, _role = await self._authorized_document(
-            document_id, principal, AllowedAction.RETRY_DOCUMENT
+        document = await self._require_document(document_id)
+        base, _role = await self._authorized_base(
+            str(document["base_id"]), principal, AllowedAction.RETRY_DOCUMENT
         )
         if str(document["status"]) not in {
             DocumentStatus.PENDING.value,
@@ -2409,8 +2394,9 @@ class KnowledgeService:
     ) -> Mapping[str, Any]:
         """恢复已暂停文档：重新提交解析队列，回到待解析状态。"""
         del request_id
-        document, base, _role = await self._authorized_document(
-            document_id, principal, AllowedAction.RETRY_DOCUMENT
+        document = await self._require_document(document_id)
+        base, _role = await self._authorized_base(
+            str(document["base_id"]), principal, AllowedAction.RETRY_DOCUMENT
         )
         if str(document["status"]) != DocumentStatus.PAUSED.value:
             raise KnowledgeServiceError(
@@ -2453,8 +2439,9 @@ class KnowledgeService:
         request_id: str,
     ) -> DocumentUploadAccepted:
         """重试失败文档：删除上游旧副本后，用本地原文重新上传并解析。"""
-        document, base, role = await self._authorized_document(
-            document_id, principal, AllowedAction.RETRY_DOCUMENT
+        document = await self._require_document(document_id)
+        base, role = await self._authorized_base(
+            str(document["base_id"]), principal, AllowedAction.RETRY_DOCUMENT
         )
         if str(document["status"]) not in {
             DocumentStatus.FAILED.value,
@@ -2558,6 +2545,21 @@ class KnowledgeService:
     # ---------------- 检索与问答 ----------------
 
     @staticmethod
+    def _metadata_filter_kwargs(
+        metadata_filter: DocumentMetadataFilter | None,
+    ) -> dict[str, Any]:
+        """把过滤器转成 repository._document_filters 的关键字参数。"""
+        if metadata_filter is None:
+            return {}
+        return {
+            "publish_date_from": metadata_filter.publish_date_from,
+            "publish_date_to": metadata_filter.publish_date_to,
+            "report_tags": metadata_filter.report_tags or None,
+            "report_second_sources": metadata_filter.report_second_sources or None,
+            "report_title_contains": metadata_filter.report_title_contains,
+        }
+
+    @staticmethod
     def _matches_metadata_filter(
         document: Mapping[str, Any], metadata_filter: DocumentMetadataFilter | None
     ) -> bool:
@@ -2590,7 +2592,7 @@ class KnowledgeService:
         return True
 
     async def _list_ready_documents(
-        self, base_id: str, metadata_filter: DocumentMetadataFilter | None = None
+        self, base_id: str, filter_kwargs: dict[str, Any]
     ) -> list[dict[str, Any]]:
         """分页读取知识库全部已解析文档（本地查询无上限）。"""
 
@@ -2604,7 +2606,7 @@ class KnowledgeService:
                 status=DocumentStatus.READY.value,
                 limit=page_size,
                 offset=offset,
-                metadata_filter=metadata_filter,
+                **filter_kwargs,
             )
             documents.extend(page)
             if len(page) < page_size:
@@ -2629,10 +2631,11 @@ class KnowledgeService:
         ``metadata_filter`` 为硬过滤：区间外文档不会进入证据。
         """
         base, _ = await self._authorized_base(base_id, principal, AllowedAction.ASK)
+        filter_kwargs = self._metadata_filter_kwargs(metadata_filter)
         if document_ids is None:
             # 分页读取全部已解析文档（本地库查询无上限），避免超过 500 篇时
             # 检索范围被静默截断；是否需要 document_ids 范围见下方 meta 分支。
-            documents = await self._list_ready_documents(base_id, metadata_filter)
+            documents = await self._list_ready_documents(base_id, filter_kwargs)
         else:
             documents = await self._repo(
                 self.repository.get_documents, base_id, document_ids

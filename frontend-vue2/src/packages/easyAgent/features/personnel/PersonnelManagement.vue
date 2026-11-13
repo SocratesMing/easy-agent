@@ -42,6 +42,12 @@
           <input v-model="departmentName" placeholder="部门名称" aria-label="按部门名称筛选" />
         </label>
         <span class="pm-toolbar-spacer"></span>
+        <button class="pm-btn pm-quiet" type="button" :disabled="syncing" @click="syncFromSource">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" />
+          </svg>
+          {{ syncing ? '更新中…' : '更新人员信息' }}
+        </button>
         <button class="pm-btn pm-quiet" type="button" :disabled="downloadingTemplate" @click="downloadTemplate">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" />
@@ -373,6 +379,7 @@ import {
   getPersonnelImportTemplate,
   importPersonnelUsers,
   listPersonnelUsers,
+  syncPersonnelUsers,
   updatePersonnelUser,
 } from './api.js'
 import {
@@ -381,6 +388,7 @@ import {
   formatPersonnelValidationDetail,
   normalizePersonnelPage,
   summarizeImportResult,
+  summarizeSyncResult,
   validatePersonnelForm,
 } from './model.js'
 import { grantDepartmentManager, listDepartmentManagers, revokeDepartmentManager } from '../knowledge/api.js'
@@ -408,6 +416,7 @@ export default {
     const deptManagerMap = ref(new Map())  // Map<userId, Set<departmentId>> 谁在哪些部门是知识库管理员
     const togglingDeptManagerUserId = ref('')  // 当前正在 toggle 的 user_id
     const downloadingTemplate = ref(false)
+    const syncing = ref(false)
     const showEditor = ref(false)
     const editingUserId = ref('')
     const form = reactive(emptyPersonnelForm())
@@ -720,6 +729,22 @@ export default {
       }
     }
 
+    async function syncFromSource() {
+      if (syncing.value) return
+      if (!window.confirm('将从配置的人员接口拉取数据并按账号覆盖更新现有人员信息，确认继续？')) return
+      syncing.value = true
+      try {
+        const result = await syncPersonnelUsers()
+        notify(summarizeSyncResult(result))
+        page.value = 1
+        await loadUsers()
+      } catch (error) {
+        notify(resolveError(error, '更新人员信息失败'), 'error')
+      } finally {
+        syncing.value = false
+      }
+    }
+
     async function downloadTemplate() {
       if (downloadingTemplate.value) return
       downloadingTemplate.value = true
@@ -818,6 +843,8 @@ export default {
       showImport,
       statusLabel,
       submitImport,
+      syncing,
+      syncFromSource,
       togglingDeptManagerUserId,
       toggleDeptManager,
       canToggleDeptManager,

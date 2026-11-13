@@ -551,3 +551,148 @@ def test_delete_personnel_blocked_while_owning_bases_and_cleans_grants(client, d
     assert db.get_user_by_id(user_id) is None
     assert _count_rows(db, "SELECT COUNT(*) AS n FROM knowledge_permissions WHERE subject_id=?", (user_id,)) == 0
     assert _count_rows(db, "SELECT COUNT(*) AS n FROM knowledge_department_managers WHERE user_id=?", (user_id,)) == 0
+
+
+def _use_sync_config(monkeypatch, **overrides):
+    """把运行时配置替换为 personnel.sync（默认启用并指向本地假接口）。"""
+    from types import SimpleNamespace
+
+    from easy_agent.bootstrap.config_models import PersonnelConfig
+    from easy_agent.services.agents import manager as agent_manager
+
+    sync = {"enabled": True, "url": "http://hr.local/api/users", "source_name": "HR接口"}
+    sync.update(overrides)
+    config = SimpleNamespace(personnel=PersonnelConfig(sync=sync))
+    monkeypatch.setattr(agent_manager, "get_agent_config", lambda: {"config": config})
+    return config
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _FakeHttpClient:
+    def __init__(self, pages):
+        self.pages = pages
+        self.calls = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get(self, url, params=None, headers=None):
+        self.calls.append({"url": url, "params": params, "headers": headers})
+        return _FakeResponse(self.pages[len(self.calls) - 1])
+
+
+def test_sync_endpoint_requires_admin(client):
+    assert client.post("/agent/personnel/sync").status_code == 403
+
+
+def test_sync_rejects_when_disabled(client, monkeypatch):
+    _use_sync_config(monkeypatch, enabled=False)
+    client = _as_admin(client)
+    response = client.post("/agent/personnel/sync")
+    assert response.status_code == 422
+    assert "未启用" in str(response.json()["detail"])
+
+
+def test_source_sync_maps_fields_and_paginates(monkeypatch):
+    from easy_agent.bootstrap.config_models import PersonnelSyncConfig
+    from easy_agent.knowledges.personnel import source_sync
+
+    cfg = PersonnelSyncConfig(
+        enabled=True,
+        url="http://hr.local/api/users",
+        token="secret",
+        items_path="data.items",
+        field_mapping={"username": "account", "display_name": "name"},
+        page={"enabled": True, "param": "pageNo", "size_param": "pageSize", "size": 2},
+    )
+    client = _FakeHttpClient([
+        {"data": {"items": [
+            {"account": "alice", "name": "爱丽丝", "department_name": "部门A"},
+            {"account": "admin", "name": "管理员", "department_name": "部门A"},
+        ]}},
+        {"data": {"items": [{"account": "bob", "name": "鲍勃", "department_name": "部门B"}]}},
+    ])
+    monkeypatch.setattr(source_sync.httpx, "Client", lambda timeout=None: client)
+
+    records = source_sync.fetch_source_records(cfg)
+    assert len(records) == 3
+    assert client.calls[0]["params"] == {"pageNo": 1, "pageSize": 2}
+    assert client.calls[0]["headers"] == {"Authorization": "Bearer secret"}
+
+    items, skipped, errors = source_sync.build_personnel_items(records, cfg)
+    assert errors == []
+    assert skipped == 1  # admin 不计入同步
+    assert [item.username for item in items] == ["alice", "bob"]
+    assert items[0].display_name == "爱丽丝"
+    assert items[0].source == "接口同步"
+
+
+def test_source_sync_collects_validation_errors():
+    from easy_agent.bootstrap.config_models import PersonnelSyncConfig
+    from easy_agent.knowledges.personnel.source_sync import build_personnel_items
+
+    cfg = PersonnelSyncConfig(enabled=True, url="http://hr.local/api/users")
+    items, skipped, errors = build_personnel_items(
+        [
+            {"username": "valid_user", "display_name": "有效用户", "department_name": "部门A"},
+            {"username": "bad user", "display_name": "无效用户", "department_name": "部门A"},
+        ],
+        cfg,
+    )
+    assert len(items) == 1
+    assert skipped == 0
+    assert len(errors) == 1
+    assert "第 2 条" in errors[0]
+
+
+def test_sync_endpoint_creates_updates_and_skips_admin(client, db, monkeypatch):
+    from easy_agent.knowledges.personnel import api as personnel_api
+
+    _use_sync_config(monkeypatch)
+    records = [
+        {
+            "username": "sync_alice",
+            "display_name": "爱丽丝",
+            "department_id": "dept-a",
+            "department_name": "部门A",
+            "account_status": "启用",
+        },
+        {"username": "admin", "display_name": "管理员", "department_name": "部门A"},
+    ]
+    monkeypatch.setattr(personnel_api, "fetch_source_records", lambda cfg: records)
+    client = _as_admin(client)
+
+    response = client.post("/agent/personnel/sync")
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "total": 2,
+        "created": 1,
+        "updated": 0,
+        "source": "HR接口",
+        "default_password": "123456",
+        "skipped": 1,
+    }
+    assert db.get_user_by_username("sync_alice").personnel_source == "HR接口"
+
+    # 全量覆盖：同名账号的字段以接口数据为准
+    records[0].update({"display_name": "Alice", "department_id": "dept-b", "department_name": "部门B"})
+    updated = client.post("/agent/personnel/sync")
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["updated"] == 1
+    user = db.get_user_by_username("sync_alice")
+    assert user.display_name == "Alice"
+    assert user.department_id == "dept-b"
+    assert user.organization_id == "dept-b"

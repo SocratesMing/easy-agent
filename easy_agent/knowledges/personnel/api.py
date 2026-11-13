@@ -22,6 +22,7 @@ from easy_agent.knowledges.personnel.models import (
     PersonnelImportResponse,
     PersonnelListResponse,
     PersonnelRecord,
+    PersonnelSyncResponse,
     PersonnelUpdateRequest,
 )
 from easy_agent.knowledges.personnel.repository import (
@@ -29,9 +30,14 @@ from easy_agent.knowledges.personnel.repository import (
     PersonnelNotFoundError,
     create_personnel,
     delete_personnel,
-    import_personnel,
     list_personnel,
     update_personnel,
+    upsert_personnel,
+)
+from easy_agent.knowledges.personnel.source_sync import (
+    PersonnelSyncError,
+    build_personnel_items,
+    fetch_source_records,
 )
 from easy_agent.knowledges.facade import KnowledgeOperationsRepository
 from easy_agent.utils.auth import is_super_admin
@@ -190,7 +196,7 @@ def import_personnel_excel(
         raise HTTPException(status_code=413, detail="Excel 文件不能超过 5MB")
     try:
         items = parse_personnel_excel(content, source)
-        created, updated = import_personnel(db, items)
+        created, updated = upsert_personnel(db, items)
     except PersonnelExcelError as exc:
         raise HTTPException(status_code=422, detail={"message": "Excel 校验失败", "errors": exc.errors}) from exc
     except PersonnelConflictError as exc:
@@ -205,6 +211,51 @@ def import_personnel_excel(
     )
     return PersonnelImportResponse(
         total=len(items), created=created, updated=updated, source=source
+    )
+
+
+@router.post("/sync", response_model=PersonnelSyncResponse, summary="从接口更新人员信息")
+def sync_personnel_users(
+    request: Request,
+    operator: Annotated[str, Depends(require_personnel_editor)],
+    db: Annotated[Database, Depends(get_database)],
+):
+    from easy_agent.services.agents.manager import get_agent_config  # 延迟导入：与 login-policy 同理
+
+    state = get_agent_config()
+    personnel = getattr(state.get("config"), "personnel", None) if state else None
+    cfg = getattr(personnel, "sync", None)
+    if cfg is None:
+        raise HTTPException(status_code=422, detail="人员接口同步未配置（personnel.sync）")
+    try:
+        records = fetch_source_records(cfg)
+        items, skipped, errors = build_personnel_items(records, cfg)
+        if errors:
+            raise PersonnelSyncError("人员接口数据校验失败", status_code=422, errors=errors)
+        created, updated = upsert_personnel(db, items)
+    except PersonnelSyncError as exc:
+        detail = {"message": str(exc), "errors": exc.errors} if exc.errors else str(exc)
+        raise HTTPException(status_code=exc.status_code, detail=detail) from exc
+    except PersonnelConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    source = cfg.source_name.strip() or "接口同步"
+    logger.info(
+        "[人员管理] 接口同步 | 操作人: %s | 来源: %s | 总数: %s | 新增: %s | 更新: %s | 跳过: %s",
+        operator, source, len(records), created, updated, skipped,
+    )
+    _audit(
+        request, db, operator, "personnel.sync", "api-sync",
+        {
+            "source": source,
+            "total": len(records),
+            "created": created,
+            "updated": updated,
+            "skipped": skipped,
+        },
+    )
+    return PersonnelSyncResponse(
+        total=len(records), created=created, updated=updated, skipped=skipped, source=source
     )
 
 

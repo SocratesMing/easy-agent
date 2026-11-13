@@ -139,14 +139,22 @@ export function filenameFromContentDisposition(value, fallback = '人员信息�
   return plainMatch ? plainMatch[1].trim() : fallback
 }
 
-export function summarizeImportResult(result = {}) {
+function summarizePersonnelWriteResult(result = {}, action = '导入完成') {
   const created = Number(result.created != null ? result.created : result.created_count)
   const updated = Number(result.updated != null ? result.updated : result.updated_count)
   const skipped = Number(result.skipped != null ? result.skipped : result.skipped_count)
   const safeCreated = Number.isFinite(created) ? created : 0
   const safeUpdated = Number.isFinite(updated) ? updated : 0
   const safeSkipped = Number.isFinite(skipped) ? skipped : 0
-  return `导入完成：新增 ${safeCreated} 人，更新 ${safeUpdated} 人，跳过 ${safeSkipped} 人`
+  return `${action}：新增 ${safeCreated} 人，更新 ${safeUpdated} 人，跳过 ${safeSkipped} 人`
+}
+
+export function summarizeImportResult(result = {}) {
+  return summarizePersonnelWriteResult(result, '导入完成')
+}
+
+export function summarizeSyncResult(result = {}) {
+  return summarizePersonnelWriteResult(result, '更新完成')
 }
 
 export function formatPersonnelValidationDetail(detail, maxErrors = 8) {

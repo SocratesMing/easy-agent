@@ -483,6 +483,40 @@ class HitlConfig(BaseModel):
     （带不带服务前缀都行），没列出的 MCP 工具仍按服务端标注 / 名字自动判断（见 ``agent/hitl.py``）。"""
 
 
+class PersonnelSyncPageConfig(BaseModel):
+    """人员接口同步的分页参数；外部接口支持分页时才开启。"""
+
+    enabled: bool = False
+    param: str = "page"
+    size_param: str = "page_size"
+    size: int = 500
+
+
+class PersonnelSyncConfig(BaseModel):
+    """人员管理「更新人员信息」按钮所调用的外部接口。
+
+    ``items_path`` 指向响应中的人员数组（点号路径），``field_mapping`` 使用
+    「本地字段 -> 外部字段名」覆盖默认的同名读取；``source_name`` 写入
+    ``personnel_source``，用于数据追溯。
+    """
+
+    enabled: bool = False
+    source_name: str = "接口同步"
+    url: str = ""
+    token: str = ""
+    token_header: str = "Authorization"
+    token_prefix: str = "Bearer "
+    timeout_seconds: float = 20.0
+    items_path: str = "data.items"
+    field_mapping: dict[str, str] = Field(default_factory=dict)
+    page: PersonnelSyncPageConfig = Field(default_factory=PersonnelSyncPageConfig)
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _blank_switch_is_off(cls, value):
+        return blank_as_false(value)
+
+
 class PersonnelConfig(BaseModel):
     """Personnel provisioning and account-source policy."""
 
@@ -493,6 +527,9 @@ class PersonnelConfig(BaseModel):
 
     passwordless_login_enabled: bool = False
     """门户免密登录开关：默认关闭；启用后外部系统可通过用户名+用户ID 直登。"""
+
+    sync: PersonnelSyncConfig = Field(default_factory=PersonnelSyncConfig)
+    """「更新人员信息」按钮调用的外部接口同步配置。"""
 
 
 class UploadLimitsConfig(BaseModel):

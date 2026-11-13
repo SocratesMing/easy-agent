@@ -551,32 +551,19 @@ def test_list_documents_applies_metadata_filters(db):
 
     rows = repo.list_documents(
         base_id,
-        metadata_filter=DocumentMetadataFilter(
-            publish_date_from="2026-10-01", publish_date_to="2026-10-05"
-        ),
+        publish_date_from="2026-10-01",
+        publish_date_to="2026-10-05",
         limit=50,
     )
     assert sorted(item["source_record_id"] for item in rows) == ["101", "102", "103"]
 
-    rows = repo.list_documents(
-        base_id,
-        metadata_filter=DocumentMetadataFilter(report_tags=["公告"]),
-        limit=50,
-    )
+    rows = repo.list_documents(base_id, report_tags=["公告"], limit=50)
     assert sorted(item["source_record_id"] for item in rows) == ["101", "103", "104", "105"]
 
-    rows = repo.list_documents(
-        base_id,
-        metadata_filter=DocumentMetadataFilter(report_second_sources=["邮件"]),
-        limit=50,
-    )
+    rows = repo.list_documents(base_id, report_second_sources=["邮件"], limit=50)
     assert [item["source_record_id"] for item in rows] == ["103"]
 
-    rows = repo.list_documents(
-        base_id,
-        metadata_filter=DocumentMetadataFilter(report_title_contains="报告10"),
-        limit=50,
-    )
+    rows = repo.list_documents(base_id, report_title_contains="报告10", limit=50)
     assert len(rows) == 5
 
 
@@ -585,9 +572,8 @@ def test_publish_date_filter_excludes_null_dates(db):
     base_id, _ = _create_base_and_documents(repo)
     rows = repo.list_documents(
         base_id,
-        metadata_filter=DocumentMetadataFilter(
-            publish_date_from="2026-01-01", publish_date_to="2026-12-31"
-        ),
+        publish_date_from="2026-01-01",
+        publish_date_to="2026-12-31",
         limit=50,
     )
     assert "105" not in {item["source_record_id"] for item in rows}
