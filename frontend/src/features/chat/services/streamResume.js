@@ -136,16 +136,6 @@ export function resumeCandidates({ saved, flight, sessions, current }) {
   }
 }
 
-// 打开会话的调用方需要完整状态，区分运行中的流和已结束但仍可回放的流。
-export async function probeStreamState(sessionId, getStatus) {
-  if (!sessionId || typeof getStatus !== 'function') return null
-  try {
-    return await getStatus(sessionId)
-  } catch (e) {
-    return null
-  }
-}
-
 /**
  * 打开会话时的探活：**不依赖本地「在飞」记录**，直接问后端这一轮还在不在跑。
  *
