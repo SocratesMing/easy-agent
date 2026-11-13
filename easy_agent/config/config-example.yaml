@@ -290,7 +290,7 @@ knowledge:
 
 # 输入框提示词增强（独立调用；更改总时限时同步调整前端 35 秒等待上限）
 prompt_enhancement:
-  model: "deepseek"
+  model: "openai"
   timeout_seconds: 30
   max_input_chars: 10000
   max_output_chars: 20000

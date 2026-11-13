@@ -18,7 +18,7 @@
 | `token_usage` | 用量更新 | `input_tokens` / `output_tokens` / `reasoning_tokens` / `context_tokens` | chat |
 | `knowledge_evidence` | 知识库引用 | `evidence`、`warnings`（旧文档写的 `items` 仅为向后兼容的兼容字段） | knowledge / chat |
 | `approval_required` | HITL 中断 | `thread_id`、`action_requests`（全部待审批中断的操作，见下文）；恢复流另带 `blocks` | chat |
-| `done` | 正常结束 | `session_id`、`elapsed_time`、`usage`；`blocks` **仅审批续跑（resume）** 下发，作为前端替换工具块的权威快照；`EVENT_SPECS` 另登记可选 `message_id` / `finish_reason` / `already_completed` | 全部 |
+| `done` | 正常结束 | `session_id`、`elapsed_time`、`usage`；`blocks` **仅审批续跑（resume）** 下发，是这条消息全部 blocks 的权威快照（前端整体替换内存 blocks，所以思考 / 正文 / 工具结果都不截断，2026-11-12）；`EVENT_SPECS` 另登记可选 `message_id` / `finish_reason` / `already_completed` | 全部 |
 | `error` | 失败/取消 | `content` | 全部 |
 
 `done` **不携带** `title` / `content`：普通对话的正文由前端用流内 `content` 增量累积的块拼装，审批续跑时用 `done.blocks` 替换内存块；会话标题由服务端生成后在流结束时通过 `GET /agent/sessions` 回填；前端不应依赖 `done.title` 做本地即时更新。

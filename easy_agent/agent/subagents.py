@@ -28,9 +28,9 @@ DEFAULT_SUBAGENTS = [
     {
         "name": "office-writer",
         "description": (
-            "Generate or edit Word / Excel / PowerPoint files. "
-            "Read the SKILL.md of the matching docx / pptx / xlsx skill (paths are in "
-            "your skills list) before writing."
+            "Generate or edit Word, PowerPoint, and Excel files. "
+            "Read the microsoft-office skill (Python) before writing; use xlsx "
+            "when the task is a spreadsheet and that skill is enabled."
         ),
         "system_prompt": (
             "You produce office documents in the session workspace. "

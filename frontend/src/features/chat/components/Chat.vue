@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-container" :class="{ 'is-sidebar': isSidebar }"
+  <div class="chat-container" :class="{ 'is-sidebar': isSidebar }" @ea-visual-prompt="onVisualPrompt"
     @mouseover="previewCitation" @mouseout="leaveCitation" @focusin="previewCitation" @focusout="leaveCitation">
     <div class="chat-main">
     <div class="chat-content" :class="composerMode === 'center' ? 'is-center' : 'is-bottom'">
@@ -389,6 +389,12 @@ function onPresetCardClick(cardIndex) {
 }
 
 const composerRef = ref(null)
+
+// 交互组件里的 sendPrompt(text)（shared/visual/mount.js 派发的冒泡事件）：写进输入框，不自动发送
+function onVisualPrompt(event) {
+  const text = event && event.detail ? String(event.detail.text || '') : ''
+  if (text) composerRef.value?.setMessage(text)
+}
 
 function onSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId = '', knowledgeBaseIds = []) {
   composerMode.value = 'bottom'
