@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from easy_agent.knowledges import api as knowledge_api
+from easy_agent.knowledges.api import chat as knowledge_chat_api
 from easy_agent.knowledges.chat import chat_bridge
 from easy_agent.knowledges.chat import streaming as knowledge_streaming
 from easy_agent.knowledges.core.models import KnowledgePrincipal
@@ -66,11 +67,11 @@ async def test_ensure_chat_session_offloads_sync_helpers(monkeypatch):
         helper_calls.append("create")
         return session
 
-    monkeypatch.setattr(knowledge_api, "_current_panel_chat_session", fake_current)
-    monkeypatch.setattr(knowledge_api, "_create_panel_chat_session", fake_create)
+    monkeypatch.setattr(knowledge_chat_api, "_current_panel_chat_session", fake_current)
+    monkeypatch.setattr(knowledge_chat_api, "_create_panel_chat_session", fake_create)
     service = _RecordingService(base=SimpleNamespace(name="知识库"))
 
-    got_session, got_base = await knowledge_api._ensure_knowledge_chat_session(
+    got_session, got_base = await knowledge_chat_api._ensure_knowledge_chat_session(
         base_id="base-1", db=object(), service=service, principal=_principal()
     )
 
@@ -91,10 +92,10 @@ async def test_rotate_chat_session_offloads_create_helper(monkeypatch):
         recorded.append(threading.get_ident() != loop_thread)
         return session
 
-    monkeypatch.setattr(knowledge_api, "_create_panel_chat_session", fake_create)
+    monkeypatch.setattr(knowledge_chat_api, "_create_panel_chat_session", fake_create)
     service = _RecordingService(base=SimpleNamespace(name="知识库"))
 
-    response = await knowledge_api.rotate_easyagent_chat_session(
+    response = await knowledge_chat_api.rotate_easyagent_chat_session(
         base_id="base-1", db=object(), service=service, principal=_principal()
     )
 
@@ -119,11 +120,11 @@ async def test_cancel_answer_offloads_session_lookup(monkeypatch):
         def remove_session_agent(self, session_id):
             return None
 
-    monkeypatch.setattr(knowledge_api, "_current_panel_chat_session", fake_current)
-    monkeypatch.setattr(knowledge_api, "get_host_capabilities", lambda: _Capabilities())
+    monkeypatch.setattr(knowledge_chat_api, "_current_panel_chat_session", fake_current)
+    monkeypatch.setattr(knowledge_chat_api, "get_host_capabilities", lambda: _Capabilities())
     service = _RecordingService(base=SimpleNamespace(name="知识库"))
 
-    result = await knowledge_api.cancel_easyagent_answer(
+    result = await knowledge_chat_api.cancel_easyagent_answer(
         base_id="base-1", db=object(), service=service, principal=_principal()
     )
 

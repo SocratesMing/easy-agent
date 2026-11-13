@@ -320,7 +320,8 @@ def _endpoint_client(service, principal):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from easy_agent.knowledges.api import _service, get_knowledge_principal, router
+    from easy_agent.knowledges.api import get_knowledge_principal, router
+    from easy_agent.knowledges.api.deps import _service
 
     app = FastAPI()
     app.include_router(router)
