@@ -344,3 +344,13 @@ test('打开会话时的探活：只认后端 active，失败一律当不活跃'
   assert.equal(called, false)
   assert.equal(await shouldAttachOnOpen('s-1', null), false)
 })
+
+
+test('probeStreamState 保留 inactive/replayable 状态供打开会话回放，并吞掉探测失败', async () => {
+  const { probeStreamState } = await import('./streamResume.js')
+  const status = { active: false, replayable: true }
+  assert.equal(await probeStreamState('s1', async sid => { assert.equal(sid, 's1'); return status }), status)
+  assert.equal(await probeStreamState('s1', async () => { throw new Error('offline') }), null)
+  assert.equal(await probeStreamState('', () => { throw new Error('must not call') }), null)
+  assert.equal(await probeStreamState('s1', null), null)
+})

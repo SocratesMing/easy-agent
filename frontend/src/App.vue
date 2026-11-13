@@ -529,13 +529,6 @@ async function attachToStreamingSession(sessionId, opts = {}) {
   }
 }
 
-// 打开 / 切换会话时探一次后端流状态（与 sessionStorage 无关）。
-//
-// 为什么不能只靠 tryAttachLiveStream：它的候选来自 sessionStorage 的「在飞」记录，
-// 换浏览器、换标签页、重新登录后是空的，于是「后台还在跑、页面停在半截」的会话永远
-// 不会被接上。这里直接问后端这一轮还在不在，在的话就当成本页的进行中会话挂上去。
-//
-// 失败（会话刚被删 / 网络抖动）静默忽略：探活绝不能影响打开会话本身。
 async function probeLiveStream(sessionId) {
   if (!sessionId || isSessionDeleted(sessionId)) return
   const status = await probeStreamState(sessionId, getStreamStatus)

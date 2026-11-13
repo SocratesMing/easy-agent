@@ -1,5 +1,8 @@
 """打包 easy-agent 发布 zip：源码 + 前端构建产物 + skills + 依赖声明。
 
+源码目录只收集 Git index 中的文件；前端 ``dist`` 是唯一允许从工作区
+收集的构建产物。这样构建机上的本地配置、凭据和缓存不会随递归遍历进入发布物。
+
 用法: uv run scripts/release/publish_zip.py
 输出: releases/easy-agent-<git-sha>.zip
 """
@@ -7,13 +10,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import shutil
 import subprocess
 import sys
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = ROOT / "releases"
@@ -62,6 +64,36 @@ SKIP_INSIDE = {
     "docs": {"archive"},
 }
 
+# `frontend-vue2/dist` is a build artifact and is intentionally included even
+# though `dist/` is ignored by Git.  Every other directory is collected from
+# the Git index so a release cannot accidentally contain files from the
+# builder's working tree.
+GENERATED_INCLUDE_PATHS = {"frontend-vue2/dist"}
+
+# These names are local state rather than release inputs.  Keep this policy in
+# the packager instead of relying on `.gitignore`: filesystem walks do not
+# consult Git's ignore rules.
+LOCAL_ONLY_DIRS = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".cache",
+    "__pycache__",
+    "node_modules",
+}
+LOCAL_ONLY_FILES = {
+    ".env",
+    ".npmrc",
+    ".pypirc",
+    "credentials.json",
+    "mcp.json",
+    "secret.json",
+    "secrets.json",
+    "settings.local.json",
+}
+
 
 def _git_sha() -> str:
     try:
@@ -92,6 +124,26 @@ def _git_tag() -> str:
 def _should_skip(rel: str) -> bool:
     """根据路径判断是否跳过。rel 是相对 ROOT 的正斜杠路径。"""
     parts = rel.split("/")
+    name = parts[-1]
+
+    # Do this check for every include root, including explicitly generated
+    # directories.  A local cache or credential file must never be packaged
+    # merely because it happens to sit below an allowed directory.
+    if any(part in LOCAL_ONLY_DIRS for part in parts):
+        return True
+    if name in LOCAL_ONLY_FILES:
+        return True
+    if name.startswith(".env") and not name.endswith(".example"):
+        return True
+    if name.endswith(".local") or ".local." in name:
+        return True
+    if name == "config.yaml" or (
+        name.startswith("config.")
+        and name.endswith(".yaml")
+        and name != "config-example.yaml"
+    ):
+        return True
+
     for top, skip_set in SKIP_INSIDE.items():
         if parts[0] != top:
             continue
@@ -107,25 +159,71 @@ def _should_skip(rel: str) -> bool:
     return False
 
 
+def _git_tracked_files() -> set[str] | None:
+    """Return paths in the Git index, or ``None`` when ROOT is not a repo."""
+    try:
+        output = subprocess.check_output(
+            ["git", "ls-files", "--cached", "-z"],
+            cwd=ROOT,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    return {
+        path.decode("utf-8")
+        for path in output.split(b"\0")
+        if path
+    }
+
+
+def _relative(path: Path) -> str:
+    return str(path.relative_to(ROOT)).replace("\\", "/")
+
+
+def _iter_directory_files(path: Path) -> Iterable[Path]:
+    for sub in path.rglob("*"):
+        if sub.is_file():
+            yield sub
+
+
 def collect_files() -> list[Path]:
-    files: list[Path] = []
+    files_by_rel: dict[str, Path] = {}
+    tracked = _git_tracked_files()
     for item in INCLUDE_PATHS:
         p = ROOT / item
         if not p.exists():
             print(f"  [warn] 跳过不存在: {item}")
             continue
         if p.is_file():
-            files.append(p)
+            rel = _relative(p)
+            if not _should_skip(rel) and (tracked is None or rel in tracked):
+                files_by_rel[rel] = p
             continue
-        # 目录
-        for sub in p.rglob("*"):
-            if not sub.is_file():
-                continue
-            rel = str(sub.relative_to(ROOT)).replace("\\", "/")
+
+        # Generated assets are deliberately allowed to come from the working
+        # tree.  Source directories use only indexed files; this is what keeps
+        # ignored local config and caches out of a release.
+        allow_untracked = item in GENERATED_INCLUDE_PATHS
+        for sub in _iter_directory_files(p):
+            rel = _relative(sub)
             if _should_skip(rel):
                 continue
-            files.append(sub)
-    return files
+            if not allow_untracked and tracked is not None and rel not in tracked:
+                continue
+            files_by_rel[rel] = sub
+    return [files_by_rel[rel] for rel in sorted(files_by_rel)]
+
+
+def validate_package_files(files: Iterable[Path]) -> None:
+    """Reject a manifest that contains known local-only paths.
+
+    Collection filters these paths already; this second check protects future
+    changes to the include list and makes the release boundary testable.
+    """
+    violations = sorted(_relative(path) for path in files if _should_skip(_relative(path)))
+    if violations:
+        details = "\n".join(f"  - {path}" for path in violations)
+        raise RuntimeError(f"release package contains local-only files:\n{details}")
 
 
 def sha256_of_zip(path: Path) -> str:
@@ -151,6 +249,7 @@ def main() -> int:
 
     print(f"收集文件中... (root={ROOT})")
     files = collect_files()
+    validate_package_files(files)
     print(f"  待打包文件: {len(files)}")
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:

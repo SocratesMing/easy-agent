@@ -7,56 +7,6 @@
  *   `[data-v] .x` 正常生效，内网宿主的工具链下整组规则失效。这里用普通选择器、限定在
  *   .easy-agent-root 内，与工具链版本无关。
  */
-
-/* ── 来源卡片（AI 回复里「标题 + 链接」独立行，见 shared/markdown/index.js beautifySourceLinks）──
-   对话正文、思考过程、用户气泡、侧边栏都会出现，统一在这里定义。
-   [href] 把优先级抬到 0,3,1，压过各组件 `.xxx[data-v] a { … }` 的普通链接样式。 */
-.easy-agent-root .msg-source-cards {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  max-width: 100%;
-  margin: 3px 0;
-}
-
-.easy-agent-root a.msg-source-card[href] {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  max-width: 100%;
-  margin: 0;
-  padding: 7px 12px;
-  border: 1px solid rgba(37, 99, 235, 0.28);
-  border-radius: 10px;
-  background: rgba(37, 99, 235, 0.05);
-  color: #2563eb;
-  font-weight: 500;
-  line-height: 1.4;
-  text-decoration: none;
-  cursor: pointer;
-  overflow-wrap: anywhere;
-  transition: background 0.15s ease-out, border-color 0.15s ease-out;
-}
-
-.easy-agent-root a.msg-source-card[href]:hover {
-  background: rgba(37, 99, 235, 0.1);
-  border-color: rgba(37, 99, 235, 0.5);
-  text-decoration: none;
-}
-
-.easy-agent-root a.msg-source-card[href] svg {
-  flex-shrink: 0;
-  width: 15px;
-  height: 15px;
-}
-
-.easy-agent-root[data-theme="dark"] a.msg-source-card[href] {
-  background: rgba(96, 165, 250, 0.1);
-  border-color: rgba(96, 165, 250, 0.35);
-}
-
-/* ── 文件预览里的 Markdown 文档（FilePreview.vue 的 .preview-markdown > .markdown-body）── */
 .easy-agent-root .preview-markdown .markdown-body {
   max-width: 900px;
   margin: 0 auto;

@@ -57,6 +57,7 @@ from easy_agent.services.agents import (
     tool_scope,
 )
 from easy_agent.services.streaming import runs as run_registry
+from easy_agent.services.streaming.outcome import StreamOutcome
 from easy_agent.services.agents.manager import (
     get_agent_config as _get_agent_config,
     get_or_create_agent_for_session,
@@ -422,6 +423,7 @@ class TurnPlan:
     parsed_content: str
     knowledge_chat: Any
     event_stream: AsyncGenerator[str, None]
+    outcome: StreamOutcome
 
 
 @dataclass(frozen=True)
@@ -445,6 +447,7 @@ class ResumePlan:
     resume_thread: str
     run_id: str
     event_stream: AsyncGenerator[str, None]
+    outcome: StreamOutcome
 
 
 async def prepare_turn(
@@ -744,6 +747,7 @@ async def prepare_turn(
         request_json=request.model_dump_json(),
     )
 
+    outcome = StreamOutcome()
     event_stream = chat_stream_generator(
         request=request,
         db=repo.database,
@@ -759,6 +763,7 @@ async def prepare_turn(
         context_prefix=knowledge_chat.context,
         initial_events=knowledge_chat.initial_events,
         assistant_metadata=knowledge_chat.assistant_metadata,
+        outcome=outcome,
     )
     return TurnPlan(
         session_id=session_id,
@@ -770,6 +775,7 @@ async def prepare_turn(
         parsed_content=parsed_content,
         knowledge_chat=knowledge_chat,
         event_stream=event_stream,
+        outcome=outcome,
     )
 
 
@@ -879,6 +885,7 @@ async def prepare_resume(
         ),
     )
 
+    outcome = StreamOutcome()
     event_stream = resume_stream_generator(
         db=repo.database,
         agent=agent,
@@ -888,6 +895,7 @@ async def prepare_resume(
         username=username,
         message_id=request.message_id,
         handle=thread_id,
+        outcome=outcome,
     )
     return ResumePlan(
         session_id=session_id,
@@ -896,4 +904,5 @@ async def prepare_resume(
         resume_thread=resume_thread,
         run_id=run_id,
         event_stream=event_stream,
+        outcome=outcome,
     )

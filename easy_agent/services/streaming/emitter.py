@@ -20,19 +20,22 @@ from __future__ import annotations
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Mapping
 from typing import Any
 
+from easy_agent.services.streaming.outcome import StreamOutcome
 from easy_agent.services.streaming.sse import SSEEvent, format_sse, validate_event
 
 
 class SSEEmitter:
     """事件 frame 生产器：一个流一个实例（或复用无状态默认值）。"""
 
-    __slots__ = ("_session_id", "_validate")
+    __slots__ = ("_session_id", "_validate", "_outcome")
 
     def __init__(
-        self, session_id: str | None = None, *, validate: bool = False
+        self, session_id: str | None = None, *, validate: bool = False,
+        outcome: StreamOutcome | None = None,
     ) -> None:
         self._session_id = session_id
         self._validate = validate
+        self._outcome = outcome
 
     @property
     def session_id(self) -> str | None:
@@ -43,6 +46,9 @@ class SSEEmitter:
         data = dict(payload)
         if self._validate:
             validate_event(data)
+        # 在序列化边界记录结构化失败，覆盖快捷 error() 和 processor 的 error 事件。
+        if self._outcome is not None and data.get("type") == SSEEvent.ERROR:
+            self._outcome.fail(data.get("content") or "处理失败")
         return format_sse(data)
 
     def emit(self, event_type: str, /, **fields: Any) -> str:

@@ -763,3 +763,40 @@ def test_diagnostics_tolerates_proc_without_diag_fields(caplog):
 
     logs = _diag_logs(caplog, _Bare())
     assert any("finish_reason=未返回" in m for m in logs)
+
+
+# ── 正文 / 思考不丢、不截断（2026-11-12）──────────────────────────────────
+
+
+def test_content_sharing_chunk_with_tool_call_chunks_is_kept():
+    """正文和工具分片同包到达时，文字仍计入正文：界面事件、累计正文和 blocks 都不能丢。"""
+    p = StreamProcessor(sid="s1")
+    events = p.handle("messages", (AIMessageChunk(content="我先看一下表格。", tool_call_chunks=[
+        {"name": "read_file", "args": "", "id": "tc1", "index": 0}
+    ]), {}))
+    assert [e["content"] for e in events if e["type"] == "content"] == ["我先看一下表格。"]
+    assert p.accumulated_response == "我先看一下表格。"
+    assert [b["content"] for b in p.blocks if b["type"] == "content"] == ["我先看一下表格。"]
+
+
+def test_non_str_content_with_tool_call_chunks_is_still_skipped():
+    """内容块列表（非字符串 content）带工具分片时仍跳过，沿用原行为。"""
+    p = StreamProcessor(sid="s1")
+    events = p.handle("messages", (AIMessageChunk(content=[{"type": "text", "text": "x"}], tool_call_chunks=[
+        {"name": "ls", "args": "", "id": "tc1", "index": 0}
+    ]), {}))
+    assert not any(e["type"] == "content" for e in events)
+    assert p.accumulated_response == ""
+
+
+def test_resume_block_snapshot_is_not_truncated():
+    """审批续跑的 blocks 快照会整体替换前端内存 blocks：思考、正文、工具结果都要完整。"""
+    p = StreamProcessor(sid="s1")
+    p.handle("messages", (AIMessageChunk(content="", additional_kwargs={"reasoning_content": "思" * 5000}), {}))
+    p.handle("messages", (AIMessageChunk(content="答" * 12000), {}))
+    p.handle("updates", {"model": {"messages": [AIMessage(
+        content="", tool_calls=[{"name": "read_file", "args": {"file_path": "a.md"}, "id": "tc1"}],
+    )]}})
+    p.handle("updates", {"tools": {"messages": [ToolMessage(content="行" * 6000, tool_call_id="tc1", name="read_file")]}})
+    sizes = {b["type"]: len(b.get("content") or b.get("result") or "") for b in p._sse_blocks()}
+    assert sizes == {"thinking": 5000, "content": 12000, "tool_call": 6000}

@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-container" :class="{ 'is-sidebar': isSidebar }"
+  <div class="chat-container" :class="{ 'is-sidebar': isSidebar }" @ea-visual-prompt="onVisualPrompt"
     @mouseover="previewCitation" @mouseout="leaveCitation" @focusin="previewCitation" @focusout="leaveCitation">
     <div class="chat-main">
     <div class="chat-content" :class="composerMode === 'center' ? 'is-center' : 'is-bottom'">
@@ -354,6 +354,13 @@ export default {
   beforeDestroy() {
   },
   methods: {
+    // 交互组件里的 sendPrompt(text)（shared/visual/mount.js 派发的冒泡事件）：写进输入框，不自动发送
+    onVisualPrompt(event) {
+      const text = event && event.detail ? String(event.detail.text || '') : ''
+      const input = this.$refs.composerRef
+      // applyExpertPrompt 是输入框现成的「外部预填」入口：写入文字、调整高度并聚焦
+      if (text && input && typeof input.applyExpertPrompt === 'function') input.applyExpertPrompt(text)
+    },
     focusComposer() {
       const c = this.$refs.composerRef
       if (c) c.focusInput()

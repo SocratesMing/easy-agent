@@ -13,6 +13,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -22,6 +23,9 @@ import easy_agent.api.chat as chat_api
 import easy_agent.services.agents.chat_turn as chat_turn
 from easy_agent.services.streaming import runs as run_registry
 from easy_agent.services.streaming import orchestrator
+from easy_agent.services.streaming.emitter import SSEEmitter
+from easy_agent.services.streaming.outcome import StreamOutcome
+from easy_agent.services.streaming.sse import SSE_HEARTBEAT_FRAME
 import easy_agent.services.experts.runtime as expert_runtime
 from easy_agent.models.db import SessionModel
 from easy_agent.db.repositories import agent_runs as agent_runs_repo
@@ -123,7 +127,7 @@ def test_chat_stream_exception_marks_failed_and_emits_error(client, db, monkeypa
 
 @pytest.mark.parametrize("exception_type", [httpx.ReadError, RuntimeError, asyncio.TimeoutError])
 def test_chat_error_frame_marks_failed_and_releases_lock(client, db, monkeypatch, exception_type):
-    """真实异常编排：保留半截回复和中性说明，error 帧使 run 失败并释放锁。"""
+    """真实异常编排：无需反解析 SSE，仍保留半截回复、记失败并释放锁。"""
     sid = "sess-run-error-frame"
     _seed_session(db, sid)
 
@@ -138,6 +142,11 @@ def test_chat_error_frame_marks_failed_and_releases_lock(client, db, monkeypatch
     async def fake_agent(*args, **kwargs):
         return SimpleNamespace(workspace_dir=None, config=None, agent=InterruptedGraph())
 
+    def unexpected_parse(*args, **kwargs):
+        raise AssertionError("运行结果不应通过反解析 SSE JSON 获取")
+
+    # 仅禁止驱动层的旧解析入口；事件落库和断线回放仍需要合法解析 SSE。
+    monkeypatch.setattr(chat_api, "parse_sse_frame", unexpected_parse, raising=False)
     monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_agent)
     resp = client.post("/agent/chat/stream", json={
         "message": "hi", "session_id": sid, "message_id": "msg-error-frame",
@@ -237,13 +246,105 @@ async def test_cancelled_stream_marks_run_cancelled(db, monkeypatch, swallow_can
     assert run["lease_until"] == ""
 
 
-def test_resume_creates_run_with_decisions(client, db, monkeypatch):
+@pytest.mark.parametrize("case, status, error", [
+    ("content", "completed", ""),
+    ("tool_failure", "completed", ""),
+    ("approval", "completed", ""),
+    ("empty_error", "failed", "处理失败"),
+    ("error_then_done", "failed", "模型中断"),
+])
+async def test_driver_uses_shared_outcome_and_forwards_frames(monkeypatch, case, status, error):
+    """驱动只转发帧；空错误有兜底，工具失败不等于 run 失败，done 不抹掉错误。"""
+    outcome = StreamOutcome()
+    emitter = SSEEmitter("s1", outcome=outcome)
+    frames = []
+    record_end = AsyncMock()
+    unregister = AsyncMock()
+    monkeypatch.setattr(chat_api, "aregister_stream_task", _async_noop)
+    monkeypatch.setattr(chat_api, "aunregister_stream_task", unregister)
+    monkeypatch.setattr(chat_api, "_record_run_end", record_end)
+    received = []
+    hub = SimpleNamespace(broadcast=received.append, close=lambda: received.append(None))
+
+    async def stream():
+        # 注释帧不是 JSON，驱动无需知道其编码或内容。
+        frames.append(SSE_HEARTBEAT_FRAME)
+        yield frames[-1]
+        if case == "content":
+            payload = {"type": "content", "content": '正文中提到 "type": "error"'}
+        elif case == "tool_failure":
+            payload = {"type": "tool_result", "success": False, "result": "工具失败"}
+        elif case == "approval":
+            payload = {"type": "approval_required", "thread_id": "s1-m1", "action_requests": []}
+        else:
+            payload = {"type": "error", "content": "" if case == "empty_error" else "模型中断"}
+        frames.append(emitter.frame(payload))
+        yield frames[-1]
+        if case == "error_then_done":
+            frames.append(emitter.done())
+            yield frames[-1]
+
+    await chat_api._drive_stream(
+        stream(), hub, asyncio.Queue(), emitter, "s1", "s1", None, None,
+        object(), None, "run1", outcome=outcome,
+    )
+
+    assert received == [*frames, None]
+    assert outcome.error == error
+    assert record_end.await_args.args[1:4] == ("run1", status, error)
+    unregister.assert_awaited_once()
+
+
+@pytest.mark.parametrize("swallow_cancel", [False, True])
+async def test_lease_loss_marks_failed_even_if_generator_swallows_cancel(monkeypatch, swallow_cancel):
+    outcome = StreamOutcome()
+    emitter = SSEEmitter("s1", outcome=outcome)
+    started = asyncio.Event()
+    record_end = AsyncMock()
+    unregister = AsyncMock()
+    monkeypatch.setattr(chat_api, "aregister_stream_task", _async_noop)
+    monkeypatch.setattr(chat_api, "aunregister_stream_task", unregister)
+    monkeypatch.setattr(chat_api, "_record_run_end", record_end)
+
+    async def lose_lease(session_id, sid, renew_stream, runs, run_id, owner_task, lease_lost):
+        await started.wait()
+        lease_lost.set()
+        owner_task.cancel()
+
+    monkeypatch.setattr(chat_api, "_stream_heartbeat", lose_lease)
+    received = []
+    hub = SimpleNamespace(broadcast=received.append, close=lambda: received.append(None))
+
+    async def stream():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            if not swallow_cancel:
+                raise
+            yield emitter.error("请求被取消")
+
+    worker = asyncio.create_task(chat_api._drive_stream(
+        stream(), hub, asyncio.Queue(), emitter, "s1", "s1", None, None,
+        object(), None, "run1", outcome=outcome,
+    ))
+    await asyncio.wait_for(asyncio.gather(worker, return_exceptions=True), timeout=5)
+
+    assert record_end.await_args.args[1:4] == ("run1", "failed", chat_api._LEASE_LOST_MESSAGE)
+    assert received[-1] is None
+    unregister.assert_awaited_once()
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_resume_creates_run_with_decisions(client, db, monkeypatch, failed):
     sid = "sess-run-resume"
     _seed_session(db, sid)
     _patch_agent(monkeypatch)
 
     async def fake_resume(**kwargs):
-        yield 'data: {"type": "done"}\n\n'
+        assert isinstance(kwargs["outcome"], StreamOutcome)
+        emitter = SSEEmitter(sid, outcome=kwargs["outcome"])
+        yield emitter.error("恢复失败") if failed else emitter.done()
 
     monkeypatch.setattr(chat_turn, "resume_stream_generator", fake_resume)
 
@@ -260,7 +361,8 @@ def test_resume_creates_run_with_decisions(client, db, monkeypatch):
     assert resp.status_code == 200
     run = agent_runs_repo.get_run(db, new_run_id(sid, "msg-approve"))
     assert run is not None
-    assert run["status"] == "completed"
+    assert run["status"] == ("failed" if failed else "completed")
+    assert run["error"] == ("恢复失败" if failed else "")
     payload = json.loads(run["request_json"])
     assert payload["session_id"] == sid
     assert payload["decisions"] == [{"type": "approve"}]

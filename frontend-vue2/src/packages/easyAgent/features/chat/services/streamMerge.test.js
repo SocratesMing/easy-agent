@@ -98,6 +98,20 @@ for (const [name, createHandler] of [['sidebar', createStreamChunkHandler], ['pa
     })
   }
 
+  test(`${name}: 临时工具 ID 升级后 Vue2 观察者收到完成状态`, async (t) => {
+    const h = harness(createHandler)
+    t.after(() => h.vm.$destroy())
+    const seen = []
+    h.vm.$watch(() => JSON.stringify(h.vm.messages[0].blocks.map(b => [b.id, b.streaming, b.result])), value => seen.push(value))
+    h.onChunk({ type: 'tool_call_delta', tool_name: 'write_file', step: 1 })
+    await Vue.nextTick()
+    assert.equal(seen.at(-1), JSON.stringify([['tool-write_file', true, '']]))
+    h.onChunk({ type: 'tool_call', tool_name: 'write_file', tool_call_id: 'c1', step: 1 })
+    h.onChunk({ type: 'tool_result', tool_name: 'write_file', tool_call_id: 'c1', result: 'ok', step: 1 })
+    await Vue.nextTick()
+    assert.equal(seen.at(-1), JSON.stringify([['c1', false, 'ok']]))
+  })
+
   test(`${name}: done 正文从全部内容块拼回`, (t) => {
     const h = harness(createHandler)
     t.after(() => h.vm.$destroy())

@@ -49,9 +49,9 @@ test('小白名单标签仍可用，文件预览 rawHtml=allow 保持作者写�
   assert.ok(renderAllow('<div> 和 <span> 有什么区别？').includes('<div>'))
 })
 
-// ── 第 6 项：来源卡片误判 ────────────────────────────────────────────────
+// ── 第 6 项：来源行收成 markdown 链接 ────────────────────────────
 
-test('命令行、完整句子、表格数据行不再被整行改写成来源卡片', () => {
+test('命令行、完整句子、表格数据行不再被整行改写成命名链接', () => {
   for (const md of [
     '克隆仓库：git clone https://github.com/foo/bar.git',
     '安装方法参考官方文档：https://docs.python.org/3/install/',
@@ -65,12 +65,16 @@ test('命令行、完整句子、表格数据行不再被整行改写成来源�
   assert.ok(!table.includes('msg-source-card'), table)
 })
 
-test('真正的来源行仍生成卡片，标题与地址完整保留', () => {
+test('标题加裸 URL 收成 markdown 链接，已有的 markdown 链接保持文字链接', () => {
   const html = render('东方财富收评 https://finance.eastmoney.com/a/1.html')
-  assert.ok(html.includes(`<a class="msg-source-card" href="https://finance.eastmoney.com/a/1.html" ${NEW_TAB}`), html)
-  assert.ok(html.includes('<span class="msg-source-card-title">东方财富收评</span>'), html)
-  assert.ok(render('[独立行链接](https://example.com/standalone)').includes('class="msg-source-card"'))
-  assert.ok(render('凤凰财经/中国证券报 https://a.com/x').includes('class="msg-source-card"'))
+  assert.ok(html.includes(`<a href="https://finance.eastmoney.com/a/1.html" ${NEW_TAB}>东方财富收评</a>`), html)
+  assert.ok(!html.includes('msg-source-card'), html)
+  const standalone = render('[独立行链接](https://example.com/standalone)')
+  assert.ok(standalone.includes(`<a href="https://example.com/standalone" ${NEW_TAB}>独立行链接</a>`), standalone)
+  assert.ok(!standalone.includes('msg-source-card'))
+  const named = render('凤凰财经/中国证券报 https://a.com/x')
+  assert.ok(named.includes(`<a href="https://a.com/x" ${NEW_TAB}>凤凰财经/中国证券报</a>`), named)
+  assert.ok(!named.includes('msg-source-card'))
 })
 
 // ── 第 7 项：emoji 短代码误伤 ────────────────────────────────────────────
