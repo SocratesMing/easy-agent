@@ -164,6 +164,22 @@ checkpoint:
 personnel:
   self_registration_enabled: false   # 自助注册：true 时登录页显示注册入口
   passwordless_login_enabled: false  # 门户免密登录：true 时支持 URL 直登与 /login-passwordless（admin 不支持）
+  # 人员接口同步：等外部接口信息确定后再取消注释并填写；未配置时「更新人员信息」按钮返回 422。
+  # sync:
+  #   enabled: ${PERSONNEL_SYNC_ENABLED:-false}
+  #   source_name: "${PERSONNEL_SYNC_SOURCE:-接口同步}"   # 写入人员信息来源，便于追溯
+  #   url: ${PERSONNEL_SYNC_URL:-}                        # 外部人员接口地址
+  #   token: ${PERSONNEL_SYNC_TOKEN:-}                    # 访问令牌；留空则不带鉴权头
+  #   token_header: Authorization
+  #   token_prefix: "Bearer "
+  #   timeout_seconds: 20
+  #   items_path: "data.items"          # 响应中人员数组的点号路径
+  #   field_mapping: {}                 # 本地字段 -> 外部字段名；未列出的字段按同名读取
+  #   page:
+  #     enabled: false                  # 外部接口分页时开启，按 items 数量判断是否继续翻页
+  #     param: page
+  #     size_param: page_size
+  #     size: 500
 
 # ===== 分布式锁（多实例部署）=====
 distributed_lock:

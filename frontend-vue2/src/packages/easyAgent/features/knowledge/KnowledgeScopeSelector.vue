@@ -323,5 +323,5 @@ onUnmounted(() => {
 .scope-manage{width:100%;padding:8px 10px;border:none;border-radius:8px;background:transparent;font-size:13px;color:var(--text-secondary,#64748b);cursor:pointer;text-align:center}
 .scope-manage:hover{background:rgba(15,23,42,.05)}
 .scope-popover-enter-active,.scope-popover-leave-active{transition:.18s}
-.scope-popover-enter-from,.scope-popover-leave-to{opacity:0;transform:translateY(-5px) scale(.98);transform-origin:top left}
+.scope-popover-enter,.scope-popover-leave-to{opacity:0;transform:translateY(-5px) scale(.98);transform-origin:top left}
 </style>

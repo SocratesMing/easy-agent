@@ -63,7 +63,7 @@ def test_templates_have_identical_key_set_count_and_order():
     for (keys, _values, _groups, _commented), path in zip(parsed, FILES):
         assert len(keys) == len(set(keys)), f"{path.name} 存在重复键"
     assert parsed[0][0] == parsed[1][0] == parsed[2][0]
-    assert len(parsed[0][0]) == 121, "基线变量数应为 121"
+    assert len(parsed[0][0]) == 132, "基线变量数应为 132"
     assert parsed[0][2] == parsed[1][2] == parsed[2][2], "分组顺序不一致"
 
 

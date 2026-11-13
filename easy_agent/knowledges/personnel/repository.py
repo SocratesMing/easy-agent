@@ -223,10 +223,13 @@ def delete_personnel(db: Database, user_id: str) -> dict:
     return record
 
 
-def _import_personnel_transaction(
+def _upsert_personnel_transaction(
     db: Database, items: list[PersonnelCreateRequest]
 ) -> tuple[int, int]:
-    """Upsert a fully validated workbook in one database transaction."""
+    """按账号在单个事务内新增/更新人员。
+
+    调用方负责先完成字段校验与 admin 过滤，这里只处理落库与冲突检测。
+    """
 
     with db.get_connection() as connection:
         cursor = connection.cursor()
@@ -292,10 +295,10 @@ def _import_personnel_transaction(
         return created, updated
 
 
-def import_personnel(db: Database, items: list[PersonnelCreateRequest]) -> tuple[int, int]:
-    """Upsert a workbook atomically and translate database races to HTTP 409."""
+def upsert_personnel(db: Database, items: list[PersonnelCreateRequest]) -> tuple[int, int]:
+    """Excel 导入与接口同步共用的 upsert 入口，数据库竞态统一翻译为 HTTP 409。"""
 
     try:
-        return _import_personnel_transaction(db, items)
+        return _upsert_personnel_transaction(db, items)
     except (sqlite3.IntegrityError, pymysql.IntegrityError) as exc:
         raise PersonnelConflictError("账号或员工编号与现有人员冲突") from exc

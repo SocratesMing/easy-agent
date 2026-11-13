@@ -42,6 +42,7 @@ const MAX_NEW_FILE_LINES = 800
  *    实为 3376 行而预算未同步，按实测值更新 3370 → 3376（本次权限设置改动未触及 App.vue）。
  *  2026-11-13 同一批上传分多次选择时过滤重复文件（pickAcceptable 先去重再校验限额）后
  *    按实测值更新：ChatInput 4824 → 4841。
+ *  2026-11-13 知识库工作台精简后按实测值下调：KnowledgeWorkbench 1922 → 1779。
  */
 const LINE_BUDGET = {
   'App.vue': 3376,
@@ -56,7 +57,7 @@ const LINE_BUDGET = {
   'features/chat/components/SessionList.vue': 1040,
   'features/workspace/components/WorkspacePanel.vue': 978,
   'features/tasks/components/ScheduledTasksPanel.vue': 842,
-  'features/knowledge/KnowledgeWorkbench.vue': 1922,
+  'features/knowledge/KnowledgeWorkbench.vue': 1779,
 }
 
 /** 组件里已经存在的 api 直连（存量，只允许删） */

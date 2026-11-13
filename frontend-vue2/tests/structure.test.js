@@ -59,6 +59,8 @@ const MAX_NEW_FILE_LINES = 800
  *   KnowledgeWorkbench 1921 → 1926、PersonnelManagement 1145 → 1165。
  * 2026-11-13 同一批上传分多次选择时过滤重复文件（pickAcceptable 先去重再校验限额）
  * 后按实测值更新：ChatInput 3688 → 3721。
+ * 2026-11-13 知识库工作台精简（抽权限树/导入菜单组件 + 清理死代码）：
+ *   KnowledgeWorkbench 1926 → 1782。
  */
 const LINE_BUDGET = {
   // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
@@ -80,7 +82,7 @@ const LINE_BUDGET = {
   [`${MOD}features/chat/components/SessionList.vue`]: 1072,
   [`${MOD}features/tasks/components/ScheduledTasksPanel.vue`]: 967,
   [`${MOD}features/workspace/components/WorkspacePanel.vue`]: 954,
-  [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1926,
+  [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1782,
   [`${MOD}features/personnel/PersonnelManagement.vue`]: 1165,
   // 页面级深色覆盖（原 App.vue 非 scoped 样式块，只允许变短）
   [`${MOD}styles/theme-dark.css`]: 1195,

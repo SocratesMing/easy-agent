@@ -115,6 +115,32 @@ def effective_role(
     return max(candidates, key=_ROLE_RANK.__getitem__)
 
 
+def resolve_role(
+    base: Mapping[str, object],
+    principal: KnowledgePrincipal,
+    permissions: Iterable[Mapping[str, object]],
+    *,
+    super_admin: bool = False,
+) -> KnowledgeBaseRole | None:
+    """在单库授权之上叠加超级管理员与公共空间默认可见规则。
+
+    超级管理员对公共（team）空间直通 MANAGER；公共空间默认对本部门账号
+    只读可见（勾选名单模式下默认可见让位于勾选人员）。服务层与 Agent 原文
+    工具都必须走这里，避免两套角色口径分叉。
+    """
+
+    permission_rows = list(permissions)
+    if str(base.get("space_type")) != KnowledgeBaseVisibility.TEAM.value:
+        return effective_role(base, principal, permission_rows)
+    if super_admin:
+        return KnowledgeBaseRole.MANAGER
+    same_department = bool(principal.department_id) and (
+        principal.department_id == str(base.get("department_id") or "").strip()
+    )
+    team_viewer = same_department and not _base_access_restricted(base)
+    return effective_role(base, principal, permission_rows, team_viewer=team_viewer)
+
+
 def allowed_actions(role: KnowledgeBaseRole | None) -> list[AllowedAction]:
     """按角色映射允许的操作清单（排序后返回）。"""
 
@@ -132,4 +158,5 @@ def allowed_actions(role: KnowledgeBaseRole | None) -> list[AllowedAction]:
 __all__ = [
     "allowed_actions",
     "effective_role",
+    "resolve_role",
 ]

@@ -321,10 +321,57 @@ class RagflowClient:
         """剔除值为 None 的可选字段。"""
         return {key: value for key, value in body.items() if value is not None}
 
+    # 查询参数与 body 的清理语义完全相同，保留独立名称以兼容既有调用点。
+    _clean_query = _clean_body
+
     @staticmethod
-    def _clean_query(params: dict[str, Any]) -> dict[str, Any]:
-        """剔除值为 None 的查询参数。"""
-        return {key: value for key, value in params.items() if value is not None}
+    def _documents_path(dataset_id: str) -> str:
+        """知识库文档集合路径。"""
+        return RagflowClient._format_path(
+            "/api/v1/datasets/{dataset_id}/documents", dataset_id=dataset_id
+        )
+
+    @staticmethod
+    def _page_query(
+        page: int | None,
+        page_size: int | None,
+        *,
+        orderby: str | None = None,
+        desc: bool | None = None,
+        name: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """构造分页查询参数（剔除值为 None 的项）。"""
+        query: dict[str, Any] = {
+            "page": page,
+            "page_size": page_size,
+            "orderby": orderby,
+            "desc": desc,
+            "name": name,
+        }
+        if extra:
+            query.update(extra)
+        return RagflowClient._clean_body(query)
+
+    @staticmethod
+    def _require_all(values: tuple[str, ...], message: str) -> None:
+        """必填字段校验：任一为空即抛出 ValueError。"""
+        if any(not value for value in values):
+            raise ValueError(message)
+
+    @staticmethod
+    def _expect_dict(data: Any, message: str) -> dict[str, Any]:
+        """断言响应 data 为对象，否则抛出契约异常。"""
+        if not isinstance(data, dict):
+            raise RagflowContractError(message)
+        return data
+
+    @staticmethod
+    def _expect_list(data: Any, message: str) -> list[dict[str, Any]]:
+        """断言响应 data 为数组，否则抛出契约异常。"""
+        if not isinstance(data, list):
+            raise RagflowContractError(message)
+        return data
 
     @staticmethod
     def _require_ids(values: list[str], label: str) -> None:
@@ -363,11 +410,10 @@ class RagflowClient:
             user_defined_model_name: 用户自定义唯一名称，缺省同 model_name。
             x_custom_device: 仓颉特定显卡路由头，不涉及请忽略。
         """
-        for field in (model_factory, model_type, model_name, api_base):
-            if not field:
-                raise ValueError(
-                    "model_factory/model_type/model_name/api_base 均为必填"
-                )
+        self._require_all(
+            (model_factory, model_type, model_name, api_base),
+            "model_factory/model_type/model_name/api_base 均为必填",
+        )
         if model_type == "chat" and max_tokens is None:
             raise ValueError("添加 chat 类型模型时必须传入 max_tokens")
         body = self._clean_body(
@@ -417,9 +463,7 @@ class RagflowClient:
     async def get_global_models(self) -> dict[str, Any]:
         """查看系统全局模型配置（文档 0.4：GET /api/v1/global_models）。"""
         data = await self._request("GET", "/api/v1/global_models")
-        if not isinstance(data, dict):
-            raise RagflowContractError("RAGFlow 全局模型配置格式不符")
-        return data
+        return self._expect_dict(data, "RAGFlow 全局模型配置格式不符")
 
     async def set_global_models(
         self,
@@ -538,22 +582,18 @@ class RagflowClient:
         Returns:
             ``{"datasets": [...], "total": n}`` 形式的 data 字段。
         """
-        query = self._clean_query(
-            {
-                "page": page,
-                "page_size": page_size,
-                "orderby": orderby,
-                "desc": desc,
-                "name": name,
-                "id": dataset_id,
-            }
+        query = self._page_query(
+            page,
+            page_size,
+            orderby=orderby,
+            desc=desc,
+            name=name,
+            extra={"id": dataset_id},
         )
         data = await self._request("GET", "/api/v1/datasets", query=query)
         if isinstance(data, list):
             return {"datasets": data, "total": len(data)}
-        if not isinstance(data, dict):
-            raise RagflowContractError("RAGFlow 知识库列表格式不符")
-        return data
+        return self._expect_dict(data, "RAGFlow 知识库列表格式不符")
 
     # ─────────────────────────── 2 知识库内的文档管理 ───────────────────────────
 
@@ -592,9 +632,7 @@ class RagflowClient:
                     else metadata
                 )
             }
-        path = self._format_path(
-            "/api/v1/datasets/{dataset_id}/documents", dataset_id=dataset_id
-        )
+        path = self._documents_path(dataset_id)
         data = await self._request("POST", path, files=multipart, form=form)
         if not isinstance(data, list) or not data:
             raise RagflowContractError("RAGFlow 上传文档未返回文档列表")
@@ -626,9 +664,10 @@ class RagflowClient:
             client_ip / client_port: 客户端 IP/端口，不传使用服务端默认值。
         """
         self._require_non_empty(dataset_id, "dataset_id")
-        for field in (batch_id, file_part, object_name):
-            if not field:
-                raise ValueError("batch_id/file_part/object_name 为必填字段")
+        self._require_all(
+            (batch_id, file_part, object_name),
+            "batch_id/file_part/object_name 为必填字段",
+        )
         body = self._clean_body(
             {
                 "serviceId": service_id,
@@ -734,26 +773,19 @@ class RagflowClient:
         # Ragflow 契约：page_size 上限 100，超出直接 code=100 拒绝
         if page_size is not None and page_size > 100:
             page_size = 100
-        query = self._clean_query(
-            {
-                "page": page,
-                "page_size": page_size,
-                "orderby": orderby,
-                "desc": desc,
-                "keywords": keywords,
-                "id": document_id,
-                "name": name,
-            }
+        query = self._page_query(
+            page,
+            page_size,
+            orderby=orderby,
+            desc=desc,
+            name=name,
+            extra={"keywords": keywords, "id": document_id},
         )
-        path = self._format_path(
-            "/api/v1/datasets/{dataset_id}/documents", dataset_id=dataset_id
-        )
+        path = self._documents_path(dataset_id)
         data = await self._request("GET", path, query=query)
         if isinstance(data, list):
             return {"docs": data, "total": len(data)}
-        if not isinstance(data, dict):
-            raise RagflowContractError("RAGFlow 文档列表格式不符")
-        return data
+        return self._expect_dict(data, "RAGFlow 文档列表格式不符")
 
     async def delete_documents(
         self, dataset_id: str, document_ids: list[str]
@@ -761,9 +793,7 @@ class RagflowClient:
         """删除文档（文档 2.6：DELETE /api/v1/datasets/{dataset_id}/documents）。"""
         self._require_non_empty(dataset_id, "dataset_id")
         self._require_ids(document_ids, "document_ids")
-        path = self._format_path(
-            "/api/v1/datasets/{dataset_id}/documents", dataset_id=dataset_id
-        )
+        path = self._documents_path(dataset_id)
         await self._request("DELETE", path, json_body={"ids": document_ids})
 
     async def parse_documents(
@@ -825,9 +855,7 @@ class RagflowClient:
             document_id=document_id,
         )
         data = await self._request("POST", path, json_body=body)
-        if not isinstance(data, dict):
-            raise RagflowContractError("RAGFlow 添加 chunk 未返回对象")
-        return data
+        return self._expect_dict(data, "RAGFlow 添加 chunk 未返回对象")
 
     async def list_chunks(
         self,
@@ -860,9 +888,7 @@ class RagflowClient:
             document_id=document_id,
         )
         data = await self._request("GET", path, query=query)
-        if not isinstance(data, dict):
-            raise RagflowContractError("RAGFlow chunk 列表格式不符")
-        return data
+        return self._expect_dict(data, "RAGFlow chunk 列表格式不符")
 
     async def delete_chunks(
         self, dataset_id: str, document_id: str, chunk_ids: list[str]
@@ -990,9 +1016,7 @@ class RagflowClient:
             meta_fields=meta_fields,
         )
         data = await self._request("POST", "/api/v1/retrieval", json_body=body)
-        if not isinstance(data, dict):
-            raise RagflowContractError("RAGFlow 检索结果格式不符")
-        return data
+        return self._expect_dict(data, "RAGFlow 检索结果格式不符")
 
     async def search_datasets(
         self,
@@ -1045,9 +1069,7 @@ class RagflowClient:
             }
         )
         data = await self._request("POST", "/api/v1/datasets/search", json_body=body)
-        if not isinstance(data, dict):
-            raise RagflowContractError("RAG 平台知识库检索结果格式不符")
-        return data
+        return self._expect_dict(data, "RAG 平台知识库检索结果格式不符")
 
     # ─────────────────────────── 4 聊天助手管理 ───────────────────────────
 
@@ -1121,20 +1143,16 @@ class RagflowClient:
         chat_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """查询聊天助手列表（文档 4.4：GET /api/v1/chats）。"""
-        query = self._clean_query(
-            {
-                "page": page,
-                "page_size": page_size,
-                "orderby": orderby,
-                "desc": desc,
-                "name": name,
-                "id": chat_id,
-            }
+        query = self._page_query(
+            page,
+            page_size,
+            orderby=orderby,
+            desc=desc,
+            name=name,
+            extra={"id": chat_id},
         )
         data = await self._request("GET", "/api/v1/chats", query=query)
-        if not isinstance(data, list):
-            raise RagflowContractError("RAGFlow 聊天助手列表格式不符")
-        return data
+        return self._expect_list(data, "RAGFlow 聊天助手列表格式不符")
 
     # ─────────────────────────── 5 会话管理 ───────────────────────────
 
@@ -1191,24 +1209,19 @@ class RagflowClient:
     ) -> list[dict[str, Any]]:
         """查询会话列表（文档 5.3：GET /api/v1/chats/{chat_id}/sessions）。"""
         self._require_non_empty(chat_id, "chat_id")
-        query = self._clean_query(
-            {
-                "page": page,
-                "page_size": page_size,
-                "orderby": orderby,
-                "desc": desc,
-                "name": name,
-                "id": session_id,
-                "user_id": user_id,
-            }
+        query = self._page_query(
+            page,
+            page_size,
+            orderby=orderby,
+            desc=desc,
+            name=name,
+            extra={"id": session_id, "user_id": user_id},
         )
         path = self._format_path(
             "/api/v1/chats/{chat_id}/sessions", chat_id=chat_id
         )
         data = await self._request("GET", path, query=query)
-        if not isinstance(data, list):
-            raise RagflowContractError("RAGFlow 会话列表格式不符")
-        return data
+        return self._expect_list(data, "RAGFlow 会话列表格式不符")
 
     async def delete_sessions(
         self, chat_id: str, session_ids: list[str]
@@ -1256,9 +1269,7 @@ class RagflowClient:
             "/api/v1/chats/{chat_id}/completions", chat_id=chat_id
         )
         data = await self._request("POST", path, json_body=body)
-        if not isinstance(data, dict):
-            raise RagflowContractError("RAGFlow 对话响应格式不符")
-        return data
+        return self._expect_dict(data, "RAGFlow 对话响应格式不符")
 
     # ─────────────────────────── 6 团队管理 ───────────────────────────
 
@@ -1271,9 +1282,7 @@ class RagflowClient:
         data = await self._request(
             "POST", "/api/v1/team", json_body={"email": email}
         )
-        if not isinstance(data, dict):
-            raise RagflowContractError("RAGFlow 加入团队响应格式不符")
-        return data
+        return self._expect_dict(data, "RAGFlow 加入团队响应格式不符")
 
     # ─────────────────────────── 7 RAG 平台资源目录接入（RI001–RI004 / RI010） ───────────────────────────
 
@@ -1322,9 +1331,7 @@ class RagflowClient:
         data = await self._request(
             "POST", "/api/v1/abac/files", files=multipart, form=form
         )
-        if not isinstance(data, list):
-            raise RagflowContractError("RAG 平台资源目录上传未返回结果数组")
-        return data
+        return self._expect_list(data, "RAG 平台资源目录上传未返回结果数组")
 
     async def upload_cbcm_files_by_tree(
         self,
@@ -1354,11 +1361,10 @@ class RagflowClient:
             datasets: 实时解析加工到目标知识库 id 列表；未提供则按目录与
                 知识库映射关系批量调度加工。
         """
-        for field in (tree_code, service_id, batch_id, file_part, object_name):
-            if not field:
-                raise ValueError(
-                    "tree_code/service_id/batch_id/file_part/object_name 均为必填"
-                )
+        self._require_all(
+            (tree_code, service_id, batch_id, file_part, object_name),
+            "tree_code/service_id/batch_id/file_part/object_name 均为必填",
+        )
         body = self._clean_body(
             {
                 "tree_code": tree_code,
@@ -1376,9 +1382,7 @@ class RagflowClient:
             }
         )
         data = await self._request("POST", "/api/v1/abac/files/cbcm", json_body=body)
-        if not isinstance(data, list):
-            raise RagflowContractError("RAG 平台 CBCM 上传未返回结果数组")
-        return data
+        return self._expect_list(data, "RAG 平台 CBCM 上传未返回结果数组")
 
     async def search_by_scene(
         self,
@@ -1428,9 +1432,7 @@ class RagflowClient:
             }
         )
         data = await self._request("POST", "/api/v1/abac/search", json_body=body)
-        if not isinstance(data, dict):
-            raise RagflowContractError("RAG 平台场景检索结果格式不符")
-        return data
+        return self._expect_dict(data, "RAG 平台场景检索结果格式不符")
 
     async def list_scene_knowledge_bases(
         self,
@@ -1456,9 +1458,7 @@ class RagflowClient:
             {"page": page, "page_size": page_size, "scene_code": scene_code}
         )
         data = await self._request("GET", "/api/v1/abac/kb", query=query)
-        if not isinstance(data, dict):
-            raise RagflowContractError("RAG 平台场景知识库列表格式不符")
-        return data
+        return self._expect_dict(data, "RAG 平台场景知识库列表格式不符")
 
     async def delete_file_by_tree(self, file_id: str) -> None:
         """按资源目录删除文档（RI010：DELETE /api/v1/abac/files/{id}）。
