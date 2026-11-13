@@ -31,6 +31,8 @@ class _FakeAgent:
         self.kwargs = kwargs
         self.model_name = kwargs.get("model_name") or "deepseek"
         self.enable_web_search = bool(kwargs.get("enable_web_search"))
+        # 缓存驱逐会比对审批模式：替身必须带上，否则每次都被判「模式变化」
+        self.approval_mode = kwargs.get("approval_mode") or "manual"
         self.system_prompt_extra = kwargs.get("system_prompt_extra", "")
         self.workspace_dir = "/tmp/ws"
         self.workspace_virtual_path = "/workspace"

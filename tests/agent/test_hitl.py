@@ -4,13 +4,16 @@ from types import SimpleNamespace
 
 from easy_agent.agent import EasyAgent
 from easy_agent.agent.hitl import (
+    AUTO_APPROVED_APPROVAL_TOOLS,
     DEFAULT_APPROVAL_TOOLS,
     EXECUTE_HITL_TOOL_DESCRIPTION,
+    HITL_SYSTEM_NOTE,
     HITL_WHEN_PREDICATES,
     _is_destructive_command,
     _is_knowledge_materialize,
     build_interrupt_config,
     hitl_enabled,
+    resolve_approval_tools,
 )
 from easy_agent.tools import registry
 from easy_agent.tools.registry import SOURCE_EXPERT, ToolSpec
@@ -369,3 +372,101 @@ def test_unlisted_mcp_tools_still_use_annotations_and_names():
         approval_tools=[],
     )
     assert list(cfg) == ["delete_note"]
+
+
+# ── 用户级审批模式（设置 → 权限设置） ───────────────────────────────────
+
+
+def test_auto_mode_approves_every_approval_item():
+    """auto 把 5 个审批项全部放行（含知识库原文落盘），MCP 写工具也不进审批。"""
+    agent = _agent(
+        [
+            _tool("save_expert"),
+            _tool("create_scheduled_task"),
+            _tool("access_knowledge_original"),
+            _mcp_tool("mysql_execute_sql"),
+        ]
+    )
+
+    agent.approval_mode = "manual"
+    assert set(agent._build_interrupt_config()) == {
+        "execute",
+        "delete",
+        "save_expert",
+        "create_scheduled_task",
+        "access_knowledge_original",
+        "mysql_execute_sql",
+    }
+
+    agent.approval_mode = "auto"
+    # 空字典 = 不安装 HumanInTheLoopMiddleware，本轮没有任何审批节点
+    assert agent._build_interrupt_config() == {}
+
+
+def test_auto_mode_skips_the_mcp_fallback_entirely(monkeypatch):
+    """auto 模式连 MCP 兜底都不走：名字含 execute_sql / destructiveHint 也不进审批。"""
+    agent = _agent(
+        [
+            _mcp_tool("mysql_execute_sql"),
+            _mcp_tool("drop_table", destructiveHint=True),
+            _mcp_tool("delete_row"),
+        ]
+    )
+    agent.approval_mode = "auto"
+    assert agent._build_interrupt_config() == {}
+
+    # 回滚开关：把 AUTO_APPROVES_MCP_TOOLS 改回 False 即恢复 MCP 审批
+    from easy_agent.agent import hitl
+
+    monkeypatch.setattr(hitl, "AUTO_APPROVES_MCP_TOOLS", False)
+    assert set(agent._build_interrupt_config()) == {
+        "mysql_execute_sql",
+        "drop_table",
+        "delete_row",
+    }
+
+
+def test_manual_mode_keeps_the_mcp_fallback():
+    """manual 是安全默认值：MCP 写工具照旧按 annotations / 名字进审批。"""
+    agent = _agent([_mcp_tool("mysql_execute_sql"), _mcp_tool("list_tables", readOnlyHint=True)])
+    agent.approval_mode = "manual"
+    assert set(agent._build_interrupt_config()) == {
+        "execute",
+        "delete",
+        "mysql_execute_sql",
+    }
+
+
+def test_resolve_approval_tools_falls_back_to_manual_on_illegal_value():
+    assert resolve_approval_tools(None, "manual") is None
+    assert resolve_approval_tools(None, "yolo") is None
+    assert resolve_approval_tools(["delete", "execute"], "manual") == ["delete", "execute"]
+
+
+def test_resolve_approval_tools_removes_exactly_the_auto_approved_names():
+    auto = resolve_approval_tools(None, "auto")
+    assert set(DEFAULT_APPROVAL_TOOLS) - set(auto) == AUTO_APPROVED_APPROVAL_TOOLS
+    # 默认名单已被全部覆盖：auto 不剩任何审批项
+    assert auto == []
+    assert set(DEFAULT_APPROVAL_TOOLS) <= AUTO_APPROVED_APPROVAL_TOOLS
+
+
+def test_auto_approved_names_are_all_real_approval_items():
+    """放行名单里写错名字会静默失效（摘不到就永远不减），这里把拼写钉死。"""
+    for name in AUTO_APPROVED_APPROVAL_TOOLS:
+        assert name in DEFAULT_APPROVAL_TOOLS, f"{name} 不在审批名单里，放行它是空操作"
+
+
+def test_auto_mode_swaps_the_hitl_system_note():
+    """工具描述是按模型全局注册的，auto 下只能靠提示词覆盖「会先暂停等批准」的说法。"""
+    agent = _agent()
+    agent.approval_mode = "manual"
+    assert agent._hitl_system_note() == HITL_SYSTEM_NOTE
+
+    agent.approval_mode = "auto"
+    note = agent._hitl_system_note()
+    assert note != HITL_SYSTEM_NOTE
+    assert "自动审批" in note and "直接执行" in note
+
+    agent.enable_hitl = False
+    assert agent._hitl_system_note() == ""

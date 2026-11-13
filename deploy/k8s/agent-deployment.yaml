@@ -30,7 +30,10 @@ data:
   # 0 = never expire by age. >0 deletes whole threads (not single checkpoints).
   CHECKPOINT_TTL_DAYS: "0"
   # Same-instance table prefix; raise it to isolate several environments in one database.
-  CHECKPOINT_MYSQL_TABLE_PREFIX: "cp"
+  # Must keep the trailing underscore: it is concatenated verbatim to the table base name,
+  # so "cp" would create cpcheckpoints/cpcheckpoint_blobs, which does not match the DDL
+  # audit baseline (cp_checkpoints / cp_checkpoint_blobs / cp_checkpoint_writes / cp_checkpoint_meta).
+  CHECKPOINT_MYSQL_TABLE_PREFIX: "cp_"
   # Scheduled tasks run on one pod only (the scheduler refuses to register them otherwise).
   DISTRIBUTED_LOCK_ENABLED: "true"
   # Uploaded files go to MySQL instead of the pod-local data/uploads.

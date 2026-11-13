@@ -1697,30 +1697,60 @@ export default {
      * 选出本批可以上传的文件（入列前校验，避免"传了一半才发现超限"）。
      *
      * 规则：
-     * - enabled=false 时不限；
-     * - 数量不满足（已有非失败数 + 本批数 > 上限）→ **整批拒绝**，让用户重新选择；
+     * - 先做**重复过滤**：文件名 + 大小 + 修改时间都相同视为同一文件，
+     *   与本轮已添加的文件（含本批内互相重复）只保留一个，其余忽略；
+     *   上传失败（error）的条目不算已添加，允许重新选择同一个文件再传；
+     *   uploadedFiles 在发送后清空，因此去重只作用于本轮，不影响其它轮次；
+     * - enabled=false 时不限额度；
+     * - 数量不满足（已有非失败数 + 去重后本批数 > 上限）→ **整批拒绝**，让用户重新选择；
      * - 逐个文件检查单文件大小与总大小 → **只跳过超限的那一个**，其余照常上传；
      * - 失败文件不占额度，因此删除/失败都会立即释放名额与空间。
      */
+    uploadFileKey(file) {
+      const lastModified = file && typeof file.lastModified === 'number' ? file.lastModified : ''
+      return [file.name, file.size, lastModified].join('\u0000')
+    },
     pickAcceptable(files) {
       const L = this.uploadLimits
-      if (!L.enabled) return { accepted: [...files], rejected: [], batchRejected: false }
+
+      // 重复过滤：与本轮已添加文件重复、或本批内互相重复的，只保留第一个
+      const existingKeys = new Set(
+        this.uploadedFiles
+          .filter(f => f.uploadStatus !== 'error')
+          .map(f => {
+            const lastModified = f.file && typeof f.file.lastModified === 'number' ? f.file.lastModified : ''
+            return [f.filename, f.size, lastModified].join('\u0000')
+          })
+      )
+      const deduped = []
+      const rejected = []
+      const batchKeys = new Set()
+      for (const file of files) {
+        const key = this.uploadFileKey(file)
+        if (existingKeys.has(key) || batchKeys.has(key)) {
+          rejected.push({ file, reason: 'duplicate' })
+          continue
+        }
+        batchKeys.add(key)
+        deduped.push(file)
+      }
+
+      if (!L.enabled) return { accepted: deduped, rejected, batchRejected: false }
 
       let count = this.usedCount
       let total = this.usedBytes
       const accepted = []
-      const rejected = []
 
-      if (count + files.length > L.maxFiles) {
+      if (count + deduped.length > L.maxFiles) {
         return {
           accepted: [],
-          rejected: files.map(f => ({ file: f, reason: 'count' })),
+          rejected,
           batchRejected: true,
           message: `最多只能上传 ${L.maxFiles} 个文件（已用 ${count} 个），请重新选择`,
         }
       }
 
-      for (const file of files) {
+      for (const file of deduped) {
         if (file.size > this.mbToBytes(L.maxFileSizeMb)) {
           rejected.push({ file, reason: 'file_size' })
           continue
@@ -1739,6 +1769,9 @@ export default {
     buildRejectNotice(result, acceptedCount) {
       const L = this.uploadLimits
       const parts = result.rejected.map(({ file, reason }) => {
+        if (reason === 'duplicate') {
+          return `${file.name}（与本轮已添加文件重复，已过滤）`
+        }
         if (reason === 'file_size') {
           return `${file.name}（超过单文件上限 ${L.maxFileSizeMb}MB）`
         }
@@ -1747,9 +1780,12 @@ export default {
         }
         return file.name
       })
+      const onlyDuplicates = result.rejected.length > 0 && result.rejected.every(r => r.reason === 'duplicate')
       const head = acceptedCount > 0
         ? `已添加 ${acceptedCount} 个文件，忽略 ${result.rejected.length} 个：`
-        : `无法上传，已忽略 ${result.rejected.length} 个文件：`
+        : (onlyDuplicates
+          ? `已忽略 ${result.rejected.length} 个重复文件：`
+          : `无法上传，已忽略 ${result.rejected.length} 个文件：`)
       return head + parts.join('；')
     },
     /** 重新上传一个失败的文件（复用同一个 File 对象，无需用户重新选择） */

@@ -38,11 +38,15 @@ const MAX_NEW_FILE_LINES = 800
  *  2026-11-11 打开会话时探一次流状态（shouldAttachOnOpen / probeLiveStream，
  *  §14.4-D）后按实测值更新：App.vue 3349 → 3370；
  *  2026-11-11 存量校正（SessionList 在合并后即为 1040 行、预算未同步）：1038 → 1040。
+ *  2026-11-12 存量校正：App.vue 在 mysql_saver / 跨 Pod 挂载修复（999bc983、1d418cc5）后
+ *    实为 3376 行而预算未同步，按实测值更新 3370 → 3376（本次权限设置改动未触及 App.vue）。
+ *  2026-11-13 同一批上传分多次选择时过滤重复文件（pickAcceptable 先去重再校验限额）后
+ *    按实测值更新：ChatInput 4824 → 4841。
  *  2026-11-13 知识库工作台精简后按实测值下调：KnowledgeWorkbench 1922 → 1779。
  */
 const LINE_BUDGET = {
-  'App.vue': 3370,
-  'features/chat/components/ChatInput.vue': 4824,
+  'App.vue': 3376,
+  'features/chat/components/ChatInput.vue': 4841,
   'features/chat/components/ChatMessage.vue': 2523,
   'features/experts/components/ExpertListPanel.vue': 2188,
   'features/connectors/components/ConnectorListPanel.vue': 1547,

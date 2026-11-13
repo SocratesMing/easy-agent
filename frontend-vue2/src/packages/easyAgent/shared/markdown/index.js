@@ -41,6 +41,11 @@ export { citationMarker, sourceCardMarker } from './markers.js'
 export { protectCodeRegions } from './codeRegions.js'
 export { bufferStreamingTail } from './streamingTail.js'
 
+/** 引用预处理复用同一解析器，避免另建 Markdown 链接识别规则。 */
+export function tokenizeInlineMarkdown(text) {
+  return marked.Lexer.lexInline(text)
+}
+
 let initialized = false
 
 // 将模型可能“内联”写出的块级公式 $$...$$ 与 \[...\] 规整到独立行，
@@ -81,7 +86,7 @@ function buildCitationHtml(display, compact) {
   const d = escapeHtml(display)
   if (compact) {
     return '<button type="button" class="ke-cite ke-cite-number" data-cite="' + d +
-      '" aria-label="查看知识依据 ' + d + '">' + d + '</button>'
+      '" aria-label="查看引用来源 ' + d + '">' + d + '</button>'
   }
   return '<a class="ke-cite" data-cite="' + d + '">[知识依据' + d + ']</a>'
 }
