@@ -1332,6 +1332,117 @@ class SourceSyncEngine:
 
     # ---------------- 主循环 ----------------
 
+    async def _handle_existing_document(
+        self,
+        document: dict[str, Any],
+        row: SourceRow,
+        *,
+        stats: dict[str, int],
+        inflight: list[dict[str, Any]],
+    ) -> bool:
+        """处理“本地已有该源记录对应文档”的分支；返回 True 表示本行已处理完。
+
+        返回 False 表示文档状态不在任何已知分支（既不需要跳过也不能重试），
+        由调用方继续按新记录处理。
+        """
+
+        record_id = row.record_id
+        status = str(document.get("status") or "")
+        if status == DocumentStatus.DELETED.value:
+            # 当前库内已被删除：尊重删除动作，不再重新上传
+            logger.info(
+                "文档同步跳过：文档已删除 | id=%s doc=%s",
+                record_id,
+                document["id"],
+            )
+            stats["existing"] += 1
+            return True
+        remote_id = str(document.get("remote_document_id") or "")
+        if status == DocumentStatus.PENDING.value and not remote_id:
+            # 上传中断（本地记录已建、远端还没拿到 ID）：
+            # 先把状态改成 FAILED，让它进入“可重试”分支，
+            # 重试会复用本地原文，避免重复建本地记录。
+            document = await self._repo(
+                self.repository.update_document,
+                str(document["id"]),
+                status=DocumentStatus.FAILED.value,
+                error_code="SYNC_UPLOAD_INTERRUPTED",
+                error_message="上次上传未完成，重新提交",
+            )
+            status = DocumentStatus.FAILED.value
+        elif status in _READY_DOCUMENT_STATUSES:
+            # 已完成/解析中/暂停：都不需要再上传，直接跳过
+            stats["existing"] += 1
+            return True
+        if status in _RETRYABLE_DOCUMENT_STATUSES:
+            await self._retry_existing_document(
+                document, row, stats=stats, inflight=inflight
+            )
+            return True
+        return False
+
+    async def _retry_existing_document(
+        self,
+        document: dict[str, Any],
+        row: SourceRow,
+        *,
+        stats: dict[str, int],
+        inflight: list[dict[str, Any]],
+    ) -> None:
+        """对可重试状态的本地文档重新提交解析，并维护台账与在途列表。"""
+
+        record_id = row.record_id
+        # 走重试：先确保有台账行，再累计尝试次数
+        retry_item = await self._repo(
+            self.repository.create_or_get_sync_item,
+            source=self.source,
+            source_record_id=record_id,
+            publish_date=row.publish_date,
+        )
+        retry_item_id = str(retry_item["id"])
+        attempts = self._next_attempt(retry_item)
+        if attempts > MAX_UPLOAD_ATTEMPTS:
+            # 次数用完了：不再重试，记下失败原因
+            await self._update_item(
+                retry_item_id,
+                status="failed",
+                attempts=attempts,
+                last_error="超过最大重试次数",
+            )
+            stats["failed"] += 1
+            return
+        try:
+            await self.service.retry_document(
+                document_id=str(document["id"]),
+                principal=self.principal,
+                request_id=f"source-sync-retry:{record_id}:{attempts}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            # 这次重试没成功：记录错误，下一轮再说
+            await self._update_item(
+                retry_item_id,
+                document_id=str(document["id"]),
+                status="failed",
+                attempts=attempts,
+                last_error=str(exc)[:1000],
+            )
+            stats["failed"] += 1
+            logger.error("研报文档重试失败 | id=%s err=%s", record_id, exc)
+            return
+        # 重试成功：台账改为 parsing，并放进在途列表继续跟踪
+        await self._update_item(
+            retry_item_id,
+            document_id=str(document["id"]),
+            status="parsing",
+            attempts=attempts,
+        )
+        refreshed = await self._repo(
+            self.repository.get_sync_item, self.source, record_id
+        )
+        if refreshed is not None:
+            inflight.append(refreshed)
+        stats["retried"] += 1
+
     async def run(
         self,
         *,
@@ -1455,87 +1566,10 @@ class SourceSyncEngine:
                 document = (
                     await self._find_document(record_id, base_id) if record_id else None
                 )
-                if document is not None:
-                    status = str(document.get("status") or "")
-                    if status == DocumentStatus.DELETED.value:
-                        # 当前库内已被删除：尊重删除动作，不再重新上传
-                        logger.info(
-                            "文档同步跳过：文档已删除 | id=%s doc=%s",
-                            record_id,
-                            document["id"],
-                        )
-                        stats["existing"] += 1
-                        continue
-                    remote_id = str(document.get("remote_document_id") or "")
-                    if status == DocumentStatus.PENDING.value and not remote_id:
-                        # 上传中断（本地记录已建、远端还没拿到 ID）：
-                        # 先把状态改成 FAILED，让它进入下一段“可重试”分支，
-                        # 重试会复用本地原文，避免重复建本地记录。
-                        document = await self._repo(
-                            self.repository.update_document,
-                            str(document["id"]),
-                            status=DocumentStatus.FAILED.value,
-                            error_code="SYNC_UPLOAD_INTERRUPTED",
-                            error_message="上次上传未完成，重新提交",
-                        )
-                        status = DocumentStatus.FAILED.value
-                    elif status in _READY_DOCUMENT_STATUSES:
-                        # 已完成/解析中/暂停：都不需要再上传，直接跳过
-                        stats["existing"] += 1
-                        continue
-                    if status in _RETRYABLE_DOCUMENT_STATUSES:
-                        # 走重试：先确保有台账行，再累计尝试次数
-                        publish_date = parsed_row.publish_date
-                        retry_item = await self._repo(
-                            self.repository.create_or_get_sync_item,
-                            source=self.source,
-                            source_record_id=record_id,
-                            publish_date=publish_date,
-                        )
-                        retry_item_id = str(retry_item["id"])
-                        attempts = self._next_attempt(retry_item)
-                        if attempts > MAX_UPLOAD_ATTEMPTS:
-                            # 次数用完了：不再重试，记下失败原因
-                            await self._update_item(
-                                retry_item_id,
-                                status="failed",
-                                attempts=attempts,
-                                last_error="超过最大重试次数",
-                            )
-                            stats["failed"] += 1
-                            continue
-                        try:
-                            await self.service.retry_document(
-                                document_id=str(document["id"]),
-                                principal=self.principal,
-                                request_id=f"source-sync-retry:{record_id}:{attempts}",
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            # 这次重试没成功：记录错误，下一轮再说
-                            await self._update_item(
-                                retry_item_id,
-                                document_id=str(document["id"]),
-                                status="failed",
-                                attempts=attempts,
-                                last_error=str(exc)[:1000],
-                            )
-                            stats["failed"] += 1
-                            logger.error("研报文档重试失败 | id=%s err=%s", record_id, exc)
-                            continue
-                        # 重试成功：台账改为 parsing，并放进在途列表继续跟踪
-                        await self._update_item(
-                            retry_item_id,
-                            document_id=str(document["id"]),
-                            status="parsing",
-                            attempts=attempts,
-                        )
-                        refreshed = await self._repo(
-                            self.repository.get_sync_item, self.source, record_id
-                        )
-                        if refreshed is not None:
-                            inflight.append(refreshed)
-                        stats["retried"] += 1
-                        continue
+                if document is not None and await self._handle_existing_document(
+                    document, parsed_row, stats=stats, inflight=inflight
+                ):
+                    continue
                 if dry_run:
                     # 演习模式：只记录“本来会入库”，不做任何写操作
                     stats["planned"] += 1
