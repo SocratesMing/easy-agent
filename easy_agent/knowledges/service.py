@@ -1429,6 +1429,24 @@ class KnowledgeService:
             raise _not_found()
         return document
 
+    async def _authorized_document(
+        self,
+        document_id: str,
+        principal: KnowledgePrincipal,
+        action: AllowedAction = AllowedAction.VIEW,
+        *,
+        include_deleted: bool = True,
+    ) -> tuple[dict[str, Any], dict[str, Any], KnowledgeBaseRole]:
+        """读取文档并校验其所属知识库的操作权限，返回 (文档, 库记录, 角色)。"""
+
+        document = await self._require_document(
+            document_id, include_deleted=include_deleted
+        )
+        base, role = await self._authorized_base(
+            str(document["base_id"]), principal, action
+        )
+        return document, base, role
+
     async def refresh_base_documents(self, base: Mapping[str, Any]) -> None:
         """用上游文档状态刷新本地投影；仅后台解析轮询 worker 调用。
 
@@ -2183,9 +2201,8 @@ class KnowledgeService:
     ) -> DocumentSummary:
         """移动文档到目标文件夹（目标须属于同一知识库）。"""
 
-        document = await self._require_document(document_id, include_deleted=False)
-        _, role = await self._authorized_base(
-            str(document["base_id"]), principal, AllowedAction.MOVE_DOCUMENT
+        document, _, role = await self._authorized_document(
+            document_id, principal, AllowedAction.MOVE_DOCUMENT, include_deleted=False
         )
         if folder_id:
             await self._require_folder(str(document["base_id"]), folder_id)
@@ -2203,9 +2220,8 @@ class KnowledgeService:
         request_id: str,
     ) -> tuple[dict[str, Any], KnowledgeDocumentBinary]:
         """优先返回本地原文；不可用时回退下载上游副本。"""
-        document = await self._require_document(document_id, include_deleted=False)
-        base, _ = await self._authorized_base(
-            str(document["base_id"]), principal, AllowedAction.DOWNLOAD
+        document, base, _ = await self._authorized_document(
+            document_id, principal, AllowedAction.DOWNLOAD, include_deleted=False
         )
         original = await self._repo(
             self.repository.get_original_object, document_id
@@ -2350,9 +2366,8 @@ class KnowledgeService:
     ) -> Mapping[str, Any]:
         """暂停未就绪文档的解析任务：退出解析队列，保留原文可随时恢复。"""
         del request_id
-        document = await self._require_document(document_id)
-        base, _role = await self._authorized_base(
-            str(document["base_id"]), principal, AllowedAction.RETRY_DOCUMENT
+        document, base, _role = await self._authorized_document(
+            document_id, principal, AllowedAction.RETRY_DOCUMENT
         )
         if str(document["status"]) not in {
             DocumentStatus.PENDING.value,
@@ -2394,9 +2409,8 @@ class KnowledgeService:
     ) -> Mapping[str, Any]:
         """恢复已暂停文档：重新提交解析队列，回到待解析状态。"""
         del request_id
-        document = await self._require_document(document_id)
-        base, _role = await self._authorized_base(
-            str(document["base_id"]), principal, AllowedAction.RETRY_DOCUMENT
+        document, base, _role = await self._authorized_document(
+            document_id, principal, AllowedAction.RETRY_DOCUMENT
         )
         if str(document["status"]) != DocumentStatus.PAUSED.value:
             raise KnowledgeServiceError(
@@ -2439,9 +2453,8 @@ class KnowledgeService:
         request_id: str,
     ) -> DocumentUploadAccepted:
         """重试失败文档：删除上游旧副本后，用本地原文重新上传并解析。"""
-        document = await self._require_document(document_id)
-        base, role = await self._authorized_base(
-            str(document["base_id"]), principal, AllowedAction.RETRY_DOCUMENT
+        document, base, role = await self._authorized_document(
+            document_id, principal, AllowedAction.RETRY_DOCUMENT
         )
         if str(document["status"]) not in {
             DocumentStatus.FAILED.value,
