@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -72,10 +73,27 @@ def _extract_hitl_request(graph_state) -> dict | None:
     return items[0][1] if items else None
 
 
+def action_name(action: Mapping) -> str:
+    """审批载荷里的工具名。
+
+    两套形状并存：HITL 中断原始结构用 ``name`` / ``args``，落库并回放的
+    ``pending_action_requests`` 用 ``tool_name`` / ``arguments``（见 ``projector``）。
+    """
+    return str(action.get("name") or action.get("tool_name") or "")
+
+
+def action_args(action: Mapping) -> dict:
+    """审批载荷里的工具参数（兼容 ``args`` / ``arguments``，取不到返回空字典）。"""
+    raw = action.get("args")
+    if raw is None:
+        raw = action.get("arguments")
+    return dict(raw) if isinstance(raw, Mapping) else {}
+
+
 def _hitl_action_names(hitl_request: dict) -> set[str]:
     """待审批的工具名集合（兼容 ActionRequest 为 dict 或对象两种形态）。"""
     return {
-        (ar.get("name", "") if isinstance(ar, dict) else getattr(ar, "name", ""))
+        action_name(ar) if isinstance(ar, Mapping) else str(getattr(ar, "name", ""))
         for ar in (hitl_request.get("action_requests") or [])
     }
 
@@ -143,8 +161,8 @@ _LEGACY_REJECT_MESSAGE = "用户拒绝了此操作，请勿重试此删除命令
 
 def reject_message(action: dict) -> str:
     """按工具生成回给模型的拒绝说明：说清拒绝了什么，并要求不要换个方式重试。"""
-    name = str(action.get("name") or "")
-    args = action.get("args") or {}
+    name = action_name(action)
+    args = action_args(action)
     if name == "delete":
         target = args.get("file_path") or args.get("path") or ""
         what = f"删除 {target}" if target else "这次删除"
@@ -250,3 +268,46 @@ def plan_resume(interrupts: list[HitlInterrupt], decisions: list[dict]) -> Resum
     return ResumePlan(
         resume=legacy_resume, answered={first.interrupt_id: expanded}, legacy=True
     )
+
+
+# ── 人工审批审计（日志用纯数据整形） ──────────────────────────────────────
+
+#: 决策类型 → 日志文案。与 ``_DECISION_TYPES`` 一一对应，新增类型时同步。
+_DECISION_LABELS = {
+    "approve": "批准执行",
+    "edit": "修改参数后执行",
+    "reject": "拒绝执行",
+    "respond": "直接回复",
+}
+
+
+def decision_label(decision: dict) -> str:
+    """决策类型的中文说明（日志用）；未知类型原样返回，不猜。"""
+    kind = str(decision.get("type") or "")
+    return _DECISION_LABELS.get(kind, kind or "未知决策")
+
+
+def answered_actions(
+    answered: Mapping[str | None, list[dict]] | None,
+    pending_actions: Iterable[dict] | None,
+) -> list[tuple[dict, dict]]:
+    """把「待审批的操作」与「它收到的决策」配对（人工审批日志用）。
+
+    ``pending_actions`` 是审批载荷里的 ``pending_action_requests``（含 ``name`` /
+    ``args`` / ``interrupt_id`` / ``action_index``）。按 ``interrupt_id`` 分组后依
+    ``action_index`` 与决策对齐；旧前端没有 ``interrupt_id``（``answered`` 的键为
+    ``None``）时退回全量操作。决策数少于操作数时只配前 N 个，多出的视为未作答。
+    """
+    actions = [a for a in (pending_actions or []) if isinstance(a, dict)]
+    pairs: list[tuple[dict, dict]] = []
+    for interrupt_id, decisions in (answered or {}).items():
+        scoped = (
+            [a for a in actions if a.get("interrupt_id") == interrupt_id]
+            if interrupt_id
+            else actions
+        )
+        scoped.sort(key=lambda a: a.get("action_index") or 0)
+        for action, decision in zip(scoped, decisions or []):
+            if isinstance(decision, dict):
+                pairs.append((action, decision))
+    return pairs

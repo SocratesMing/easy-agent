@@ -136,16 +136,6 @@ export function resumeCandidates({ saved, flight, sessions, current }) {
   }
 }
 
-// 打开会话的调用方需要完整状态，区分运行中的流和已结束但仍可回放的流。
-export async function probeStreamState(sessionId, getStatus) {
-  if (!sessionId || typeof getStatus !== 'function') return null
-  try {
-    return await getStatus(sessionId)
-  } catch (e) {
-    return null
-  }
-}
-
 /**
  * 打开会话时的探活：**不依赖本地「在飞」记录**，直接问后端这一轮还在不在跑。
  *
@@ -162,9 +152,24 @@ export async function shouldAttachOnOpen(sessionId, getStatus) {
   return Boolean(status && status.active)
 }
 
+/**
+ * 单个会话的流状态（`/stream/status` 的薄包装）。
+ *
+ * 调用方（`App.vue` 的 `probeLiveStream` / vue2 的 `chatSession.js`）需要拿到
+ * `active` 与 `replayable` 两个字段判断「挂实时流」还是「回放过程事件」，
+ * 因此这里原样返回状态对象；查询失败返回 `null`（探活失败绝不能影响打开会话）。
+ */
+export async function probeStreamState(sessionId, getStatus) {
+  if (!sessionId || typeof getStatus !== 'function') return null
+  try {
+    return await getStatus(sessionId)
+  } catch (e) {
+    return null
+  }
+}
+
 /** 逐个问后端「这一轮还在跑吗」，返回确实活跃的会话。 */
-export async function probeActive(ids, getStatus) {
-  const active = []
+export async function probeActive(ids, getStatus) {  const active = []
   for (const sid of ids) {
     try {
       const status = await getStatus(sid)

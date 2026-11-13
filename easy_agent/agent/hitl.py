@@ -49,6 +49,50 @@ DEFAULT_INTERRUPT_TOOLS = default_interrupt_tool_names()
 # execute / access_knowledge_original），按 hitl_order 排序。
 DEFAULT_APPROVAL_TOOLS = tuple(spec.name for spec in hitl_tool_specs())
 
+# ── 用户级审批模式（设置 → 权限设置） ────────────────────────────────────
+#
+# ``manual``：现状，名单里的工具全部要用户批准。
+# ``auto``：按 :data:`AUTO_APPROVED_APPROVAL_TOOLS` 从审批名单里摘掉这几项，**其余全保留**。
+# 注意 auto 不是 ``enable_hitl=False``：总开关一旦关掉，定时任务工具注入
+# （``registry._scheduled_task_enabled``）、提示词段落、恢复语义都会跟着变；
+# auto 只是把审批项一条条摘掉，摘空后 DeepAgents 不安装 HITL 中间件，其余机制原样保留。
+APPROVAL_MODE_MANUAL = "manual"
+APPROVAL_MODE_AUTO = "auto"
+APPROVAL_MODES: tuple[str, ...] = (APPROVAL_MODE_MANUAL, APPROVAL_MODE_AUTO)
+
+#: 自动审批放行的审批项（按工具名）。
+#: * ``execute``：沙箱内的全部 Shell 命令，含 ``rm`` / ``del`` 等删除类命令
+#:   （2026-11-12 调整：删除类命令不再单独审批）。
+#: * ``delete``：删除文件或目录（含递归）。``rm -r`` / ``rmdir`` 仍由
+#:   ``backends/shell.py`` 在策略层直接拒绝，删目录请走本工具。
+#: * ``save_expert``：在对话内新建 / 修改**自己的**专家。修改他人专家由文件系统
+#:   permission 的 deny 规则拦住，与审批开关无关。
+#: * ``create_scheduled_task``：创建定时任务（2026-11-12 调整：不再要求二次确认）。
+#: * ``access_knowledge_original``：知识库原文落盘（``action=materialize``）。
+#:   写入目标是自己的工作区，属于「新增文件」范围（2026-11-13 调整：不再保留审批）。
+#:
+#: 覆盖了 :data:`DEFAULT_APPROVAL_TOOLS` 的全部审批项（2026-11-13 起知识库原文落盘也放行），
+#: 因此 auto 模式构造出的 ``interrupt_on`` 是空字典——DeepAgents 的
+#: ``_merge_fs_interrupt_on`` 会把空配置归并成 ``None`` 并**不安装**
+#: ``HumanInTheLoopMiddleware``（等于没有审批节点，但 ``enable_hitl`` 仍为 True，
+#: 定时任务工具注入与恢复语义都不受影响）。
+#: 要收回某一项（例如将来接入写能力 MCP），把它从这里删掉即可恢复审批。
+AUTO_APPROVED_APPROVAL_TOOLS: frozenset[str] = frozenset(
+    {
+        "execute",
+        "delete",
+        "save_expert",
+        "create_scheduled_task",
+        "access_knowledge_original",
+    }
+)
+
+#: 自动审批是否连 MCP / 动态注入工具一起放行。
+#: 2026-11-12 用户确认：当前接入的 MCP 服务只提供查询能力（无建表 / 删表 / 改表），
+#: 因此 auto 模式下 **不再** 走 names 启发式与 ``annotations`` 兜底给 MCP 工具加审批；
+#: manual 模式行为不变。若将来接入带写能力的 MCP，把这里改回 False 即可恢复审批。
+AUTO_APPROVES_MCP_TOOLS = True
+
 # 名字启发式的豁免集合同样由注册表派生：已单独配置 HITL 的工具与只读内置工具
 # 不参与「名字含 write/delete/... 即视为写操作」的判定。
 _NAME_HEURISTIC_EXEMPT = name_heuristic_exempt_tools()
@@ -75,6 +119,47 @@ HITL_SYSTEM_NOTE = (
     "或名称含 write/delete/update/insert 等写操作的 MCP 工具。"
     "收到审批结果前不要假设操作已完成；用户拒绝后按其意见调整方案，不要原样重试。"
 )
+
+#: 用户开启「允许自动审批」时的替代文案：告诉模型哪几类操作已被放行、哪几类仍要等批准。
+#: 工具描述是**按模型全局注册**的（``HarnessProfile``），没法按用户改，
+#: 所以 execute / delete / save_expert 描述里「会先暂停等批准」的旧说法只能由本段提示词覆盖。
+HITL_AUTO_SYSTEM_NOTE = (
+    "## 人工审批（已全部放行）\n\n"
+    "用户已开启「允许自动审批」：下列操作都会**直接执行**，不再暂停等用户批准。"
+    "相关工具描述里「会先暂停、等你批准后再执行」的说法在当前设置下不适用，不必为此征询同意：\n"
+    "- delete：删除文件或目录（含递归删除整个目录）；\n"
+    "- execute：沙箱内的全部 Shell 命令，包括 rm / del / unlink 等删除类命令；\n"
+    "- save_expert：在对话内新建 / 修改自己的专家；\n"
+    "- create_scheduled_task：创建定时任务；\n"
+    "- access_knowledge_original：把知识库原文落盘到工作区（materialize）；\n"
+    "- 全部 MCP 工具（当前接入的 MCP 服务只提供查询能力）。\n\n"
+    "策略层与权限层的硬限制不因本设置改变：execute 里的 rm -r / rmdir 等目录删除仍会被直接拒绝"
+    "（删目录请用 delete 工具）；修改他人的专家、他人创建的数据与公共技能仍会被拒绝，"
+    "遇到拒绝不要换路径重试。\n"
+    "删除与覆盖都不可撤销：执行前确认路径正确，不要用通配符批量删除，也不要覆盖用户已有文件。"
+)
+
+# ── 审批日志（两种模式必须一眼可分） ─────────────────────────────────────
+#
+# 排查时最常被问的两件事：「我开了自动审批，日志里怎么没有任何痕迹」和
+# 「这个删除到底是谁批的」。因此两条路径各有一句固定文案：
+#
+# * ``auto``：``interrupt_on`` 被摘空 → 框架不装 ``HumanInTheLoopMiddleware``，
+#   工具链路上没有任何审批节点。由 ``ApprovalAuditMiddleware`` 在工具**执行前**
+#   补 :data:`AUTO_APPROVAL_SKIPPED_NOTE`；
+# * ``manual``：恢复阶段由 ``orchestrator`` 打 :data:`MANUAL_APPROVAL_DONE_NOTE`
+#   （带审批结论），工具执行时不再重复记录。
+AUTO_APPROVAL_SKIPPED_NOTE = "用户已选择自动审批，跳过人工审批"
+MANUAL_APPROVAL_DONE_NOTE = "用户已人工审批"
+
+
+def brief_args(args: object, limit: int = 300) -> str:
+    """工具参数的单行摘要（审批日志用）：超长截断，取不到时返回 ``-``。"""
+    if not isinstance(args, Mapping) or not args:
+        return "-"
+    text = str(dict(args)).replace("\n", " ")
+    return text if len(text) <= limit else f"{text[:limit]}…"
+
 
 EXECUTE_HITL_TOOL_DESCRIPTION: str = (
     "⚠️⚠️⚠️ 人工审批工具 (HUMAN-IN-THE-LOOP / HITL) ⚠️⚠️⚠️\n\n"
@@ -370,6 +455,47 @@ def hitl_enabled(config, requested: bool = True) -> bool:
     return bool(requested) and bool(getattr(getattr(config, "hitl", None), "enabled", True))
 
 
+def normalize_approval_mode(mode: object) -> str:
+    """把任意输入收敛成合法审批模式；非法值一律回退 ``manual``（安全方向默认值）。"""
+    value = str(mode or "").strip().lower()
+    return APPROVAL_MODE_AUTO if value == APPROVAL_MODE_AUTO else APPROVAL_MODE_MANUAL
+
+
+def is_auto_approval(approval_mode: object) -> bool:
+    """当前是否「允许自动审批」（只放行 :data:`AUTO_APPROVED_APPROVAL_TOOLS`）。"""
+    return normalize_approval_mode(approval_mode) == APPROVAL_MODE_AUTO
+
+
+def auto_approved_tool_names(approval_tools: Iterable[str] | None = None) -> list[str]:
+    """自动审批实际放行的审批项（按审批名单顺序；名单里没有的不返回）。
+
+    供设置页展示「放行哪些」，保证文案与后端实际行为同源。
+    """
+    names = list(DEFAULT_APPROVAL_TOOLS if approval_tools is None else approval_tools)
+    return [name for name in names if name in AUTO_APPROVED_APPROVAL_TOOLS]
+
+
+def resolve_approval_tools(
+    approval_tools: Iterable[str] | None, approval_mode: object
+) -> list[str] | None:
+    """按审批模式收敛出本轮审批名单。
+
+    ``manual``：原样返回（``None`` 时交给 :func:`build_interrupt_config` 用默认名单）；
+    ``auto``：从名单里摘掉 :data:`AUTO_APPROVED_APPROVAL_TOOLS`（execute / delete /
+    save_expert / create_scheduled_task / access_knowledge_original），其余顺序不变。
+    默认名单已被全部覆盖，所以正常配置下 ``auto`` 返回**空列表**——本轮没有任何审批项。
+    """
+    if not is_auto_approval(approval_mode):
+        return None if approval_tools is None else [str(name) for name in approval_tools]
+    names = list(DEFAULT_APPROVAL_TOOLS if approval_tools is None else approval_tools)
+    return [str(name) for name in names if str(name).strip() not in AUTO_APPROVED_APPROVAL_TOOLS]
+
+
+def auto_approves_mcp(approval_mode: object) -> bool:
+    """auto 模式下 MCP / 动态注入工具是否需要审批（False = 直接执行）。"""
+    return is_auto_approval(approval_mode) and AUTO_APPROVES_MCP_TOOLS
+
+
 def _interrupt_options(
     name: str,
     spec: ToolSpec | None,
@@ -405,6 +531,7 @@ def build_interrupt_config(
     specs: Iterable[ToolSpec] | None = None,
     predicates: Mapping[str, Callable[[ToolCallRequest], bool]] | None = None,
     sid: str = "",
+    approval_mode: str = APPROVAL_MODE_MANUAL,
 ) -> dict[str, bool | InterruptOnConfig] | None:
     """按「审批名单」和「实际注入到本会话的工具」构造 ``interrupt_on``。
 
@@ -422,6 +549,11 @@ def build_interrupt_config(
     4. 名单外的 MCP / 动态工具（注册表里没有的名字）兜底：先看 MCP annotations
        （:func:`mcp_annotation_decision`），没有可用标注再按名字启发式判定。注册表里的
        内置 / 应用工具只看名单。
+    5. ``approval_mode="auto"``（设置 → 权限设置里的「允许自动审批」）额外做两件事：
+       从名单里摘掉 :data:`AUTO_APPROVED_APPROVAL_TOOLS`，并**跳过第 4 条兜底**——
+       MCP / 动态注入工具不再按名字或 annotations 加审批（见 :data:`AUTO_APPROVES_MCP_TOOLS`）。
+       默认名单被全部覆盖，因此返回值通常是**空字典**：调用方（``create_deep_agent``）
+       会把空配置归并成 ``None`` 并跳过 ``HumanInTheLoopMiddleware``，即本轮没有审批节点。
 
     Args:
         tool_names: 本会话实际注入的非内置工具（工具对象或工具名）。
@@ -432,6 +564,7 @@ def build_interrupt_config(
         predicates: 仅测试/扩展用；默认使用本模块的
             :data:`HITL_WHEN_PREDICATES`。
         sid: 日志用短会话 id。
+        approval_mode: 用户级审批模式（``manual`` / ``auto``），非法值按 ``manual`` 处理。
 
     Returns:
         工具名 → ``InterruptOnConfig`` 的字典；未启用 HITL 时为 ``None``。
@@ -445,11 +578,21 @@ def build_interrupt_config(
     builtin_names = set(builtin_tool_names())
     predicate_map = HITL_WHEN_PREDICATES if predicates is None else predicates
     hitl_specs = {spec.name: spec for spec in (hitl_tool_specs() if specs is None else specs)}
-    wanted = (
+    wanted_source = (
         list(hitl_specs)
         if approval_tools is None
         else [str(name).strip() for name in approval_tools if str(name).strip()]
     )
+    wanted = resolve_approval_tools(wanted_source, approval_mode) or []
+    # auto 模式：MCP / 应用注入（注册表里没有的工具）不进审批，只留注册表里的 HITL 工具
+    auto_mcp = auto_approves_mcp(approval_mode)
+    if auto_mcp:
+        dropped = [name for name in wanted if name not in hitl_specs]
+        wanted = [name for name in wanted if name in hitl_specs]
+        if dropped:
+            logger.info(
+                "[%s] 允许自动审批：MCP / 应用工具不进审批 | %s", sid or "-", dropped
+            )
     # 名单按注入名匹配，MCP 工具也认去掉 server 前缀的原始名
     injected: dict[str, list[str]] = {}
     for name in ordered_names:
@@ -475,7 +618,9 @@ def build_interrupt_config(
 
     # 名单外的 MCP / 动态工具兜底（DA-09）：服务端 annotations 优先，没有可用标注再看名字。
     # D4：MCP 工具可能带 server 前缀，名字启发式按原始名判断，避免前缀干扰。
-    for name in ordered_names:
+    # auto 模式整段跳过：当前接入的 MCP 只提供查询能力，不再给它们加审批。
+    fallback_names = () if auto_mcp else ordered_names
+    for name in fallback_names:
         if name in config or name in builtin_names or get_tool_spec(name) is not None:
             continue
         tool_obj = tool_objects.get(name)
@@ -498,4 +643,9 @@ def build_interrupt_config(
                     allowed_decisions=mcp_interrupt_decisions(heuristic_name, tool_obj)
                 ),
             )
+    if auto_mcp and not config:
+        # 全部审批项已放行：空配置 = 不安装 HumanInTheLoopMiddleware（enable_hitl 仍为 True）
+        logger.info(
+            "[%s] 允许自动审批：本轮没有需要审批的工具，不安装审批中间件", sid or "-"
+        )
     return config

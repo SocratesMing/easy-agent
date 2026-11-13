@@ -31,6 +31,7 @@ from easy_agent.utils.prompt_probe import describe_prompt, prompt_fingerprint
 from easy_agent.utils.blocking import run_blocking
 from easy_agent.services.mcp.tools import get_mcp_tools as load_mcp_tools_for_user
 from easy_agent.services.mcp.policy import filter_server_names
+from easy_agent.services.approval_settings import read_approval_mode
 
 logger = logging.getLogger("easy-agent.chat_service")
 
@@ -49,6 +50,13 @@ logger = logging.getLogger("easy-agent.chat_service")
 #: 不带本轮选择的路径），两者语义不同，不能用同一个 None 表示。
 #: ``SessionState.skill_scope`` 也用它区分「从未指定」与「显式 None（全量可见）」。
 _SCOPE_UNSPECIFIED = object()
+
+#: ``approval_mode`` 的「未指定」哨兵：
+#: * 不传 → 每轮读一次用户设置（设置页保存后下一条消息生效）；
+#: * 传 ``None`` → 沿用缓存的 Agent（HITL 审批恢复 / 定时任务：此时用户可能刚改过设置，
+#:   若按新值重建 Agent 会丢掉 checkpointer 里的中断态，恢复直接 409）。
+#: 与 ``enable_web_search=None``「跟随缓存」的约定同构。
+_APPROVAL_UNSPECIFIED = object()
 
 
 class DropScope(str, Enum):
@@ -357,6 +365,7 @@ async def get_or_create_agent_for_session(
     system_prompt_extra: str = "",
     expert_agent_id: str | None = None,
     skill_whitelist: list[str] | None | object = _SCOPE_UNSPECIFIED,
+    approval_mode: str | None | object = _APPROVAL_UNSPECIFIED,
 ) -> EasyAgent:
     """获取（或创建）会话 Agent。
 
@@ -383,6 +392,13 @@ async def get_or_create_agent_for_session(
     ``save_expert``（DA-13）：非专家会话都注入，且不参与技能门控——产品级入口不能依赖
     技能 frontmatter 的写法（见 ``agent/core.py`` 的 ``_ALWAYS_AVAILABLE_TOOLS``）；也不再
     随本轮选中的技能驱逐重建 Agent。专家会话不提供，防止领域专家被借来创建 / 修改别的专家。
+
+    ``approval_mode`` 为用户级审批模式（设置 → 权限设置，存
+    ``{workspace_dir}/.settings/{user}.json``）：
+    **不传**（哨兵）表示每轮读一次用户设置——这是「保存后下一条消息生效」的唯一来源，
+    也是多副本部署里跨 Pod 自愈的方式（不依赖 ``invalidate_user_agents`` 那种只清本进程）；
+    传 ``None`` 表示「沿用缓存的 Agent」，供 HITL 审批恢复使用：此时若按最新设置重建 Agent，
+    ``interrupt_on`` 变化会让图重建、checkpointer 里的中断态丢失，恢复直接 409。
     """
     async with _create_lock(session_id):
         return await _get_or_create_agent_unlocked(
@@ -395,6 +411,7 @@ async def get_or_create_agent_for_session(
             system_prompt_extra=system_prompt_extra,
             expert_agent_id=expert_agent_id,
             skill_whitelist=skill_whitelist,
+            approval_mode=approval_mode,
         )
 
 
@@ -463,14 +480,25 @@ def _try_reuse_cached_agent(
     current_scope: tuple[str, ...] | None,
     only_connectors: list[str] | None,
     system_prompt_extra: str,
+    approval_mode: str | None = None,
 ):
-    """缓存命中判定：参数一致则返回缓存 Agent；参数变化则驱逐并返回 None。"""
+    """缓存命中判定：参数一致则返回缓存 Agent；参数变化则驱逐并返回 None。
+
+    ``approval_mode=None`` 表示「沿用缓存」（HITL 审批恢复）：不比较审批模式，
+    否则用户在审批卡片挂着的时候切了设置，这一轮就会重建 Agent 并丢掉中断态。
+    """
     if cached is None:
         return None
     cached_web_search = bool(getattr(cached, "enable_web_search", False))
     # enable_web_search=None（如 HITL 恢复）：不比较开关，直接复用缓存 Agent
     search_matches = (
         enable_web_search is None or web_search_enabled == cached_web_search
+    )
+    # 审批模式变化同样必须驱逐：否则「设置了自动审批但下一轮还在弹审批卡片」，
+    # 跨 Pod 时尤其明显（invalidate_user_agents 只清本进程）。
+    cached_approval_mode = getattr(cached, "approval_mode", None)
+    approval_changed = (
+        approval_mode is not None and approval_mode != cached_approval_mode
     )
     # 专家变更同样必须驱逐：否则「换专家不生效」，且专家人设会黏在后续的
     # 普通聊天上（模型与联网开关都没变，缓存会一直命中）。
@@ -487,6 +515,7 @@ def _try_reuse_cached_agent(
         or not search_matches
         or expert_changed
         or scope_changed
+        or approval_changed
     ):
         logger.info(
             f"[{session_id[-5:]}] Agent 参数变化 | "
@@ -495,6 +524,7 @@ def _try_reuse_cached_agent(
             f"expert: {state.expert_key or '(通用)'} -> "
             f"{expert_key or '(通用)'} | "
             f"skill_scope: {cached_scope_key or '全量'} -> {current_scope or '全量'} | "
+            f"approval_mode: {cached_approval_mode or '?'} -> {approval_mode or '(沿用缓存)'} | "
             f"connectors: {only_connectors if only_connectors is not None else '(全部)'} | "
             f"驱逐旧 Agent 重建 | "
             f"{describe_prompt('本轮 extra', system_prompt_extra)} | "
@@ -651,6 +681,7 @@ async def _get_or_create_agent_unlocked(
     system_prompt_extra: str = "",
     expert_agent_id: str | None = None,
     skill_whitelist: list[str] | None | object = _SCOPE_UNSPECIFIED,
+    approval_mode: str | None | object = _APPROVAL_UNSPECIFIED,
 ) -> EasyAgent:
     if _agent_config is None:
         raise RuntimeError("Agent 配置未初始化")
@@ -669,6 +700,9 @@ async def _get_or_create_agent_unlocked(
     web_search_tool, web_search_enabled = _resolve_web_search_tool(
         config, username, session_id, enable_web_search
     )
+    # 用户级审批模式：未指定时每轮读一次文件（约 200 字节）；None = 沿用缓存（审批恢复）
+    if approval_mode is _APPROVAL_UNSPECIFIED:
+        approval_mode = await run_blocking(read_approval_mode, username, config)
 
     # 模型切换 / 联网搜索开关变化 / 专家变更：缓存的 Agent 不匹配，驱逐后重建
     cached = _try_reuse_cached_agent(
@@ -682,6 +716,7 @@ async def _get_or_create_agent_unlocked(
         current_scope=current_scope,
         only_connectors=only_connectors,
         system_prompt_extra=system_prompt_extra,
+        approval_mode=approval_mode,
     )
     if cached is not None:
         return cached
@@ -719,6 +754,13 @@ async def _get_or_create_agent_unlocked(
         mcp_tools=tools,
         organization_id=organization_id,
         enable_hitl=enable_hitl,
+        # approval_mode=None（沿用缓存）但缓存已被 LRU 淘汰时没有中断态可保，
+        # 退回读文件按最新设置重建
+        approval_mode=(
+            approval_mode
+            if approval_mode is not None
+            else await run_blocking(read_approval_mode, username, config)
+        ),
         model_name=model_name,
         enable_web_search=web_search_enabled,
         system_prompt_extra=system_prompt_extra,

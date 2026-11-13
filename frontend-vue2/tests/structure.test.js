@@ -66,11 +66,13 @@ const LINE_BUDGET = {
   [`${MOD}features/chat/components/ChatMessage.vue`]: 2644,
   [`${MOD}features/chat/components/AiSidebar.vue`]: 1726,
   [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2253,
-  [`${MOD}features/chat/mixins/chatSession.js`]: 1733,
+  // 2026-11-12 存量校正：mysql_saver / 跨 Pod 挂载修复后实为 1740 行，按实测值更新（本次改动未触及）
+  [`${MOD}features/chat/mixins/chatSession.js`]: 1740,
   [`${MOD}features/connectors/components/ConnectorListPanel.vue`]: 1504,
   [`${MOD}features/skills/components/SkillListPanel.vue`]: 1260,
   [`${MOD}shared/preview/FilePreview.vue`]: 1164,
-  [`${MOD}features/settings/components/SettingsPanel.vue`]: 1128,
+  // 2026-11-12 设置页新增「权限设置」tab（导航项 + ApprovalPanel 挂载）：1128 → 1129
+  [`${MOD}features/settings/components/SettingsPanel.vue`]: 1129,
   [`${MOD}features/chat/components/Chat.vue`]: 1123,
   [`${MOD}features/chat/components/SessionList.vue`]: 1072,
   [`${MOD}features/tasks/components/ScheduledTasksPanel.vue`]: 967,

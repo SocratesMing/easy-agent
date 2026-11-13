@@ -51,6 +51,8 @@ def _patch_manager(monkeypatch, config):
             self.kwargs = kwargs
             self.model_name = kwargs.get("model_name") or config.active_model
             self.enable_web_search = kwargs.get("enable_web_search", False)
+            # 缓存驱逐会比对审批模式：替身必须带上，否则每次都被判「模式变化」
+            self.approval_mode = kwargs.get("approval_mode") or "manual"
             self.mcp_tools = kwargs.get("mcp_tools") or []
             self.workspace_dir = kwargs.get("workspace_name") or "ws"
             created.append(self)
