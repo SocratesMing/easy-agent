@@ -150,3 +150,16 @@ def test_build_turn_preview_has_header_and_body(tmp_path):
 
     assert "用户本轮上传的文件" in preview
     assert "preview-body" in preview
+
+
+# ── 「只传文件」引导提示的追加 / 剥离 ────────────────────────────────────
+
+
+def test_strip_files_only_turn_hint_removes_trailing_hint():
+    text = f"【预览】a.txt 开头\n\n{su.FILES_ONLY_TURN_HINT}"
+    assert su.strip_files_only_turn_hint(text) == "【预览】a.txt 开头"
+
+    assert su.strip_files_only_turn_hint(su.FILES_ONLY_TURN_HINT) == ""
+    assert su.strip_files_only_turn_hint("总结这份报告") == "总结这份报告"
+    assert su.strip_files_only_turn_hint("") == ""
+    assert su.strip_files_only_turn_hint(None) == ""

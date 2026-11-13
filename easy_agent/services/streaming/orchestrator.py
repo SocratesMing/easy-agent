@@ -64,6 +64,10 @@ from easy_agent.services.sessions.thread import (
     plan_turn,
     record_turn_checkpoint,
 )
+from easy_agent.services.sessions.uploads import (
+    FILES_ONLY_TURN_HINT,
+    strip_files_only_turn_hint,
+)
 from easy_agent.services.streaming.persistence import (
     IncrementalPersister,
     persist_approval_decisions,
@@ -1081,7 +1085,10 @@ async def _chat_stream_impl(
 
     message_content = parsed_content or request.message
     # 保存原始用户输入（记忆/工作区前缀注入前），供日志明确打印用户实际提问。
-    raw_user_input = message_content
+    # 「只传文件」轮次的引导提示不属于用户原话，这里剥离（记忆侧 raw_user_msg 同理）。
+    raw_user_input = strip_files_only_turn_hint(message_content) or request.message
+    # 终态确认：本轮模型输入里是否真的带着「只传文件」引导提示（只用于日志）
+    hint_injected = bool(parsed_content) and parsed_content.endswith(FILES_ONLY_TURN_HINT)
 
     if agent and agent.workspace_dir:
         message_content = f"[workspace: {agent.workspace_virtual_path}/ | shell: cd {agent.workspace_virtual_path}]\n{message_content}"
@@ -1103,6 +1110,8 @@ async def _chat_stream_impl(
     )
     logger.info(
         f"[{sid}] 💬 用户输入 | {raw_user_input[:200]}{'...' if len(raw_user_input) > 200 else ''}"
+        # 终态确认：引导提示是否真的进了本轮模型输入（与 chat_turn 的 🧭 日志互为印证）
+        f" | 🧭 引导提示={'有' if hint_injected else '无'}"
     )
 
     context_length = None
@@ -1190,7 +1199,8 @@ async def _chat_stream_impl(
             auto_compress_tokens=auto_compress_tokens,
             thread_id=thread_id,
             handle=handle,
-            raw_user_msg=parsed_content or request.message,
+            # 「只传文件」轮次的引导提示不进记忆整理输入（剥离后回退到用户原话）
+            raw_user_msg=strip_files_only_turn_hint(parsed_content) or request.message,
             message_content=message_content,
             session_logger=session_logger,
             result_log_truncate=result_log_truncate,

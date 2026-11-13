@@ -72,7 +72,7 @@ from easy_agent.services.usage import resolve_usage_identity
 from easy_agent.utils.usage_context import usage_scope
 from easy_agent.utils.blocking import run_blocking
 from easy_agent.utils.file_parser import parse_file_content
-from easy_agent.utils.prompt_probe import describe_prompt
+from easy_agent.utils.prompt_probe import describe_prompt, prompt_fingerprint
 from easy_agent.utils.session_logger import SessionLogger
 
 logger = logging.getLogger(__name__)
@@ -648,6 +648,31 @@ async def prepare_turn(
         build_turn_uploads, repo, session_id, username, request.files, request.message
     )
     parsed_content = uploads.model_input
+    # 「只传文件、没写正文」的轮次：向本轮模型输入末尾追加引导提示，让模型基于附件
+    # 引导用户提问，而不是顺着历史话题回答上一轮的问题。只影响模型请求——落库正文、
+    # thread 占位、系统提示词都不动；记忆 / 用户输入日志侧由 orchestrator 的
+    # strip_files_only_turn_hint 剥离（见 uploads.FILES_ONLY_TURN_HINT）。
+    files_only_turn = not (request.message or "").strip() and bool(request.files)
+    if files_only_turn:
+        parsed_content = (
+            f"{parsed_content}\n\n{file_context.FILES_ONLY_TURN_HINT}"
+            if parsed_content
+            else file_context.FILES_ONLY_TURN_HINT
+        )
+    # 可观测性：每轮固定一行，明确「本轮引导提示是否注入」。排查时 grep 🧭 即可：
+    # 已注入 = 本轮只有文件没有正文；未注入 = 本轮有正文（或没有文件）。
+    logger.info(
+        f"[{sid}] 🧭 引导提示 | "
+        + (
+            f"已注入（只有文件、无正文） | 文件数: {len(request.files or [])} | "
+            f"提示指纹: {prompt_fingerprint(file_context.FILES_ONLY_TURN_HINT)} | "
+            f"模型输入: {len(parsed_content)} 字符"
+            if files_only_turn
+            else "未注入（有正文或无文件） | "
+            f"正文长度: {len((request.message or '').strip())} | "
+            f"文件数: {len(request.files or [])} | 模型输入: {len(parsed_content)} 字符"
+        )
+    )
     # 专家提示词与技能提示排在最后：agent.py 的拼接顺序为
     # [system_prompt, user_info, web_search_prompt, system_prompt_extra]，
     # 放在 extra 末尾即 recency 最高，专家人设可主导通用人设。

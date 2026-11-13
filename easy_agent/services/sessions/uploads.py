@@ -61,6 +61,26 @@ MANIFEST_HEADER = """# 用户上传的文件（本会话）
 
 """
 
+# 「只传文件、没写正文」轮次的引导提示：用户没有附带任何文字时，把这段追加到本轮
+# 模型输入末尾，让模型基于附件引导提问，而不是顺着历史话题回答上一轮的问题。
+# 只影响本轮模型请求（parsed_content）——落库正文、thread 占位、系统提示词都不动；
+# 记忆整理 / 用户输入日志侧由 strip_files_only_turn_hint 剥离，避免引导文案被当成
+# 用户原话进入记忆。
+FILES_ONLY_TURN_HINT = (
+    "（用户本次只上传了文件，没有附带任何文字说明。请基于附件内容简要说明你看到的"
+    "文件信息，并引导用户针对这些文件提出具体问题；不要继续回答历史话题，也不要"
+    "臆测用户意图。）"
+)
+
+
+def strip_files_only_turn_hint(text: str | None) -> str:
+    """剥掉追加在本轮模型输入末尾的「只传文件」引导提示（记忆 / 日志侧隔离用）。"""
+    if not text:
+        return ""
+    if text.endswith(FILES_ONLY_TURN_HINT):
+        text = text[: -len(FILES_ONLY_TURN_HINT)]
+    return text.strip()
+
 
 # ── 配置 ────────────────────────────────────────────────────────────────
 
