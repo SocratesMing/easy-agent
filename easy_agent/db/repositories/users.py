@@ -18,6 +18,19 @@ from easy_agent.db.user_fields_registry import save_user_fields
 
 logger = logging.getLogger("easy_agent.db.users")
 
+# 免密登录可携带的人员字段（与人员管理一致）；写入时只补空值，不覆盖已有数据。
+PASSWORDLESS_PROFILE_FIELDS = (
+    "display_name",
+    "employee_id",
+    "department_id",
+    "department_name",
+    "division_name",
+    "team_name",
+    "email",
+    "position",
+    "mobile",
+)
+
 
 def create_user(db, user_data: UserModel) -> UserModel:
     with db.get_connection() as conn:
@@ -277,26 +290,100 @@ def verify_user_password(db, account: str, password: str) -> Optional[UserModel]
         return None
     return user
 
+def _normalize_passwordless_profile(profile: Optional[dict]) -> dict[str, str]:
+    """只保留人员字段并去空白；部门编号为空时按人员管理规则回填部门名称。"""
+    data = {
+        name: str((profile or {}).get(name) or "").strip()
+        for name in PASSWORDLESS_PROFILE_FIELDS
+    }
+    if not data["department_id"]:
+        data["department_id"] = data["department_name"]
+    return data
+
+
+def _fill_missing_passwordless_profile(
+    db, user: UserModel, profile: dict[str, str]
+) -> UserModel:
+    """只填空：账号已有值的人员字段不被门户数据覆盖。"""
+    updates: dict[str, str] = {}
+    for name in (
+        "display_name",
+        "department_name",
+        "division_name",
+        "team_name",
+        "email",
+        "position",
+        "mobile",
+    ):
+        value = profile.get(name) or ""
+        if value and not getattr(user, name, ""):
+            updates[name] = value
+
+    # 部门编号与 organization_id 同步：知识库鉴权读取的是 organization_id。
+    department_id = profile.get("department_id") or ""
+    if department_id and not (user.department_id or user.organization_id):
+        updates["department_id"] = department_id
+        updates["organization_id"] = department_id
+
+    # 工号全局唯一：已被其他账号占用时跳过，避免阻断登录。
+    employee_id = profile.get("employee_id") or ""
+    if employee_id and not user.employee_id:
+        if get_user_by_employee_id(db, employee_id):
+            logger.warning(
+                f"[用户] 免密登录工号已被其他账号占用，跳过写入 | "
+                f"用户: {user.username} | 工号: {employee_id}"
+            )
+        else:
+            updates["employee_id"] = employee_id
+
+    if updates and not user.personnel_source:
+        updates["personnel_source"] = "portal"
+
+    if not updates:
+        return user
+
+    updates["updated_at"] = datetime.now().isoformat()
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        db._execute(
+            cursor,
+            "UPDATE users SET " + ", ".join(f"{name}=?" for name in updates) + " WHERE user_id=?",
+            (*updates.values(), user.user_id),
+        )
+    return get_user_by_username(db, user.username) or user
+
+
 def get_or_create_passwordless_user(db,
     username: str,
     user_id: str = "",
+    profile: Optional[dict] = None,
 ) -> tuple[Optional[UserModel], bool]:
     """免密登录：按用户名查找用户，不存在则注册。
 
     - 用户名已存在：直接返回该用户，user_id 不参与匹配；
+      携带的人员字段按「只填空」补全，不覆盖已有值；
     - 用户名不存在：user_id 为空或 "0" 时自动生成唯一 ID，否则使用传入值，
-      传入值已被其他用户占用时返回 (None, False)。
+      传入值已被其他用户占用时返回 (None, False)；人员字段随账号一并写入。
 
     返回 (user, created)。
     """
+    profile = _normalize_passwordless_profile(profile)
     existing = get_user_by_username(db, username)
     if existing:
-        return existing, False
+        return _fill_missing_passwordless_profile(db, existing, profile), False
 
     if not user_id or user_id == "0":
         user_id = str(uuid.uuid4())
     elif get_user_by_id(db, user_id):
         return None, False
+
+    employee_id = profile["employee_id"]
+    if employee_id and get_user_by_employee_id(db, employee_id):
+        logger.warning(
+            f"[用户] 免密登录工号已被其他账号占用，跳过写入 | "
+            f"用户: {username} | 工号: {employee_id}"
+        )
+        employee_id = ""
 
     now = datetime.now().isoformat()
     user = UserModel(
@@ -304,9 +391,18 @@ def get_or_create_passwordless_user(db,
         username=username,
         # 免密用户不通过密码登录，写入随机密码哈希防止被猜测
         password_hash=hash_password(uuid.uuid4().hex),
-        organization_id="",
-        email="",
+        organization_id=profile["department_id"],
+        email=profile["email"],
         bound_ip="",
+        employee_id=employee_id,
+        display_name=profile["display_name"],
+        department_id=profile["department_id"],
+        department_name=profile["department_name"],
+        division_name=profile["division_name"],
+        team_name=profile["team_name"],
+        position=profile["position"],
+        mobile=profile["mobile"],
+        personnel_source="portal",
         created_at=now,
         updated_at=now,
     )

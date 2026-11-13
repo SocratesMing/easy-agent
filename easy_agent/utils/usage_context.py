@@ -19,9 +19,12 @@ def get_usage_identity() -> UsageIdentity | None:
 
 
 @contextmanager
-def usage_scope(user_id: str | None, session_id: str | None = None):
-    """``None`` explicitly disables collection, including an inherited identity."""
-    token = _identity.set(UsageIdentity(user_id, session_id) if user_id else None)
+def usage_scope(user_id: str | UsageIdentity | None, session_id: str | None = None):
+    """Use an immutable identity or legacy ID pair; ``None`` clears inherited identity."""
+    identity = user_id if isinstance(user_id, UsageIdentity) else (
+        UsageIdentity(user_id, session_id) if user_id else None
+    )
+    token = _identity.set(identity)
     try:
         yield
     finally:

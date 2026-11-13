@@ -88,7 +88,63 @@ def runtime(tmp_path):
 
 def repo(rows):
     return SimpleNamespace(get_owned_session=lambda sid, username: SimpleNamespace(
-        session_id=sid, username=username, messages=rows))
+        session_id=sid, username=username, workspace_name="test", messages=rows))
+
+
+@pytest.mark.parametrize("checkpoint_backend", ["same_sqlite", "separate_sqlite", "mysql"])
+async def test_independent_checkpoint_with_sqlite_business_db(tmp_path, checkpoint_backend):
+    rt = runtime(tmp_path)
+    if checkpoint_backend == "mysql":
+        from easy_agent.persistence.mysql_saver import AsyncMySQLSaver, MySQLCheckpointConfig
+
+        saver = AsyncMySQLSaver(MySQLCheckpointConfig())
+        assert await compaction.independent_checkpoint(rt, saver) is True
+        return
+
+    path = rt._db.db_path if checkpoint_backend == "same_sqlite" else str(tmp_path / "checkpoint.db")
+    async with AsyncSqliteSaver.from_conn_string(path) as saver:
+        assert await compaction.independent_checkpoint(rt, saver) is (checkpoint_backend == "separate_sqlite")
+
+
+@pytest.mark.parametrize("failure", ["version", "missing_package", "missing_method"])
+async def test_incompatible_adapter_rejects_before_backend(tmp_path, monkeypatch, failure):
+    from importlib.metadata import PackageNotFoundError
+    from easy_agent.agent import manual_compaction
+
+    a = agent(None, tmp_path)
+    a._build_backend = lambda paths: pytest.fail("incompatible adapter accessed backend")
+    if failure == "missing_method":
+        monkeypatch.setattr(manual_compaction.SummarizationMiddleware, "_acreate_summary", None)
+    else:
+        def installed(name):
+            if failure == "missing_package":
+                raise PackageNotFoundError(name)
+            return "unsupported"
+        monkeypatch.setattr(manual_compaction, "version", installed)
+    with pytest.raises(RuntimeError, match="不支持手动压缩"):
+        await prepare_compaction(a, [HumanMessage("old")], {})
+    with pytest.raises(RuntimeError, match="不支持手动压缩"):
+        manual_compaction.estimate_context(a, [], {})
+    assert not a.model.inputs
+
+
+def test_install_contract_matches_verified_adapter():
+    from importlib.metadata import requires
+    import tomllib
+    from pathlib import Path
+    from packaging.requirements import Requirement
+    from easy_agent.agent.manual_compaction import VERIFIED_VERSIONS, compatibility_reason
+
+    root = Path(__file__).resolve().parents[2]
+    project = tomllib.loads((root / "pyproject.toml").read_text())
+    requirements = {r.name: r for r in map(Requirement, project["project"]["dependencies"])}
+    installed_metadata = {r.name: r for r in map(Requirement, requires("easy-agent"))}
+    locked = {p["name"]: p["version"] for p in tomllib.loads((root / "uv.lock").read_text())["package"]}
+    for name, expected in VERIFIED_VERSIONS.items():
+        assert str(requirements[name].specifier) == f"=={expected}"
+        assert str(installed_metadata[name].specifier) == f"=={expected}"
+        assert locked[name] == expected
+    assert compatibility_reason() is None
 
 
 async def test_real_graph_restart_next_model_and_idempotency(tmp_path):

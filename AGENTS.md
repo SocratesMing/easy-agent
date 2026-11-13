@@ -75,6 +75,8 @@ cd frontend && npm run build        # Build the Vue3 baseline
 - Follow **Conventional Commits**: `feat`, `fix`, `chore`, `refactor`, `docs`. Use a scope where helpful, e.g. `feat(ui):`, `fix(agent):`, `chore(config):`.
 - Descriptions are concise and may be in Chinese, matching existing history (e.g. `feat(env): AGENT_ENV 多环境识别`).
 - Keep PRs focused and link related issues. Build the frontend (`npm run build`) and run `pytest` before opening a PR.
+- Separate independently verifiable CSS extraction / file moves from feature or bug-fix commits. For a move, verify the old and new contents; selector prefixes, `scoped` / `:deep()` changes and import order are behavior changes and must be described and checked separately.
+- For dual-frontend changes, identify the canonical `frontend-shared/` source and generated copies in the PR. Run `node scripts/dev/sync-frontend-shared.mjs --check`; describe the behavior change and its tests separately from mechanical moves, and report each frontend's build result independently.
 
 ## Configuration & Security Tips
 

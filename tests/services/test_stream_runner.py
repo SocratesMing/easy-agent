@@ -3,7 +3,7 @@
 两个公开生成器现在只负责准备输入与元数据；主循环、HITL 收尾、取消/异常兜底都在
 ``_run_stream``。本文件锁住合并后的三条语义：
 
-- 生成器不再各写一份主循环 / 收尾 / 兜底（源码结构，防止重复代码长回来）；
+- 提前关闭公开生成器时，内部流在计费身份复位前关闭；
 - 流中异常仍走统一兜底：chat 修正 thinking / 工具状态后下发 error 帧；
 - resume 的取消兜底仍用 ``with_approval=True`` 保存部分回复（审批状态不丢）。
 """
@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import time
 
@@ -20,6 +19,7 @@ import pytest
 
 from easy_agent.models.api import ChatRequest
 from easy_agent.services.streaming import orchestrator
+from easy_agent.services.streaming.outcome import StreamOutcome
 from tests.services.test_stream_split_golden import (
     FakeDB,
     FakeGraph,
@@ -119,28 +119,14 @@ def _types(events):
     return [event["type"] for event in events]
 
 
-def test_generators_delegate_the_shared_loop_to_run_stream():
-    """两个生成器只准备输入，不再各自实现主循环 / 收尾 / 兜底。"""
-    chat_src = inspect.getsource(orchestrator.chat_stream_generator)
-    resume_src = inspect.getsource(orchestrator.resume_stream_generator)
-    for source in (chat_src, resume_src):
-        assert "_run_stream(" in source
-        for marker in (
-            "pump_stream(",
-            "detect_hitl_interruption(",
-            "finalize_stream(",
-            "persist_partial(",
-            "_end_thinking(",
-        ):
-            assert marker not in source, marker
-
-
 async def test_chat_prep_error_emits_error_frame_and_writes_nothing():
     """准备阶段异常：补统一文案的 error 帧，不落任何 assistant 消息。"""
     db = _FailingDB()
+    outcome = StreamOutcome()
     frames = await _frames(
         orchestrator.chat_stream_generator(
-            ChatRequest(message="hi"), db, _agent(FakeGraph([])), "s1", "m1", "tester"
+            ChatRequest(message="hi"), db, _agent(FakeGraph([])), "s1", "m1", "tester",
+            outcome=outcome,
         )
     )
     events = _events(frames)
@@ -148,6 +134,103 @@ async def test_chat_prep_error_emits_error_frame_and_writes_nothing():
     assert _types(events) == ["start", "error"]
     assert events[-1]["content"] == "处理失败: db down"
     assert db.persisted == []
+    assert outcome.error == events[-1]["content"]
+
+
+@pytest.mark.parametrize("resume", [False, True])
+async def test_closing_public_generator_closes_inner_stream_with_identity(monkeypatch, resume):
+    from easy_agent.utils.usage_context import UsageIdentity, get_usage_identity, usage_scope
+
+    observed = []
+    identity = UsageIdentity("real-id", "s1")
+
+    async def resolve(*args):
+        return identity
+
+    async def stream(run, payload):
+        try:
+            observed.append(("stream", get_usage_identity()))
+            yield run.emitter.content("partial")
+        finally:
+            observed.append(("closed", get_usage_identity()))
+
+    monkeypatch.setattr(orchestrator, "resolve_usage_identity", resolve)
+    monkeypatch.setattr(orchestrator, "_run_stream", stream)
+    graph = FakeGraph([], states=[_hitl_state()] if resume else [])
+    if resume:
+        generator = orchestrator.resume_stream_generator(
+            FakeDB(_resume_messages()), _agent(graph), "s1", "s1-m1", [{"type": "approve"}],
+            session_logger=FakeLogger(), message_id="m1",
+        )
+    else:
+        generator = orchestrator.chat_stream_generator(
+            ChatRequest(message="hi"), FakeDB(), _agent(graph), "s1", "m1", "tester",
+        )
+    with usage_scope("parent"):
+        assert _types(_events([await anext(generator)])) == ["start"]
+        assert _types(_events([await anext(generator)])) == ["content"]
+        await generator.aclose()
+        assert get_usage_identity() == UsageIdentity("parent")
+        assert observed == [("stream", identity), ("closed", identity)]
+
+
+async def test_chat_identity_survives_client_disconnect_until_background_finishes(monkeypatch):
+    from easy_agent.api import chat
+    from easy_agent.utils.usage_context import UsageIdentity, get_usage_identity, usage_scope
+
+    identity = UsageIdentity("real-id", "usage-detached")
+    entered, release = asyncio.Event(), asyncio.Event()
+    observed = []
+    registered = []
+
+    async def register(session_id, task):
+        registered.append(task)
+
+    async def unregister(session_id, task):
+        observed.append(("after-stream", get_usage_identity()))
+
+    async def stream(run, payload):
+        observed.append(("before-disconnect", get_usage_identity()))
+        entered.set()
+        await release.wait()
+        observed.append(("after-disconnect", get_usage_identity()))
+        yield run.emitter.content("finished")
+
+    async def unexpected_lookup(*args):
+        pytest.fail("An explicitly supplied identity must not be resolved again")
+
+    monkeypatch.setattr(orchestrator, "resolve_usage_identity", unexpected_lookup)
+    monkeypatch.setattr(orchestrator, "_run_stream", stream)
+    monkeypatch.setattr(chat, "aregister_stream_task", register)
+    monkeypatch.setattr(chat, "aunregister_stream_task", unregister)
+    monkeypatch.setattr(chat, "is_session_streaming", lambda session_id: False)
+    generator = orchestrator.chat_stream_generator(
+        ChatRequest(message="hi"), FakeDB(), _agent(FakeGraph([])),
+        identity.session_id, "m1", "tester", usage_identity=identity,
+    )
+    response = chat._detached_event_stream(generator, identity.session_id, "usage")
+    try:
+        with usage_scope("unrelated-parent"):
+            assert _types(_events([await anext(response)])) == ["start"]
+            await asyncio.wait_for(entered.wait(), 5)
+            # Closing the client response leaves the registered worker running.
+            await response.aclose()
+            assert not registered[0].done()
+            assert get_usage_identity() == UsageIdentity("unrelated-parent")
+        release.set()
+        await asyncio.wait_for(registered[0], 5)
+        assert observed == [
+            ("before-disconnect", identity), ("after-disconnect", identity),
+            ("after-stream", UsageIdentity("unrelated-parent")),
+        ]
+        assert chat._session_stream_hubs[identity.session_id].done
+        assert get_usage_identity() is None
+    finally:
+        release.set()
+        await response.aclose()
+        if registered:
+            await asyncio.wait_for(registered[0], 5)
+        chat._session_stream_hubs.pop(identity.session_id, None)
 
 
 async def test_chat_prep_cancel_propagates_without_empty_partial():
@@ -313,6 +396,7 @@ async def test_resume_error_keeps_approval_status_and_matching_message(timed_out
     graph.astream = _astream
     graph.states = [_hitl_state()]
     db = FakeDB(_resume_messages())
+    outcome = StreamOutcome()
 
     frames = await _frames(
         orchestrator.resume_stream_generator(
@@ -323,11 +407,13 @@ async def test_resume_error_keeps_approval_status_and_matching_message(timed_out
             [{"type": "approve"}],
             session_logger=FakeLogger(),
             message_id="m1",
+            outcome=outcome,
         )
     )
     events = _events(frames)
 
     assert _types(events)[-1] == "error"
+    assert outcome.error == events[-1]["content"]
     partial = db.persisted[-1]
     if timed_out:
         assert events[-1]["code"] == "timeout"

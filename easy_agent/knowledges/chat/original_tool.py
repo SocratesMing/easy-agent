@@ -21,7 +21,11 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from easy_agent.db import get_database
-from easy_agent.knowledges.core.chunks import chunk_text, ordered_chunks
+from easy_agent.knowledges.core.chunks import (
+    chunk_text,
+    collect_document_chunks,
+    ordered_chunks,
+)
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.models import AllowedAction, KnowledgePrincipal
 from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
@@ -294,20 +298,9 @@ class KnowledgeOriginalTool(BaseTool):
         if not dataset_id:
             return "错误：无法定位文档所在的数据集。"
 
-        chunks: list[dict[str, Any]] = []
-        for page in range(1, 101):
-            data = await client.list_chunks(
-                dataset_id, remote_id, page=page, page_size=100
-            )
-            batch = data.get("chunks") if isinstance(data, dict) else None
-            if not isinstance(batch, list) or not batch:
-                break
-            chunks.extend(item for item in batch if isinstance(item, dict))
-            total = data.get("total")
-            if len(batch) < 100 or (
-                isinstance(total, (int, float)) and len(chunks) >= int(total)
-            ):
-                break
+        chunks = await collect_document_chunks(
+            client, dataset_id, remote_id, max_pages=100
+        )
         text = "\n".join(
             value
             for value in (chunk_text(item) for item in ordered_chunks(chunks))

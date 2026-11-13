@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _BASE_UPDATE_FIELDS = {
     "remote_dataset_id", "name", "description", "status",
-    "deleted_at", "deleted_by", "access_restricted",
+    "deleted_at", "deleted_by", "access_restricted", "meta_backfilled",
 }
 _DOCUMENT_UPDATE_FIELDS = {
     "remote_document_id", "folder_id", "status", "progress", "error_code",
@@ -156,6 +156,7 @@ class KnowledgeRepository:
         embedding_model: str,
         status: str = "creating",
         base_id: str | None = None,
+        meta_backfilled: int = 0,
     ) -> dict[str, Any]:
         base_id = base_id or str(uuid.uuid4())
         timestamp = _now()
@@ -167,12 +168,13 @@ class KnowledgeRepository:
                 INSERT INTO knowledge_bases
                     (id, remote_dataset_id, name, description, space_type,
                      owner_user_id, department_id, embedding_model, status,
-                     created_at, updated_at)
-                VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     meta_backfilled, created_at, updated_at)
+                VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     base_id, name, description, space_type, owner_user_id,
-                    department_id, embedding_model, status, timestamp, timestamp,
+                    department_id, embedding_model, status, meta_backfilled,
+                    timestamp, timestamp,
                 ),
             )
         return self.get_base(base_id)
@@ -623,6 +625,22 @@ class KnowledgeRepository:
                 f"{_DOCUMENT_SELECT} WHERE {' AND '.join(clauses)} "
                 "ORDER BY d.created_at DESC LIMIT 1",
                 tuple(parameters),
+            )
+            return _row_dict(cursor.fetchone())
+
+    def find_duplicate_document(
+        self, base_id: str, sha256: str
+    ) -> dict[str, Any] | None:
+        """同一知识库内按原文 sha256 查找未删除文档（重复上传拦截）。"""
+
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            self.db._execute(
+                cursor,
+                f"{_DOCUMENT_SELECT} "
+                "WHERE d.base_id=? AND d.status!='deleted' AND o.sha256=? "
+                "ORDER BY d.created_at LIMIT 1",
+                (base_id, sha256),
             )
             return _row_dict(cursor.fetchone())
 

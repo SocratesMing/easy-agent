@@ -92,6 +92,10 @@ export default {
     loadedSessionId() {
       this.reconstructPendingApproval()
     },
+    // 临时通知与消息内常驻错误独立；新提示到来时重新计时。
+    error(value) {
+      this._dismissError(value)
+    },
   },
   created() {
     chatBus.on('stream-started', this.onPeerStreamStarted)
@@ -103,12 +107,6 @@ export default {
       clear: () => { this.error = null },
       ttlMs: TRANSIENT_ERROR_TTL_MS,
     })
-  },
-  watch: {
-    // 期间出现新提示会取消旧定时器并重新计时
-    error(value) {
-      this._dismissError(value)
-    },
   },
   beforeUnmount() {
     this._offSessionState?.()

@@ -30,6 +30,7 @@ from easy_agent.bootstrap.config_models import (
     SummarizationConfig,
     ToolsConfig,
     UploadLimitsConfig,
+    VisualConfig,
     WebSearchConfig,
 )
 from easy_agent.bootstrap.env import env_bool, env_str, is_unset_placeholder
@@ -69,6 +70,7 @@ KNOWN_TOP_LEVEL_KEYS = _fields(AgentConfig) | frozenset(
         "upload_limits",
         "file_context",
         "streaming",
+        "visual",
         "expert",
         "expert_tags",
         "expert_guardrail_enabled",
@@ -107,6 +109,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
     "upload_limits": _fields(UploadLimitsConfig),
     "file_context": _fields(FileContextConfig),
     "streaming": _fields(StreamingConfig),
+    "visual": _fields(VisualConfig),
     # 以下各段与模型字段名不同（expert 段对应 Config.expert_*）或不归 Config 管（knowledge）
     "expert": frozenset(
         {
@@ -127,11 +130,25 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "embedding",
             "audit",
             "limits",
+            "retrieval",
             "source_sync",
         }
     ),
-    "knowledge.embedding": frozenset({"model"}),
     "knowledge.audit": frozenset({"enabled", "max_details_bytes"}),
+    "knowledge.retrieval": frozenset(
+        {
+            "similarity_threshold",
+            "fallback_similarity_threshold",
+            "aggregation_similarity_threshold",
+            "minimum_evidence_score",
+            "vector_similarity_weight",
+            "top_k",
+            "page_size",
+            "rerank_model",
+            "per_base_quota",
+            "top_n",
+        }
+    ),
     "knowledge.limits": frozenset(
         {
             "max_file_size_mb",
@@ -153,12 +170,9 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "base_id",
             "base_name",
             "lookback_days",
-            "start_date",
-            "start_delay_minutes",
+            "start_time",
             "interval_minutes",
             "max_inflight",
-            "poll_interval_seconds",
-            "max_attempts",
             "mysql",
         }
     ),
@@ -186,6 +200,9 @@ DEPRECATED_CONFIG_KEYS: dict[str, str] = {
     "system_prompt_path": "system_prompt_path 已由 prompt_path 取代，当前仍兼容读取",
     "log": "log 段不再由 Config 读取（日志由 initialization/log.py 管理）",
     "log_dir": "log_dir 不再由 Config 读取（日志由 initialization/log.py 管理）",
+    "knowledge.embedding": (
+        "knowledge.embedding 已废弃：embedding 模型由 RAGFlow 共享数据集决定，该键不再生效"
+    ),
 }
 
 

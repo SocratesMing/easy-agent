@@ -12,6 +12,19 @@ from easy_agent.services.streaming import side_effects
 from easy_agent.utils.usage_context import UsageIdentity, get_usage_identity, usage_scope
 
 
+def test_scope_accepts_resolved_identity_and_resets_after_failure():
+    identity = UsageIdentity("real-id", "session")
+    with usage_scope("parent"):
+        with pytest.raises(ValueError):
+            with usage_scope(identity):
+                assert get_usage_identity() == identity
+                raise ValueError("failed")
+        assert get_usage_identity() == UsageIdentity("parent")
+        with usage_scope(None):
+            assert get_usage_identity() is None
+    assert get_usage_identity() is None
+
+
 @pytest.mark.parametrize("failure", ["missing", "database"])
 async def test_failed_lookup_never_substitutes_username_or_inherits_outer_user(monkeypatch, failure):
     def lookup(username):

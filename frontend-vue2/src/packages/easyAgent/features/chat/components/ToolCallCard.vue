@@ -81,6 +81,19 @@
       <pre v-else-if="card.card === 'search'" class="tcc-code" v-html="linkifyText(card.raw)"></pre>
       <pre v-else-if="card.card === 'terminal' || card.card === 'read'" class="tcc-code" v-html="linkifyText(card.body || '(无内容)')"></pre>
 
+      <!-- 数据类工具的图表信封：摘要 + 图表（沙箱 iframe）+ 明细表 -->
+      <div v-else-if="card.card === 'visual'" class="tcc-visual">
+        <p v-if="card.envelope.summary" class="tcc-visual-summary">{{ card.envelope.summary }}</p>
+        <VisualFrame kind="echarts" :source="chartSource" :title="card.title" />
+        <div v-if="card.envelope.table" class="tcc-visual-table-wrap">
+          <table class="tcc-visual-table">
+            <thead><tr><th v-for="(col, i) in card.envelope.table.columns" :key="i">{{ col }}</th></tr></thead>
+            <tbody><tr v-for="(row, r) in card.envelope.table.rows" :key="r"><td v-for="(cell, c) in row" :key="c">{{ cell }}</td></tr></tbody>
+          </table>
+        </div>
+        <ul v-if="card.envelope.notes.length" class="tcc-visual-notes"><li v-for="(note, i) in card.envelope.notes" :key="i">{{ note }}</li></ul>
+      </div>
+
       <!-- 参数已在标题的 meta 里，展开只看结果 -->
       <pre v-else class="tcc-code" v-html="linkifyText(card.body || '(无内容)')"></pre>
     </div>
@@ -90,9 +103,11 @@
 <script>
 import { toolCard } from '../../../utils/toolPresentation.js'
 import { linkifyText } from '../../../markdownSetup.js'
+import VisualFrame from './VisualFrame.vue'
 
 export default {
   name: 'ToolCallCard',
+  components: { VisualFrame },
   props: {
     toolName: { type: String, default: '' },
     args: { type: [Object, Array], default: null },
@@ -107,13 +122,23 @@ export default {
   },
   emits: ['approve', 'reject', 'edit'],
   data() {
-    return { expanded: this.pendingApproval, editing: false, draft: '', editError: '' }
+    // 图表卡片默认展开：图本身就是这次调用的结果
+    const visual = toolCard(this.toolName, this.args, this.result, this.success).card === 'visual'
+    return { expanded: this.pendingApproval || visual, editing: false, draft: '', editError: '' }
   },
   created() {
     // 自动展开是否由本轮流式写入触发，用于在 streaming 结束后收回自动展开
     this._streamOpened = false
+    // 图表卡片只自动展开一次：结果在流式中途才到时补展开，之后尊重用户手动折叠
+    this._visualOpened = this.card.card === 'visual'
   },
   watch: {
+    'card.card'(value) {
+      if (value === 'visual' && !this._visualOpened) {
+        this._visualOpened = true
+        this.expanded = true
+      }
+    },
     // 待审批状态可能比卡片首帧晚到：流式先渲染工具卡片，之后才收到 approval_required。
     // 此时 expanded 已固定为 false，需要在转为待审批时自动展开，让用户直接看到
     // 参数与「批准 / 编辑 / 拒绝」按钮。仅展开不收起，审批结束后仍可查看结果。
@@ -150,6 +175,9 @@ export default {
     card() {
       return toolCard(this.toolName, this.args, this.result, this.success)
     },
+    chartSource() {
+      return this.card.envelope ? JSON.stringify(this.card.envelope.chart) : ''
+    },
     kindKey() {
       if (this.card.shape === 'paths') return 'list'
       if (this.card.shape === 'matches') return 'search'
@@ -159,7 +187,7 @@ export default {
     kindLabel() {
       // 写入/编辑的标题已含动作，不再重复显示类型标签
       const map = {
-        terminal: '命令', list: '列出', search: '搜索', read: '读取', edit: '', other: '工具',
+        terminal: '命令', list: '列出', search: '搜索', read: '读取', edit: '', other: '工具', visual: '图表',
       }
       return this.kindKey in map ? map[this.kindKey] : '工具'
     },
@@ -306,6 +334,12 @@ export default {
 .tcc-label { font-size: 12px; color: var(--text-secondary, #64748b); margin-bottom: 4px; }
 .tcc-streaming-hint { margin-bottom: 4px; font-size: 12px; color: var(--text-secondary, #64748b); }
 
+.tcc-visual-summary { margin: 0 0 4px; font-size: 13px; line-height: 1.6; color: var(--text-primary, #1f2937); }
+.tcc-visual-table-wrap { max-height: 240px; overflow: auto; border: 1px solid var(--border-color, #e2e8f0); border-radius: 8px; }
+.tcc-visual-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.tcc-visual-table th, .tcc-visual-table td { padding: 4px 8px; border-bottom: 1px solid var(--border-color, #e2e8f0); text-align: left; white-space: nowrap; }
+.tcc-visual-table th { position: sticky; top: 0; background: var(--bg-tertiary, #f1f5f9); font-weight: 500; color: var(--text-secondary, #64748b); }
+.tcc-visual-notes { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: var(--text-secondary, #64748b); }
 .tcc-approval-prompt { font-size: 13px; color: #b45309; margin-bottom: 6px; }
 .tcc-approval-files { margin: 0 0 8px; padding-left: 18px; font-size: 12px; color: var(--text-secondary, #64748b); }
 .tcc-approval-actions { display: flex; gap: 8px; }

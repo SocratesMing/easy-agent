@@ -107,6 +107,25 @@
             </div>
           </div>
 
+          <div
+            v-if="activeTab === 'version'"
+            class="content-panel"
+            role="tabpanel"
+            id="panel-version"
+            aria-labelledby="tab-version"
+          >
+            <div class="panel-header">
+              <h3>版本信息</h3>
+            </div>
+            <div v-if="loading" class="loading-state"><div class="spinner"></div></div>
+            <dl v-else class="version-list">
+              <template v-for="row in versionRows">
+                <dt :key="`k-${row.key}`">{{ row.label }}</dt>
+                <dd :key="`v-${row.key}`"><code>{{ row.value }}</code></dd>
+              </template>
+            </dl>
+          </div>
+
           <div v-if="activeTab === 'archive'" class="content-panel" role="tabpanel" id="panel-archive" aria-labelledby="tab-archive">
             <ArchiveManager ref="archiveManager" :open="true" @close="$emit('close')" />
           </div>
@@ -132,6 +151,7 @@ import {
   getMemory,
   updateMemory,
   getSystemPrompt,
+  getVersionInfo,
 } from '../../../api/settings.js'
 import {
   createMarkdownRenderer,
@@ -165,8 +185,10 @@ export default {
         },
         { key: 'usage', label: 'Token统计', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 3v18h17M8 16v-5m5 5V7m5 9V4"/></svg>' },
         { key: 'archive', label: '归档管理', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h18v4H3zM5 7v14h14V7M10 11h4"/></svg>' },
+        { key: 'version', label: '版本', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 8v8M18 10a6 6 0 0 1-6 6H8"/></svg>' },
         { key: 'approval', label: '权限设置', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>' },
       ],
+      versionInfo: {},
       activeTab: 'memory',
       loading: false,
       // 记忆
@@ -207,6 +229,14 @@ export default {
         console.error('系统提示词 Markdown 渲染失败:', e)
         return `<pre>${this.escapeHtml(raw)}</pre>`
       }
+    },
+    versionRows() {
+      const v = this.versionInfo || {}
+      const rows = [
+        { key: 'name', label: '名称', value: v.name },
+        { key: 'version', label: '版本号', value: v.version },
+      ]
+      return rows.filter(r => r.value)
     },
   },
   watch: {
@@ -253,7 +283,7 @@ export default {
     },
 
     async loadTabData() {
-      if (!['memory', 'prompt'].includes(this.activeTab)) return
+      if (!['memory', 'prompt', 'version'].includes(this.activeTab)) return
       this.loading = true
       try {
         if (this.activeTab === 'memory') {
@@ -264,6 +294,8 @@ export default {
         } else if (this.activeTab === 'prompt') {
           const data = await getSystemPrompt()
           this.promptContent = data.content || ''
+        } else if (this.activeTab === 'version') {
+          this.versionInfo = await getVersionInfo()
         }
       } catch (e) {
         console.error('加载数据失败:', e)
@@ -687,6 +719,23 @@ export default {
 /* 提示词查看器 */
 .prompt-viewer {
   flex: 1;
+}
+
+.version-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 10px 24px;
+  margin: 0;
+  font-size: 14px;
+}
+
+.version-list dt {
+  color: var(--text-secondary);
+}
+
+.version-list dd {
+  margin: 0;
+  word-break: break-all;
 }
 
 .prompt-preview {

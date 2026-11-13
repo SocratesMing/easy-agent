@@ -153,6 +153,8 @@ def _build_knowledge_context(
         "凡是本轮片段支撑的回答都应标注引用，尽量完整利用相关片段，不要遗漏可用依据。",
         "涉及数量、合计、排名或占比的问题：先逐条列出依据中所有相关条目，再给出数量或合计，"
         "不要只数已看到的条目，也不要臆断。",
+        "标注为「弱相关」的依据仅作参考：没有强相关依据时，必须说明依据较弱，"
+        "不得把弱相关片段当作确定结论。",
         "依据不足时明确说明。",
     ])
     if not evidence:
@@ -169,8 +171,9 @@ def _build_knowledge_context(
             AGGREGATION_SNIPPET_LIMIT if metadata.get("aggregation") else 2400
         )
         snippet = str(item.get("snippet") or "")[:snippet_limit]
+        weak_label = "（弱相关）" if metadata.get("weak") else ""
         lines.append(
-            f"[知识依据{index}] 知识库={base_name}; 文档={document_name}\n{snippet}"
+            f"[知识依据{index}]{weak_label} 知识库={base_name}; 文档={document_name}\n{snippet}"
         )
     if warnings:
         lines.append("检索提示：" + "；".join(warnings[:5]))
@@ -307,7 +310,7 @@ async def prepare_knowledge_chat(
             session_id=session_id,
             principal=principal,
             question=question,
-            top_n=8,
+            top_n=service.config.retrieval.top_n,
             request_id=str(uuid.uuid4()),
             metadata_filter=filter_model,
         )

@@ -280,6 +280,7 @@ node smoke.mjs --chrome <chrome 路径> --base http://localhost:18091   # Node �
 7. 宿主真实路由（hash / history）与 `keep-alive` 用法；Easy Agent 页面父容器的高度来源。
 8. 宿主是否自己使用 Monaco（`MonacoEnvironment`），`publicPath` 是否为跨域 CDN。
 9. 内网旧目录里是否有定制（先 `--legacy-scan`）。
+10. 宿主页面的 CSP 是否限制 iframe：对话里的图表、流程图、交互组件渲染在指向 Agent 后端 `/agent/viz/frame.html` 的沙箱 iframe 里，`frame-src`（或 `child-src`）需要允许该地址，否则卡片会退回显示源码（见 `docs/design/2026-11-12-chat-visuals.md`）。
 
 ## 11. 合同变更记录
 

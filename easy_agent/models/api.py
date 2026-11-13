@@ -2,7 +2,7 @@
 
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field, StrictBool
+from pydantic import BaseModel, Field, StrictBool, field_validator, model_validator
 
 
 class AgentConfig(BaseModel):
@@ -310,8 +310,48 @@ class RegisterRequest(BaseModel):
 
 
 class PasswordlessLoginRequest(BaseModel):
+    """免密登录项：用户名 + 用户ID，可选携带人员信息。
+
+    人员信息按「只填空」写入：账号对应字段已有值时不会被门户覆盖，
+    仅供人员管理补全展示与权限判断使用。
+    """
+
     username: str = Field(..., description="用户名", min_length=2, max_length=50)
     user_id: str = Field(default="0", max_length=100, description="用户ID：已存在用户忽略此字段；新用户为 0/空时自动生成")
+    display_name: str = Field(default="", max_length=127, description="姓名")
+    employee_id: str = Field(default="", max_length=64, description="工号")
+    department_id: str = Field(default="", max_length=255, description="部门编号；为空时回填为部门名称")
+    department_name: str = Field(default="", max_length=255, description="部门名称")
+    division_name: str = Field(default="", max_length=255, description="处室名称")
+    team_name: str = Field(default="", max_length=255, description="团队名称")
+    email: str = Field(default="", max_length=255, description="邮箱")
+    position: str = Field(default="", max_length=127, description="岗位")
+    mobile: str = Field(default="", max_length=64, description="手机号")
+
+    @field_validator(
+        "display_name",
+        "employee_id",
+        "department_id",
+        "department_name",
+        "division_name",
+        "team_name",
+        "email",
+        "position",
+        "mobile",
+        mode="before",
+    )
+    @classmethod
+    def strip_profile_fields(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @model_validator(mode="after")
+    def fill_department_id(self) -> "PasswordlessLoginRequest":
+        if not self.department_id:
+            self.department_id = self.department_name
+        # 与人员管理保持一致：admin 是系统管理员专用部门，不可分配给其他账号。
+        if self.department_id.casefold() == "admin":
+            raise ValueError("部门 admin 为系统管理员专用，不可用于免密登录")
+        return self
 
 
 class ResetPasswordRequest(BaseModel):

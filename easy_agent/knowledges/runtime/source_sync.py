@@ -59,15 +59,9 @@ from datetime import UTC, datetime, timedelta  # 时间处理：当前时间、�
 from pathlib import Path  # 面向对象的路径操作：取后缀、判断绝对路径、遍历目录
 from typing import Any  # 类型注解：表示“任意类型”
 
-# pymysql 是连接 MySQL 的第三方库。这里用 try/except 做“软依赖”处理：
-# 没安装 pymysql 时，本模块依然能正常 import（不跑同步的环境不受影响），
-# 只有真正要连接“文档 SQL”时，才会在 _connect_source 里抛出明确的错误。
-try:
-    import pymysql
-    from pymysql.cursors import DictCursor  # DictCursor：查询结果按“列名→值”的字典返回
-except ImportError:  # pragma: no cover - 依赖缺失时由运行期报错兜底
-    pymysql = None  # type: ignore[assignment]
-    DictCursor = None  # type: ignore[assignment]
+# pymysql 是连接 MySQL 的第三方库（项目硬依赖），同步阻塞操作统一放线程池执行。
+import pymysql
+from pymysql.cursors import DictCursor  # DictCursor：查询结果按“列名→值”的字典返回
 
 # run_in_threadpool：把一个“会阻塞的普通函数”丢到线程池里执行。
 # 原因：pymysql 查数据库、读本地文件都是阻塞操作，直接在 async 函数里调用
@@ -100,7 +94,7 @@ _RUN_LOCK = asyncio.Lock()
 #   uploading : 正在把文件上传给知识库
 #   parsing   : 已提交，等待知识库解析
 #   ready     : 解析完成，可以检索
-#   failed    : 失败（会根据 max_attempts 决定是否继续重试）
+#   failed    : 失败（超过固定重试次数后不再重试）
 #   deleted   : 文档在知识库里被人工删除了，不再重传
 #
 # 进程重启后，状态仍停在下面两个值，说明“上次没跑完”，需要重新检查、回收
@@ -137,6 +131,10 @@ _MAX_TITLE_CHARS = 100
 # 同步来源标识：写入元数据 sql 的 source 字段，用于幂等与区分来源（固定值，不配置）
 # 可以理解为给这批文档打个“来源标签”：以后要查“哪些文档是 SQL 同步来的”，就按它过滤。
 SOURCE_SYNC_SOURCE = "source_sync"
+
+# 在途文档状态轮询间隔（秒）与单篇失败重试上限：代码内固定，不放进配置文件。
+INFLIGHT_POLL_INTERVAL_SECONDS = 15.0
+MAX_UPLOAD_ATTEMPTS = 3
 
 # 文档 SQL 表结构固定；表名必须通过 source_sync.mysql.table 配置。
 # 为什么要限制字符：SQL 里的“表名”没法用参数占位符传递，只能拼进字符串，
@@ -478,12 +476,12 @@ def date_folder_segments(publish_date: str) -> list[str]:
 
     知识库里的目录是“年/月/日”三层结构，
     2026-10-23 的文档会归档到 2026年 > 10月 > 23日 目录下。
-    月份/日期前面的 0 会被去掉（"03" → "3"）。
+    月/日统一补零（"03" → "03月"），让目录名按字典序排列时
+    1 月 ~ 12 月、1 日 ~ 31 日仍是自然顺序。
     """
     # "2026-10-23".split("-") → ["2026", "10", "23"]
     year, month, day = publish_date.split("-")
-    # int(...) 是为了去掉前导零："10" 还是 "10"，"03" 会变成 "3"
-    return [f"{year}年", f"{int(month)}月", f"{int(day)}日"]
+    return [f"{year}年", f"{int(month):02d}月", f"{int(day):02d}日"]
 
 
 def _iter_windows(
@@ -509,9 +507,6 @@ def _iter_windows(
 # ---------------------------------------------------------------------------
 def _connect_source(sync_config: SourceSyncConfig) -> Any:
     """创建到“文档 SQL”（MySQL）的连接。这是同步阻塞函数，调用方需放线程池。"""
-    if pymysql is None:
-        raise RuntimeError("未安装 pymysql，无法连接研报 SQL")
-
     mysql = sync_config.mysql
     host = mysql.host.strip()
     database = mysql.database.strip()
@@ -656,6 +651,12 @@ class SourceSyncEngine:
 
         await self._repo(self.repository.update_sync_item, item_id, **fields)
 
+    @staticmethod
+    def _merge_stats(stats: dict[str, int], batch: dict[str, int]) -> None:
+        """把一轮批次统计累加进本次同步的总统计。"""
+        for key, value in batch.items():
+            stats[key] += value
+
     async def _fail_item(
         self,
         item_id: str,
@@ -724,6 +725,8 @@ class SourceSyncEngine:
             owner_user_id=self.principal.user_id,
             department_id=self.principal.department_id,
             embedding_model="",
+            # 新建库没有历史文档：后续上传即写 base_id 元数据，直接走 meta 检索
+            meta_backfilled=1,
         )
         # 新建的库默认不是 ACTIVE，这里显式激活，后面才能往里传文档
         await self._repo(
@@ -735,7 +738,7 @@ class SourceSyncEngine:
         return str(created["id"])
 
     async def ensure_date_folder(self, base_id: str, publish_date: str) -> str | None:
-        """确保 ``YYYY年/M月/D日`` 三级目录存在，返回日目录 ID。
+        """确保 ``YYYY年/MM月/DD日`` 三级目录存在，返回日目录 ID。
 
         ensure_folders 收到的是一整条路径（如 "2026年/10月/23日"），
         它会“缺哪层建哪层”。但它不返回最底层目录的 ID，所以这里创建完
@@ -882,6 +885,16 @@ class SourceSyncEngine:
             return "deleted"
         return "missing"
 
+    async def _delete_staged_and_count(
+        self, path: Path, stats: dict[str, int]
+    ) -> None:
+        """删除暂存文件并按结果累加统计（删除失败不阻断同步）。"""
+        result = await self._delete_staged_file(path)
+        if result == "deleted":
+            stats["staged_deleted"] += 1
+        elif result == "failed":
+            stats["staged_cleanup_failed"] += 1
+
     async def _cleanup_staged_for_document(
         self, document: dict[str, Any], stats: dict[str, int] | None = None
     ) -> None:
@@ -896,13 +909,10 @@ class SourceSyncEngine:
         if not name:
             return
         path = self._staging_dir / Path(name).name
-        result = await self._delete_staged_file(path)
         if stats is None:
-            return
-        if result == "deleted":
-            stats["staged_deleted"] += 1
-        elif result == "failed":
-            stats["staged_cleanup_failed"] += 1
+            await self._delete_staged_file(path)
+        else:
+            await self._delete_staged_and_count(path, stats)
 
     # ---------------- 单条入库 ----------------
 
@@ -1125,7 +1135,7 @@ class SourceSyncEngine:
         文档 DELETED                     台账置 deleted，尊重人工删除，永不重传
         文档 READY                       台账置 ready，同步完成
         文档 PENDING 且没有远端 ID        上次上传半途中断，台账置 failed 等重试
-        文档 FAILED/CANCELLED/UNKNOWN     未超过 max_attempts 就重试，否则置 failed
+        文档 FAILED/CANCELLED/UNKNOWN     未超过固定重试上限就重试，否则置 failed
         其他（解析中/暂停等）              原样留在 remaining，下一轮继续等
         ==============================  ==========================================
 
@@ -1206,7 +1216,7 @@ class SourceSyncEngine:
                 continue
             if status in _RETRYABLE_DOCUMENT_STATUSES:
                 attempts = int(item.get("attempts") or 0) + 1  # 这次算第几次尝试
-                if attempts <= self.sync_config.max_attempts:
+                if attempts <= MAX_UPLOAD_ATTEMPTS:
                     try:
                         # 让知识库服务重新提交解析（复用本地原文，不重新上传文件）
                         await self.service.retry_document(
@@ -1265,10 +1275,9 @@ class SourceSyncEngine:
             inflight, batch_stats = await self.refresh_inflight(
                 inflight, base_id=base_id
             )
-            for key, value in batch_stats.items():
-                stats[key] += value
+            self._merge_stats(stats, batch_stats)
             if len(inflight) >= self.sync_config.max_inflight:
-                await asyncio.sleep(self.sync_config.poll_interval_seconds)
+                await asyncio.sleep(INFLIGHT_POLL_INTERVAL_SECONDS)
         return inflight
 
     # ---------------- 主循环 ----------------
@@ -1276,7 +1285,6 @@ class SourceSyncEngine:
     async def run(
         self,
         *,
-        start_date: str | None = None,
         limit: int | None = None,
         dry_run: bool = False,
         wait_for_inflight: bool = True,
@@ -1284,7 +1292,6 @@ class SourceSyncEngine:
         """执行一次完整的同步，返回统计信息。
 
         参数：
-            start_date: 覆盖配置里的起始日期（YYYY-MM-DD），用于首次回填或补数据；
             limit:      最多扫描多少条源记录，主要给测试/演练用（达到后提前结束）；
             dry_run:    演习模式：不建库、不上传，只打印“本来会入库”的清单；
             wait_for_inflight: 收尾时是否等在途文档解析完成。定时触发传 False，
@@ -1292,7 +1299,7 @@ class SourceSyncEngine:
 
         整体流程：
             1. 确定目标知识库（base_id）；
-            2. 决定时间窗口：首次回填从 start_date 开始，否则只回溯 lookback_days 天；
+            2. 决定时间窗口：只回溯 lookback_days 天；
             3. 恢复上次中断时还在途的文档，并清理超期暂存残留；
             4. 按窗口拉取源记录：已入库→跳过，失败→重试；
             5. 新记录先批量拷贝到暂存目录，再从暂存文件上传；
@@ -1348,11 +1355,7 @@ class SourceSyncEngine:
                 keep_names=keep_names,
             )
         now = datetime.now(UTC)  # 本次同步的“截止时间”，统一用 UTC，避免时区问题
-        # 看看台账里有没有记录：全为 0 说明是第一次运行（决定要不要做历史回填）
-        counts = await self._repo(
-            self.repository.count_sync_items, source=self.source
-        )
-        window_start = self._window_start(now, start_date, first_run=not any(counts.values()))
+        window_start = now - timedelta(days=self.sync_config.lookback_days)
         # 把 [起始时间, 现在) 按 lookback_days 天切成若干段，逐段查询，
         # 避免一次性把几个月的数据全部拉进内存
         windows = list(_iter_windows(window_start, now, self.sync_config.lookback_days))
@@ -1371,8 +1374,7 @@ class SourceSyncEngine:
                 inflight, resumed_stats = await self.refresh_inflight(
                     inflight, base_id=base_id
                 )
-                for key, value in resumed_stats.items():
-                    stats[key] += value
+                self._merge_stats(stats, resumed_stats)
                 logger.info("研报 SQL 同步恢复在途文档 | count=%s", len(inflight))
         for window_start_at, window_end_at in windows:
             # 查询数据库是阻塞操作，必须放线程池，否则会卡住事件循环
@@ -1450,7 +1452,7 @@ class SourceSyncEngine:
                         )
                         retry_item_id = str(retry_item["id"])
                         attempts = int(retry_item.get("attempts") or 0) + 1
-                        if attempts > self.sync_config.max_attempts:
+                        if attempts > MAX_UPLOAD_ATTEMPTS:
                             # 次数用完了：不再重试，记下失败原因
                             await self._update_item(
                                 retry_item_id,
@@ -1517,9 +1519,8 @@ class SourceSyncEngine:
                 staged_files, stage_errors, stage_stats = await self.stage_rows(
                     pending_rows
                 )
-                for key, value in stage_stats.items():
-                    stats[key] += value
-                # 单独汇总打一条，missing_source 不再逐条打 warning
+                self._merge_stats(stats, stage_stats)
+                # 单独汇总打一条，missing_source 不再逐条打日志
                 logger.info(
                     "研报 SQL 批量暂存完成 | start=%s end=%s rows=%s "
                     "copied=%s failed=%s missing_source=%s",
@@ -1531,9 +1532,8 @@ class SourceSyncEngine:
                     stage_stats["missing_source"],
                 )
                 if stage_stats["missing_source"]:
-                    logger.warning(
-                        "本窗口 %d 条研报未在磁盘上找到对应源文件，已跳过（检查 "
-                        "source_sync.file_root 与 batchid 是否匹配）",
+                    logger.info(
+                        "本窗口 %d 条研报未在磁盘上找到对应源文件，已跳过",
                         stage_stats["missing_source"],
                     )
 
@@ -1563,11 +1563,7 @@ class SourceSyncEngine:
                     stats["ready"] += 1
                     staged_file = staged_files.get(record_id)
                     if staged_file is not None:
-                        result = await self._delete_staged_file(staged_file)
-                        if result == "deleted":
-                            stats["staged_deleted"] += 1
-                        elif result == "failed":
-                            stats["staged_cleanup_failed"] += 1
+                        await self._delete_staged_and_count(staged_file, stats)
             # 外层循环也要检查 limit（一次窗口可能有多条记录）
             if limit is not None and stats["scanned"] >= limit:
                 break
@@ -1578,35 +1574,15 @@ class SourceSyncEngine:
             inflight, batch_stats = await self.refresh_inflight(
                 inflight, base_id=base_id
             )
-            for key, value in batch_stats.items():
-                stats[key] += value
+            self._merge_stats(stats, batch_stats)
             if inflight:
                 # 还有没结束的：睡一会儿再查，避免疯狂空转打爆知识库接口
-                await asyncio.sleep(self.sync_config.poll_interval_seconds)
+                await asyncio.sleep(INFLIGHT_POLL_INTERVAL_SECONDS)
 
         logger.info(
             "文档同步完成 | " + " ".join(f"{key}={value}" for key, value in stats.items())
         )
         return stats
-
-    def _window_start(
-        self, now: datetime, start_date: str | None, *, first_run: bool
-    ) -> datetime:
-        """计算本次同步的**起始时间**。
-
-        规则：
-        - 首次运行（台账里还没有任何记录）且配置/参数指定了 start_date：
-          从 start_date 开始，做“历史回填”；
-        - 其他情况：只处理最近 lookback_days 天，避免每次都全量扫描。
-
-        注意：即使有 start_date，非首次运行也不会再从头扫，
-        因为老记录已经在台账里，重新扫只会浪费时间。
-        """
-        configured = (start_date or self.sync_config.start_date or "").strip()
-        if configured and first_run:
-            # 首次回填：从配置的起始日期开始按窗口切分，避免一次拉全量
-            return datetime.strptime(configured, "%Y-%m-%d").replace(tzinfo=UTC)
-        return now - timedelta(days=self.sync_config.lookback_days)
 
 
 # ---------------------------------------------------------------------------
@@ -1615,7 +1591,6 @@ class SourceSyncEngine:
 async def run_source_sync(
     app,
     *,
-    start_date: str | None = None,
     limit: int | None = None,
     dry_run: bool = False,
     wait_for_inflight: bool = True,
@@ -1677,7 +1652,6 @@ async def run_source_sync(
     # 加锁：如果已有同步在跑，这里会排队等待，避免两路同时上传
     async with _RUN_LOCK:
         return await engine.run(
-            start_date=start_date,
             limit=limit,
             dry_run=dry_run,
             wait_for_inflight=wait_for_inflight,
@@ -1723,6 +1697,17 @@ async def startup_source_sync(app) -> None:
     logger.info("研报 SQL 同步任务已调度（后台执行）")
 
 
+def _seconds_until_start_time(start_time: str) -> float:
+    """距下一次 ``HH:MM:SS``（服务器本地时间）还有多少秒；已过则顺延到次日。"""
+
+    target_time = datetime.strptime(start_time, "%H:%M:%S").time()
+    now = datetime.now()
+    target = datetime.combine(now.date(), target_time)
+    if target <= now:
+        target += timedelta(days=1)
+    return max(0.0, (target - now).total_seconds())
+
+
 async def _sync_loop(app) -> None:
     """后台循环：按固定间隔触发同步，不等待上一轮解析完成。
 
@@ -1731,20 +1716,25 @@ async def _sync_loop(app) -> None:
       某轮执行超过间隔时跳过错过的触发点，不补跑；
     - 每轮只负责扫描＋暂存＋提交上传，在途文档的解析进度由下一轮开头的
       refresh_inflight 回收，避免“等全部解析完再计时”；
-    - start_delay_minutes > 0 时先等几分钟再第一次执行，
-      给应用一个“启动缓冲”，避免刚起来就抢资源；
+    - start_time 非空时先等到当天的该时刻（已过则顺延到次日）再第一次执行，
+      仅首次生效；留空 = 启动后立即执行第一次；
     - interval_minutes <= 0 表示“只跑一次”，此时保留等解析结束的收尾行为；
     - CancelledError 必须原样抛出：吞掉它会导致任务无法被正常取消，
       关闭服务时可能卡住。
     """
     sync_config = app.state.knowledge_config.source_sync
-    delay = int(getattr(sync_config, "start_delay_minutes", 0))
+    start_time = str(getattr(sync_config, "start_time", "") or "").strip()
     interval = int(getattr(sync_config, "interval_minutes", 0))
     loop = asyncio.get_running_loop()
     try:
-        if delay > 0:
-            logger.info("研报 SQL 同步将在 %s 分钟后首次执行", delay)
-            await asyncio.sleep(delay * 60)  # 分钟换算成秒
+        if start_time:
+            delay = _seconds_until_start_time(start_time)
+            logger.info(
+                "研报 SQL 同步将在 %s（约 %.1f 分钟后）首次执行",
+                start_time,
+                delay / 60,
+            )
+            await asyncio.sleep(delay)
         if interval <= 0:
             # 只跑一次：等全部在途文档解析结束再退出（命令行/补数据场景）
             try:

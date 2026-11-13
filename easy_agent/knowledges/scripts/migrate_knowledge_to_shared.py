@@ -44,6 +44,7 @@ from easy_agent.knowledges.service import (  # noqa: E402
     CHUNK_METHOD,
     PARSER_CONFIG,
     KnowledgeService,
+    upstream_document_running,
 )
 
 # 本地文档列表分页大小（repository.list_documents 无上限约束，取宽裕值）
@@ -99,16 +100,12 @@ async def _in_shared_dataset(
 async def _parse_actually_running(
     ragflow: RagflowClient, shared_id: str, remote_id: str
 ) -> bool:
-    """核查共享数据集内文档解析是否实际已启动（与 service 同名逻辑一致）。"""
+    """核查共享数据集内文档解析是否实际已启动（复用 service 层同一判定）。"""
     try:
         data = await ragflow.list_documents(shared_id, document_id=remote_id)
     except RagflowError:
         return False
-    docs = _docs_of_shared(data)
-    if docs and isinstance(docs[0], dict):
-        run = str(docs[0].get("run", "")).upper()
-        return run in {"RUNNING", "DONE"}
-    return False
+    return upstream_document_running(data, remote_id)
 
 
 async def _migrate_document(

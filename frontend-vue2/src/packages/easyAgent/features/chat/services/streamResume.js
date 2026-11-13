@@ -136,6 +136,16 @@ export function resumeCandidates({ saved, flight, sessions, current }) {
   }
 }
 
+// 打开会话的调用方需要完整状态，区分运行中的流和已结束但仍可回放的流。
+export async function probeStreamState(sessionId, getStatus) {
+  if (!sessionId || typeof getStatus !== 'function') return null
+  try {
+    return await getStatus(sessionId)
+  } catch (e) {
+    return null
+  }
+}
+
 /**
  * 打开会话时的探活：**不依赖本地「在飞」记录**，直接问后端这一轮还在不在跑。
  *
@@ -148,13 +158,8 @@ export function resumeCandidates({ saved, flight, sessions, current }) {
  * 查询失败（会话刚被删除、网络抖动）一律视为不活跃：探活不该影响打开会话。
  */
 export async function shouldAttachOnOpen(sessionId, getStatus) {
-  if (!sessionId || typeof getStatus !== 'function') return false
-  try {
-    const status = await getStatus(sessionId)
-    return Boolean(status && status.active)
-  } catch (e) {
-    return false
-  }
+  const status = await probeStreamState(sessionId, getStatus)
+  return Boolean(status && status.active)
 }
 
 /**

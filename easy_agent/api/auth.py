@@ -238,6 +238,9 @@ def login_passwordless(
     新用户的 user_id 为 0/空时自动生成唯一 ID，否则使用传入值；
     传入的 user_id 已被其他用户占用时返回 400。供外部系统通过 URL
     携带用户名与用户ID 直登使用。
+
+    可选携带人员信息（姓名/工号/部门/处室/团队/邮箱/岗位/手机号）：
+    新用户直接写入，已存在用户只补空值，不覆盖人员管理里已有的数据。
     """
     repo = _as_user_repository(db)
     cfg = get_agent_config()
@@ -252,6 +255,7 @@ def login_passwordless(
     user, created = repo.get_or_create_passwordless_user(
         username=request.username,
         user_id=request.user_id,
+        profile=request.model_dump(exclude={"username", "user_id"}),
     )
     if not user:
         raise HTTPException(status_code=400, detail="用户ID已被其他用户使用")

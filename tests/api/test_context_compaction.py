@@ -71,14 +71,51 @@ def test_api_rejects_busy_approval_empty_invalid_and_unsupported(client, db, set
     cfg.agent.session_thread = False
     assert client.post(url, json=body).status_code == 409
     cfg.agent.session_thread = True
-    # 多 worker / 多副本不再关闭压缩：旧判据 `detect_worker_count() == 1` 是"checkpoint
-    # 在本 Pod 文件里"的遗留，共享 saver 下并发一致性交给 session_runtime 的流锁。
-    # 真正"不支持"只剩两种情况：会话线程关闭（上一行）与没有共享 saver（下面两行）。
+    # 已通过部署校验的共享 saver 不再按副本/worker 数禁用压缩；框架兼容检查仍保留。
     monkeypatch.setenv("EASY_REPLICA_COUNT", "2")
+    monkeypatch.setenv("WEB_CONCURRENCY", "4")
     assert client.get(f"/agent/sessions/{sid}/context").json()["supported"]
     monkeypatch.setattr(compaction, "shared_checkpointer_active", lambda: False)
     assert not client.get(f"/agent/sessions/{sid}/context").json()["supported"]
     assert client.post(url, json=body).status_code == 409
+
+
+@pytest.mark.parametrize("package,installed", [("deepagents", "0.7.29"), ("langgraph", "1.2.17")])
+def test_unsupported_framework_rejected_before_agent_or_archive_work(
+    client, setup_compaction, monkeypatch, package, installed,
+):
+    from easy_agent.agent import manual_compaction
+
+    sid, agents, _ = setup_compaction
+    real_version = manual_compaction.version
+    monkeypatch.setattr(manual_compaction, "version", lambda name: installed if name == package else real_version(name))
+    url = f"/agent/sessions/{sid}/context"
+    status = client.get(url)
+    assert status.status_code == 200
+    assert status.json()["supported"] is False
+    assert package in status.json()["reason"] and installed in status.json()["reason"]
+    result = client.post(url + "/compact", json={"model": "small", "request_id": "unsupported-version"})
+    assert result.status_code == 409
+    assert result.json()["detail"] == status.json()["reason"]
+    assert agents == {}  # 拒绝发生在建图、模型和 backend/归档之前。
+    assert client.get(url).json()["compactions"] == []
+
+
+def test_committed_result_still_recovers_when_framework_becomes_unsupported(client, setup_compaction, monkeypatch):
+    from easy_agent.agent import manual_compaction
+
+    sid, agents, _ = setup_compaction
+    url = f"/agent/sessions/{sid}/context"
+    body = {"model": "small", "request_id": "saved-before-upgrade"}
+    result = client.post(url + "/compact", json=body)
+    assert result.status_code == 200
+    monkeypatch.setattr(manual_compaction, "version", lambda name: "unsupported")
+    status = client.get(url).json()
+    assert not status["supported"]
+    assert status["compactions"] == [result.json()["compaction"]]
+    retry = client.post(url + "/compact", json=body)
+    assert retry.status_code == 200 and retry.json() == result.json()
+    assert len(agents[sid].model.inputs) == 1
 
 
 @pytest.mark.parametrize("double_summary", [False, True])

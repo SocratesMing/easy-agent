@@ -8,9 +8,10 @@ from pathlib import Path
 
 from fastapi import HTTPException
 from langchain_core.messages import RemoveMessage
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
-from easy_agent.agent.manual_compaction import estimate_context, prepare_compaction, terminal_update_node
+from easy_agent.agent.manual_compaction import compatibility_reason, estimate_context, prepare_compaction, terminal_update_node
 from easy_agent.agent.run_config import build_run_config
 from easy_agent.db.providers import get_session_runtime_repository, get_agent_run_repository
 from easy_agent.persistence.checkpoints import get_session_checkpointer, shared_checkpointer_active
@@ -23,13 +24,14 @@ from easy_agent.utils.blocking import run_blocking
 
 logger = logging.getLogger(__name__)
 TIMEOUT_SECONDS = 120
+HEARTBEAT_SECONDS = 8
 _operations: dict[tuple[str, str], asyncio.Task] = {}
 
 
 async def independent_checkpoint(runtime, saver) -> bool:
-    """提交围栏持有业务库写锁，checkpoint 必须使用独立的数据库文件。"""
+    """两端均为 SQLite 时，提交围栏与 checkpoint 必须使用独立文件。"""
     db = runtime._db
-    if db.db_type != "sqlite":
+    if db.db_type != "sqlite" or not isinstance(saver, AsyncSqliteSaver):
         return True
     async with saver.conn.execute("PRAGMA database_list") as cursor:
         databases = await cursor.fetchall()
@@ -44,18 +46,18 @@ async def independent_checkpoint(runtime, saver) -> bool:
     return await run_blocking(different_files)
 
 
-def supported(config) -> bool:
-    """手动压缩可用性。
-
-    旧判据额外要求 ``detect_worker_count() == 1``，理由是"checkpoint 存在本 Pod 文件
-    里，多 worker 会读到别的进程没写到的状态"。切到共享后端（sqlite 文件共享盘 /
-    mysql_saver）后这条前提不再成立，闸门只应看"当前是否共享后端 + 会话线程是否开启"；
-    多 worker 下的并发一致性由 ``session_runtime`` 的流式互斥保证。
-    """
-    return bool(
+def unsupported_reason(config) -> str | None:
+    """部署合法性由启动校验负责；此处检查共享持久化与摘要适配能力。"""
+    if not (
         getattr(getattr(config, "agent", None), "session_thread", False)
         and shared_checkpointer_active()
-    )
+    ):
+        return "当前运行模式不支持手动压缩（需要开启会话 thread 并启用持久化共享 checkpoint）"
+    return compatibility_reason()
+
+
+def supported(config) -> bool:
+    return unsupported_reason(config) is None
 
 
 async def records(session_id: str) -> list[dict]:
@@ -127,8 +129,8 @@ async def _execute(repo, session, username, model, request_id, identity):
         from easy_agent.services.agents.manager import get_agent_config
 
         config = (get_agent_config() or {}).get("config")
-        if not supported(config):
-            raise HTTPException(409, "当前运行模式不支持手动压缩（需要单实例、单 worker 的持久会话 checkpoint）")
+        if reason := unsupported_reason(config):
+            raise HTTPException(409, reason)
         if model and model not in config.models:
             raise HTTPException(422, "所选模型不可用")
         sid = session.session_id
@@ -145,7 +147,7 @@ async def _execute(repo, session, username, model, request_id, identity):
                 raise HTTPException(409, "会话仍在生成，请稍后重试")
             async def heartbeat_loop():
                 while True:
-                    await asyncio.sleep(8)
+                    await asyncio.sleep(HEARTBEAT_SECONDS)
                     if not await run_blocking(runtime.renew_stream_lease, sid, owner, ttl_seconds=30):
                         raise RuntimeError("压缩租约续约失败")
 
@@ -260,14 +262,15 @@ async def context_status(repo, session_id: str, username: str) -> dict:
 
     session = await run_blocking(repo.get_owned_session, session_id, username)
     config = (get_agent_config() or {}).get("config")
-    available = supported(config)
+    unavailable = unsupported_reason(config)
     runtime = get_session_runtime_repository()
-    available = available and await independent_checkpoint(runtime, get_session_checkpointer(session_id))
+    if not unavailable and not await independent_checkpoint(runtime, get_session_checkpointer(session_id)):
+        unavailable = "手动压缩需要业务库与 checkpoint 使用独立的数据库文件"
     busy = any(sid == session_id for sid, _ in _operations) or await run_blocking(is_stream_active, runtime, session_id)
     pending = _pending(session.messages or [])
-    reason = ("当前模式不支持手动压缩" if not available else
+    reason = (unavailable if unavailable else
               "会话正在生成或压缩" if busy else
               "请先处理待审批操作" if pending else
               "请先开始对话" if not session.messages else "")
-    return {"session_id": session_id, "supported": available, "busy": busy,
+    return {"session_id": session_id, "supported": unavailable is None, "busy": busy,
             "reason": reason, "compactions": await records(session_id)}

@@ -39,6 +39,8 @@ from easy_agent.utils.auth import is_super_admin
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/agent/personnel", tags=["Personnel"])
 
+MAX_EXCEL_BYTES = 5 * 1024 * 1024
+
 
 @router.get("/login-policy")
 def login_policy():
@@ -47,7 +49,6 @@ def login_policy():
     state = get_agent_config()
     policy = getattr(state.get("config"), "personnel", None) if state else None
     return {"self_registration_enabled": bool(getattr(policy, "self_registration_enabled", False))}
-MAX_EXCEL_BYTES = 5 * 1024 * 1024
 
 
 def _audit(

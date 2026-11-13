@@ -3,6 +3,10 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 import time
+import logging
+import sqlite3
+
+import pymysql
 
 import pytest
 from fastapi import FastAPI
@@ -65,18 +69,30 @@ def test_real_jwt_isolation_and_client_user_id_is_ignored(db, usage_client):
     assert response.status_code == 200
     assert response.json()["summary"]["all_time"] == 999
     assert len(response.json()["daily"]["dates"]) == 30
+    assert response.headers["Cache-Control"] == "no-store"
+    response = usage_client.get("/agent/usage?days=7", headers=alice_headers)
+    assert response.status_code == 200
+    assert response.json()["days"] == 7
+    assert response.headers["Cache-Control"] == "no-store"
 
 
 @pytest.mark.parametrize("days", ["1", "0", "all", "8", "-7", "7.1"])
 def test_invalid_days_return_422(db, usage_client, days):
     _, headers = login(db, "alice")
-    assert usage_client.get(f"/agent/usage?days={days}", headers=headers).status_code == 422
+    response = usage_client.get(f"/agent/usage?days={days}", headers=headers)
+    assert response.status_code == 422
+    assert response.headers["Cache-Control"] == "no-store"
 
 
 def test_anonymous_and_missing_jwt_user_return_401(usage_client):
-    assert usage_client.get("/agent/usage").status_code == 401
+    response = usage_client.get("/agent/usage")
+    assert response.status_code == 401
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["WWW-Authenticate"] == "Bearer"
     headers = {"Authorization": "Bearer " + create_access_token({"sub": "missing", "v": 0})}
-    assert usage_client.get("/agent/usage", headers=headers).status_code == 401
+    response = usage_client.get("/agent/usage", headers=headers)
+    assert response.status_code == 401
+    assert response.headers["Cache-Control"] == "no-store"
 
 
 def test_user_disappears_after_auth_is_401_not_username_fallback(usage_client):
@@ -86,21 +102,24 @@ def test_user_disappears_after_auth_is_401_not_username_fallback(usage_client):
     )
     repo = Mock()
     usage_client.app.dependency_overrides[get_token_usage_repository] = lambda: repo
-    assert usage_client.get("/agent/usage").status_code == 401
+    response = usage_client.get("/agent/usage")
+    assert response.status_code == 401
+    assert response.headers["Cache-Control"] == "no-store"
     repo.query.assert_not_called()
 
 
 @pytest.mark.parametrize("failing", ["user", "statistics"])
-def test_database_failures_return_503_and_no_store(usage_client, failing):
+@pytest.mark.parametrize("error", [sqlite3.OperationalError, pymysql.err.OperationalError])
+def test_database_failures_return_503_and_no_store(usage_client, failing, error):
     usage_client.app.dependency_overrides[get_current_username] = lambda: "alice"
     users = SimpleNamespace(
         get_user_by_username=Mock(return_value=SimpleNamespace(user_id="real-id"))
     )
     stats = SimpleNamespace(query=Mock())
     if failing == "user":
-        users.get_user_by_username.side_effect = RuntimeError("database unavailable")
+        users.get_user_by_username.side_effect = error("database unavailable")
     else:
-        stats.query.side_effect = RuntimeError("database unavailable")
+        stats.query.side_effect = error("database unavailable")
     usage_client.app.dependency_overrides[get_user_repository] = lambda: users
     usage_client.app.dependency_overrides[get_token_usage_repository] = lambda: stats
     response = usage_client.get("/agent/usage")
@@ -110,9 +129,42 @@ def test_database_failures_return_503_and_no_store(usage_client, failing):
 
 
 def test_database_failure_during_real_auth_returns_503(usage_client):
-    users = SimpleNamespace(get_user_by_username=Mock(side_effect=RuntimeError("unavailable")))
+    users = SimpleNamespace(get_user_by_username=Mock(side_effect=sqlite3.OperationalError("unavailable")))
     usage_client.app.dependency_overrides[get_user_repository] = lambda: users
     headers = {"Authorization": "Bearer " + create_access_token({"sub": "alice", "v": 0})}
     response = usage_client.get("/agent/usage", headers=headers)
     assert response.status_code == 503
     assert response.headers["Cache-Control"] == "no-store"
+
+
+@pytest.mark.parametrize("failure", ["type_error", "output_validation", "auth_error"])
+def test_programming_errors_stay_500_with_traceback_and_no_store(usage_client, caplog, failure):
+    users = SimpleNamespace(get_user_by_username=Mock(return_value=SimpleNamespace(user_id="id")))
+    stats = SimpleNamespace(query=Mock(return_value={}))
+    if failure == "auth_error":
+        users.get_user_by_username.side_effect = TypeError("private diagnostic")
+    else:
+        usage_client.app.dependency_overrides[get_current_username] = lambda: "alice"
+        if failure == "type_error":
+            stats.query.side_effect = TypeError("private diagnostic")
+    usage_client.app.dependency_overrides[get_user_repository] = lambda: users
+    usage_client.app.dependency_overrides[get_token_usage_repository] = lambda: stats
+    headers = {"Authorization": "Bearer " + create_access_token({"sub": "alice", "v": 0})}
+    with caplog.at_level(logging.ERROR, logger="easy_agent.usage"):
+        with TestClient(usage_client.app, raise_server_exceptions=False) as client:
+            response = client.get("/agent/usage", headers=headers)
+    assert response.status_code == 500
+    assert response.headers["Cache-Control"] == "no-store"
+    assert "private diagnostic" not in response.text
+    assert "ValidationError" not in response.text
+    assert any(record.exc_info for record in caplog.records if record.name == "easy_agent.usage")
+
+
+def test_usage_response_policy_does_not_apply_to_other_routes(usage_client):
+    @usage_client.app.get("/unrelated")
+    def unrelated():
+        return {"ok": True}
+
+    response = usage_client.get("/unrelated")
+    assert response.status_code == 200
+    assert "Cache-Control" not in response.headers

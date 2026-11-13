@@ -27,11 +27,10 @@ from easy_agent.services.agents.manager import (
     remove_session_agent,
 )
 from easy_agent.services.streaming.emitter import SSEEmitter
+from easy_agent.services.streaming.outcome import StreamOutcome
 from easy_agent.services.streaming.sse import (
     SSE_HEARTBEAT_FRAME,
     heartbeat_interval_seconds,
-    parse_sse_frame,
-    SSEEvent,
 )
 from easy_agent.services.sessions.runtime import SessionBusyError
 from easy_agent.services.streaming.runs import finish_run, renew_run
@@ -199,10 +198,11 @@ async def _drive_stream(
     gen, hub, queue: asyncio.Queue, emitter: SSEEmitter,
     session_id: str, sid: str, renew_stream, db, runs, stream_events, run_id,
     keep_events: bool = False,
+    outcome: StreamOutcome | None = None,
 ) -> None:
     """后台任务：推进生成器，把每个 SSE 分片广播给 hub 的全部订阅者（原始客户端队列也是其一）。
 
-    run 终态默认 failed，生成器正常耗尽且没有 error 帧才改为 completed；
+    run 终态默认 failed，生成器正常耗尽且共享结果没有失败才改为 completed；
     CancelledError 分两种：``/cancel`` → cancelled，**流锁租约丢失 → failed**
     （租约丢了还继续写就是双写，见 :func:`_stream_heartbeat`）。
 
@@ -228,12 +228,13 @@ async def _drive_stream(
             )
         async for chunk in gen:
             hub.broadcast(chunk)
-            # 编排器会把模型异常转换成 error 帧后正常返回，不能据此记为成功。
-            event = parse_sse_frame(chunk)
-            if event.get("type") == SSEEvent.ERROR:
-                run_error = event.get("content") or "处理失败"
+        # 编排器将异常转成事件后正常返回，使用序列化前记录的结果，无需反解析 SSE。
+        run_error = outcome.error if outcome is not None else ""
         # 流编排器也可能捕获取消、保存部分内容后返回 error 帧。
-        if bg is not None and bg.cancelling():
+        if lease_lost.is_set():
+            run_status = "failed"
+            run_error = _LEASE_LOST_MESSAGE
+        elif bg is not None and bg.cancelling():
             run_status = "cancelled"
         else:
             run_status = "failed" if run_error else "completed"
@@ -292,6 +293,7 @@ async def _drive_stream(
 async def _detached_event_stream(
     gen, session_id: str, sid: str, renew_stream=None, db=None, runs=None,
     stream_events=None, run_id=None, keep_events: bool = False,
+    outcome: StreamOutcome | None = None,
 ):
     """以「后台任务 + 事件中枢」驱动流式生成器，与客户端断开解耦。
 
@@ -304,6 +306,7 @@ async def _detached_event_stream(
     并在正常结束/取消/异常时落 ``completed`` / ``cancelled`` / ``failed`` 终态；
     不传（专家拒答流等非 run 生命周期）行为与改造前一致。``runs`` 是 run 记录域
     repository（``ChatRepository.runs``）；迁移期传 ``db`` 也兼容（内部会适配）。
+    ``outcome`` 必须与会吞异常并转换为错误事件的生成器共享，驱动不从 SSE 推断结果。
     """
     emitter = SSEEmitter(session_id)
     # run 生命周期优先用领域 repository（``runs``）；迁移期仍允许只传 ``db`` 的旧调用方
@@ -329,6 +332,7 @@ async def _detached_event_stream(
         _drive_stream(
             gen, hub, queue, emitter, session_id, sid, renew_stream, db,
             run_store, stream_events, run_id, keep_events=keep_events,
+            outcome=outcome,
         )
     )
     _detached_bg_tasks.add(bg_task)
@@ -399,6 +403,7 @@ async def chat_stream(
             stream_events=repo.stream_events,
             runs=repo.runs,
             run_id=plan.run_id,
+            outcome=plan.outcome,
         )
     )
 
@@ -459,6 +464,7 @@ async def chat_resume(
             stream_events=repo.stream_events,
             runs=repo.runs,
             run_id=plan.run_id,
+            outcome=plan.outcome,
             # 恢复是同一轮的延续：保留中断前的思考过程，跨 Pod 打开时才能回放完整过程
             keep_events=True,
         )
