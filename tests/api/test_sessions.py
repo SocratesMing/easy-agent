@@ -77,6 +77,32 @@ def test_add_message_and_history(client):
     assert any(m["content"] == "你好" for m in msgs)
 
 
+def test_session_endpoints_use_all_recorded_calls_for_only_input_and_output(client, db):
+    from easy_agent.db.repositories.token_usage import TokenUsageRepository
+
+    user = db.register_user("testuser", "secret123")
+    sid = _create_session(client)
+    repo = TokenUsageRepository(db)
+    for index in (1, 2, 3):
+        repo.record_usage(
+            event_id=f"call-{index}", user_id=user.user_id, session_id=sid,
+            model_key="default", model_name="model", completed_at_ms=index,
+            input_tokens=index * 100, output_tokens=index * 10,
+        )
+    MessageRepository(db).add_message(sid, {"role": "assistant", "content": "answer", "usage": {
+        "input_tokens": 300, "output_tokens": 30, "reasoning_tokens": 4,
+        "context_tokens": 300, "context_length": 131072, "elapsed_time": 2.0, "step_count": 2,
+    }})
+    for path in (f"/agent/sessions/{sid}", f"/agent/sessions/{sid}/history"):
+        data = client.get(path).json()
+        assert data["usage"] == {
+            "input_tokens": 600, "output_tokens": 60, "reasoning_tokens": 4,
+            "context_tokens": 300, "elapsed_time": 2.0, "step_count": 2,
+        }
+        assert data["context_length"] == 131072
+        assert data["messages"][-1]["usage"]["input_tokens"] == 300
+
+
 def test_history_keeps_raw_thinking(client, db):
     """历史读取保留原文思考：前端「思考过程」要显示真实内容，不能退化成固定摘要。"""
     sid = _create_session(client)
@@ -176,10 +202,9 @@ def test_upload_session_file(client):
 
 
 def test_compute_session_usage_reports_the_latest_call_not_a_sum():
-    """token 字段与流式 token_usage 同口径：最近一次模型调用，不跨轮相加。
+    """消息辅助函数提取最后一次调用；接口层另查逐调用账本替换输入/输出。
 
-    每轮的输入已包含之前各轮的历史，相加会重复计算（10 + 20 加成 30）；
-    耗时与步数可以相加，仍按会话累计。
+    消息快照遗漏每轮中间调用，不能相加推算消耗；耗时和步数仍按会话累计。
     """
     from easy_agent.api.sessions import compute_session_usage
 
@@ -234,9 +259,16 @@ def test_compute_session_usage_skips_replies_without_a_model_call():
 def test_session_endpoints_report_the_window_of_the_latest_turn_model(client, db, monkeypatch):
     """会话不记录所用模型：窗口取最近一轮落库的 context_length，不取当前默认模型。"""
     from easy_agent.api import sessions as sessions_api
+    from easy_agent.db.repositories.token_usage import TokenUsageRepository
 
     monkeypatch.setattr(sessions_api, "get_context_length", lambda: 1_000_000)
+    user = db.register_user("testuser", "secret123")
     sid = _create_session(client)
+    TokenUsageRepository(db).record_usage(
+        event_id="window-call", user_id=user.user_id, session_id=sid,
+        model_key="default", model_name="model", completed_at_ms=1,
+        input_tokens=900, output_tokens=10,
+    )
     MessageRepository(db).add_message(sid, {"role": "assistant", "content": "a", "usage": {
         "input_tokens": 900, "output_tokens": 10, "context_tokens": 900,
         "context_length": 131072, "elapsed_time": 1.0, "step_count": 1}})

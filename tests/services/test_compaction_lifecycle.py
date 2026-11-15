@@ -50,8 +50,29 @@ async def test_prepare_failure_never_commits_and_preserves_new_owner(tmp_path, m
             monkeypatch.setattr(rt, "renew_stream_lease", lambda *args, **kwargs: False)
         task = asyncio.create_task(compaction._execute(repository, repository.get_owned_session("s1", "tester"),
                                                       "tester", "small", failure, None))
+        started_task = asyncio.create_task(started.wait())
         try:
-            await asyncio.wait_for(started.wait(), 5)
+            done, _ = await asyncio.wait(
+                (started_task, task),
+                timeout=5,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            assert done, "压缩任务既没有开始准备，也没有失败"
+            if task in done:
+                # 心跳可能在 prepare 之前就发现租约已失效。此时安全要求仍然成立：
+                # 不进入准备、不提交 checkpoint、释放自己持有的租约。
+                assert failure == "heartbeat"
+                with pytest.raises(HTTPException) as error:
+                    await task
+                assert error.value.status_code == 502
+                assert not stopped.is_set()
+                assert not (await a.agent.aget_state({"configurable": {"thread_id": "s1"}})).values
+                assert rows == history()
+                assert not rt.get_session_runtime("s1")["stream_owner"]
+                assert not a.model.inputs
+                return
+
+            assert started.is_set()
             if failure == "takeover":
                 rt.upsert_session_runtime("s1", stream_owner="new-owner")
             if failure == "cancel":
@@ -69,8 +90,9 @@ async def test_prepare_failure_never_commits_and_preserves_new_owner(tmp_path, m
                 assert not a.model.inputs
         finally:
             proceed.set()
+            started_task.cancel()
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            await asyncio.gather(started_task, task, return_exceptions=True)
 
 
 async def test_timeout_during_commit_waits_for_save_then_retry_recovers(tmp_path, monkeypatch):

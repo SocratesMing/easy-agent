@@ -101,6 +101,17 @@ def test_system_prompt_marks_connector_and_knowledge_results_as_data_sources():
     assert "/workspace/" not in prompt
 
 
+def test_source_markers_keep_external_references_inline_and_model_knowledge_as_plain_text():
+    prompt = _load()
+    assert "[连接器依据 server/tool]" in prompt
+    assert "ok=true" in prompt and "is_error=false" in prompt
+    assert "逐字取自前缀" in prompt
+    assert "来源：模型自身知识" in prompt
+    assert "[模型知识]" not in prompt
+    assert "模型知识统一尾注" not in prompt
+    assert "不要把这些来源集中移到回答尾部" in prompt
+
+
 def test_system_prompt_does_not_contradict_channel_specific_rules():
     """基础提示词不与联网段、知识库检索依据、delete 工具描述各说各话。"""
     prompt = _load()

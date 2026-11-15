@@ -69,6 +69,29 @@ def fixed(repo):
         )
 
 
+def test_session_totals_include_all_calls_and_models_without_crossing_users(db):
+    alice = db.register_user("session-alice", "secret123")
+    bob = db.register_user("session-bob", "secret123")
+    repo = TokenUsageRepository(db)
+    record(repo, "first", alice.user_id, input=100, output=10, session="chat")
+    record(repo, "second", alice.user_id, input=200, output=20, session="chat", key="secondary")
+    record(repo, "second", alice.user_id, input=200, output=20, session="chat")
+    record(repo, "next-turn", alice.user_id, input=300, output=30, session="chat")
+    record(repo, "other-chat", alice.user_id, input=9000, session="other")
+    record(repo, "other-user", bob.user_id, input=8000, session="chat")
+    record(repo, "no-session", alice.user_id, input=7000)
+
+    assert repo.session_totals("session-alice", "chat") == {
+        "input_tokens": 600, "output_tokens": 60,
+    }
+    assert repo.session_totals("session-bob", "chat") == {
+        "input_tokens": 8000, "output_tokens": 2,
+    }
+    assert repo.session_totals("session-alice", "empty") == {
+        "input_tokens": 0, "output_tokens": 0,
+    }
+
+
 @pytest.mark.parametrize("days,model_totals", [(7, [4700, 2300]), (30, [9300, 8000])])
 def test_fixed_data_and_user_isolation(db, days, model_totals):
     repo = TokenUsageRepository(db)

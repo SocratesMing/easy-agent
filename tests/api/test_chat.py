@@ -12,6 +12,56 @@ def test_chat_stream_returns_tokens(client):
     assert "data:" in resp.text
 
 
+def test_chat_stream_accumulates_all_calls_across_turns_and_matches_history(client, db, monkeypatch):
+    from easy_agent.db.repositories.message_repository import MessageRepository
+    from easy_agent.db.repositories.token_usage import TokenUsageRepository
+    from easy_agent.services.streaming.sse import format_sse, parse_sse_frame
+
+    user = db.register_user("testuser", "secret123")
+    repo = TokenUsageRepository(db)
+    _patch_stream(monkeypatch)
+
+    async def measured_stream(**kwargs):
+        sid, mid = kwargs["session_id"], kwargs["message_id"]
+        for step in (1, 2):
+            repo.record_usage(
+                event_id=f"{mid}:{step}", user_id=user.user_id, session_id=sid,
+                model_key="default", model_name="model", completed_at_ms=step,
+                input_tokens=step * 100, output_tokens=step * 10,
+            )
+            yield format_sse({"type": "token_usage", "input_tokens": step * 100,
+                              "output_tokens": step * 10, "context_tokens": step * 100,
+                              "reasoning_tokens": step, "step_count": step, "elapsed_time": step})
+        snapshot = {"input_tokens": 200, "output_tokens": 20, "context_tokens": 200,
+                    "reasoning_tokens": 2, "step_count": 2, "elapsed_time": 2}
+        MessageRepository(db).update_last_assistant_message(sid, {
+            "role": "assistant", "content": "answer", "usage": snapshot,
+        })
+        yield format_sse({"type": "done", "session_id": sid, "usage": snapshot})
+
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", measured_stream)
+    sid = client.post("/agent/sessions", json={}).json()["session_id"]
+    for turn in (1, 2):
+        response = client.post("/agent/chat/stream", json={
+            "session_id": sid, "message_id": f"turn-{turn}", "message": "question",
+        })
+        assert response.status_code == 200
+        events = [parse_sse_frame(line) for line in response.text.splitlines() if line.startswith("data:")]
+        snapshots = [event for event in events if event["type"] == "token_usage"]
+        assert [(event["input_tokens"], event["output_tokens"]) for event in snapshots] == [
+            ((turn - 1) * 300 + 100, (turn - 1) * 30 + 10), (turn * 300, turn * 30),
+        ]
+        done = next(event for event in events if event["type"] == "done")
+        assert done["usage"] == {
+            "input_tokens": turn * 300, "output_tokens": turn * 30, "context_tokens": 200,
+            "reasoning_tokens": 2, "step_count": 2, "elapsed_time": 2,
+        }
+        history = client.get(f"/agent/sessions/{sid}/history").json()
+        assert history["usage"]["input_tokens"] == turn * 300
+        assert history["usage"]["output_tokens"] == turn * 30
+        assert history["usage"]["context_tokens"] == 200
+
+
 def test_stream_empty_message_400(client):
     # 正文允许为空（只挂技能、只上传文件时本来就没有正文），但两者全空不算有效请求 → 400。
     resp = client.post("/agent/chat/stream", json={"message": ""})

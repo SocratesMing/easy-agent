@@ -17,6 +17,7 @@ from deepagents.middleware.filesystem import (
 
 from easy_agent.sandboxing.fs_safety import _check_external_dir_safety
 from easy_agent.agent.builtin_skills import BUILTIN_VIRTUAL_ROOT
+from easy_agent.agent.hitl import is_auto_approval
 
 # 纯移动：沿用拆分前的 logger 名称，保持日志路由/过滤行为不变。
 logger = logging.getLogger("easy_agent.agent")
@@ -237,12 +238,22 @@ class AgentWorkspaceMixin:
 
         关闭了 HITL 的运行（定时任务）没人审批：中断只会让写入丢失（调度器把这次运行
         记为结束、随后删掉 thread），所以这类运行不生成 interrupt 规则，行为与 D7 之前一致。
+
+        用户在「设置 → 权限设置」里选了「允许自动审批」时同样不生成：敏感路径只覆盖
+        自己的记忆与自己安装的技能（写他人专家/公共技能由前面的 deny 规则拦住），
+        属于本设置放行的「修改 / 新增」范围。
         """
         sensitive = getattr(self.config.agent, "interrupt_sensitive_writes", False)
         if not sensitive:
             return []
         if not getattr(self, "enable_hitl", True):
             logger.info(f"[{self.sid}] 🔏 HITL 已关闭，敏感路径写入不走审批（无人可批）")
+            return []
+        if is_auto_approval(getattr(self, "approval_mode", None)):
+            logger.info(
+                f"[{self.sid}] 🔓 已开启自动审批，敏感路径写入不走审批"
+                "（仅限自己的记忆与自己安装的技能）"
+            )
             return []
         # /memories/ 路由总是挂载（backend.py），/user-skills/ 只在技能目录存在时挂载
         interrupt_paths: list[str] = ["/memories/**"]

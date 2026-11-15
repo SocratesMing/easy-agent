@@ -52,6 +52,7 @@ from easy_agent.services.sessions.uploads import (
 )
 
 from easy_agent.services.sessions import compaction as compaction_service
+from easy_agent.services.usage import session_usage_totals
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +77,10 @@ def _latest_usage(messages: list[dict]) -> dict:
 
 
 def compute_session_usage(messages: list[dict]) -> dict | None:
-    """会话详情 / 历史接口的用量，与流式 ``token_usage`` 同一口径。
+    """提取消息快照及会话耗时/步数；接口再从账本填入输入/输出累计。
 
-    每条 assistant 消息落库的是该轮**最近一次模型调用**的用量，而每次调用的输入已包含
-    之前各轮的全部历史：跨轮相加会把历史重复计算（三轮 10k / 20k / 30k 加成 60k），
-    既不是上下文占用也不是计费量，还和对话进行中显示的值对不上。所以 token 字段取最后
-    一条有用量的 assistant 消息；``elapsed_time`` / ``step_count`` 可以相加，仍按会话累计。
+    消息只保留每轮最后一次调用，无法从消息还原多步消耗。上下文和思考仍取最后一条
+    有用量的 assistant 消息；输入/输出由 ``session_usage_totals`` 查询逐调用账本。
 
     Returns:
         包含 input_tokens/output_tokens/reasoning_tokens/context_tokens/
@@ -275,7 +274,9 @@ async def get_session(
 
     session = await asyncio.to_thread(repo.get_owned_session, session_id, username)
 
-    usage = compute_session_usage(session.messages or [])
+    usage = await session_usage_totals(
+        compute_session_usage(session.messages or []), username, session_id,
+    )
     context_length = session_context_length(session.messages or [])
 
     return SessionDetail(
@@ -458,7 +459,9 @@ async def get_chat_history(
 
     session = await asyncio.to_thread(repo.get_owned_session, session_id, username)
 
-    usage = compute_session_usage(session.messages or [])
+    usage = await session_usage_totals(
+        compute_session_usage(session.messages or []), username, session_id,
+    )
     context_length = session_context_length(session.messages or [])
 
     return GetChatHistoryResponse(

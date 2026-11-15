@@ -25,6 +25,7 @@ import httpx
 from langgraph.types import Command
 
 from easy_agent.agent import EasyAgent
+from easy_agent.agent.hitl import MANUAL_APPROVAL_DONE_NOTE, brief_args
 from easy_agent.db import Database
 from easy_agent.persistence.checkpoints import checkpoint_instance
 from easy_agent.agent.model import resolve_context_length
@@ -39,6 +40,10 @@ from easy_agent.services.agents.manager import get_agent_config
 from easy_agent.services.streaming.approvals import (
     HitlDecisionError,
     ResumePlan,
+    action_args,
+    action_name,
+    answered_actions,
+    decision_label,
     normalize_resume_decisions,
     pending_hitl_interrupts,
     plan_resume,
@@ -59,6 +64,10 @@ from easy_agent.services.sessions.thread import (
     approval_handle,
     plan_turn,
     record_turn_checkpoint,
+)
+from easy_agent.services.sessions.uploads import (
+    FILES_ONLY_TURN_HINT,
+    strip_files_only_turn_hint,
 )
 from easy_agent.services.streaming.persistence import (
     IncrementalPersister,
@@ -1170,7 +1179,10 @@ async def _chat_stream_impl(
 
     message_content = parsed_content or request.message
     # 保存原始用户输入（记忆/工作区前缀注入前），供日志明确打印用户实际提问。
-    raw_user_input = message_content
+    # 「只传文件」轮次的引导提示不属于用户原话，这里剥离（记忆侧 raw_user_msg 同理）。
+    raw_user_input = strip_files_only_turn_hint(message_content) or request.message
+    # 终态确认：本轮模型输入里是否真的带着「只传文件」引导提示（只用于日志）
+    hint_injected = bool(parsed_content) and parsed_content.endswith(FILES_ONLY_TURN_HINT)
 
     if agent and agent.workspace_dir:
         message_content = f"[workspace: {agent.workspace_virtual_path}/ | shell: cd {agent.workspace_virtual_path}]\n{message_content}"
@@ -1192,6 +1204,8 @@ async def _chat_stream_impl(
     )
     logger.info(
         f"[{sid}] 💬 用户输入 | {raw_user_input[:200]}{'...' if len(raw_user_input) > 200 else ''}"
+        # 终态确认：引导提示是否真的进了本轮模型输入（与 chat_turn 的 🧭 日志互为印证）
+        f" | 🧭 引导提示={'有' if hint_injected else '无'}"
     )
 
     context_length = None
@@ -1279,7 +1293,8 @@ async def _chat_stream_impl(
             auto_compress_tokens=auto_compress_tokens,
             thread_id=thread_id,
             handle=handle,
-            raw_user_msg=parsed_content or request.message,
+            # 「只传文件」轮次的引导提示不进记忆整理输入（剥离后回退到用户原话）
+            raw_user_msg=strip_files_only_turn_hint(parsed_content) or request.message,
             message_content=message_content,
             session_logger=session_logger,
             result_log_truncate=result_log_truncate,
@@ -1447,6 +1462,34 @@ async def _resume_stream_impl(
             for d in decisions
         )
         logger.info(f"[{sid}] 👤 用户审批操作: {decision_desc}")
+        logger.info(
+            f"[{sid}] 🔔 HITL 恢复 | thread_id={thread_id} | "
+            f"已有内容 {len(accumulated_response)} 字符 | "
+            f"已有 blocks {len(blocks)} | decisions={decisions}"
+        )
+        # 人工审批结论逐条落日志：带工具名与参数，和 auto 模式的
+        # 「用户已选择自动审批，跳过人工审批」形成对照——两者都含「审批」关键词，
+        # 排查时按「用户已人工审批」/「用户已选择自动审批」即可区分是谁放行的。
+        approval_pairs = answered_actions(
+            plan.answered, snapshot.pending_action_requests
+        )
+        for action, decision in approval_pairs:
+            logger.info(
+                "[%s] 👤 %s：%s | 工具: %s | 参数: %s",
+                sid or "-",
+                MANUAL_APPROVAL_DONE_NOTE,
+                decision_label(decision),
+                action_name(action) or "-",
+                brief_args(action_args(action)),
+            )
+        if decisions and not approval_pairs:
+            # 取不到待审批载荷（旧记录 / 字段缺失）时保留改造前的汇总日志
+            decision_desc = "、".join(
+                ("批准" if (d or {}).get("type") == "approve" else "拒绝")
+                if isinstance(d, dict) else str(d)
+                for d in decisions
+            )
+            logger.info(f"[{sid}] 👤 用户审批操作: {decision_desc}")
 
     context_length, auto_compress_tokens = resolve_resume_context(agent)
 

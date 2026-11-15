@@ -33,6 +33,7 @@ from easy_agent.services.streaming.sse import (
     heartbeat_interval_seconds,
 )
 from easy_agent.services.sessions.runtime import SessionBusyError
+from easy_agent.services.usage import with_session_token_totals
 from easy_agent.services.streaming.runs import finish_run, renew_run
 from easy_agent.services.streaming.hub import (  # noqa: F401 - 兼容旧导入路径
     _HUB_HISTORY_MAX_CHARS,
@@ -386,7 +387,7 @@ async def chat_stream(
         # 专家相关性预检短路：不建 Agent、不登记 run，只推一条极简拒答流
         return sse_response(
             _detached_event_stream(
-                plan.event_stream,
+                with_session_token_totals(plan.event_stream, username, plan.session_id),
                 plan.session_id,
                 plan.sid,
                 renew_stream=repo.renew_stream,
@@ -396,7 +397,7 @@ async def chat_stream(
         )
     return sse_response(
         _detached_event_stream(
-            plan.event_stream,
+            with_session_token_totals(plan.event_stream, username, plan.session_id),
             plan.session_id,
             plan.sid,
             renew_stream=repo.renew_stream,
@@ -457,7 +458,7 @@ async def chat_resume(
     )
     return sse_response(
         _detached_event_stream(
-            plan.event_stream,
+            with_session_token_totals(plan.event_stream, username, plan.session_id),
             plan.session_id,
             plan.sid,
             renew_stream=repo.renew_stream,

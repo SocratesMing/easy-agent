@@ -22,7 +22,7 @@ test('正文分块的首次引用顺序与资料卡片一致，忽略代码和�
   assert.deepEqual(result.numberMap, { 3: 1, 1: 2 })
   assert.deepEqual(result.items, [evidence[2], evidence[0]])
   const html = renderMarkdown(linkKnowledgeCitations('[知识依据3] [知识依据1] [知识依据99]', result.numberMap, true), createMarkdownRenderer({}))
-  assert.match(html, /class="ke-cite ke-cite-number" data-cite="1" aria-label="查看知识依据 1">1<\/button>/)
+  assert.match(html, /class="ke-cite ke-cite-number" data-cite="1" aria-label="查看引用来源 1">1<\/button>/)
   assert.match(html, /data-cite="2"/)
   assert.match(html, /\[知识依据99\]/)
 })
@@ -53,17 +53,19 @@ test('浮层使用实际可见视口，支持缩放、软键盘和可见区域�
     visualViewport: { width: 400, height: 300, offsetLeft: 80, offsetTop: 240 } })
   assert.deepEqual(viewport, { left: 80, top: 240, width: 400, height: 300 })
   const position = citationPosition({ left: 470, top: 500, bottom: 520 }, { height: 500 }, viewport)
-  assert.equal(position.left, 92)
+  assert.equal(position.left, 108)
   assert.equal(position.top, 252)
-  assert.equal(position.width, 376)
+  assert.equal(position.width, 360)
   assert.equal(position.maxHeight, 276)
 })
 
-test('长资料优先使用窗口剩余高度，四个边缘和极小窗口都限制在视口内', () => {
+test('长资料高度不超过 320px，四个边缘和极小窗口都限制在视口内', () => {
   for (const viewport of [{ width: 1280, height: 580 }, { width: 320, height: 240 }]) {
     for (const anchor of [{ left: 2, top: 2, bottom: 22 },
       { left: viewport.width - 20, top: viewport.height - 24, bottom: viewport.height - 4 }]) {
       const result = citationPosition(anchor, { height: 1000 }, viewport)
+      assert.equal(result.maxHeight, Math.min(320, viewport.height - 24))
+      assert.equal(result.width, Math.min(360, viewport.width - 24))
       assert.ok(result.left >= 12)
       assert.ok(result.top >= 12)
       assert.ok(result.left + result.width <= viewport.width - 12)

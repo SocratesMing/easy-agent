@@ -12,14 +12,15 @@
 
 | 展示 / 数据 | 当前定义 |
 | --- | --- |
-| 聊天 `token_usage` / `done.usage` 中的 Token 字段 | 最近一次模型调用的快照；后续调用覆盖，不累加整轮调用 |
+| 聊天 `token_usage` / `done.usage` 及会话历史顶层 `usage` 的 `input_tokens` / `output_tokens` | 当前用户在本会话全部已记录调用的输入 / 输出累计；跨轮、跨模型、跨步骤汇总，重连和审批续跑读取绝对值 |
+| `reasoning_tokens` | 最近一次模型调用的思考明细，保持原有口径 |
 | `context_tokens` | 最近一次调用的输入上下文规模，沿用现有缓存计数适配规则 |
 | 消息 `elapsed_time` / `step_count` | 当前 assistant 消息累计；审批续跑继承已有值，等待审批的时间不计 |
 | 设置中的个人 Token 统计 | 按调用 ID 幂等记录供应商显式上报的完整用量，累计 `input_tokens + output_tokens`，思考和缓存不额外相加 |
 
-例如同一轮调用两次，分别上报 `100/10`、`200/20` 个输入 / 输出 Token：聊天最终快照为 `200/20`，个人账本累计为 `330`。删除会话不会删除个人账本；未获得完整供应商证据时不估算补记。完整采集与身份隔离规则见 [Token 用量统计](token-usage-api.md)。
+2026-11-13：仅调整聊天输入 / 输出两项的数值口径，标签、思考、上下文占用、耗时和步数均不变。例如同一轮调用两次，分别上报 `100/10`、`200/20` 个输入 / 输出 Token：聊天显示 `300/30`，上下文仍为 `200`，个人账本总消耗为 `330`；下一轮再调用 `300/30`，聊天显示 `600/60`，上下文为 `300`。消息内的 `usage` 仍保存最后一次调用快照，不能累加消息快照推算全会话消耗。历史和流式都查询同一逐调用账本；未采集的旧调用、供应商漏报和写库失败无法补算。删除会话不会删除个人账本。完整采集与身份隔离规则见 [Token 用量统计](token-usage-api.md)。
 
-对应回归：`tests/agent/test_token_usage_graph.py` 的 `test_stream_latest_call_usage_and_personal_ledger_have_distinct_scopes` 经真实图执行、流处理器及临时账本验证上述两次调用；供应商 HTTP 响应使用模拟数据。`tests/agent/test_token_usage.py`、`tests/db/test_token_usage.py`、`tests/api/test_usage.py` 与 `tests/services/test_usage_scopes.py` 覆盖采集、幂等、查询与身份范围。
+对应回归：`tests/agent/test_token_usage_graph.py` 的 `test_public_chat_counts_all_calls_and_turns_while_context_stays_current` 经真实图执行、流处理器及临时账本验证跨调用和跨轮累计；供应商 HTTP 响应使用模拟数据。`tests/api/test_chat.py` 验证实际聊天路由与历史恢复的一致性，`tests/services/test_session_token_totals.py` 验证回放、审批续跑及字段隔离。`tests/agent/test_token_usage.py`、`tests/db/test_token_usage.py`、`tests/api/test_usage.py` 与 `tests/services/test_usage_scopes.py` 覆盖采集、幂等、查询与身份范围。
 
 ## 错误展示与历史
 

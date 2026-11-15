@@ -4,6 +4,8 @@
 import { relatedEvidence } from '../markdown/citations.js'
 
 let nextId = 0
+const CARD_WIDTH = 360
+const CARD_MAX_HEIGHT = 320
 
 /** 浮层优先放在编号下方，空间不足时翻到上方，并限制在可见窗口内。 */
 export function citationViewport(win) {
@@ -23,8 +25,8 @@ export function citationPosition(anchor, card, viewport) {
   const top = (viewport.top || 0) + margin
   const right = (viewport.left || 0) + viewport.width - margin
   const bottom = (viewport.top || 0) + viewport.height - margin
-  const width = Math.max(1, Math.min(420, viewport.width - margin * 2))
-  const maxHeight = Math.max(1, viewport.height - margin * 2)
+  const width = Math.max(1, Math.min(CARD_WIDTH, viewport.width - margin * 2))
+  const maxHeight = Math.max(1, Math.min(CARD_MAX_HEIGHT, viewport.height - margin * 2))
   const height = Math.min(card.height, maxHeight)
   const below = anchor.bottom + gap
   const above = anchor.top - gap - height
@@ -79,8 +81,8 @@ export default {
       this.citationPreview = { item, number }
       const viewport = citationViewport(window)
       this.citationStyle = {
-        width: `${Math.max(1, Math.min(420, viewport.width - 24))}px`,
-        maxHeight: `${Math.max(1, viewport.height - 24)}px`, visibility: 'hidden',
+        width: `${Math.max(1, Math.min(CARD_WIDTH, viewport.width - 24))}px`,
+        maxHeight: `${Math.max(1, Math.min(CARD_MAX_HEIGHT, viewport.height - 24))}px`, visibility: 'hidden',
       }
       anchor.setAttribute('aria-describedby', this.citationPopoverId)
       this.$nextTick(this.positionCitation)

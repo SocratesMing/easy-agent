@@ -215,3 +215,96 @@ def test_knowledge_status_reports_enabled_flag(client):
             delattr(app.state, "knowledge_config")
         else:
             app.state.knowledge_config = previous
+
+
+# ── 权限设置（审批模式） ──────────────────────────────────────────────
+
+
+def _patch_approval_path(monkeypatch, tmp_path):
+    """把审批设置文件重定向到临时目录（默认落在真实 workspace_dir 下）。"""
+    from easy_agent.bootstrap.config import Config
+
+    monkeypatch.setattr(
+        Config,
+        "get_user_approval_settings_path",
+        classmethod(
+            lambda cls, username, config=None: tmp_path
+            / ".settings"
+            / f"{cls.sanitize_username(username)}.json"
+        ),
+    )
+
+
+def test_approval_settings_defaults_to_manual(client, monkeypatch, tmp_path):
+    """没有配置文件时按 manual 返回，且不下发任何与本轮无关的内容。"""
+    _patch_approval_path(monkeypatch, tmp_path)
+
+    resp = client.get("/agent/settings/approval")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["mode"] == "manual"
+    assert data["revision"] == 0
+    assert data["updated_at"] == ""
+    # 放行清单由服务端下发，与 hitl 的 AUTO_APPROVED_APPROVAL_TOOLS 同源
+    assert set(data["auto_approved_tools"]) == {
+        "execute",
+        "delete",
+        "save_expert",
+        "create_scheduled_task",
+        "access_knowledge_original",
+    }
+    assert not Path(data["path"]).exists()
+
+
+def test_approval_settings_roundtrip_writes_atomic_payload(client, monkeypatch, tmp_path):
+    _patch_approval_path(monkeypatch, tmp_path)
+    path = Path(client.get("/agent/settings/approval").json()["path"])
+
+    saved = client.put("/agent/settings/approval", json={"mode": "auto"})
+    assert saved.status_code == 200
+    assert saved.json()["mode"] == "auto"
+    assert saved.json()["revision"] == 1
+    assert path.exists()
+
+    # 只落四字段：不写用户名、不写路径，避免与账号体系耦合
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert set(stored) == {"version", "mode", "updated_at", "revision"}
+
+    assert client.get("/agent/settings/approval").json()["mode"] == "auto"
+
+    back = client.put("/agent/settings/approval", json={"mode": "manual"})
+    assert back.json()["mode"] == "manual"
+    assert back.json()["revision"] == 2
+
+
+def test_approval_settings_rejects_illegal_mode(client, monkeypatch, tmp_path):
+    _patch_approval_path(monkeypatch, tmp_path)
+
+    resp = client.put("/agent/settings/approval", json={"mode": "yolo"})
+    assert resp.status_code == 400
+    assert not (tmp_path / ".settings").exists()
+
+
+def test_approval_settings_corrupt_file_falls_back_to_manual(client, monkeypatch, tmp_path):
+    """坏文件必须回落 manual：读崩了绝不能默认成「自动审批」。"""
+    _patch_approval_path(monkeypatch, tmp_path)
+    path = Path(client.get("/agent/settings/approval").json()["path"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{ 坏掉的 json", encoding="utf-8")
+
+    assert client.get("/agent/settings/approval").json()["mode"] == "manual"
+
+
+def test_approval_settings_locked_when_deployment_disables_hitl(client, monkeypatch, tmp_path):
+    """config.yaml 关了 hitl：两个选项都无意义，接口必须如实说。"""
+    from types import SimpleNamespace
+
+    _patch_approval_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        settings_api,
+        "_current_agent_config",
+        lambda: SimpleNamespace(hitl=SimpleNamespace(enabled=False, tools=None)),
+    )
+    data = client.get("/agent/settings/approval").json()
+    assert data["available"] is False
+    assert "hitl.enabled" in data["locked_reason"]

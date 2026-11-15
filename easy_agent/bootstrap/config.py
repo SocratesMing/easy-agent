@@ -519,6 +519,22 @@ class Config(BaseModel):
         return base / safe_name / "mcp.json"
 
     @classmethod
+    def get_user_approval_settings_path(
+        cls, username: str, config: "Config | None" = None
+    ) -> Path:
+        """获取用户级审批模式配置文件路径：{workspace_dir}/.settings/{username}.json
+
+        **故意不放在用户工作区内**（``{workspace_dir}/{username}/``）：那个目录就是 AI 的
+        工作区根，``write_file`` / ``execute`` 都能写，权限配置放进去等于让 AI 给自己提权。
+        ``.settings`` 从 backend 的 ``/workspace/`` 路由里访问不到，``fs_safety`` 也会拒绝
+        工作区根之外的越界路径。``sanitize_username`` 只保留字母数字与 ``_ -``，
+        不会产生 ``.settings`` 这种以点开头的名字，两者不会撞车。
+        """
+        safe_name = cls.sanitize_username(username)
+        base = cls._configured_base_dir(config, "workspace_dir", "./workspace")
+        return base / ".settings" / f"{safe_name}.json"
+
+    @classmethod
     def get_user_sessions_dir(cls, username: str, config: "Config | None" = None) -> Path:
         """获取用户的会话日志目录路径：{sessions_dir}/{username}/
 

@@ -851,30 +851,57 @@ async function loadUploadLimits() {
  * 选出本批可以上传的文件（入列前校验，避免"传了一半才发现超限"）。
  *
  * 规则：
- * - enabled=false 时不限；
- * - 数量不满足（已有非失败数 + 本批数 > 上限）→ **整批拒绝**，让用户重新选择；
+ * - 先做**重复过滤**：文件名 + 大小 + 修改时间都相同视为同一文件，
+ *   与本轮已添加的文件（含本批内互相重复）只保留一个，其余忽略；
+ *   上传失败（error）的条目不算已添加，允许重新选择同一个文件再传；
+ *   uploadedFiles 在发送后清空，因此去重只作用于本轮，不影响其它轮次；
+ * - enabled=false 时不限额度；
+ * - 数量不满足（已有非失败数 + 去重后本批数 > 上限）→ **整批拒绝**，让用户重新选择；
  * - 逐个文件检查单文件大小与总大小 → **只跳过超限的那一个**，其余照常上传；
  * - 失败文件不占额度，因此删除/失败都会立即释放名额与空间。
  */
+function uploadFileKey(file) {
+  return `${file.name}\u0000${file.size}\u0000${file.lastModified ?? ''}`
+}
+
 function pickAcceptable(files) {
   const L = uploadLimits.value
-  if (!L.enabled) return { accepted: [...files], rejected: [], batchRejected: false }
+
+  // 重复过滤：与本轮已添加文件重复、或本批内互相重复的，只保留第一个
+  const existingKeys = new Set(
+    uploadedFiles.value
+      .filter(f => f.uploadStatus !== 'error')
+      .map(f => `${f.filename}\u0000${f.size}\u0000${f.file?.lastModified ?? ''}`)
+  )
+  const deduped = []
+  const rejected = []
+  const batchKeys = new Set()
+  for (const file of files) {
+    const key = uploadFileKey(file)
+    if (existingKeys.has(key) || batchKeys.has(key)) {
+      rejected.push({ file, reason: 'duplicate' })
+      continue
+    }
+    batchKeys.add(key)
+    deduped.push(file)
+  }
+
+  if (!L.enabled) return { accepted: deduped, rejected, batchRejected: false }
 
   let count = usedCount.value
   let total = usedBytes.value
   const accepted = []
-  const rejected = []
 
-  if (count + files.length > L.maxFiles) {
+  if (count + deduped.length > L.maxFiles) {
     return {
       accepted: [],
-      rejected: files.map(f => ({ file: f, reason: 'count' })),
+      rejected,
       batchRejected: true,
       message: `最多只能上传 ${L.maxFiles} 个文件（已用 ${count} 个），请重新选择`,
     }
   }
 
-  for (const file of files) {
+  for (const file of deduped) {
     if (file.size > mbToBytes(L.maxFileSizeMb)) {
       rejected.push({ file, reason: 'file_size' })
       continue
@@ -894,6 +921,9 @@ function pickAcceptable(files) {
 function buildRejectNotice(result, acceptedCount) {
   const L = uploadLimits.value
   const parts = result.rejected.map(({ file, reason }) => {
+    if (reason === 'duplicate') {
+      return `${file.name}（与本轮已添加文件重复，已过滤）`
+    }
     if (reason === 'file_size') {
       return `${file.name}（超过单文件上限 ${L.maxFileSizeMb}MB）`
     }
@@ -902,9 +932,12 @@ function buildRejectNotice(result, acceptedCount) {
     }
     return file.name
   })
+  const onlyDuplicates = result.rejected.length > 0 && result.rejected.every(r => r.reason === 'duplicate')
   const head = acceptedCount > 0
     ? `已添加 ${acceptedCount} 个文件，忽略 ${result.rejected.length} 个：`
-    : `无法上传，已忽略 ${result.rejected.length} 个文件：`
+    : (onlyDuplicates
+      ? `已忽略 ${result.rejected.length} 个重复文件：`
+      : `无法上传，已忽略 ${result.rejected.length} 个文件：`)
   return head + parts.join('；')
 }
 
@@ -2538,15 +2571,13 @@ function retryUpload(index) {
     }
   }
 
-  // 重试同样遵循“发送时才上传”：已有会话可立即重传；新对话回到待发送状态，
-  // 等用户点发送时再建会话并上传。
-  item.uploadStatus = props.sessionId ? 'uploading' : 'pending'
+  // 重试同样遵循「发送时才上传」：回到待发送状态，用户点发送时再上传。
+  item.uploadStatus = 'pending'
   item.uploadProgress = 0
   item.errorMessage = ''
   item.retryable = false
   item.cancelled = false
   uploadedFiles.value = [...uploadedFiles.value]
-  if (props.sessionId) uploadOneFile(item)
 }
 
 async function handleFileSelect(event) {
@@ -2568,17 +2599,15 @@ async function handleFileSelect(event) {
     showUploadNotice(buildRejectNotice(result, result.accepted.length))
   }
 
-  // 并行上传：每个文件独立开始、独立进度，互不排队
-  // 新对话不立即上传：先以待发送状态留在前端，发送时创建会话再上传；
-  // 已有会话按原有体验立即上传。
-  const uploadNow = Boolean(props.sessionId)
+  // 统一「发送时上传」：无论新对话还是已有会话，选完文件都只留在前端（pending），
+  // 点发送时 preparePendingFiles 才真正落盘（已有会话直接用当前 sessionId）。
   for (const file of result.accepted) {
     // 创建文件项
     const fileItem = {
       file: file,
       filename: file.name,
       size: file.size,
-      uploadStatus: uploadNow ? 'uploading' : 'pending',
+      uploadStatus: 'pending',
       uploadProgress: 0,
       cancelled: false,
       xhrHolder: null,
@@ -2591,8 +2620,6 @@ async function handleFileSelect(event) {
 
     // 强制触发初始渲染
     uploadedFiles.value = [...uploadedFiles.value]
-
-    if (uploadNow) uploadOneFile(fileItem)
   }
 }
 

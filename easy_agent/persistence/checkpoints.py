@@ -855,15 +855,21 @@ async def _prune_orphans_mysql() -> int:
     return deleted
 
 
-def _ttl_cutoff(days: int) -> str:
-    """TTL 的截止时间串。
+def _ttl_cutoff(days: int, basis: str = "session_updated_at") -> str:
+    """TTL 的截止时间串。**两种 basis 的时区基准不同，不能共用一份 now()**。
 
-    ``sessions.updated_at`` 是 ``datetime.now().isoformat()`` 写进去的**本地时间的 ISO
-    串**（``VARCHAR(50)``），所以 cutoff 必须用同样的格式生成，否则字符串比较会错。这是
-    已知风险 R22：一旦写入格式变成带 ``Z`` 或时区偏移，比较会失效 → 启动期探针（见
-    ``_probe_sessions_updated_at``）会先验一遍。
+    - ``session_updated_at``：``sessions.updated_at`` 是 ``datetime.now().isoformat()``
+      写进去的**本地时间的 ISO 串**（``VARCHAR(50)``），所以 cutoff 必须用同样的本地
+      时间生成，否则字符串比较会错。这是已知风险 R22：一旦写入格式变成带 ``Z`` 或时区
+      偏移，比较会失效 → 启动期探针（见 ``_probe_sessions_updated_at``）会先验一遍。
+    - ``checkpoint_created_at``：``cp_checkpoints.created_at`` 是 **naive UTC**（连接上
+      ``SET time_zone='+00:00'``，应用写 ``_utcnow()``），用本地时间做 cutoff 会整体偏
+      一个时区（东八区偏 8 小时，等于多删 8 小时的量）。这里必须换回 UTC。
     """
-    return (datetime.now() - timedelta(days=int(days))).isoformat()
+    delta = timedelta(days=int(days))
+    if basis == "checkpoint_created_at":
+        return (datetime.now(UTC).replace(tzinfo=None) - delta).isoformat()
+    return (datetime.now() - delta).isoformat()
 
 
 async def _probe_sessions_updated_at(db) -> bool:
@@ -931,7 +937,7 @@ async def prune_expired_session_threads(db=None) -> int:
         basis = cfg.ttl_basis
         if basis == "session_updated_at" and not await _probe_sessions_updated_at(db):
             basis = "checkpoint_created_at"
-        cutoff = _ttl_cutoff(cfg.record_ttl_days)
+        cutoff = _ttl_cutoff(cfg.record_ttl_days, basis)
         try:
             thread_ids = await saver.list_expired_threads(
                 cutoff=cutoff,

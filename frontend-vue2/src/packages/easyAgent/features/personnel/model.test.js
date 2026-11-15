@@ -8,6 +8,7 @@ import {
   formatPersonnelValidationDetail,
   normalizePersonnelPage,
   summarizeImportResult,
+  summarizeSyncResult,
   validatePersonnelForm,
 } from './model.js'
 
@@ -136,6 +137,10 @@ test('summarizes both compact and count-style import responses', () => {
   assert.equal(
     summarizeImportResult({ created_count: 2, updated_count: 3, skipped_count: 1 }),
     '导入完成：新增 2 人，更新 3 人，跳过 1 人'
+  )
+  assert.equal(
+    summarizeSyncResult({ created: 1, updated: 4, skipped: 2 }),
+    '更新完成：新增 1 人，更新 4 人，跳过 2 人'
   )
 })
 

@@ -39,8 +39,7 @@
     {"package": "easy_agent.knowledges", "reason": "知识库不在本方案范围（§6.2、§13 决策 4）"},
     {"package": "easy_agent.knowledges.personnel", "reason": "知识库不在本方案范围（§6.2、§13 决策 4）"},
     {"package": "easy_agent.knowledges.ragflow", "reason": "知识库不在本方案范围（§6.2、§13 决策 4）"},
-    {"package": "easy_agent.skills.docx.scripts.office.validators", "reason": "打包的技能脚本，是 skills/ 的副本（sync_skills.py --check 保证一致），不属于应用分层"},
-    {"package": "easy_agent.skills.pptx.scripts.office.validators", "reason": "打包的技能脚本，是 skills/ 的副本（sync_skills.py --check 保证一致），不属于应用分层"},
+    {"package": "easy_agent.knowledges.service", "reason": "知识库服务拆包后的公开 facade，集中导出 KnowledgeService 及各 mixin；知识库不在本方案范围（§6.2、§13 决策 4）"},
     {"package": "easy_agent.skills.xlsx.scripts.office.validators", "reason": "打包的技能脚本，是 skills/ 的副本（sync_skills.py --check 保证一致），不属于应用分层"}
   ]
 }

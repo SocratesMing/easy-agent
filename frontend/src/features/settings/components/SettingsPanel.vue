@@ -114,6 +114,10 @@
           <div v-if="activeTab === 'usage'" class="content-panel" role="tabpanel" id="panel-usage" aria-labelledby="tab-usage">
             <TokenUsagePanel />
           </div>
+
+          <div v-if="activeTab === 'approval'" class="content-panel" role="tabpanel" id="panel-approval" aria-labelledby="tab-approval">
+            <ApprovalPanel />
+          </div>
         </div>
       </div>
     </div>
@@ -124,6 +128,7 @@
 import { ref, watch, onMounted, onBeforeUnmount, nextTick, computed } from 'vue'
 import ArchiveManager from '../../chat/components/ArchiveManager.vue'
 import TokenUsagePanel from './TokenUsagePanel.vue'
+import ApprovalPanel from './ApprovalPanel.vue'
 import {
   getMemory,
   updateMemory,
@@ -236,6 +241,7 @@ const navItems = [
   },
   { key: 'usage', label: 'Token统计', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 3v18h17M8 16v-5m5 5V7m5 9V4"/></svg>' },
   { key: 'archive', label: '归档管理', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h18v4H3zM5 7v14h14V7M10 11h4"/></svg>' },
+  { key: 'approval', label: '权限设置', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>' },
 ]
 
 async function loadTabData() {

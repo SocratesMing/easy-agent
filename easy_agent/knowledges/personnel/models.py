@@ -131,3 +131,9 @@ class PersonnelImportResponse(BaseModel):
     updated: int
     source: str
     default_password: str = "123456"
+
+
+class PersonnelSyncResponse(PersonnelImportResponse):
+    """接口同步结果；skipped 为源数据中被规则跳过（如 admin）的条数。"""
+
+    skipped: int = 0

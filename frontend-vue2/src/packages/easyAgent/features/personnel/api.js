@@ -46,6 +46,13 @@ export function importPersonnelUsers(file, source) {
   }, '导入人员信息失败')
 }
 
+export function syncPersonnelUsers() {
+  return request({
+    url: `${ROOT}/sync`,
+    method: 'post',
+  }, '更新人员信息失败')
+}
+
 export async function getPersonnelImportTemplate() {
   try {
     const response = await requestRaw({

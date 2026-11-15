@@ -78,8 +78,9 @@ from easy_agent.knowledges.core.models import (
     SessionKnowledgeScopeResponse,
 )
 from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
-from easy_agent.knowledges.ragflow import RagflowError
 from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.ragflow import RagflowError
+from easy_agent.knowledges.runtime.observability import resolve_request_id
 from easy_agent.knowledges.service import KnowledgeService, KnowledgeServiceError
 from easy_agent.utils.auth import is_super_admin
 
@@ -256,15 +257,39 @@ def _get_knowledge_config(request: Request) -> KnowledgeConfig:
 
 
 def _request_id(request: Request) -> str:
-    """解析请求追踪 ID：优先请求状态，其次 X-Request-Id 头，否则随机生成。"""
+    """解析请求追踪 ID：优先请求状态，其次归一化 X-Request-Id 头。"""
 
     state_request_id = getattr(request.state, "request_id", "")
     if state_request_id:
         return str(state_request_id)
-    candidate = request.headers.get("X-Request-Id", "").strip()
-    if candidate and len(candidate) <= 128 and "\r" not in candidate and "\n" not in candidate:
-        return candidate
-    return str(uuid.uuid4())
+    return resolve_request_id(request.headers.get("X-Request-Id"))
+
+
+async def _record_manager_audit(
+    request: Request,
+    db: Database,
+    principal: KnowledgePrincipal,
+    *,
+    action: str,
+    object_id: str,
+    department_id: str,
+) -> None:
+    """部门管理员变更审计：仅在审计开关打开时记录。"""
+
+    config = _get_knowledge_config(request)
+    if not config.audit.enabled:
+        return
+    await run_in_threadpool(
+        KnowledgeOperationsRepository(db).record_audit,
+        request_id=str(getattr(request.state, "request_id", "unknown")),
+        actor_user_id=principal.user_id,
+        actor_username=principal.username,
+        action=action,
+        object_type="department_manager",
+        object_id=object_id,
+        details={"department_id": department_id},
+        max_details_bytes=config.audit.max_details_bytes,
+    )
 
 
 def _service(
@@ -1290,19 +1315,14 @@ async def grant_department_manager(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    config = _get_knowledge_config(request)
-    if config.audit.enabled:
-        await run_in_threadpool(
-            KnowledgeOperationsRepository(db).record_audit,
-            request_id=str(getattr(request.state, "request_id", "unknown")),
-            actor_user_id=principal.user_id,
-            actor_username=principal.username,
-            action="department_manager.grant",
-            object_type="department_manager",
-            object_id=f"{payload.user_id}@{department_id}",
-            details={"department_id": department_id},
-            max_details_bytes=config.audit.max_details_bytes,
-        )
+    await _record_manager_audit(
+        request,
+        db,
+        principal,
+        action="department_manager.grant",
+        object_id=f"{payload.user_id}@{department_id}",
+        department_id=department_id,
+    )
     return DepartmentManagerGrantResponse(manager=_dept_manager_summary(row))
 
 
@@ -1326,19 +1346,14 @@ async def revoke_department_manager(
         department_id=department_id,
     )
 
-    config = _get_knowledge_config(request)
-    if config.audit.enabled:
-        await run_in_threadpool(
-            KnowledgeOperationsRepository(db).record_audit,
-            request_id=str(getattr(request.state, "request_id", "unknown")),
-            actor_user_id=principal.user_id,
-            actor_username=principal.username,
-            action="department_manager.revoke",
-            object_type="department_manager",
-            object_id=f"{user_id}@{department_id}",
-            details={"department_id": department_id},
-            max_details_bytes=config.audit.max_details_bytes,
-        )
+    await _record_manager_audit(
+        request,
+        db,
+        principal,
+        action="department_manager.revoke",
+        object_id=f"{user_id}@{department_id}",
+        department_id=department_id,
+    )
     return DepartmentManagerRevokeResponse(
         user_id=user_id, department_id=department_id, revoked=ok
     )
