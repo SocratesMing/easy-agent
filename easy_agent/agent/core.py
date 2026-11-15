@@ -381,9 +381,10 @@ class EasyAgent(AgentWorkspaceMixin):
         workspace_name: str = "",
         mcp_tools: list | None = None,
         organization_id: str = "",
-       enable_hitl: bool = True,
-       approval_mode: str = APPROVAL_MODE_MANUAL,
-       model_name: str | None = None,
+        enable_hitl: bool = True,
+        enable_user_interaction: bool = True,
+        approval_mode: str = APPROVAL_MODE_MANUAL,
+        model_name: str | None = None,
         enable_web_search: bool = False,
         system_prompt_extra: str = "",
         skill_whitelist: list[str] | None = None,
@@ -405,6 +406,8 @@ class EasyAgent(AgentWorkspaceMixin):
                 提供时替代 session_id 作为目录名。
             mcp_tools: MCP 工具列表，作为额外工具注入智能体。
             organization_id: 用户所属机构ID，注册后不可更改，将注入系统提示词。
+            enable_user_interaction: 是否允许 ``ask_user`` 中断；定时任务等无人值守
+                执行传 False，交互式聊天保持默认 True。
             enable_web_search: 是否开启联网搜索。为 True 时在系统提示词中加入
                 联网搜索行为约束（web_search 工具本身由 agent_manager 注入，
                 仅在 web_search 配置了 api_key 时才为 True）。
@@ -428,6 +431,7 @@ class EasyAgent(AgentWorkspaceMixin):
         self.mcp_tools = mcp_tools or []
         self.organization_id = organization_id or ""
         self.enable_hitl = enable_hitl
+        self.enable_user_interaction = enable_user_interaction
         # 用户级审批模式：只影响「审批名单里摘掉哪几项」，不影响 enable_hitl 总开关
         self.approval_mode = normalize_approval_mode(approval_mode)
         self.enable_web_search = enable_web_search

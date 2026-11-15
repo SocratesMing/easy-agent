@@ -310,10 +310,10 @@ def load_resume_snapshot(messages: list[dict] | None) -> ResumeSnapshot:
 
 
 def last_user_message(messages: list[dict] | None) -> str:
-    """取会话中最后一条 user 消息的正文（HITL 恢复后生成记忆用）。"""
+    """取会话中最后一条可输入模型的 user 消息正文（HITL 恢复后生成记忆用）。"""
     result = ""
     for message in messages or []:
-        if message.get("role") == "user":
+        if message.get("role") == "user" and not message.get("display_only"):
             result = message.get("content", "") or ""
     return result
 
@@ -328,7 +328,9 @@ def decision_status_map(pending_tool_call_ids: list, decisions: list) -> dict[st
         decision_type = (
             decision_item.get("type") if isinstance(decision_item, dict) else None
         )
-        status_by_id[tc_id] = "approved" if decision_type == "approve" else "rejected"
+        status_by_id[tc_id] = (
+            "approved" if decision_type in {"approve", "respond"} else "rejected"
+        )
     return status_by_id
 
 
@@ -352,7 +354,9 @@ def decision_status_by_interrupt(
             if tool_call_id:
                 decision_type = decision.get("type") if isinstance(decision, dict) else None
                 status_by_id[tool_call_id] = (
-                    "approved" if decision_type == "approve" else "rejected"
+                    "approved"
+                    if decision_type in {"approve", "respond"}
+                    else "rejected"
                 )
     return status_by_id
 

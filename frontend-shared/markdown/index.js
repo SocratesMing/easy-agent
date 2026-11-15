@@ -532,7 +532,10 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
     const visualKind = visualKindOfLang(rawLang)
     if (visualKind && state.partial && !isFenceClosed(raw)) return visualPendingHtml(visualKind)
     const langLabel = escapeHtml(rawLang || 'text')
-    const highlighted = typeof highlight === 'function' ? highlight(code, rawLang, state) : ''
+    // 可视化源码最终会被卡片隐藏，只在“查看源码”时展示；不值得再做逐 token 高亮。
+    const highlighted = visualKind
+      ? `<pre class="ea-visual-raw"><code>${escapeHtml(code)}</code></pre>`
+      : (typeof highlight === 'function' ? highlight(code, rawLang, state) : '')
     const block = (
       '<div class="code-block-wrapper">' +
       '<div class="code-header">' +

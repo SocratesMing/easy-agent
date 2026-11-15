@@ -161,6 +161,7 @@ def test_build_agent_middleware_type_and_order():
         "ToolErrorMiddleware",
         "ModelCallLimitMiddleware",
         "ToolCallLimitMiddleware",
+        "ApprovalAuditMiddleware",
     ]
 
 
@@ -214,9 +215,10 @@ def test_tool_progress_thresholds_come_from_config():
 def test_easyagent_build_middleware_delegates(monkeypatch, lightweight_agent):
     captured: dict = {}
 
-    def fake_builder(config, max_steps):
+    def fake_builder(config, max_steps, *, approval_mode=None):
         captured["config"] = config
         captured["max_steps"] = max_steps
+        captured["approval_mode"] = approval_mode
         return ["stub-middleware"]
 
     monkeypatch.setattr(core_mod, "build_agent_middleware", fake_builder)
@@ -224,6 +226,7 @@ def test_easyagent_build_middleware_delegates(monkeypatch, lightweight_agent):
     assert lightweight_agent._build_middleware() == ["stub-middleware"]
     assert captured["config"] is lightweight_agent.config
     assert captured["max_steps"] == lightweight_agent.max_steps
+    assert captured["approval_mode"] == lightweight_agent.approval_mode
 
 
 # ── _build_backend_for_context 纯函数（最小 context） ─────────

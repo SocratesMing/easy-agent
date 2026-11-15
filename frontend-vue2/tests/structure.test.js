@@ -61,13 +61,15 @@ const MAX_NEW_FILE_LINES = 800
  * 后按实测值更新：ChatInput 3688 → 3721。
  * 2026-11-13 知识库工作台精简（抽权限树/导入菜单组件 + 清理死代码）：
  *   KnowledgeWorkbench 1926 → 1782。
+ * 2026-11-15 合并 feature/1128 后按实测值更新：PersonnelManagement 1165 → 1194。
  */
 const LINE_BUDGET = {
   // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
   // 2026-11-05 合并 audit-improvements（注释停用 AiSidebar）后按实测值更新：2035 → 2036
   [`${MOD}EasyAgentPage.vue`]: 2057,
   [`${MOD}features/chat/components/ChatInput.vue`]: 3721,
-  [`${MOD}features/chat/components/ChatMessage.vue`]: 2644,
+  // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2644 → 2616
+  [`${MOD}features/chat/components/ChatMessage.vue`]: 2616,
   [`${MOD}features/chat/components/AiSidebar.vue`]: 1726,
   [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2253,
   // 2026-11-12 存量校正：mysql_saver / 跨 Pod 挂载修复后实为 1740 行，按实测值更新（本次改动未触及）
@@ -83,7 +85,7 @@ const LINE_BUDGET = {
   [`${MOD}features/tasks/components/ScheduledTasksPanel.vue`]: 967,
   [`${MOD}features/workspace/components/WorkspacePanel.vue`]: 954,
   [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1782,
-  [`${MOD}features/personnel/PersonnelManagement.vue`]: 1165,
+  [`${MOD}features/personnel/PersonnelManagement.vue`]: 1194,
   // 页面级深色覆盖（原 App.vue 非 scoped 样式块，只允许变短）
   [`${MOD}styles/theme-dark.css`]: 1195,
 }

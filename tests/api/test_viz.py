@@ -39,8 +39,32 @@ def test_frame_page_enables_every_kind_by_default(monkeypatch):
     assert "img-src data: blob:" in csp
     assert "default-src 'none'" in csp
     assert _script_src(csp) == "script-src 'self' 'unsafe-inline'"
-    assert response.headers["cache-control"] == "no-cache"
+    assert response.headers["cache-control"] == "public, max-age=60"
     assert response.headers["referrer-policy"] == "no-referrer"
+
+
+@pytest.mark.parametrize(
+    ("kind", "asset"),
+    [("echarts", "vendor/echarts.min.js"), ("mermaid", "vendor/mermaid.min.js")],
+)
+def test_frame_page_preloads_requested_library(monkeypatch, kind, asset):
+    response = _client(monkeypatch).get(f"/agent/viz/frame.html?kind={kind}")
+
+    assert response.status_code == 200
+    assert f'<link rel="preload" as="script" href="{asset}" fetchpriority="high">' in response.text
+
+
+def test_frame_page_supports_etag_revalidation(monkeypatch):
+    client = _client(monkeypatch)
+    first = client.get("/agent/viz/frame.html?kind=echarts")
+    etag = first.headers["etag"]
+    again = client.get(
+        "/agent/viz/frame.html?kind=echarts",
+        headers={"If-None-Match": etag},
+    )
+
+    assert again.status_code == 304
+    assert again.headers["cache-control"] == "public, max-age=60"
 
 
 def test_widgets_off_keeps_charts_but_blocks_inline_scripts(monkeypatch):
@@ -69,12 +93,30 @@ def test_master_switch_off_disables_everything(monkeypatch):
     ],
 )
 def test_whitelisted_assets_are_served_with_cache(monkeypatch, path, media):
-    response = _client(monkeypatch).get(f"/agent/viz/{path}")
+    response = _client(monkeypatch).get(
+        f"/agent/viz/{path}", headers={"Accept-Encoding": "identity"}
+    )
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith(media)
     assert response.headers["cache-control"] == "public, max-age=86400"
     assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["vary"] == "Accept-Encoding"
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["frame.js", "frame.css", "vendor/echarts.min.js", "vendor/mermaid.min.js"],
+)
+def test_large_visual_assets_are_gzipped_when_accepted(monkeypatch, path):
+    response = _client(monkeypatch).get(
+        f"/agent/viz/{path}", headers={"Accept-Encoding": "gzip"}
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-encoding"] == "gzip"
+    assert response.headers["vary"] == "Accept-Encoding"
+    assert response.headers["cache-control"] == "public, max-age=86400"
 
 
 @pytest.mark.parametrize(

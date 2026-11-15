@@ -27,9 +27,10 @@ from langchain.agents.middleware import InterruptOnConfig, ToolCallRequest
 
 from easy_agent.sandboxing.command_policy import is_deletion_command, is_directory_deletion
 from easy_agent.tools.registry import (
-    ALLOWED_INTERRUPT_DECISIONS,
     DESTRUCTIVE_INTERRUPT_DECISIONS,
+    MCP_INTERRUPT_DECISIONS,
     ToolSpec,
+    approval_tool_specs,
     builtin_tool_names,
     default_interrupt_tool_names,
     get_tool_spec,
@@ -45,9 +46,10 @@ logger = logging.getLogger("easy-agent.hitl")
 # 实际 interrupt_on 由 build_interrupt_config() 按会话实际工具集过滤。
 DEFAULT_INTERRUPT_TOOLS = default_interrupt_tool_names()
 
-# config.yaml 的 hitl.tools 不配时的审批名单：注册表里的全部 HITL 工具（含按条件审批的
-# execute / access_knowledge_original），按 hitl_order 排序。
-DEFAULT_APPROVAL_TOOLS = tuple(spec.name for spec in hitl_tool_specs())
+# config.yaml 的 hitl.tools 不配时的审批名单：注册表里的全部**安全审批**工具（含按条件
+# 审批的 execute / access_knowledge_original），按 hitl_order 排序。ask_user 属于产品
+# 交互中断，不走这个名单，也不受 hitl.enabled 关闭影响。
+DEFAULT_APPROVAL_TOOLS = tuple(spec.name for spec in approval_tool_specs())
 
 # ── 用户级审批模式（设置 → 权限设置） ────────────────────────────────────
 #
@@ -269,7 +271,7 @@ def mcp_interrupt_decisions(tool_name: str, tool: object | None = None) -> list[
     )
     if destructive or _DELETE_TOOL_RE.search(tool_name or ""):
         return list(DESTRUCTIVE_INTERRUPT_DECISIONS)
-    return list(ALLOWED_INTERRUPT_DECISIONS)
+    return list(MCP_INTERRUPT_DECISIONS)
 
 
 def _is_knowledge_materialize(request: ToolCallRequest) -> bool:
@@ -537,8 +539,9 @@ def build_interrupt_config(
 
     规则：
 
-    1. ``enable_hitl=False`` → ``None``（不启用 HITL）；
-    2. ``approval_tools`` 是 config.yaml 的 ``hitl.tools``，不配时用注册表里的全部 HITL 工具
+    1. 产品交互工具（``ask_user``，只允许 ``respond``）只要实际注入就始终进入配置；
+       ``enable_hitl=False`` 只关闭安全审批，不会关闭规划确认；
+    2. ``approval_tools`` 是 config.yaml 的 ``hitl.tools``，不配时用注册表里的全部安全审批工具
        （:data:`DEFAULT_APPROVAL_TOOLS`）。名单里**本会话实际存在**的工具进审批，按名单顺序；
        没注入的名字记 debug 日志并跳过（DeepAgents 对 ``interrupt_on`` 里不存在的工具名静默
        无效，见 T1-14）。框架内置工具（``execute`` / ``delete`` 等）始终存在；MCP 工具按注入名
@@ -552,8 +555,8 @@ def build_interrupt_config(
     5. ``approval_mode="auto"``（设置 → 权限设置里的「允许自动审批」）额外做两件事：
        从名单里摘掉 :data:`AUTO_APPROVED_APPROVAL_TOOLS`，并**跳过第 4 条兜底**——
        MCP / 动态注入工具不再按名字或 annotations 加审批（见 :data:`AUTO_APPROVES_MCP_TOOLS`）。
-       默认名单被全部覆盖，因此返回值通常是**空字典**：调用方（``create_deep_agent``）
-       会把空配置归并成 ``None`` 并跳过 ``HumanInTheLoopMiddleware``，即本轮没有审批节点。
+       默认安全审批名单被全部覆盖；但 ``ask_user`` 仍按第 1 条保留，因此规划确认不会被
+       自动审批关闭。只有本轮既没有安全审批项、也没有 ``ask_user`` 时才是空配置。
 
     Args:
         tool_names: 本会话实际注入的非内置工具（工具对象或工具名）。
@@ -567,19 +570,18 @@ def build_interrupt_config(
         approval_mode: 用户级审批模式（``manual`` / ``auto``），非法值按 ``manual`` 处理。
 
     Returns:
-        工具名 → ``InterruptOnConfig`` 的字典；未启用 HITL 时为 ``None``。
+        工具名 → ``InterruptOnConfig`` 的字典；没有需要中断的工具时为 ``None``。
     """
-    if not enable_hitl:
-        return None
-
     tools = list(tool_names or ())
     ordered_names = [name for name in map(_tool_name, tools) if name]
     tool_objects = {_tool_name(tool): tool for tool in tools if not isinstance(tool, str)}
     builtin_names = set(builtin_tool_names())
     predicate_map = HITL_WHEN_PREDICATES if predicates is None else predicates
-    hitl_specs = {spec.name: spec for spec in (hitl_tool_specs() if specs is None else specs)}
+    all_specs = tuple(hitl_tool_specs() if specs is None else specs)
+    interaction_specs = tuple(spec for spec in all_specs if spec.interaction_only)
+    approval_specs = {spec.name: spec for spec in all_specs if not spec.interaction_only}
     wanted_source = (
-        list(hitl_specs)
+        list(approval_specs)
         if approval_tools is None
         else [str(name).strip() for name in approval_tools if str(name).strip()]
     )
@@ -587,8 +589,8 @@ def build_interrupt_config(
     # auto 模式：MCP / 应用注入（注册表里没有的工具）不进审批，只留注册表里的 HITL 工具
     auto_mcp = auto_approves_mcp(approval_mode)
     if auto_mcp:
-        dropped = [name for name in wanted if name not in hitl_specs]
-        wanted = [name for name in wanted if name in hitl_specs]
+        dropped = [name for name in wanted if name not in approval_specs]
+        wanted = [name for name in wanted if name in approval_specs]
         if dropped:
             logger.info(
                 "[%s] 允许自动审批：MCP / 应用工具不进审批 | %s", sid or "-", dropped
@@ -602,6 +604,24 @@ def build_interrupt_config(
             injected.setdefault(original, []).append(name)
 
     config: dict[str, bool | InterruptOnConfig] = {}
+
+    # 产品交互（ask_user）与安全审批分开：即使 hitl.enabled=false，规划确认仍可用。
+    for spec in interaction_specs:
+        for name in injected.get(spec.name, []):
+            config.setdefault(
+                name,
+                _interrupt_options(
+                    name,
+                    spec,
+                    tool_objects.get(name),
+                    predicate_map,
+                    sid,
+                ),
+            )
+
+    if not enable_hitl:
+        return config or None
+
     for wanted_name in wanted:
         matches = [wanted_name] if wanted_name in builtin_names else injected.get(wanted_name, [])
         if not matches:
@@ -613,7 +633,11 @@ def build_interrupt_config(
         for name in matches:
             if name not in config:
                 config[name] = _interrupt_options(
-                    name, hitl_specs.get(wanted_name), tool_objects.get(name), predicate_map, sid
+                    name,
+                    approval_specs.get(wanted_name),
+                    tool_objects.get(name),
+                    predicate_map,
+                    sid,
                 )
 
     # 名单外的 MCP / 动态工具兜底（DA-09）：服务端 annotations 优先，没有可用标注再看名字。

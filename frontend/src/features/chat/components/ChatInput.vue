@@ -25,6 +25,11 @@
         @remove="removeFile"
         @retry="retryUpload"
       />
+      <SelectedModeChip
+        v-if="interactionMode !== 'normal'"
+        :mode="interactionMode"
+        @clear="interactionMode = 'normal'"
+      />
       
       <div class="input-row">
         <div class="input-field">
@@ -469,7 +474,6 @@
             hidden
           />
 
-
           <ModelPicker
             :models="models"
             :selected-model="selectedModel"
@@ -664,6 +668,8 @@ import { uploadFile, deleteFile } from '../../../api/files.js'
 import { getKnowledgeStatus, getWebSearchStatus, getUploadLimits } from '../../../api/settings.js'
 import { getUserSkills, importSkill } from '../../../api/skills.js'
 import { iconCategoryFor } from '../../../utils/skillCategories.js'
+import SelectedModeChip from './SelectedModeChip.vue'
+import { interactionCommandItems } from '../../../shared/chat/planInteraction.js'
 
 // 镜像层为画出技能芯片的外扩留白，把裁剪盒向外扩了这么多 px（见 .input-mirror 的 padding/margin）：
 // 补滚动条占位时要一起加上，否则镜像内容比 textarea 窄、换行位置对不上。
@@ -770,6 +776,7 @@ const props = defineProps({
 const emit = defineEmits(['compact-context', 'send', 'stop', 'createSession', 'update:selectedModel', 'typing', 'clearExpert', 'selectExpert', 'prefillApplied', 'openPanel', 'openKnowledge', 'webSearchChange'])
 
 const message = ref('')
+const interactionMode = ref('normal')
 const textareaRef = ref(null)
 const uploadedFiles = ref([])
 // 新对话里勾选的知识库：只暂存在前端，首条消息发送时随请求提交，
@@ -1071,7 +1078,7 @@ const filteredSkills = computed(() => {
 })
 
 // 按类型纵向分组，键盘索引仅包含可选择的行。
-const menuItems = computed(() => [...commandItems(skillQuery.value, props.compactReason, props.compactBusy), ...filteredSkills.value])
+const menuItems = computed(() => [...interactionCommandItems(skillQuery.value), ...commandItems(skillQuery.value, props.compactReason, props.compactBusy), ...filteredSkills.value])
 const skillRows = computed(() =>
   menuItems.value.map((skill, index) => ({
     skill, index,
@@ -1182,6 +1189,13 @@ async function selectSkill(skill) {
   const cleared = base.slice(0, start) + base.slice(caret)
 
   if (skill.command) {
+    if (skill.interactionMode) {
+      if (isStreaming.value || props.disabled) return
+      interactionMode.value = skill.interactionMode
+      closeSkillPicker()
+      replaceTextWithCaret({ text: cleared, caret: start })
+      return
+    }
     if (props.compactReason || skill.disabled) return
     closeSkillPicker()
     replaceTextWithCaret({ text: cleared, caret: start })
@@ -2719,7 +2733,8 @@ async function send() {
       webSearchEnabled.value,
       turnSkills,
       expertEditId,
-      knowledgeBaseIds
+      knowledgeBaseIds,
+      interactionMode.value
     )
 
     message.value = ''
@@ -2729,6 +2744,7 @@ async function send() {
     // 预选技能与待修改专家已随本条消息提交，清掉避免影响下一条
     preselectedSkillDirs.value = new Set()
     pendingExpertEditId.value = ''
+    interactionMode.value = 'normal'
     dismissUploadNotice()
     closeSkillPicker()
     nextTick(() => autoResize())

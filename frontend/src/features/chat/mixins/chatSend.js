@@ -5,7 +5,8 @@ import { deleteFile } from '../../../api/files.js'
 import { authFetch } from '../../../api/auth.js'
 import { createStreamChunkHandler as createChunkHandler } from '../services/chunkHandler.js'
 import { resumeUsageBase } from '../services/streamUsage.js'
-import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision } from '../../../utils/hitlApproval.js'
+import { applyApprovalRequests, buildApprovalResumePlan, markApprovalDecision } from '../../../utils/hitlApproval.js'
+import { buildPlanContinuationTurn } from '../../../shared/chat/planConfirmationTurn.js'
 
 /**
  * AI 侧边栏对话引擎的流式操作部分：发送、HITL 审批恢复、重试、停止、删除附件。
@@ -17,7 +18,7 @@ export default {
     createStreamChunkHandler(ctx) {
       return createChunkHandler(this, ctx)
     },
-    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = []) {
+    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = [], interactionMode = 'normal') {
       const userMsgId = `user-${Date.now()}`
       const preStreamUsage = { ...this.sessionUsage }
       // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -43,6 +44,7 @@ export default {
         })),
         created_at: new Date().toISOString()
       }
+      if (interactionMode !== 'normal') userMessage.interaction_mode = interactionMode
       // 结构化技能目录名（与后端落库字段同形，见 App.vue 的同类实现）
       if (skills.length > 0) userMessage.skills = [...skills]
 
@@ -147,11 +149,13 @@ export default {
           this.selectedModel,
           enableWebSearch,
           skills,
-          '',
+          expertEditId,
           this.selectedExpert && this.selectedExpert.export_agent_id
             ? this.selectedExpert.export_agent_id
             : '',
-          pageContext ? { pageContext } : null
+          pageContext || interactionMode !== 'normal'
+            ? { pageContext, interactionMode, knowledgeBaseIds }
+            : null
         )
 
         await this.refreshSessionFiles(null, 500)
@@ -253,46 +257,52 @@ export default {
       const msgIdx = assistantMsgId ? this.messages.findIndex(m => m.id === assistantMsgId) : -1
       const pending = msgIdx !== -1 ? this.messages[msgIdx].pending_approval : null
       const actionRequests = (pending && pending.action_requests) || []
-      const { decisions, interruptId } = buildResumeDecisions(actionRequests, decision, {
-        interruptId: target && target.interruptId,
-        // 编辑参数：只改被点的那一条（action_index 由载荷带下来）
-        targetActionIndex: target && target.actionIndex,
-        editedAction: target && target.editedArgs
-          ? { name: target.actionName || '', args: target.editedArgs }
-          : null,
-      })
+      const { decisions, interruptId } = buildApprovalResumePlan(actionRequests, decision, target)
+      const confirmation = decision === 'respond' && target ? target.confirmation : null
+      let resumeAssistantId = assistantMsgId
+      let resumeUsageMessage = this.messages[msgIdx]
+      let initialBlockOrder = msgIdx !== -1 ? this.messages[msgIdx].blocks.length : 0
 
       // 清掉待审批按钮（恢复流期间不允许再点），只给本次作答的中断记上「已批准 / 已拒绝」
       if (msgIdx !== -1) {
         markApprovalDecision(this.messages[msgIdx].blocks, decision, actionRequests, interruptId)
         setReactive(this.messages, msgIdx, {
           ...this.messages[msgIdx],
+          loading: confirmation ? false : this.messages[msgIdx].loading,
+          created_at: confirmation ? new Date().toISOString() : this.messages[msgIdx].created_at,
           pending_approval: null,
           blocks: [...this.messages[msgIdx].blocks],
         })
+      }
+      if (confirmation) {
+        const split = buildPlanContinuationTurn(this.messages, msgIdx, confirmation)
+        if (split) {
+          this.messages.splice(msgIdx, 1, ...split.replacement)
+          resumeAssistantId = split.resumeAssistantId
+          this.pendingApproval = { threadId, assistantMsgId: resumeAssistantId }
+          resumeUsageMessage = undefined
+          initialBlockOrder = split.initialBlockOrder
+        }
       }
       // 本次决策已落地，重算标识（若恢复流中再遇嵌套审批会立即重新亮起）
       this.recomputePendingApprovalFlag(sessionId)
 
       const { onChunk } = this.createStreamChunkHandler({
         isResume: true,
-        assistantMsgId,
+        assistantMsgId: resumeAssistantId,
         streamSessionId: sessionId,
-        ...resumeUsageBase(this.sessionDuration, this.iterationCount, this.messages[msgIdx]),
-        initialBlockOrder: (() => {
-          const i = this.messages.findIndex(m => m.id === assistantMsgId)
-          return i !== -1 ? this.messages[i].blocks.length : 0
-        })(),
+        ...resumeUsageBase(this.sessionDuration, this.iterationCount, resumeUsageMessage),
+        initialBlockOrder,
         onApprovalRequired: (data) => {
           // 嵌套审批
           this.pendingApproval = {
             threadId: data.thread_id,
-            assistantMsgId,
+            assistantMsgId: resumeAssistantId,
           }
           // 决策后标识可能已被重算熄灭，嵌套审批到达时重新亮起
           this.syncPendingApprovalFlag(sessionId, true)
-          if (assistantMsgId && data.action_requests) {
-            const idx = this.messages.findIndex(m => m.id === assistantMsgId)
+          if (resumeAssistantId && data.action_requests) {
+            const idx = this.messages.findIndex(m => m.id === resumeAssistantId)
             if (idx !== -1) {
               this.messages[idx].pending_approval = { thread_id: data.thread_id, action_requests: data.action_requests }
               // 用后端权威 blocks 刷新（含本轮已完成工具的结果）
@@ -318,22 +328,22 @@ export default {
         const controller = new AbortController()
         this.currentAbortController = controller
         this.markStreaming(sessionId)
-        this.streamingAssistantId = assistantMsgId
+        this.streamingAssistantId = resumeAssistantId
 
         // 恢复期间保持 loading=true，使思考 spinner 与工具"执行中"状态与正常流一致
-        const _resumeIdx = this.messages.findIndex(m => m.id === assistantMsgId)
+        const _resumeIdx = this.messages.findIndex(m => m.id === resumeAssistantId)
         if (_resumeIdx !== -1) {
           setReactive(this.messages, _resumeIdx, { ...this.messages[_resumeIdx], loading: true })
         }
         // 注意：人工介入（批准/拒绝）不再作为用户侧消息展示，
         // 直接在模型侧的 execute 工具上进行了 HITL 标注。
-        await resumeStream(sessionId, threadId, decisions, onChunk, controller.signal, assistantMsgId)
+        await resumeStream(sessionId, threadId, decisions, onChunk, controller.signal, resumeAssistantId, confirmation)
 
         await this.loadSessions()
       } catch (e) {
         if (e.name === 'AbortError') return
         console.error('恢复执行失败:', e)
-        const idx = this.messages.findIndex(m => m.id === assistantMsgId)
+        const idx = this.messages.findIndex(m => m.id === resumeAssistantId)
         if (idx !== -1) {
           this.messages[idx].loading = false
           this.messages[idx].error = e.message || '恢复执行失败'
@@ -373,7 +383,7 @@ export default {
     handleWebSearchChange(enabled) {
       this.webSearchEnabled = Boolean(enabled)
     },
-    handleRetry(content) {
+    handleRetry(content, interactionMode = 'normal') {
       // 直接重新发送消息内容，不经过输入框
       console.log('[handleRetry] content type:', typeof content, 'value:', content)
 
@@ -391,7 +401,7 @@ export default {
         }
 
         // 重试不经过输入框，联网开关必须从镜像取：漏传会落回 enableWebSearch 默认值 false
-        this.handleSendMessage(content.trim(), [], null, true, this.webSearchEnabled)
+        this.handleSendMessage(content.trim(), [], null, true, this.webSearchEnabled, [], '', [], interactionMode)
       }
     },
     handleStop() {

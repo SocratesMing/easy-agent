@@ -1,6 +1,6 @@
 """Pydantic Models for API Request/Response"""
 
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, Field, StrictBool, field_validator, model_validator
 
@@ -88,6 +88,13 @@ class ChatRequest(BaseModel):
     enable_web_search: bool = Field(
         default=False, description="是否开启联网搜索（输入框地球按钮）"
     )
+    interaction_mode: Literal["normal", "plan", "brainstorm"] = Field(
+        default="normal",
+        description=(
+            "本轮交互模式：normal=普通对话，plan=规划确认，brainstorm=发散收敛。"
+            "模式说明只注入本轮模型上下文，不写入用户原话"
+        ),
+    )
     files: Optional[List[dict]] = Field(default=None, description="上传的文件列表")
     knowledge_metadata_filter: Optional[dict] = Field(
         default=None,
@@ -147,7 +154,7 @@ class ResumeRequest(BaseModel):
     decisions: List[dict[str, Any]] = Field(
         ...,
         description=(
-            "审批决策列表，每个元素 {type: approve|reject, message?: str, "
+            "审批 / 交互决策列表，每个元素 {type: approve|edit|reject|respond, message?: str, "
             "interrupt_id?: str, action_index?: int}。带 interrupt_id 时只回答该中断"
             "（取自 approval_required.action_requests[].interrupt_id），其余中断保持挂起；"
             "不带时只回答第一个中断。与待审批中断对不上时返回 400"
@@ -156,6 +163,26 @@ class ResumeRequest(BaseModel):
     message_id: Optional[str] = Field(
         default=None,
         description="被恢复（继续）的 assistant 消息ID，用于将本轮工具调用/思考增量关联到该消息",
+    )
+    confirmation_message: Optional[str] = Field(
+        default=None,
+        max_length=20000,
+        description=(
+            "规划确认等产品交互提交后，作为普通用户消息持久化并显示在会话中的文本；"
+            "为空表示普通工具审批，不新增用户消息"
+        ),
+    )
+    confirmation_message_id: Optional[str] = Field(
+        default=None,
+        max_length=80,
+        description="确认用户消息的前端稳定 ID，用于乐观消息与服务端历史对齐",
+    )
+    split_assistant_message: bool = Field(
+        default=False,
+        description=(
+            "为 true 时把恢复后的 assistant 续写保存为新的消息行，"
+            "使中断前规划内容、用户确认、后续执行保持正确时间顺序"
+        ),
     )
 
 

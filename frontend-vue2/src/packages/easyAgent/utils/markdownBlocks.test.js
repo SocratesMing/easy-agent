@@ -111,19 +111,30 @@ test('以标签开头的行转义后包进段落，多行保留换行；details 
 
 test('patchMarkdownBlocks：不加包裹层，内容没变的块保留原节点，变了的就地替换，多余的移除', () => {
   const root = new JSDOM('').window.document.createElement('div')
+  const changes = []
   let state = patchMarkdownBlocks(root, [], [
     { key: '0:a', html: '<p>一</p>\n' },
     { key: '1:b', html: '<p>二</p>\n' },
-  ])
+  ], nodes => changes.push(nodes))
   assert.equal(root.innerHTML, '<p>一</p>\n<p>二</p>\n')
+  assert.equal(changes[0].length, 2)
   const first = root.firstChild
+  changes.length = 0
   state = patchMarkdownBlocks(root, state, [
     { key: '0:a', html: '<p>一</p>\n' },
     { key: '1:c', html: '<p>二三</p>\n' },
     { key: '2:d', html: '<pre>代码</pre>' },
-  ])
+  ], nodes => changes.push(nodes))
   assert.equal(root.innerHTML, '<p>一</p>\n<p>二三</p>\n<pre>代码</pre>')
   assert.equal(root.firstChild, first) // 第一块的节点没被重建（选区不丢）
+  assert.equal(changes[0].length, 2) // 只报告新变化的两个块，不扫描未变化块
+  changes.length = 0
+  patchMarkdownBlocks(root, state, [
+    { key: '0:a', html: '<p>一</p>\n' },
+    { key: '1:c', html: '<p>二三</p>\n' },
+    { key: '2:d', html: '<pre>代码</pre>' },
+  ], nodes => changes.push(nodes))
+  assert.deepEqual(changes, [[]])
   // 同一个 key 的 HTML 变了（如流式结束后代码块补上高亮）→ 只替换这一块
   state = patchMarkdownBlocks(root, state, [
     { key: '0:a', html: '<p>一</p>\n' },

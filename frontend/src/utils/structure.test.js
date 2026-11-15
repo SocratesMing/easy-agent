@@ -43,11 +43,14 @@ const MAX_NEW_FILE_LINES = 800
  *  2026-11-13 同一批上传分多次选择时过滤重复文件（pickAcceptable 先去重再校验限额）后
  *    按实测值更新：ChatInput 4824 → 4841。
  *  2026-11-13 知识库工作台精简后按实测值下调：KnowledgeWorkbench 1922 → 1779。
+ *  2026-11-15 合并 feature/1128（远程联网开关与审批设置）后按实测值更新：
+ *    ChatInput 4841 → 4851。
  */
 const LINE_BUDGET = {
   'App.vue': 3376,
-  'features/chat/components/ChatInput.vue': 4841,
-  'features/chat/components/ChatMessage.vue': 2523,
+  'features/chat/components/ChatInput.vue': 4851,
+  // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2523 → 2499
+  'features/chat/components/ChatMessage.vue': 2499,
   'features/experts/components/ExpertListPanel.vue': 2188,
   'features/connectors/components/ConnectorListPanel.vue': 1547,
   'features/settings/components/SettingsPanel.vue': 1226,

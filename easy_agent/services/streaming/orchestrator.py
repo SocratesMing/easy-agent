@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import time
 from contextlib import aclosing
@@ -726,6 +727,80 @@ async def finalize_stream(
     yield emitter.done(session_id=session_id, **done_fields)
 
 
+def _strip_prefix(value: str, prefix: str) -> str:
+    value = value or ""
+    prefix = prefix or ""
+    return value[len(prefix):] if prefix and value.startswith(prefix) else value
+
+
+def _continuation_view(proc, *, step_boundary: int | None, response_prefix: str = "", thinking_prefix: str = ""):
+    """Return a processor-shaped view containing only content produced after resume."""
+    if step_boundary is None:
+        return proc
+    view = copy.copy(proc)
+    visible = [
+        {**block}
+        for block in (proc.blocks or [])
+        if int(block.get("step") or 0) > step_boundary
+    ]
+    step_values = [int(block.get("step") or 0) for block in visible if block.get("step")]
+    step_offset = max(0, min(step_values) - 1) if step_values else 0
+    view.blocks = []
+    for block in visible:
+        if block.get("step"):
+            block["step"] = max(1, int(block["step"]) - step_offset)
+        view.blocks.append(block)
+    view.accumulated_response = _strip_prefix(proc.accumulated_response, response_prefix)
+    view.accumulated_thinking = _strip_prefix(proc.accumulated_thinking, thinking_prefix)
+    view.current_step = max(
+        (int(block.get("step") or 0) for block in view.blocks),
+        default=0,
+    )
+    view.continuation_step_offset = step_offset
+    view.is_in_thinking = False
+    view.thinking_start_time = None
+    return view
+
+
+def _continuation_tool_records(
+    records: list, step_boundary: int | None, step_offset: int = 0
+) -> list:
+    if step_boundary is None:
+        return records
+    result = []
+    for record in records or []:
+        if (
+            len(record) <= 6
+            or int(record[6] or 0) <= step_boundary
+        ):
+            continue
+        item = list(record)
+        item[6] = max(1, int(item[6] or 0) - step_offset)
+        result.append(item)
+    return result
+
+
+def _continuation_event_allowed(event: dict, step_boundary: int | None) -> bool:
+    if step_boundary is None:
+        return True
+    step = event.get("step")
+    if step is None:
+        return True
+    return int(step or 0) > step_boundary
+
+
+class _NoopPersister:
+    """Split continuation is persisted at final/partial boundaries, never as merged blocks."""
+
+    @staticmethod
+    def due(proc) -> bool:
+        return False
+
+    @staticmethod
+    def maybe_persist(proc) -> bool:
+        return False
+
+
 @dataclass
 class StreamRun:
     """一次 chat / resume 流式运行的共享上下文（主循环、收尾与兜底所需）。
@@ -755,6 +830,17 @@ class StreamRun:
     session_logger: SessionLogger | None = None
     result_log_truncate: int = 200
     decision_status_by_id: dict | None = None
+    split_from_step: int | None = None
+    split_response_prefix: str = ""
+    split_thinking_prefix: str = ""
+
+    def continuation_view(self):
+        return _continuation_view(
+            self.proc,
+            step_boundary=self.split_from_step,
+            response_prefix=self.split_response_prefix,
+            thinking_prefix=self.split_thinking_prefix,
+        )
 
 
 async def _save_partial(
@@ -762,7 +848,6 @@ async def _save_partial(
     *,
     with_approval: bool = False,
     raise_on_error: bool = False,
-    error: str = "",
     fallback_note: str | None = None,
 ) -> None:
     """在线程里保存「进行中」的 assistant 消息（取消 / 异常兜底共用）。
@@ -770,16 +855,16 @@ async def _save_partial(
     ``fallback_note`` 由异常兜底传入兜底文案（超时 / 其他故障各一句），随消息落库
     （前端整表刷新后仍能显示）。
     """
+    proc = run.continuation_view()
     await run_blocking(
         persist_partial,
-        run.proc,
+        proc,
         db=run.db,
         session_id=run.session_id,
         sid=run.sid,
         start_time=run.start_time,
         with_approval=with_approval,
         raise_on_error=raise_on_error,
-        error=error,
         fallback_note=fallback_note,
     )
 
@@ -917,13 +1002,16 @@ async def _run_stream(run: StreamRun, stream_input) -> AsyncGenerator[str, None]
             session_logger=run.session_logger,
             context=getattr(run.agent, "session_context", None),
         ):
-            yield run.emitter.frame(ev)
+            if _continuation_event_allowed(ev, run.split_from_step):
+                yield run.emitter.frame(ev)
 
         # 确保 thinking 结束（流结束时若仍在思考）
         for _ev in proc._end_thinking():
-            yield run.emitter.frame(_ev)
+            if _continuation_event_allowed(_ev, run.split_from_step):
+                yield run.emitter.frame(_ev)
 
-        if proc.accumulated_response:
+        continuation_proc = run.continuation_view()
+        if continuation_proc.accumulated_response:
             yield run.emitter.content_end()
 
         if is_resume:
@@ -942,7 +1030,7 @@ async def _run_stream(run: StreamRun, stream_input) -> AsyncGenerator[str, None]
             interruption = await detect_hitl_interruption(
                 agent=run.agent,
                 stream_config=run.stream_config,
-                proc=proc,
+                proc=continuation_proc,
                 elapsed_time=time.time() - run.start_time,
                 thread_id=run.handle,
                 with_approval=is_resume,
@@ -962,7 +1050,7 @@ async def _run_stream(run: StreamRun, stream_input) -> AsyncGenerator[str, None]
                         SSEEvent.APPROVAL_REQUIRED,
                         thread_id=run.handle,
                         # 嵌套中断时也下发当前 blocks，前端据此刷新已完成的工具结果
-                        blocks=proc._sse_blocks(),
+                        blocks=continuation_proc._sse_blocks(),
                         action_requests=interruption.action_requests_payload,
                     )
                 else:
@@ -1002,6 +1090,12 @@ async def _run_stream(run: StreamRun, stream_input) -> AsyncGenerator[str, None]
             # blocks 同样需要 finalize：去重 + 重新应用审批决策；同步回 proc，
             # 保证 done 事件的 _sse_blocks() 用的是同一份。
             proc.blocks = finalize_blocks(proc.blocks, run.decision_status_by_id)
+            continuation_proc = run.continuation_view()
+            tool_call_records = _continuation_tool_records(
+                tool_call_records,
+                run.split_from_step,
+                getattr(continuation_proc, "continuation_step_offset", 0),
+            )
 
         async for frame in finalize_stream(
             agent=run.agent,
@@ -1009,7 +1103,7 @@ async def _run_stream(run: StreamRun, stream_input) -> AsyncGenerator[str, None]
             session_id=run.session_id,
             sid=run.sid,
             message_id=run.message_id,
-            proc=proc,
+            proc=continuation_proc,
             start_time=run.start_time,
             context_length=run.context_length,
             auto_compress_tokens=run.auto_compress_tokens,
@@ -1240,6 +1334,7 @@ async def resume_stream_generator(
     handle: str | None = None,
     *,
     outcome: StreamOutcome | None = None,
+    split_assistant: bool = False,
 ) -> AsyncGenerator[str, None]:
     """HITL 恢复流：用户审批后继续执行 Agent。
 
@@ -1255,6 +1350,7 @@ async def resume_stream_generator(
             db, agent, session_id, thread_id, decisions, username,
             session_logger, message_id, handle,
             outcome=outcome,
+            split_assistant=split_assistant,
         )) as stream:
             async for frame in stream:
                 yield frame
@@ -1272,6 +1368,7 @@ async def _resume_stream_impl(
     handle: str | None = None,
     *,
     outcome: StreamOutcome | None = None,
+    split_assistant: bool = False,
 ) -> AsyncGenerator[str, None]:
     handle = handle or thread_id
     start_time = time.time()
@@ -1296,7 +1393,8 @@ async def _resume_stream_impl(
     current_step = snapshot.current_step
     # 计时接着中断前已用的耗时往下算（等待审批的时间不计）：续跑下发和落库的
     # elapsed_time 与 step_count 一样是这条消息的累计值，落库不再丢掉中断前那段。
-    start_time -= snapshot.elapsed_time
+    if not split_assistant:
+        start_time -= snapshot.elapsed_time
     last_context_tokens = 0
     pending_tool_call_ids = snapshot.pending_tool_call_ids
     original_user_msg = ""  # 触发 HITL 的原始用户消息，供记忆生成使用
@@ -1352,8 +1450,14 @@ async def _resume_stream_impl(
         f"已有 blocks {len(blocks)} | decisions={decisions}"
     )
     if decisions:
+        decision_labels = {
+            "approve": "批准",
+            "edit": "修改后继续",
+            "reject": "拒绝",
+            "respond": "提交确认",
+        }
         decision_desc = "、".join(
-            ("批准" if (d or {}).get("type") == "approve" else "拒绝")
+            decision_labels.get((d or {}).get("type"), "拒绝")
             if isinstance(d, dict) else str(d)
             for d in decisions
         )
@@ -1406,11 +1510,15 @@ async def _resume_stream_impl(
     # {interrupt_id: value} 映射；未作答的中断保持挂起，流结束后再次下发审批。
     resume_command = Command(resume=plan.resume)
 
-    persister = IncrementalPersister(
-        db=db,
-        session_id=session_id,
-        sid=sid,
-        start_time=start_time,
+    persister = (
+        _NoopPersister()
+        if split_assistant
+        else IncrementalPersister(
+            db=db,
+            session_id=session_id,
+            sid=sid,
+            start_time=start_time,
+        )
     )
 
     run = StreamRun(
@@ -1432,6 +1540,9 @@ async def _resume_stream_impl(
         mode="resume",
         session_logger=session_logger,
         decision_status_by_id=decision_status_by_id,
+        split_from_step=snapshot.current_step if split_assistant else None,
+        split_response_prefix=snapshot.accumulated_response if split_assistant else "",
+        split_thinking_prefix=snapshot.accumulated_thinking if split_assistant else "",
     )
     # 主循环、收尾与兜底统一在 _run_stream（与 chat 共用）；这里只构造恢复输入。
     async with aclosing(_run_stream(run, resume_command)) as stream:
