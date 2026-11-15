@@ -319,6 +319,7 @@ def _persist_user_turn(
     turn_skill_dirs: list[str],
     *,
     turn_id: str = "",
+    file_references: list | None = None,
 ) -> dict:
     """落本轮用户消息（正常链路与短路拒答链路共用，保证两种情况下会话都完整）。
 
@@ -338,6 +339,8 @@ def _persist_user_turn(
         user_message["turn_id"] = turn_id
     if expert_meta:
         user_message["expert"] = expert_meta
+    if file_references:
+        user_message["file_references"] = file_references
     if request.files:
         user_message["files"] = request.files
     # 结构化技能目录名：气泡按它渲染技能标签，不再需要从消息文本里反扒 `/目录名`

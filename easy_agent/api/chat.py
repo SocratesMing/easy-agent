@@ -375,7 +375,7 @@ async def chat_stream(
 ):
     repo = _as_chat_repository(db)
     # 参数校验留在路由：prepare_turn 只处理业务准备
-    require_turn_content(request.message, request.files, request.skills)
+    require_turn_content(request.message, request.files, request.skills, request.file_references)
 
     plan = await prepare_turn(
         request=request,

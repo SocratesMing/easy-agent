@@ -122,6 +122,7 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
       enable_web_search: enableWebSearch,
       files: files,
   }
+  if (extra && extra.fileReferences && extra.fileReferences.length) payload.file_references = extra.fileReferences
   if (model) {
       payload.model = model
   }

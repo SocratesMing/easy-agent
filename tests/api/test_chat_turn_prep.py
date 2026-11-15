@@ -286,11 +286,68 @@ async def test_prepare_turn_returns_plan_and_persists_user_message(db, monkeypat
     assert session.messages[0]["turn_id"] == plan.message_id
 
 
-async def test_prepare_turn_expert_refusal_returns_refusal_plan(db, monkeypatch):
+@pytest.mark.parametrize("message", ["", "查看这些资料"])
+async def test_references_persist_without_reading_and_only_enter_the_current_turn(
+    db, tmp_path, monkeypatch, message,
+):
+    from easy_agent.services.streaming.messages import build_context_messages, turn_message_text
+
+    repo = ChatRepository(db)
+    captured = _patch_collaborators(monkeypatch, {})
+    session_id = _session(repo)
+    workspace = repo.get_owned_session_meta(session_id, "alice")["workspace_name"]
+    monkeypatch.setattr(chat_turn.Config, "get_user_workspace_dir", lambda _: tmp_path)
+    root = tmp_path / "session" / workspace
+    (root / "output").mkdir(parents=True)
+    (root / "output" / "报告.txt").write_text("SECRET_FILE_MARKER", encoding="utf-8")
+    refs = [{"path": "output/./报告.txt", "type": "file"}, {"path": "output/", "type": "directory"}]
+    normalized = [{"path": "output/报告.txt", "type": "file"}, {"path": "output", "type": "directory"}]
+    request = _turn_request(message=message, session_id=session_id, file_references=refs)
+    plan = await chat_turn.prepare_turn(
+        request=request, http_request=_http_request(), repo=repo, username="alice",
+    )
+    stored = repo.get_session(session_id).messages[0]
+    assert stored["file_references"] == normalized
+    assert stored["content"] == (message or "查看引用对象：output/报告.txt、output/")
+    assert turn_message_text(request.message) == stored["content"]
+    assert [ref.model_dump() for ref in request.file_references] == normalized
+    assert '"path": "/workspace/output/报告.txt"' in plan.parsed_content
+    assert '"type": "directory"' in plan.parsed_content
+    assert "SECRET_FILE_MARKER" not in plan.parsed_content
+    rebuilt = build_context_messages([stored], "下一轮")
+    assert rebuilt[0].content == stored["content"]
+    next_plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="下一轮", session_id=session_id),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert next_plan.parsed_content == "下一轮"
+    assert "file_references" not in repo.get_session(session_id).messages[-1]
+    assert captured["stream_kwargs"]["parsed_content"] == "下一轮"
+
+
+async def test_reference_validation_failure_never_creates_agent_or_user_message(db, monkeypatch):
+    repo = ChatRepository(db)
+    captured = _patch_collaborators(monkeypatch, {})
+    session_id = _session(repo)
+    with pytest.raises(NotFoundError):
+        await chat_turn.prepare_turn(
+            request=_turn_request(session_id=session_id, file_references=[{"path": "missing", "type": "file"}]),
+            http_request=_http_request(), repo=repo, username="alice",
+        )
+    assert not repo.get_session(session_id).messages
+    assert "agent_kwargs" not in captured
+
+
+async def test_prepare_turn_expert_refusal_returns_refusal_plan(db, tmp_path, monkeypatch):
     """专家相关性预检拒答：返回 RefusalPlan，不建 Agent、不登记 run。"""
     repo = ChatRepository(db)
     captured = {}
     _patch_collaborators(monkeypatch, captured)
+    session_id = _session(repo)
+    workspace = repo.get_owned_session_meta(session_id, "alice")["workspace_name"]
+    monkeypatch.setattr(chat_turn.Config, "get_user_workspace_dir", lambda _: tmp_path)
+    (tmp_path / "session" / workspace / "output").mkdir(parents=True)
+    references = [{"path": "output", "type": "directory"}]
     monkeypatch.setattr(
         expert_runtime,
         "load_expert_prompt",
@@ -308,7 +365,10 @@ async def test_prepare_turn_expert_refusal_returns_refusal_plan(db, monkeypatch)
     monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", must_not_build)
 
     plan = await chat_turn.prepare_turn(
-        request=_turn_request(message="今天天气如何", expert_agent_id="preset_x"),
+        request=_turn_request(
+            message="今天天气如何", expert_agent_id="preset_x", session_id=session_id,
+            file_references=references,
+        ),
         http_request=_http_request(),
         repo=repo,
         username="alice",
@@ -321,6 +381,7 @@ async def test_prepare_turn_expert_refusal_returns_refusal_plan(db, monkeypatch)
     # 没有进入 Agent 生成器；依赖技能补装在事件循环外执行（缓存驱逐才回到事件循环）
     assert "stream_kwargs" not in captured
     assert captured["provision_kwargs"]["invalidate_cache"] is False
+    assert repo.get_session(session_id).messages[0]["file_references"] == references
 
 
 async def test_expert_precheck_uses_verified_real_user_id(db, monkeypatch):

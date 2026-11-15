@@ -26,6 +26,10 @@
         @retry="retryUpload"
       />
       
+      <div v-if="fileReferences.length" class="reference-tags">
+        <FileReferenceTag v-for="ref in fileReferences" :key="ref.path" :item="ref" removable @remove="removeReference(ref)" />
+      </div>
+      <FileReferencePicker ref="referencePicker" :open="referenceOpen" :session-id="sessionId || ''" :load-tree="getWorkspaceTree" :query="referenceSearch" :style="skillPickerStyle" @navigate="resetReferenceQuery" @select="selectReference" @close="closeReference" />
       <div class="input-row">
         <div class="input-field">
           <div
@@ -55,7 +59,7 @@
             ref="textareaRef"
             v-model="message"
             spellcheck="false"
-            v-tip.hover="'输入消息，Enter 发送 · Shift+Enter 换行 · 输入 / 唤起技能选择'"
+            v-tip.hover="'输入消息，Enter 发送 · Shift+Enter 换行 · 输入 / 选择技能 · 输入 @ 引用会话文件'"
             @keydown="onKeydown"
             @beforeinput="onBeforeInput"
             @paste="invalidateEnhancement"
@@ -67,7 +71,7 @@
             @keyup="updateCaretLine"
             @click="updateCaretLine"
             @scroll="updateCaretLine"
-            placeholder=""
+            placeholder="今天帮你做些什么？@ 引用会话文件，/ 调用技能与指令"
             :disabled="disabled"
             rows="1"
           ></textarea>
@@ -660,7 +664,10 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { commandItems } from '../../../shared/compaction/state.js'
-import { uploadFile, deleteFile } from '../../../api/files.js'
+import FileReferencePicker from './FileReferencePicker.vue'
+import FileReferenceTag from './FileReferenceTag.vue'
+import { restoreReferenceDraft } from '../../../shared/fileReferences.js'
+import { uploadFile, deleteFile, getWorkspaceTree } from '../../../api/files.js'
 import { getKnowledgeStatus, getWebSearchStatus, getUploadLimits } from '../../../api/settings.js'
 import { getUserSkills, importSkill } from '../../../api/skills.js'
 import { iconCategoryFor } from '../../../utils/skillCategories.js'
@@ -692,6 +699,7 @@ import { formatSize } from '../../../utils/format.js'
 import SkillPicker from './SkillPicker.vue'
 import UploadTray from './UploadTray.vue'
 import { useContextDuration, useContextRing } from '../composables/useContextUsage.js'
+import { useFileReferences } from '../composables/useFileReferences.js'
 import { usePromptEnhancement } from '../composables/usePromptEnhancement.js'
 import ModelPicker from './ModelPicker.vue'
 import PromptEnhancementActions from './PromptEnhancementActions.vue'
@@ -770,6 +778,10 @@ const props = defineProps({
 const emit = defineEmits(['compact-context', 'send', 'stop', 'createSession', 'update:selectedModel', 'typing', 'clearExpert', 'selectExpert', 'prefillApplied', 'openPanel', 'openKnowledge', 'webSearchChange'])
 
 const message = ref('')
+const { fileReferences, referenceOpen, referenceSearch, referencePicker, updateReference,
+  closeReference, resetReferenceQuery, selectReference, removeReference, restoreInitialReferences } = useFileReferences({
+  props, message, replaceTextWithCaret, closeSkillPicker, updateSkillPickerPosition,
+})
 const textareaRef = ref(null)
 const uploadedFiles = ref([])
 // 新对话里勾选的知识库：只暂存在前端，首条消息发送时随请求提交，
@@ -1011,7 +1023,7 @@ const pendingExpertEditId = ref('')
 
 const { enhancement, canEnhance, invalidateEnhancement, enhancePrompt,
   enhancementCompositionStart, enhancementCompositionEnd } = usePromptEnhancement({
-  props, message, tokenMap, knownSkills, preselectedSkillDirs, pendingExpertEditId,
+  props, message, fileReferences, tokenMap, knownSkills, preselectedSkillDirs, pendingExpertEditId,
   preparingFiles, textareaRef, autoResize, syncMirror,
 })
 
@@ -1297,6 +1309,7 @@ function onBeforeInput(event) {
 /** 键盘：面板打开时接管 ↑↓ / Enter / Esc，其余情况保持原有 Enter 发送 */
 function onKeydown(event) {
   if (event.isComposing || event.keyCode === 229) return
+  if (referenceOpen.value && referencePicker.value?.key(event)) return
   if (handleTokenDeleteKey(event)) return
 
   if (skillPickerOpen.value) {
@@ -1341,6 +1354,10 @@ function onKeydown(event) {
 
 /** 点击面板外的区域时收起技能面板 */
 function closeSkillPickerOnClick(event) {
+  if (referenceOpen.value) {
+    if (referencePicker.value?.$el.contains(event.target)) return
+    if (event.target !== textareaRef.value) closeReference()
+  }
   if (!skillPickerOpen.value) return
   const picker = skillPickerRef.value
   if (picker && picker.contains(event.target)) return
@@ -1349,7 +1366,7 @@ function closeSkillPickerOnClick(event) {
 
 /** 窗口尺寸变化时重新定位（移动端键盘弹出会触发 resize） */
 function handleViewportChange() {
-  if (skillPickerOpen.value) updateSkillPickerPosition()
+  if (skillPickerOpen.value || referenceOpen.value) updateSkillPickerPosition()
 }
 
 // ========== 联网搜索 ==========
@@ -2287,6 +2304,7 @@ let selfCreatedSession = false
 
 watch(() => props.sessionId, (newVal, oldVal) => {
   if (newVal === oldVal) return
+  restoreInitialReferences(newVal, oldVal); closeReference()
   // 会话已切换/已创建：下一次发送需要按新的 sessionId 重新判断
   pendingSessionPromise = null
   // 本组件自己发起的建会话（上传文件 / 切换连接器开关）仍属「输入阶段的连续操作」，
@@ -2326,6 +2344,7 @@ async function handleSkillImportFile(event) {
 const canSend = computed(() => {
   return (
     message.value.trim() ||
+    fileReferences.value.length > 0 ||
     uploadedFiles.value.length > 0 ||
     selectedSkillDirs.value.length > 0
   )
@@ -2636,10 +2655,8 @@ async function send() {
     // 新对话的知识选择只存在本地：先取快照，再上传附件（上传会先创建会话）
     const knowledgeBaseIds = props.sessionId ? [] : [...pendingKnowledgeBaseIds.value]
 
-    // 新对话的附件此前未上传，发送时才落盘
     await preparePendingFiles()
 
-    // 等待所有文件上传完成
     const uploadingFiles = uploadedFiles.value.filter(f => f.uploadStatus === 'uploading')
     if (uploadingFiles.length > 0) {
       console.log('文件正在上传中，请稍候...')
@@ -2664,7 +2681,7 @@ async function send() {
       }))
 
     const payload = buildPayload()
-    if (!payload && !filesToSend.length && !selectedSkillDirs.value.length) {
+    if (!payload && !filesToSend.length && !selectedSkillDirs.value.length && !fileReferences.value.length) {
       // 附件全部失败且没有正文/技能：保留文件与错误提示，不发空请求
       return
     }
@@ -2692,10 +2709,13 @@ async function send() {
       webSearchEnabled.value,
       turnSkills,
       expertEditId,
-      knowledgeBaseIds
+      knowledgeBaseIds,
+      [...fileReferences.value]
     )
 
     message.value = ''
+    fileReferences.value = []
+    closeReference()
     uploadedFiles.value = []
     // 新对话选择已随消息提交；已有会话改选由选择器单独落库，这里清掉本地暂存
     if (props.sessionId) pendingKnowledgeBaseIds.value = []
@@ -2748,17 +2768,10 @@ function onInput(event) {
   autoResize()
   updateCaretLine()
   updateSkillPicker()
+  updateReference(ta)
   syncMirror()
   emit('typing')
 }
-
-watch(message, (val) => {
-  try {
-    sessionStorage.setItem(props.draftKey, val)
-  } catch (e) {
-    // 隐私模式等场景下 sessionStorage 可能不可用，忽略即可
-  }
-})
 
 // 程序化赋值（恢复草稿、切会话、发送后清空）不触发 input 事件，镜像层在这里补同步
 watch(message, () => nextTick(syncMirror))
@@ -2774,7 +2787,9 @@ onMounted(() => {
   try {
     const draft = sessionStorage.getItem(props.draftKey)
     if (draft) {
-      message.value = draft
+      const restored = restoreReferenceDraft(draft, props.sessionId)
+      message.value = restored.message
+      fileReferences.value = restored.fileReferences
       nextTick(() => autoResize())
     }
   } catch (e) {
@@ -4796,6 +4811,7 @@ html[data-theme="dark"] .plus-list-tag.custom {
   font-size: 12px;
   color: var(--text-secondary);
 }
+.reference-tags { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 16px 0; }
 </style>
 
 <style scoped>

@@ -1,6 +1,6 @@
 """Pydantic Models for API Request/Response"""
 
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Literal
 
 from pydantic import BaseModel, Field, StrictBool, field_validator, model_validator
 
@@ -76,6 +76,20 @@ class MessageModel(BaseModel):
     tool_calls: Optional[List[dict]] = Field(default=None, description="工具调用列表")
 
 
+class FileReference(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    path: str = Field(..., min_length=1)
+    type: Literal["file", "directory"]
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        if not value.strip() or "\x00" in value:
+            raise ValueError("路径不能为空")
+        return value
+
+
 class ChatRequest(BaseModel):
     message: str = Field(
         ...,
@@ -89,6 +103,7 @@ class ChatRequest(BaseModel):
         default=False, description="是否开启联网搜索（输入框地球按钮）"
     )
     files: Optional[List[dict]] = Field(default=None, description="上传的文件列表")
+    file_references: List[FileReference] = Field(default_factory=list)
     knowledge_metadata_filter: Optional[dict] = Field(
         default=None,
         description=(

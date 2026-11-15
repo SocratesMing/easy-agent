@@ -325,8 +325,8 @@ function goToNextUserMessage() {
   }
 }
 
-function handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = []) {
-  emit('sendMessage', message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds)
+function handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = [], fileReferences = []) {
+  emit('sendMessage', message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds, fileReferences)
 }
 
 function handleRemoveFile(file, messageIndex) {
@@ -396,10 +396,10 @@ function onVisualPrompt(event) {
   if (text) composerRef.value?.setMessage(text)
 }
 
-function onSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId = '', knowledgeBaseIds = []) {
+function onSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId = '', knowledgeBaseIds = [], fileReferences = []) {
   composerMode.value = 'bottom'
   isAtBottom.value = true
-  handleSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds)
+  handleSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds, fileReferences)
 }
 
 // 是否贴底：用户位于滚动容器底部时为 true，向上滚动查看历史时为 false。

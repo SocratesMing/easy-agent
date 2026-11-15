@@ -221,13 +221,15 @@ def build_workspace_tree(workspace_dir: Path, path: str = "") -> list:
 
 def resolve_workspace_file(workspace_dir: Path, file_path: str) -> Path:
     """解析工作区文件绝对路径，并防止路径穿越攻击。"""
-    full_path = (workspace_dir / file_path).resolve()
-    base = workspace_dir.resolve()
-    if full_path != base and base not in full_path.parents:
-        raise HTTPException(status_code=400, detail="非法的文件路径")
-    if not full_path.exists() or not full_path.is_file():
-        raise HTTPException(status_code=404, detail="文件不存在")
-    return full_path
+    from easy_agent.models.exceptions import BadRequestError, NotFoundError
+    from easy_agent.services.sessions.workspace import resolve_workspace_path
+
+    try:
+        return resolve_workspace_path(workspace_dir, file_path)
+    except BadRequestError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.message) from exc
 
 
 def _resolve_download_file(upload_dir: Path, workspace_dir: Path, file_path: str) -> Path:

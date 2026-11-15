@@ -420,8 +420,8 @@ export default {
         })
       }
     },
-    handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = []) {
-      this.$emit('send-message', message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds)
+    handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = [], fileReferences = []) {
+      this.$emit('send-message', message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds, fileReferences)
     },
     /**
      * 该条 assistant 消息对应哪一轮的专家（回答面板左上角的「头像 + 名称」）。
@@ -475,10 +475,10 @@ export default {
       const composer = this.$refs.composerRef
       if (composer) composer.setMessage(question)
     },
-    onSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId = '', knowledgeBaseIds = []) {
+    onSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId = '', knowledgeBaseIds = [], fileReferences = []) {
       this.composerMode = 'bottom'
       this.isAtBottom = true
-      this.handleSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds)
+      this.handleSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds, fileReferences)
     },
     handleScroll() {
       const el = this.$refs.messagesRef

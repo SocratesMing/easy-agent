@@ -1,3 +1,4 @@
+import { referenceMessage } from '../../../shared/fileReferences.js'
 import { connectSessionView } from "../../../shared/sessionManagement/viewLifecycle.js";
 import {
   loadDailySessions,
@@ -1164,6 +1165,7 @@ export default {
       skills = [],
       expertEditId = "",
       knowledgeBaseIds = [],
+      fileReferences = [],
     ) {
       const userMsgId = `user-${Date.now()}`;
       const preStreamUsage = { ...this.sessionUsage };
@@ -1174,13 +1176,14 @@ export default {
       // 用于用户中途切换会话时，把用量更新写入所属会话的缓存而非当前显示
       let streamSessionId = this.currentSessionId;
 
-      const contentWithFiles = message.trim(); // 只去首尾空白：换行与缩进是用户原话，气泡按纯文本原样展示
+      const contentWithFiles = referenceMessage(message, fileReferences); // 保留用户换行；仅引用时与服务端占位正文一致
       const pageContext = this.getPageContextForSend() || null;
 
       const userMessage = {
         id: userMsgId,
         role: "user",
         content: contentWithFiles,
+        file_references: fileReferences,
         page_context: pageContext,
         files: files.map(f => ({
           filename: f.filename,
@@ -1336,9 +1339,7 @@ export default {
             ? this.selectedExpert.export_agent_id
             : "",
           // 新对话首条消息携带的知识库范围：后端建会话后先落 scope 再检索
-          knowledgeBaseIds && knowledgeBaseIds.length
-            ? { knowledgeBaseIds }
-            : null,
+          { knowledgeBaseIds, fileReferences },
         );
 
         await this.refreshSessionFiles(null, 500);
@@ -1625,15 +1626,11 @@ export default {
       this.webSearchEnabled = Boolean(enabled);
     },
     handleRetry(content) {
+      const fileReferences = typeof content === 'object' && content ? (content.fileReferences || []) : []
+      content = typeof content === 'object' && content ? content.content : content
       // 直接重新发送消息内容，不经过输入框
-      console.log(
-        "[handleRetry] content type:",
-        typeof content,
-        "value:",
-        content,
-      );
 
-      if (content && typeof content === "string" && content.trim()) {
+      if (typeof content === "string" && (content.trim() || fileReferences.length)) {
         // 检查是否正在流式输出
         if (this.isStreaming) {
           this.error = "请等待当前消息完成";
@@ -1653,6 +1650,7 @@ export default {
           null,
           true,
           this.webSearchEnabled,
+          [], "", [], fileReferences,
         );
       }
     },

@@ -133,6 +133,7 @@
 </template>
 
 <script setup>
+import { referenceMessage } from './shared/fileReferences.js'
 import { API_BASE_URL, APP_WELCOME_TITLE, appRuntime } from './config.js'
 import { readStandaloneSessionLink } from './features/chat/services/sessionNavigation.js'
 import { loadDailySessions, sessionGuard, isSessionDeleted, isStaleSessionError, initialSessionId as resolveInitialSessionId } from './shared/sessionManagement/state.js'
@@ -1582,7 +1583,7 @@ function parseMCPResult(rawResult) {
   return rawResult
 }
 
-async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = []) {
+async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = [], fileReferences = []) {
   const userMsgId = `user-${Date.now()}`
   const preStreamUsage = { ...sessionUsage.value }
   // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1592,12 +1593,13 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   // 用于用户中途切换会话时，把用量更新写入所属会话的缓存而非当前显示
   let streamSessionId = currentSessionId.value
 
-  let contentWithFiles = message.trim() // 只去首尾空白：换行与缩进是用户原话，气泡按纯文本原样展示
+  let contentWithFiles = referenceMessage(message, fileReferences) // 保留用户换行；仅引用时与服务端占位正文一致
 
   const userMessage = {
     id: userMsgId,
     role: 'user',
     content: contentWithFiles,
+    file_references: fileReferences,
     files: files.map(f => ({
       filename: f.filename,
       size: f.size,
@@ -1724,7 +1726,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         ? selectedExpert.value.export_agent_id
         : '',
       // 新对话首条消息携带的知识库范围：后端建会话后先落 scope 再检索
-      knowledgeBaseIds && knowledgeBaseIds.length ? { knowledgeBaseIds } : null
+      { knowledgeBaseIds, fileReferences }
     )
 
     await expandWorkspaceAfterSessionCompletion(streamSessionId)
@@ -1948,10 +1950,9 @@ async function handleToolApproval(decision, target) {
 }
 
 function handleRetry(content) {
-  // 直接重新发送消息内容，不经过输入框
-  console.log('[handleRetry] content type:', typeof content, 'value:', content)
-  
-  if (content && typeof content === 'string' && content.trim()) {
+  const fileReferences = typeof content === 'object' && content ? (content.fileReferences || []) : []
+  content = typeof content === 'object' && content ? content.content : content
+  if (typeof content === 'string' && (content.trim() || fileReferences.length)) {
     // 检查是否正在流式输出
     if (isStreaming.value) {
       error.value = '请等待当前消息完成'
@@ -1967,7 +1968,7 @@ function handleRetry(content) {
     // 重试不经过输入框，联网开关必须从镜像取：漏传会落回 enableWebSearch 默认值 false，
     // 表现为「小地球亮着、后端收到 web_search: False」，模型据关闭态纪律回答未联网。
     // 第 4 位是 enableDeepThink，第 5 位才是 enableWebSearch，别错位。
-    handleSendMessage(content.trim(), [], null, true, webSearchEnabled.value)
+    handleSendMessage(content.trim(), [], null, true, webSearchEnabled.value, [], '', [], fileReferences)
   }
 }
 

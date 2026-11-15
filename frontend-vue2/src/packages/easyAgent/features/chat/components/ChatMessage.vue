@@ -1,6 +1,9 @@
 <template>
   <div class="message" :class="[message.role]">
     <div class="message-content" @click="handleContentClick">
+      <div v-if="message.role === 'user' && message.file_references && message.file_references.length" class="reference-history">
+        <FileReferenceTag v-for="ref in message.file_references" :key="ref.path" :item="ref" />
+      </div>
       <!-- AI 侧边栏发起的消息：展示随消息附带的页面上下文 -->
       <div
         v-if="message.role === 'user' && message.page_context"
@@ -253,6 +256,7 @@ import {
 } from '../../../markdownSetup.js'
 import MarkdownBody from './MarkdownBody.vue'
 import UserMessageText from './UserMessageText.vue'
+import FileReferenceTag from './FileReferenceTag.vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
 import { relatedEvidence, inlineCitationMap } from '../../../shared/markdown/citations.js'
 import KnowledgeEvidence from '../../knowledge/KnowledgeEvidence.vue'
@@ -295,7 +299,7 @@ function isProcessType(b) {
 installCodeCopyHandler()
 
 export default {
-  components: { FileIcon, ToolCallCard, KnowledgeEvidence, SkillIcon, MarkdownBody, UserMessageText, MessageError },
+  components: { FileReferenceTag, FileIcon, ToolCallCard, KnowledgeEvidence, SkillIcon, MarkdownBody, UserMessageText, MessageError },
   props: {
     citationPresentation: { type: String, default: 'inline' },
     message: {
@@ -797,9 +801,9 @@ export default {
       }
     },
     retryMessage() {
-      // 触发重试事件，传递消息内容（确保是纯字符串）
+      // 重试沿用既有入口，同时保留本条消息的引用
       const content = String(this.message.content || '')
-      this.$emit('retry', content)
+      this.$emit('retry', { content, fileReferences: this.message.file_references || [] })
     },
     removeFile(index) {
       if (this.message.files && this.message.files[index]) {
@@ -2630,6 +2634,7 @@ export default {
   background: #94a3b8;
 }
 
+.reference-history { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 </style>
 
 <style scoped src="./citationNumbers.css"></style>

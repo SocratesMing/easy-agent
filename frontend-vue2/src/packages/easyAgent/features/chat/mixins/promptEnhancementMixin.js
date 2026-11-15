@@ -4,6 +4,7 @@ import { onRuntimeEvent } from '../../../runtime/events.js'
 import { chatStore, chatBus } from '../store/chatStore.js'
 import * as tokens from '../../../utils/skillPillTokens.js'
 import { createEnhancementController, enhancementSnapshot } from '../../../shared/promptEnhancement/controller.js'
+import { referenceDraft, restoreReferenceDraft } from '../../../shared/fileReferences.js'
 
 export default {
   data() {
@@ -25,7 +26,7 @@ export default {
         blocked: !!this.enhancementBlocked,
         scope: [this.sessionId, this.draftKey, this.activeExpert, this.expertPrompt,
           this.pendingExpertEditId, this.preselectedSkillDirs, this.knownSkills,
-          chatStore.username, getStoredUsername()],
+          this.fileReferences, chatStore.username, getStoredUsername()],
       }),
       write: text => {
         this.message = text
@@ -39,7 +40,7 @@ export default {
     // Vue2's default watcher batches edits; sync observes edit-then-revert too.
     this._enhancementUnwatch = [
       'message', 'sessionId', 'draftKey', 'activeExpert', 'expertPrompt',
-      'pendingExpertEditId', 'preselectedSkillDirs', 'knownSkills', 'enhancementBlocked',
+      'pendingExpertEditId', 'preselectedSkillDirs', 'knownSkills', 'fileReferences', 'enhancementBlocked',
     ].map(key => this.$watch(key, this.invalidateEnhancement, { deep: true, sync: true }))
     this._enhancementUnwatch.push(this.$watch(() => chatStore.username, this.invalidateEnhancement, { sync: true }))
     this._enhancementStream = ({ sessionId }) => {
@@ -50,8 +51,10 @@ export default {
     window.addEventListener('storage', this.invalidateEnhancement)
     this._enhancementUnwatch.push(this.$watch('draftKey', (key, old) => {
       try {
-        sessionStorage.setItem(old, this.message)
-        this.message = sessionStorage.getItem(key) || ''
+        sessionStorage.setItem(old, referenceDraft(this.message, this.fileReferences, this.sessionId, sessionStorage.getItem(this.draftKey)))
+        const restored = restoreReferenceDraft(sessionStorage.getItem(key), this.sessionId)
+        this.message = restored.message
+        this.fileReferences = restored.fileReferences
       } catch (_) { this.message = '' }
       this.$nextTick(() => { this.autoResize(); this.syncMirror() })
     }, { sync: true }))
