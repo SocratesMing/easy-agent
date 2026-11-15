@@ -8,12 +8,13 @@
 <script>
 import { linkKnowledgeCitations } from '../../../shared/markdown/citations.js'
 import { patchMarkdownBlocks } from '../../../shared/markdown/blockDom.js'
+import { createRenderScheduler } from '../../../shared/markdown/renderScheduler.js'
 import { renderMarkdownBlocks } from '../../../shared/markdown/render.js'
 import { VISUAL_FRAME_PATH } from '../../../shared/visual/fence.js'
 import { mountVisuals } from '../../../shared/visual/mount.js'
 import { resolveUrl } from '../../../utils/request.js'
 
-// 流式期间每帧最多一次中间帧；分片停止 150ms 后按原文做一次最终渲染
+// 流式期间最多每 80ms 出一次中间帧；分片停止 150ms 后按原文做一次最终渲染
 const FRAME_MS = 80
 const SETTLE_MS = 150
 
@@ -38,51 +39,51 @@ export default {
         this.queue(value)
       },
     },
-    compactCitations() { if (this.md.started) this.render(false) },
+    compactCitations() {
+      if (!this.md.started) return
+      if (this.md.scheduler) this.md.scheduler.cancel()
+      this.render(false)
+    },
     citeMap: {
       deep: true,
       handler() {
-        if (this.md.started) this.render(false)
+        if (!this.md.started) return
+        if (this.md.scheduler) this.md.scheduler.cancel()
+        this.render(false)
       },
     },
   },
   beforeCreate() {
     // 非响应式状态：rendered 里存的是 DOM 节点，放进 data 会被 Vue 2 深度观测
-    this.md = { pending: '', blocks: [], rendered: [], frameTimer: null, frameId: null, settleTimer: null, started: false }
+    this.md = { pending: '', blocks: [], rendered: [], started: false, changedNodes: [], scheduler: null }
+  },
+  created() {
+    this.md.scheduler = createRenderScheduler({
+      frameMs: FRAME_MS,
+      settleMs: SETTLE_MS,
+      render: () => this.render(true),
+      settle: () => this.render(false),
+    })
   },
   mounted() {
     // 首次渲染发生在挂载前（immediate watcher），挂载后把结果写进 DOM
     this.flush()
   },
   beforeDestroy() {
-    this.clearTimers()
+    if (this.md.scheduler) this.md.scheduler.dispose()
   },
   methods: {
-    clearTimers() {
-      const md = this.md
-      if (md.frameTimer) clearTimeout(md.frameTimer)
-      if (md.settleTimer) clearTimeout(md.settleTimer)
-      if (md.frameId != null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(md.frameId)
-      md.frameTimer = null
-      md.frameId = null
-      md.settleTimer = null
-    },
     queue(value) {
       const md = this.md
       md.pending = value || ''
-      this.clearTimers()
       // 首次渲染（历史消息、静态内容）直接出最终态，不走流式中间帧
       if (!md.started) {
         md.started = true
+        if (md.scheduler) md.scheduler.cancel()
         this.render(false)
         return
       }
-      if (typeof requestAnimationFrame === 'function') {
-        md.frameId = requestAnimationFrame(() => this.render(true))
-      } else {
-        md.frameTimer = setTimeout(() => this.render(true), FRAME_MS)
-      }
-      md.settleTimer = setTimeout(() => this.render(false), SETTLE_MS)
+      if (md.scheduler) md.scheduler.queue()
     },
     render(partial) {
       this.md.blocks = renderMarkdownBlocks(linkKnowledgeCitations(this.md.pending, this.citeMap, this.compactCitations), { partial })
@@ -90,9 +91,15 @@ export default {
     },
     flush() {
       if (!this.$el || this.$el.nodeType !== 1) return
-      this.md.rendered = patchMarkdownBlocks(this.$el, this.md.rendered, this.md.blocks)
+      this.md.changedNodes = []
+      this.md.rendered = patchMarkdownBlocks(this.$el, this.md.rendered, this.md.blocks, nodes => {
+        this.md.changedNodes.push(...nodes)
+      })
       // ```echarts / ```mermaid / ```widget 代码块挂成沙箱 iframe 卡片（幂等：已挂载、仍在流式中的跳过）
-      mountVisuals(this.$el, { frameUrl: resolveUrl(VISUAL_FRAME_PATH) })
+      mountVisuals(this.$el, {
+        frameUrl: resolveUrl(VISUAL_FRAME_PATH),
+        targets: this.md.changedNodes,
+      })
     },
   },
 }
