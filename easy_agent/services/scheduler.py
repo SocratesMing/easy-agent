@@ -563,7 +563,11 @@ async def _invoke_task_agent(
     from langchain_core.messages import HumanMessage
 
     execution.agent = await get_or_create_agent_for_session(
-        execution.session_id, task.username, execution.workspace_name, enable_hitl=False
+        execution.session_id,
+        task.username,
+        execution.workspace_name,
+        enable_hitl=False,
+        enable_user_interaction=False,
     )
     # 调用 agent 前再次确认任务未被暂停/删除（初始守卫之后、agent 调用之前仍可能被暂停）
     pre = await run_blocking(scheduled_repo.get_scheduled_task, task.task_id)

@@ -9,7 +9,7 @@ const { defineConfig } = require("@vue/cli-service");
 // 临时连别的后端（如本机 http://localhost:8080）时设 AGENT_PROXY_TARGET 覆盖，不必改这张表；
 // 它只在 dev server 进程里读取，不会进入构建产物。
 const PROXY_TARGETS = {
-  dev: "http://183.196.130.56:22333",
+  dev: "http://127.0.0.1:8080",
   test: "http://192.168.1.100:8007",
   prod: "http://192.168.1.200:8000",
   win: "http://127.0.0.1:8080",

@@ -42,6 +42,12 @@
           <input v-model="departmentName" placeholder="部门名称" aria-label="按部门名称筛选" />
         </label>
         <span class="pm-toolbar-spacer"></span>
+        <button class="pm-btn pm-quiet" type="button" :disabled="syncing" @click="syncFromSource">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" />
+          </svg>
+          {{ syncing ? '更新中…' : '更新人员信息' }}
+        </button>
         <button class="pm-btn pm-quiet" type="button" :disabled="downloadingTemplate" @click="downloadTemplate">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" />
@@ -304,24 +310,26 @@
           <div class="pm-import-body">
             <section class="pm-format-card">
               <header>
-                <div><strong>Excel 格式说明</strong><small>首行必须使用下列中文列名</small></div>
+                <div><strong>Excel 格式说明</strong><small>首行必须与模板列名完全一致</small></div>
                 <button class="pm-text-btn" type="button" :disabled="downloadingTemplate" @click="downloadTemplate">{{ downloadingTemplate ? '下载中…' : '下载标准模板' }}</button>
               </header>
               <div class="pm-column-group">
                 <b>必填列</b>
-                <span>账号</span><span>姓名</span><span>部门编号</span><span>部门名称</span>
+                <span>姓名</span><span>sso账号</span><span>账号状态</span><span>部门编号</span><span>部门名称</span><span>处室</span><span>团队</span>
               </div>
               <div class="pm-column-group optional">
                 <b>选填列</b>
-                <span>员工编号</span><span>邮箱</span><span>岗位</span><span>手机号</span><span>状态</span>
+                <span>员工编号</span><span>岗位</span><span>手机号</span><span>邮箱</span>
               </div>
               <ul id="personnel-import-format-help">
-                <li>状态可填“启用 / 停用”或“active / disabled”，不填默认启用。</li>
+                <li>表头带 <code>*</code> 的列与人员管理界面必填项一致；部门编号留空时自动取部门名称。</li>
+                <li>账号状态可填“启用 / 停用”或“active / disabled”，不填默认启用。</li>
                 <li>Excel 不包含密码列；新增账号的默认密码为 <code>123456</code>。</li>
                 <li>单个文件不超过 5 MB，最多 5000 个数据行。</li>
                 <li>只允许上方列名；不能添加额外列，列名也不能重复。</li>
                 <li>同一文件内账号不能重复；<code>admin</code> 账号不可通过导入覆盖。</li>
                 <li>工作簿不能包含公式、隐藏行、隐藏列或隐藏工作表。</li>
+                <li>模板中的「（示例）」行会被自动跳过；旧版列式模板（账号、姓名、部门编号、部门名称等）仍可导入。</li>
               </ul>
             </section>
 
@@ -371,6 +379,7 @@ import {
   getPersonnelImportTemplate,
   importPersonnelUsers,
   listPersonnelUsers,
+  syncPersonnelUsers,
   updatePersonnelUser,
 } from './api.js'
 import {
@@ -379,6 +388,7 @@ import {
   formatPersonnelValidationDetail,
   normalizePersonnelPage,
   summarizeImportResult,
+  summarizeSyncResult,
   validatePersonnelForm,
 } from './model.js'
 import { grantDepartmentManager, listDepartmentManagers, revokeDepartmentManager } from '../knowledge/api.js'
@@ -406,6 +416,7 @@ export default {
     const deptManagerMap = ref(new Map())  // Map<userId, Set<departmentId>> 谁在哪些部门是知识库管理员
     const togglingDeptManagerUserId = ref('')  // 当前正在 toggle 的 user_id
     const downloadingTemplate = ref(false)
+    const syncing = ref(false)
     const showEditor = ref(false)
     const editingUserId = ref('')
     const form = reactive(emptyPersonnelForm())
@@ -718,6 +729,22 @@ export default {
       }
     }
 
+    async function syncFromSource() {
+      if (syncing.value) return
+      if (!window.confirm('将从配置的人员接口拉取数据并按账号覆盖更新现有人员信息，确认继续？')) return
+      syncing.value = true
+      try {
+        const result = await syncPersonnelUsers()
+        notify(summarizeSyncResult(result))
+        page.value = 1
+        await loadUsers()
+      } catch (error) {
+        notify(resolveError(error, '更新人员信息失败'), 'error')
+      } finally {
+        syncing.value = false
+      }
+    }
+
     async function downloadTemplate() {
       if (downloadingTemplate.value) return
       downloadingTemplate.value = true
@@ -816,6 +843,8 @@ export default {
       showImport,
       statusLabel,
       submitImport,
+      syncing,
+      syncFromSource,
       togglingDeptManagerUserId,
       toggleDeptManager,
       canToggleDeptManager,

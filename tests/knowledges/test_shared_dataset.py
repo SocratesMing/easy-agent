@@ -783,7 +783,7 @@ async def test_refresh_shared_base_polls_only_active_documents(db, tmp_path):
     assert len(ragflow.document_queries) == 1
 
 
-async def test_refresh_base_with_own_dataset_keeps_full_list_behavior(db, tmp_path):
+async def test_refresh_base_with_own_dataset_queries_refreshable_documents(db, tmp_path):
     ragflow = _FakeRagflow()
     service = _make_service(db, ragflow, tmp_path)
     base = _create_base_row(db, space_type="personal", owner_user_id="u-1")
@@ -795,13 +795,21 @@ async def test_refresh_base_with_own_dataset_keeps_full_list_behavior(db, tmp_pa
         db, str(base["id"]), name="x.txt", status="ready",
         remote_document_id="rd-x",
     )
+    busy = _add_document(
+        db, str(base["id"]), name="busy.txt", status="processing",
+        remote_document_id="rd-busy",
+    )
+    ragflow.documents_by_id["rd-busy"] = {
+        "id": "rd-busy", "run": "DONE", "progress": 1.0,
+    }
 
     await service.refresh_base_documents(base)
 
-    # 存量库走全量列表（page/page_size），不做逐文档查询
-    assert len(ragflow.document_queries) == 1
-    assert ragflow.document_queries[0].get("document_id") is None
-    assert ragflow.document_queries[0].get("page") == 1
+    # 自有数据集同样逐篇查询 pending/processing 文档，不受列表分页上限 100 影响
+    queried = [query.get("document_id") for query in ragflow.document_queries]
+    assert queried == ["rd-busy"]
+    assert ragflow.document_queries[0]["dataset_id"] == "ds-own"
+    assert KnowledgeRepository(db).get_document(busy["id"])["status"] == "ready"
 
 
 async def test_list_documents_does_not_wait_for_slow_upstream_refresh(db, tmp_path):

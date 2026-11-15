@@ -338,6 +338,77 @@ async def test_reference_validation_failure_never_creates_agent_or_user_message(
     assert "agent_kwargs" not in captured
 
 
+async def test_prepare_turn_persists_interaction_mode_for_retry(db, monkeypatch):
+    repo = ChatRepository(db)
+    captured = {}
+    _patch_collaborators(monkeypatch, captured)
+
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="请先规划方案", interaction_mode="plan"),
+        http_request=_http_request(),
+        repo=repo,
+        username="alice",
+    )
+
+    session = repo.get_session(plan.session_id)
+    assert session.messages[0]["interaction_mode"] == "plan"
+
+
+async def test_prepare_turn_preserves_plan_mode_and_file_references(db, tmp_path, monkeypatch):
+    repo = ChatRepository(db)
+    _patch_collaborators(monkeypatch, {})
+    session_id = _session(repo)
+    workspace = repo.get_owned_session_meta(session_id, "alice")["workspace_name"]
+    monkeypatch.setattr(chat_turn.Config, "get_user_workspace_dir", lambda _: tmp_path)
+    root = tmp_path / "session" / workspace
+    (root / "output").mkdir(parents=True)
+    (root / "output" / "report.txt").write_text("UNREAD_MARKER", encoding="utf-8")
+    references = [{"path": "output/report.txt", "type": "file"}]
+
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(
+            message="先规划方案", session_id=session_id, interaction_mode="plan",
+            file_references=references,
+        ),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+
+    stored = repo.get_session(session_id).messages[0]
+    assert stored["interaction_mode"] == "plan"
+    assert stored["file_references"] == references
+    assert stored["content"] == "先规划方案"
+    assert chat_turn.interaction_mode_context("plan") in plan.parsed_content
+    assert "/workspace/output/report.txt" in plan.parsed_content
+    assert "UNREAD_MARKER" not in plan.parsed_content
+    await plan.event_stream.aclose()
+
+
+@pytest.mark.parametrize(
+    "approval_mode, enable_user_interaction, reuse",
+    [("auto", True, False), (None, True, True), ("manual", False, False)],
+    ids=["new-approval-mode-rebuilds", "resume-preserves-mode", "interaction-change-rebuilds"],
+)
+def test_agent_cache_respects_approval_and_interaction_mode(
+    monkeypatch, approval_mode, enable_user_interaction, reuse,
+):
+    cached = SimpleNamespace(
+        model_name="model-x", enable_web_search=False, approval_mode="manual",
+        skill_whitelist=None, enable_user_interaction=True, system_prompt="base",
+    )
+    state = SimpleNamespace(agent=cached, expert_key="")
+    monkeypatch.setattr(agent_manager, "_touch_agent_cache", lambda _: None)
+
+    result = agent_manager._try_reuse_cached_agent(
+        state, "sess-cache", cached=cached, effective_model="model-x",
+        enable_user_interaction=enable_user_interaction, web_search_enabled=False,
+        enable_web_search=None, expert_key="", current_scope=None,
+        only_connectors=None, system_prompt_extra="", approval_mode=approval_mode,
+    )
+
+    assert (result is cached) is reuse
+    assert (state.agent is cached) is reuse
+
+
 async def test_prepare_turn_expert_refusal_returns_refusal_plan(db, tmp_path, monkeypatch):
     """专家相关性预检拒答：返回 RefusalPlan，不建 Agent、不登记 run。"""
     repo = ChatRepository(db)
@@ -624,7 +695,8 @@ async def test_disabled_and_unknown_skills_are_not_pinned(db, monkeypatch):
     await plan.event_stream.aclose()
 
 
-async def test_attachment_without_question_enters_original_flow(db, monkeypatch):
+async def test_attachment_without_question_enters_original_flow(db, monkeypatch, caplog):
+    caplog.set_level("INFO")
     repo = ChatRepository(db)
     captured = _patch_collaborators(monkeypatch, {})
     plan = await chat_turn.prepare_turn(
@@ -633,6 +705,56 @@ async def test_attachment_without_question_enters_original_flow(db, monkeypatch)
     )
     assert isinstance(plan, chat_turn.TurnPlan)
     assert captured["stream_kwargs"]["request"].files == FILES
+    # 空正文 + 有文件：本轮模型输入末尾追加引导提示，让 AI 引导用户对文件提问，
+    # 而不是顺着历史话题回答上一轮的问题。
+    assert chat_turn.file_context.FILES_ONLY_TURN_HINT in captured["stream_kwargs"]["parsed_content"]
+    assert plan.parsed_content == captured["stream_kwargs"]["parsed_content"]
+    # 可观测性：日志里能一眼分辨「本轮是否注入引导提示」
+    assert "🧭 引导提示 | 已注入（只有文件、无正文）" in caplog.text
+    # 引导提示只进模型输入：落库的用户消息正文保持为空（气泡仍渲染文件卡片）
+    assert repo.get_session(plan.session_id).messages[-1]["content"] == ""
+    await plan.event_stream.aclose()
+
+
+async def test_attachment_with_question_does_not_get_the_hint(db, monkeypatch, caplog):
+    """有正文时（无论是否带文件）不注入引导提示。"""
+    caplog.set_level("INFO")
+    repo = ChatRepository(db)
+    captured = _patch_collaborators(monkeypatch, {})
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="总结这份报告", files=FILES),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert isinstance(plan, chat_turn.TurnPlan)
+    assert chat_turn.file_context.FILES_ONLY_TURN_HINT not in captured["stream_kwargs"]["parsed_content"]
+    assert "🧭 引导提示 | 未注入（有正文或无文件）" in caplog.text
+    await plan.event_stream.aclose()
+
+
+async def test_skills_only_turn_does_not_get_the_hint(db, monkeypatch):
+    """只挂技能、没有文件的正空轮次维持原行为，不加引导提示。"""
+    repo = ChatRepository(db)
+    captured = _patch_collaborators(monkeypatch, {})
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="", skills=["pptx"]),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert isinstance(plan, chat_turn.TurnPlan)
+    assert chat_turn.file_context.FILES_ONLY_TURN_HINT not in captured["stream_kwargs"]["parsed_content"]
+    await plan.event_stream.aclose()
+
+
+async def test_fallback_mode_attachment_without_question_still_gets_the_hint(db, monkeypatch):
+    """回退模式（file_context 关闭）下同样注入引导提示（首轮文件全文仍走系统提示词）。"""
+    _fallback_mode(monkeypatch)
+    repo = ChatRepository(db)
+    _patch_collaborators(monkeypatch, {})
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="", files=FILES[:1]),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert isinstance(plan, chat_turn.TurnPlan)
+    assert plan.parsed_content == chat_turn.file_context.FILES_ONLY_TURN_HINT
     await plan.event_stream.aclose()
 
 

@@ -25,6 +25,7 @@
         @remove="removeFile"
         @retry="retryUpload"
       />
+      <SelectedModeChip v-if="interactionMode !== 'normal'" :mode="interactionMode" @clear="interactionMode = 'normal'" />
       
       <div v-if="fileReferences.length" class="reference-tags">
         <FileReferenceTag v-for="ref in fileReferences" :key="ref.path" :item="ref" removable @remove="removeReference(ref)" />
@@ -197,7 +198,6 @@
             :disabled="isStreaming || disabled"
             hidden
           />
-
 
           <ModelPicker
             :models="models"
@@ -395,6 +395,8 @@ import { getKnowledgeStatus, getWebSearchStatus, getUploadLimits } from '../../.
 import { getUserSkills } from '../../../api/skills.js'
 import { iconCategoryFor } from '../../../utils/skillCategories.js'
 import { buildMessageText, parseSlashQuery, splitByQuery } from '../../../utils/skillSlash.js'
+import SelectedModeChip from './SelectedModeChip.vue'
+import { interactionCommandItems } from '../../../shared/chat/planInteraction.js'
 // 内联技能标签：标签文字 = textarea 文本里的子串，选中/删除/发送前的剥离都走这套纯逻辑
 import {
   buildSegments,
@@ -480,7 +482,7 @@ const EXPERT_SEARCH_DEBOUNCE_MS = 300
 
 export default {
   mixins: [promptEnhancementMixin, contextUsageMixin, fileReferenceInputMixin],
-  components: { FileReferenceTag, FileReferencePicker, PromptEnhancementActions, FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList, PlusList, PlusSubpanelHeader },
+  components: { SelectedModeChip, FileReferenceTag, FileReferencePicker, PromptEnhancementActions, FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList, PlusList, PlusSubpanelHeader },
   directives: { tip },
   props: {
     compactReason: { type: String, default: '请先开始对话' },
@@ -510,7 +512,7 @@ export default {
   },
   data() {
     return {
-      message: '',
+      message: '', interactionMode: 'normal',
       // 镜像渲染层显示的文字（textarea 文字透明，用户看到的都是这一层，见 syncMirror）
       mirrorText: '',
       uploadedFiles: [],
@@ -779,7 +781,7 @@ export default {
      * 右侧的 `/目录名` 与名称基本重复，不再单独上色，避免一行出现三处蓝。
      */
     menuItems() {
-      return [...commandItems(this.skillQuery, this.compactReason, this.compactBusy), ...this.filteredSkills]
+      return [...interactionCommandItems(this.skillQuery), ...commandItems(this.skillQuery, this.compactReason, this.compactBusy), ...this.filteredSkills]
     },
     pickerGroups() {
       return [
@@ -1707,30 +1709,60 @@ export default {
      * 选出本批可以上传的文件（入列前校验，避免"传了一半才发现超限"）。
      *
      * 规则：
-     * - enabled=false 时不限；
-     * - 数量不满足（已有非失败数 + 本批数 > 上限）→ **整批拒绝**，让用户重新选择；
+     * - 先做**重复过滤**：文件名 + 大小 + 修改时间都相同视为同一文件，
+     *   与本轮已添加的文件（含本批内互相重复）只保留一个，其余忽略；
+     *   上传失败（error）的条目不算已添加，允许重新选择同一个文件再传；
+     *   uploadedFiles 在发送后清空，因此去重只作用于本轮，不影响其它轮次；
+     * - enabled=false 时不限额度；
+     * - 数量不满足（已有非失败数 + 去重后本批数 > 上限）→ **整批拒绝**，让用户重新选择；
      * - 逐个文件检查单文件大小与总大小 → **只跳过超限的那一个**，其余照常上传；
      * - 失败文件不占额度，因此删除/失败都会立即释放名额与空间。
      */
+    uploadFileKey(file) {
+      const lastModified = file && typeof file.lastModified === 'number' ? file.lastModified : ''
+      return [file.name, file.size, lastModified].join('\u0000')
+    },
     pickAcceptable(files) {
       const L = this.uploadLimits
-      if (!L.enabled) return { accepted: [...files], rejected: [], batchRejected: false }
+
+      // 重复过滤：与本轮已添加文件重复、或本批内互相重复的，只保留第一个
+      const existingKeys = new Set(
+        this.uploadedFiles
+          .filter(f => f.uploadStatus !== 'error')
+          .map(f => {
+            const lastModified = f.file && typeof f.file.lastModified === 'number' ? f.file.lastModified : ''
+            return [f.filename, f.size, lastModified].join('\u0000')
+          })
+      )
+      const deduped = []
+      const rejected = []
+      const batchKeys = new Set()
+      for (const file of files) {
+        const key = this.uploadFileKey(file)
+        if (existingKeys.has(key) || batchKeys.has(key)) {
+          rejected.push({ file, reason: 'duplicate' })
+          continue
+        }
+        batchKeys.add(key)
+        deduped.push(file)
+      }
+
+      if (!L.enabled) return { accepted: deduped, rejected, batchRejected: false }
 
       let count = this.usedCount
       let total = this.usedBytes
       const accepted = []
-      const rejected = []
 
-      if (count + files.length > L.maxFiles) {
+      if (count + deduped.length > L.maxFiles) {
         return {
           accepted: [],
-          rejected: files.map(f => ({ file: f, reason: 'count' })),
+          rejected,
           batchRejected: true,
           message: `最多只能上传 ${L.maxFiles} 个文件（已用 ${count} 个），请重新选择`,
         }
       }
 
-      for (const file of files) {
+      for (const file of deduped) {
         if (file.size > this.mbToBytes(L.maxFileSizeMb)) {
           rejected.push({ file, reason: 'file_size' })
           continue
@@ -1749,6 +1781,9 @@ export default {
     buildRejectNotice(result, acceptedCount) {
       const L = this.uploadLimits
       const parts = result.rejected.map(({ file, reason }) => {
+        if (reason === 'duplicate') {
+          return `${file.name}（与本轮已添加文件重复，已过滤）`
+        }
         if (reason === 'file_size') {
           return `${file.name}（超过单文件上限 ${L.maxFileSizeMb}MB）`
         }
@@ -1757,9 +1792,12 @@ export default {
         }
         return file.name
       })
+      const onlyDuplicates = result.rejected.length > 0 && result.rejected.every(r => r.reason === 'duplicate')
       const head = acceptedCount > 0
         ? `已添加 ${acceptedCount} 个文件，忽略 ${result.rejected.length} 个：`
-        : `无法上传，已忽略 ${result.rejected.length} 个文件：`
+        : (onlyDuplicates
+          ? `已忽略 ${result.rejected.length} 个重复文件：`
+          : `无法上传，已忽略 ${result.rejected.length} 个文件：`)
       return head + parts.join('；')
     },
     /** 重新上传一个失败的文件（复用同一个 File 对象，无需用户重新选择） */
@@ -1785,15 +1823,13 @@ export default {
         }
       }
 
-      // 重试同样遵循“发送时才上传”：已有会话可立即重传；新对话回到待发送状态，
-      // 等用户点发送时再建会话并上传。
-      item.uploadStatus = this.sessionId ? 'uploading' : 'pending'
+      // 重试同样遵循「发送时才上传」：回到待发送状态，用户点发送时再上传。
+      item.uploadStatus = 'pending'
       item.uploadProgress = 0
       item.errorMessage = ''
       item.retryable = false
       item.cancelled = false
       this.uploadedFiles = [...this.uploadedFiles]
-      if (this.sessionId) this.uploadOneFile(item)
     },
     /**
      * 确保会话存在并返回 sessionId（并行上传共享同一个创建 Promise，
@@ -1911,16 +1947,15 @@ export default {
         this.showUploadNotice(this.buildRejectNotice(result, result.accepted.length))
       }
 
-      // 新对话不立即上传：先以待发送状态留在前端，发送时创建会话再上传；
-      // 已有会话按原有体验立即上传。
-      const uploadNow = Boolean(this.sessionId)
+      // 统一「发送时上传」：无论新对话还是已有会话，选完文件都只留在前端（pending），
+      // 点发送时 preparePendingFiles 才真正落盘（已有会话直接用当前 sessionId）。
       for (const file of result.accepted) {
         // 创建文件项
         const fileItem = {
           file: file,
           filename: file.name,
           size: file.size,
-          uploadStatus: uploadNow ? 'uploading' : 'pending',
+          uploadStatus: 'pending',
           uploadProgress: 0,
           cancelled: false,
           abortController: null,
@@ -1933,8 +1968,6 @@ export default {
 
         // 强制触发初始渲染
         this.uploadedFiles = [...this.uploadedFiles]
-
-        if (uploadNow) this.uploadOneFile(fileItem)
       }
 
       event.target.value = ''
@@ -2031,7 +2064,8 @@ export default {
           turnSkills,
           expertEditId,
           knowledgeBaseIds,
-          this.fileReferences.slice()
+          this.fileReferences.slice(),
+          this.interactionMode
         )
 
         this.message = ''
@@ -2041,7 +2075,7 @@ export default {
         if (this.sessionId) this.pendingKnowledgeBaseIds = []
         this.selectedSkills = []
         this.preselectedSkillDirs = []
-        this.pendingExpertEditId = ''
+        this.pendingExpertEditId = ''; this.interactionMode = 'normal'
         this.dismissUploadNotice()
         this.closeSkillPicker()
         this.$nextTick(() => this.autoResize())
@@ -2260,6 +2294,7 @@ export default {
       const cleared = base.slice(0, start) + base.slice(caret)
 
       if (skill.command) {
+        if (skill.interactionMode) { if (this.isStreaming || this.disabled) return; this.interactionMode = skill.interactionMode; this.closeSkillPicker(); this.replaceTextWithCaret({ text: cleared, caret: start }); return }
         if (this.compactReason || skill.disabled) return
         this.closeSkillPicker()
         this.replaceTextWithCaret({ text: cleared, caret: start })

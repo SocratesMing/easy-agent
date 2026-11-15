@@ -105,6 +105,7 @@
         @approve="handleToolApproval('approve', $event)"
         @reject="handleToolApproval('reject', $event)"
         @edit="handleToolApproval('edit', $event)"
+        @respond="handleToolApproval('respond', $event)"
         @clearExpert="selectedExpert = null"
         @selectExpert="handleSummonExpertInPlace"
         @openPanel="openSkillCenterPanel"
@@ -151,7 +152,8 @@ import { useAiSidebarBridge } from './features/chat/composables/useAiSidebarBrid
 import WorkspacePanel from './features/workspace/components/WorkspacePanel.vue'
 const SettingsPanel = defineAsyncComponent(() => import('./features/settings/components/SettingsPanel.vue'))
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
-import { applyApprovalRequests, buildResumeDecisions, derivePendingApproval, markApprovalDecision } from './utils/hitlApproval.js'
+import { applyApprovalRequests, buildApprovalResumePlan, derivePendingApproval, markApprovalDecision } from './utils/hitlApproval.js'
+import { buildPlanContinuationTurn } from './shared/chat/planConfirmationTurn.js'
 import { createStreamChunkHandler, resumeUsageBase } from './features/chat/composables/useStreamChunks.js'
 import { clearStreamFlight, hasAssistantReply, markStreamFlight, probeStreamState, readStreamFlight, resolveResumeTargets } from './features/chat/services/streamResume.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
@@ -1583,7 +1585,7 @@ function parseMCPResult(rawResult) {
   return rawResult
 }
 
-async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = [], fileReferences = []) {
+async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = [], fileReferences = [], interactionMode = 'normal') {
   const userMsgId = `user-${Date.now()}`
   const preStreamUsage = { ...sessionUsage.value }
   // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1608,6 +1610,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     })),
     created_at: new Date().toISOString()
   }
+  if (interactionMode !== 'normal') userMessage.interaction_mode = interactionMode
   // 结构化技能目录名（与后端落库字段同形）：气泡按它渲染技能标签，不再依赖从消息
   // 文本里反扒 `/技能名`。没有选中技能时不写该字段——手打 `/技能名` 的正文仍按老规则
   // 从文本解析，行为和改造前一致。
@@ -1726,7 +1729,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
         ? selectedExpert.value.export_agent_id
         : '',
       // 新对话首条消息携带的知识库范围：后端建会话后先落 scope 再检索
-      { knowledgeBaseIds, fileReferences }
+      { knowledgeBaseIds, fileReferences, interactionMode }
     )
 
     await expandWorkspaceAfterSessionCompletion(streamSessionId)
@@ -1829,23 +1832,20 @@ async function handleToolApproval(decision, target) {
   const msgIdx = assistantMsgId ? messages.value.findIndex(m => m.id === assistantMsgId) : -1
   const pending = msgIdx !== -1 ? messages.value[msgIdx].pending_approval : null
   const actionRequests = (pending && pending.action_requests) || []
-  const { decisions, interruptId } = buildResumeDecisions(actionRequests, decision, {
-    interruptId: target && target.interruptId,
-    // 编辑参数：只改被点的那一条（action_index 由载荷带下来）
-    targetActionIndex: target && target.actionIndex,
-    editedAction: target && target.editedArgs
-      ? { name: target.actionName || '', args: target.editedArgs }
-      : null,
-  })
+  const { decisions, interruptId } = buildApprovalResumePlan(actionRequests, decision, target)
+  const confirmation = decision === 'respond' && target ? target.confirmation : null
+  let resumeAssistantId = assistantMsgId, resumeUsageMessage = msgIdx !== -1 ? messages.value[msgIdx] : undefined, initialBlockOrder = msgIdx !== -1 ? messages.value[msgIdx].blocks.length : 0
 
   // 清掉待审批按钮（恢复流期间不允许再点），只给本次作答的中断记上「已批准 / 已拒绝」
   if (msgIdx !== -1) {
     markApprovalDecision(messages.value[msgIdx].blocks, decision, actionRequests, interruptId)
-    messages.value[msgIdx] = {
-      ...messages.value[msgIdx],
-      pending_approval: null,
-      blocks: [...messages.value[msgIdx].blocks],
+    if (!confirmation) {
+      messages.value[msgIdx] = { ...messages.value[msgIdx], pending_approval: null, blocks: [...messages.value[msgIdx].blocks] }
     }
+  }
+  const split = confirmation ? buildPlanContinuationTurn(messages.value, msgIdx, confirmation) : null
+  if (split) {
+    messages.value.splice(msgIdx, 1, ...split.replacement); resumeAssistantId = split.resumeAssistantId; pendingApproval.value = { threadId, assistantMsgId: resumeAssistantId }; resumeUsageMessage = undefined; initialBlockOrder = split.initialBlockOrder
   }
   // 本次决策已落地，按本地消息重算徽标（口径 derivePendingApproval：只看消息级载荷，
   // 不扫工具块 approval_status——那是展示态，会留下"有徽标、没按钮"的死状态）；
@@ -1854,21 +1854,21 @@ async function handleToolApproval(decision, target) {
 
   const { onChunk } = createStreamChunkHandler(messages, {
     isResume: true,
-    assistantMsgId,
+    assistantMsgId: resumeAssistantId,
     streamSessionId: sessionId,
-    ...resumeUsageBase(sessionDuration.value, iterationCount.value, messages.value[msgIdx]), // 扣掉本条中断前已计入的耗时/步数
+    ...resumeUsageBase(sessionDuration.value, iterationCount.value, resumeUsageMessage), // 扣掉本条中断前已计入的耗时/步数
     runInSession,
     state: buildStreamState(),
-    initialBlockOrder: msgIdx !== -1 ? messages.value[msgIdx].blocks.length : 0,
+    initialBlockOrder,
     onApprovalRequired: (data) => {
       // 嵌套审批
       syncPendingApprovalFlag(sessionId, true)
       pendingApproval.value = {
         threadId: data.thread_id,
-        assistantMsgId,
+        assistantMsgId: resumeAssistantId,
       }
-      if (assistantMsgId && data.action_requests) {
-        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (resumeAssistantId && data.action_requests) {
+        const idx = messages.value.findIndex(m => m.id === resumeAssistantId)
         if (idx !== -1) {
           messages.value[idx].pending_approval = { thread_id: data.thread_id, action_requests: data.action_requests }
           // 用后端权威 blocks 刷新（含本轮已完成工具的结果）
@@ -1894,16 +1894,16 @@ async function handleToolApproval(decision, target) {
     const controller = new AbortController()
     currentAbortController.value = controller
     markStreaming(sessionId)
-    streamingAssistantId.value = assistantMsgId
+    streamingAssistantId.value = resumeAssistantId
 
     // 恢复期间保持 loading=true，使思考 spinner 与工具"执行中"状态与正常流一致
-    const _resumeIdx = messages.value.findIndex(m => m.id === assistantMsgId)
+    const _resumeIdx = messages.value.findIndex(m => m.id === resumeAssistantId)
     if (_resumeIdx !== -1) {
       messages.value[_resumeIdx] = { ...messages.value[_resumeIdx], loading: true }
     }
     // 注意：人工介入（批准/拒绝）不再作为用户侧消息展示，
     // 直接在模型侧的 execute 工具上进行了 HITL 标注。
-    await resumeStream(sessionId, threadId, decisions, onChunk, controller.signal, assistantMsgId)
+    await resumeStream(sessionId, threadId, decisions, onChunk, controller.signal, resumeAssistantId, confirmation)
     await expandWorkspaceAfterSessionCompletion(sessionId)
 
     await loadSessions()
@@ -1912,7 +1912,7 @@ async function handleToolApproval(decision, target) {
     console.error('恢复执行失败:', e)
     // 恢复期间用户可能已切到别的会话：错误写回本会话（展示中或其缓存）
     runInSession(sessionId, null, () => {
-      const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      const idx = messages.value.findIndex(m => m.id === resumeAssistantId)
       if (idx === -1) return
       messages.value[idx].loading = false
       messages.value[idx].error = e.message || '恢复执行失败'
@@ -1950,6 +1950,7 @@ async function handleToolApproval(decision, target) {
 }
 
 function handleRetry(content) {
+  const interactionMode = typeof content === 'object' && content ? (content.interactionMode || 'normal') : 'normal'
   const fileReferences = typeof content === 'object' && content ? (content.fileReferences || []) : []
   content = typeof content === 'object' && content ? content.content : content
   if (typeof content === 'string' && (content.trim() || fileReferences.length)) {
@@ -1968,7 +1969,7 @@ function handleRetry(content) {
     // 重试不经过输入框，联网开关必须从镜像取：漏传会落回 enableWebSearch 默认值 false，
     // 表现为「小地球亮着、后端收到 web_search: False」，模型据关闭态纪律回答未联网。
     // 第 4 位是 enableDeepThink，第 5 位才是 enableWebSearch，别错位。
-    handleSendMessage(content.trim(), [], null, true, webSearchEnabled.value, [], '', [], fileReferences)
+    handleSendMessage(content.trim(), [], null, true, webSearchEnabled.value, [], '', [], fileReferences, interactionMode)
   }
 }
 

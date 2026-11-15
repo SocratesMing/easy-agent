@@ -74,10 +74,11 @@ from easy_agent.services.streaming.orchestrator import (
     validate_resume_decisions,
 )
 from easy_agent.services.usage import resolve_usage_identity
+from easy_agent.tools.user_interaction import interaction_mode_context
 from easy_agent.utils.usage_context import usage_scope
 from easy_agent.utils.blocking import run_blocking
 from easy_agent.utils.file_parser import parse_file_content
-from easy_agent.utils.prompt_probe import describe_prompt
+from easy_agent.utils.prompt_probe import describe_prompt, prompt_fingerprint
 from easy_agent.utils.session_logger import SessionLogger
 
 logger = logging.getLogger(__name__)
@@ -441,6 +442,66 @@ def _last_session_message(repo: ChatRepository, session_id: str) -> dict | None:
     return _session_last_message(repo, session_id)
 
 
+def _mark_resumed_interaction(
+    message: dict | None, decisions: list[dict]
+) -> dict | None:
+    """Mark only the interrupts answered by this resume request as completed."""
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return message
+    updated = dict(message)
+    updated["blocks"] = [dict(block) for block in (message.get("blocks") or [])]
+    updated["tool_calls"] = [dict(call) for call in (message.get("tool_calls") or [])]
+    pending = message.get("pending_approval")
+    actions = pending.get("action_requests") if isinstance(pending, dict) else []
+    actions = [dict(action) for action in (actions or []) if isinstance(action, dict)]
+
+    answered: dict[tuple[str | None, int], str] = {}
+    for decision in decisions or []:
+        if not isinstance(decision, dict):
+            continue
+        key = (decision.get("interrupt_id"), int(decision.get("action_index") or 0))
+        answered[key] = str(decision.get("type") or "reject")
+
+    remaining: list[dict] = []
+    status_by_id: dict[str, str] = {}
+    legacy_types = iter(answered.values())
+    has_tagged = any(interrupt_id for interrupt_id, _ in answered)
+    for action in actions:
+        key = (action.get("interrupt_id"), int(action.get("action_index") or 0))
+        decision_type = answered.get(key)
+        if decision_type is None and not has_tagged:
+            decision_type = next(legacy_types, None)
+        if decision_type is None:
+            remaining.append(action)
+            continue
+        tool_call_id = action.get("tool_call_id")
+        if tool_call_id:
+            status_by_id[tool_call_id] = (
+                "approved"
+                if decision_type in {"approve", "respond"}
+                else "rejected"
+            )
+
+    for block in updated["blocks"]:
+        tool_call_id = block.get("tool_call_id") or block.get("id")
+        if tool_call_id in status_by_id:
+            block["approval_status"] = status_by_id[tool_call_id]
+            block.pop("pending_approval", None)
+    for call in updated["tool_calls"]:
+        tool_call_id = call.get("tool_call_id")
+        if tool_call_id in status_by_id:
+            call["approval_status"] = status_by_id[tool_call_id]
+
+    if remaining:
+        updated["pending_approval"] = {
+            **(pending or {}),
+            "action_requests": remaining,
+        }
+    else:
+        updated.pop("pending_approval", None)
+    return updated
+
+
 # ── 准备结果 ──────────────────────────────────────────────────────────
 
 
@@ -702,6 +763,34 @@ async def prepare_turn(
             "这里只提供位置，不代表已经读取正文。\n\n"
             + json.dumps(virtual_refs, ensure_ascii=False) + "\n\n" + parsed_content
         )
+    mode_context = interaction_mode_context(request.interaction_mode)
+    if mode_context:
+        parsed_content = f"{mode_context}\n\n{parsed_content}"
+    # 「只传文件、没写正文」的轮次：向本轮模型输入末尾追加引导提示，让模型基于附件
+    # 引导用户提问，而不是顺着历史话题回答上一轮的问题。只影响模型请求——落库正文、
+    # thread 占位、系统提示词都不动；记忆 / 用户输入日志侧由 orchestrator 的
+    # strip_files_only_turn_hint 剥离（见 uploads.FILES_ONLY_TURN_HINT）。
+    files_only_turn = not (request.message or "").strip() and bool(request.files)
+    if files_only_turn:
+        parsed_content = (
+            f"{parsed_content}\n\n{file_context.FILES_ONLY_TURN_HINT}"
+            if parsed_content
+            else file_context.FILES_ONLY_TURN_HINT
+        )
+    # 可观测性：每轮固定一行，明确「本轮引导提示是否注入」。排查时 grep 🧭 即可：
+    # 已注入 = 本轮只有文件没有正文；未注入 = 本轮有正文（或没有文件）。
+    logger.info(
+        f"[{sid}] 🧭 引导提示 | "
+        + (
+            f"已注入（只有文件、无正文） | 文件数: {len(request.files or [])} | "
+            f"提示指纹: {prompt_fingerprint(file_context.FILES_ONLY_TURN_HINT)} | "
+            f"模型输入: {len(parsed_content)} 字符"
+            if files_only_turn
+            else "未注入（有正文或无文件） | "
+            f"正文长度: {len((request.message or '').strip())} | "
+            f"文件数: {len(request.files or [])} | 模型输入: {len(parsed_content)} 字符"
+        )
+    )
     # 专家提示词与技能提示排在最后：agent.py 的拼接顺序为
     # [system_prompt, user_info, web_search_prompt, system_prompt_extra]，
     # 放在 extra 末尾即 recency 最高，专家人设可主导通用人设。
@@ -743,6 +832,8 @@ async def prepare_turn(
         user_message["files"] = request.files
     if page_context:
         user_message["page_context"] = page_context
+    if request.interaction_mode != "normal":
+        user_message["interaction_mode"] = request.interaction_mode
     # 专家随用户消息落库：回答面板取其上一条用户消息的该字段展示头像 + 名称，
     # 刷新 / 历史加载后不丢，同一会话不同轮次各对应自己那一轮的专家。
     expert_meta = await asyncio.to_thread(
@@ -893,6 +984,8 @@ async def prepare_resume(
         username,
         workspace_name,
         expert_agent_id=agent_manager.get_session_expert(session_id),
+        # 审批恢复沿用原 Agent 的审批模式；新设置下一条普通消息再生效。
+        approval_mode=None,
     )
 
     # DA-03：句柄映射到真正要恢复的 thread（会话 thread 模式下是 session_id）；
@@ -920,6 +1013,49 @@ async def prepare_resume(
         logger.warning(f"[{sid}] 拒绝无效的审批决策 | thread={thread_id} | {exc}")
         raise BadRequestError(f"审批决策无效：{exc}") from exc
 
+    confirmation_message = (request.confirmation_message or "").strip()
+    if confirmation_message:
+        if not request.split_assistant_message:
+            raise BadRequestError("规划确认消息必须使用独立的 assistant 续写消息")
+        # Keep the interrupted assistant as the pre-confirmation message, then append the
+        # user's visible choice and continue in a new assistant row after validation.
+        confirmation_source = await asyncio.to_thread(
+            _session_last_message, repo, session_id
+        )
+        completed = _mark_resumed_interaction(
+            confirmation_source, request.decisions
+        )
+        if completed is not None:
+            await asyncio.to_thread(
+                repo.messages.update_last_assistant_message,
+                session_id,
+                completed,
+            )
+        confirmation_id = request.confirmation_message_id or f"confirm-{uuid.uuid4()}"
+        await asyncio.to_thread(
+            repo.messages.add_message,
+            session_id,
+            {
+                "id": confirmation_id,
+                "role": "user",
+                "content": confirmation_message,
+                "timestamp": datetime.now().isoformat(),
+                "display_only": True,
+                "message_kind": "plan_confirmation",
+            },
+        )
+        session_logger = SessionLogger(
+            session_id=session_id,
+            username=username,
+            workspace="",
+            system_prompt="",
+        )
+        session_logger.log_user_message(
+            message=confirmation_message,
+            files=None,
+            message_id=confirmation_id,
+        )
+
     # Phase 2B：恢复 run 同样是独立 run（message_id 为空则 uuid），request_json
     # 只保存 decisions/session_id/thread_id 元数据，便于审计恢复来源。
     run_message_id = request.message_id or str(uuid.uuid4())
@@ -936,6 +1072,7 @@ async def prepare_resume(
                 "session_id": session_id,
                 "thread_id": thread_id,
                 "decisions": request.decisions,
+                "confirmation_message_id": request.confirmation_message_id,
             },
             ensure_ascii=False,
         ),
@@ -952,6 +1089,7 @@ async def prepare_resume(
         message_id=request.message_id,
         handle=thread_id,
         outcome=outcome,
+        split_assistant=bool(confirmation_message and request.split_assistant_message),
     )
     return ResumePlan(
         session_id=session_id,

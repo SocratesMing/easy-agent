@@ -165,6 +165,10 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
   if (extra && extra.knowledgeMetadataFilter) {
     payload.knowledge_metadata_filter = extra.knowledgeMetadataFilter
   }
+  // 本轮规划 / 头脑风暴模式：后端只把它作为本轮模型上下文，不写进用户原话。
+  if (extra && extra.interactionMode && extra.interactionMode !== 'normal') {
+    payload.interaction_mode = extra.interactionMode
+  }
   // 新对话首条消息携带的知识库范围：后端建会话后先落 scope 再检索，
   // 避免“选知识库”阶段提前创建空会话（已有会话仍走 knowledge-scope 接口）
   if (extra && Array.isArray(extra.knowledgeBaseIds) && extra.knowledgeBaseIds.length) {
@@ -188,7 +192,7 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
   await readChatResponse(response, sessionId, onChunk, abortSignal)
 }
 
-export async function resumeStream(sessionId, threadId, decisions, onChunk, signal, messageId) {
+export async function resumeStream(sessionId, threadId, decisions, onChunk, signal, messageId, confirmation = null) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
 
@@ -202,6 +206,9 @@ export async function resumeStream(sessionId, threadId, decisions, onChunk, sign
       thread_id: threadId,
       decisions,
       message_id: messageId || null,
+      confirmation_message: confirmation?.text || null,
+      confirmation_message_id: confirmation?.id || null,
+      split_assistant_message: !!confirmation,
     }),
     signal: abortSignal,
   })

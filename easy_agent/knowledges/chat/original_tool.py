@@ -30,10 +30,11 @@ from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.models import AllowedAction, KnowledgePrincipal
 from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
 from easy_agent.knowledges.core.original_store import LocalOriginalStore, OriginalStorageError
-from easy_agent.knowledges.core.permissions import allowed_actions, effective_role
+from easy_agent.knowledges.core.permissions import allowed_actions, resolve_role
 from easy_agent.knowledges.core.repository import KnowledgeRepository
 from easy_agent.knowledges.ragflow import RagflowClient, RagflowError
 from easy_agent.knowledges.service import SHARED_DATASET_NAME
+from easy_agent.utils.auth import is_super_admin
 from easy_agent.utils.blocking import run_blocking
 
 logger = logging.getLogger(__name__)
@@ -142,7 +143,12 @@ class KnowledgeOriginalTool(BaseTool):
         base = repository.get_base(base_id)
         if base is None:
             raise FileNotFoundError("知识资源不存在")
-        role = effective_role(base, principal, repository.list_permissions(base_id))
+        role = resolve_role(
+            base,
+            principal,
+            repository.list_permissions(base_id),
+            super_admin=is_super_admin(principal.username),
+        )
         if role is None or AllowedAction.DOWNLOAD not in allowed_actions(role):
             # 刻意不区分「无权」与「不存在」，避免资源存在性泄露
             raise FileNotFoundError("知识资源不存在")

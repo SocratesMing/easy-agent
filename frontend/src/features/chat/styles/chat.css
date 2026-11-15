@@ -68,7 +68,7 @@
 .chat-messages {
   flex: 1;
   overflow-y: auto;
-  /* 上下 padding 归零：sticky 子元素（如执行过程头部）被约束在父元素 content box 内，
+  /* 上下 padding 归零：sticky 子元素被约束在父元素 content box 内，
      容器的上下 padding 会让它们的冻结位置整体下移 24px —— 冻结时贴不住顶部、
      会与上方滚过来的内容糊在一起。改由首尾伪元素提供间距，吸附点即等于容器顶部。 */
   padding: 0 24px;

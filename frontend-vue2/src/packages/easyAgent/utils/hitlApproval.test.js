@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   applyApprovalRequests,
   approvalTargetForBlock,
+  buildApprovalResumePlan,
   buildResumeDecisions,
   markApprovalDecision,
   unmatchedApprovalRequests,
@@ -126,6 +127,26 @@ test('marking a decision clears all buttons but only stamps the answered interru
     [false, 'approved'],
     [false, 'pending'],
   ])
+})
+
+test('plan interaction answers become respond decisions without executing batched tools', () => {
+  const { decisions } = buildApprovalResumePlan(
+    [
+      { tool_name: 'ask_user', interrupt_id: 'I', action_index: 0 },
+      { tool_name: 'delete', interrupt_id: 'I', action_index: 1 },
+    ],
+    'respond',
+    {
+      interruptId: 'I',
+      response: { answers: { project: 'fast' }, note: '先做核心' },
+    },
+  )
+  assert.equal(decisions[0].type, 'respond')
+  assert.equal(decisions[1].type, 'reject')
+  assert.deepEqual(JSON.parse(decisions[0].message), {
+    answers: { project: 'fast' },
+    note: '先做核心',
+  })
 })
 
 test('buildResumeDecisions: edit 只改目标那条，其余按批准', () => {

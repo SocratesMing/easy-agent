@@ -116,6 +116,22 @@ def test_stream_web_search_defaults_off(client):
     assert ChatRequest(message="hi").enable_web_search is False
 
 
+def test_interaction_mode_defaults_to_normal_and_is_closed_set():
+    import pytest
+    from pydantic import ValidationError
+
+    from easy_agent.models.api import ChatRequest
+
+    assert ChatRequest(message="hi").interaction_mode == "normal"
+    assert ChatRequest(message="hi", interaction_mode="plan").interaction_mode == "plan"
+    assert (
+        ChatRequest(message="hi", interaction_mode="brainstorm").interaction_mode
+        == "brainstorm"
+    )
+    with pytest.raises(ValidationError):
+        ChatRequest(message="hi", interaction_mode="execute-now")
+
+
 def test_stream_passes_knowledge_base_ids_to_prepare(client, monkeypatch):
     """新对话首条消息携带的知识库范围需透传给 prepare_knowledge_chat。"""
     from easy_agent.knowledges.chat.chat_bridge import KnowledgeChatContext

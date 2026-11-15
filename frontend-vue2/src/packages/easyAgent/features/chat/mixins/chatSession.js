@@ -35,10 +35,11 @@ import { hasAssistantReply, probeStreamState } from "../services/streamResume.js
 import streamLifecycle from "./streamLifecycle.js";
 import {
   applyApprovalRequests,
-  buildResumeDecisions,
+  buildApprovalResumePlan,
   derivePendingApproval,
   markApprovalDecision,
 } from "../../../utils/hitlApproval.js";
+import { buildPlanContinuationTurn } from "../../../shared/chat/planConfirmationTurn.js";
 
 // 会话级界面字段 → sessionStates 缓存字段，后台流事件期间换入（runInSession）；含 pendingApproval：多会话同时待审批时各自持有
 const SESSION_FIELDS = [
@@ -1166,6 +1167,7 @@ export default {
       expertEditId = "",
       knowledgeBaseIds = [],
       fileReferences = [],
+      interactionMode = "normal",
     ) {
       const userMsgId = `user-${Date.now()}`;
       const preStreamUsage = { ...this.sessionUsage };
@@ -1193,6 +1195,7 @@ export default {
         })),
         created_at: new Date().toISOString(),
       };
+      if (interactionMode !== "normal") userMessage.interaction_mode = interactionMode;
       // 结构化技能目录名（与后端落库字段同形，见 App.vue 的同类实现）
       if (skills.length > 0) userMessage.skills = [...skills];
 
@@ -1339,7 +1342,7 @@ export default {
             ? this.selectedExpert.export_agent_id
             : "",
           // 新对话首条消息携带的知识库范围：后端建会话后先落 scope 再检索
-          { knowledgeBaseIds, fileReferences },
+          { knowledgeBaseIds, fileReferences, interactionMode },
         );
 
         await this.refreshSessionFiles(null, 500);
@@ -1462,19 +1465,14 @@ export default {
       const pending =
         msgIdx !== -1 ? this.messages[msgIdx].pending_approval : null;
       const actionRequests = (pending && pending.action_requests) || [];
-      const { decisions, interruptId } = buildResumeDecisions(
+      const { decisions, interruptId } = buildApprovalResumePlan(
         actionRequests,
         decision,
-        {
-          interruptId: target && target.interruptId,
-          // 编辑参数：只改被点的那一条（action_index 由载荷带下来）
-          targetActionIndex: target && target.actionIndex,
-          editedAction:
-            target && target.editedArgs
-              ? { name: target.actionName || "", args: target.editedArgs }
-              : null,
-        },
+        target,
       );
+      const confirmation =
+        decision === "respond" && target ? target.confirmation : null;
+      let resumeAssistantId = assistantMsgId, resumeUsageMessage = this.messages[msgIdx], initialBlockOrder = msgIdx !== -1 ? this.messages[msgIdx].blocks.length : 0;
 
       // 清掉待审批按钮（恢复流期间不允许再点），只给本次作答的中断记上「已批准 / 已拒绝」
       if (msgIdx !== -1) {
@@ -1484,38 +1482,35 @@ export default {
           actionRequests,
           interruptId,
         );
-        setReactive(this.messages, msgIdx, {
-          ...this.messages[msgIdx],
-          pending_approval: null,
-          blocks: [...this.messages[msgIdx].blocks],
-        });
+        if (!confirmation) setReactive(this.messages, msgIdx, { ...this.messages[msgIdx], pending_approval: null, blocks: [...this.messages[msgIdx].blocks] });
+      }
+      if (confirmation) {
+        const split = buildPlanContinuationTurn(this.messages, msgIdx, confirmation);
+        if (split) { this.messages.splice(msgIdx, 1, ...split.replacement); resumeAssistantId = split.resumeAssistantId; this.pendingApproval = { threadId, assistantMsgId: resumeAssistantId }; resumeUsageMessage = undefined; initialBlockOrder = split.initialBlockOrder }
       }
       // 本次决策已落地，重算标识（若恢复流中再遇嵌套审批会立即重新亮起）
       this.recomputePendingApprovalFlag(sessionId);
 
       const { onChunk } = this.createStreamChunkHandler({
         isResume: true,
-        assistantMsgId,
+        assistantMsgId: resumeAssistantId,
         streamSessionId: sessionId,
         ...resumeUsageBase(
           this.sessionDuration,
           this.iterationCount,
-          this.messages[msgIdx],
+          resumeUsageMessage,
         ), // 扣掉本条中断前已计入的耗时/步数
-        initialBlockOrder: (() => {
-          const i = this.messages.findIndex(m => m.id === assistantMsgId);
-          return i !== -1 ? this.messages[i].blocks.length : 0;
-        })(),
+        initialBlockOrder,
         onApprovalRequired: data => {
           // 嵌套审批
           this.pendingApproval = {
             threadId: data.thread_id,
-            assistantMsgId,
+            assistantMsgId: resumeAssistantId,
           };
           // 决策后标识可能已被重算熄灭，嵌套审批到达时重新亮起
           this.syncPendingApprovalFlag(sessionId, true);
-          if (assistantMsgId && data.action_requests) {
-            const idx = this.messages.findIndex(m => m.id === assistantMsgId);
+          if (resumeAssistantId && data.action_requests) {
+            const idx = this.messages.findIndex(m => m.id === resumeAssistantId);
             if (idx !== -1) {
               this.messages[idx].pending_approval = {
                 thread_id: data.thread_id,
@@ -1552,11 +1547,11 @@ export default {
         streamController = controller;
         this.currentAbortController = controller;
         this.markStreaming(sessionId);
-        this.streamingAssistantId = assistantMsgId;
+        this.streamingAssistantId = resumeAssistantId;
 
         // 恢复期间保持 loading=true，使思考 spinner 与工具"执行中"状态与正常流一致
         const _resumeIdx = this.messages.findIndex(
-          m => m.id === assistantMsgId,
+          m => m.id === resumeAssistantId,
         );
         if (_resumeIdx !== -1) {
           setReactive(this.messages, _resumeIdx, {
@@ -1572,7 +1567,8 @@ export default {
           decisions,
           onChunk,
           controller.signal,
-          assistantMsgId,
+          resumeAssistantId,
+          confirmation,
         );
 
         await this.loadSessions();
@@ -1581,7 +1577,7 @@ export default {
         console.error("恢复执行失败:", e);
         // 恢复期间用户可能已切到别的会话：错误写回本会话（展示中或其缓存）
         this.runInSession(sessionId, null, () => {
-          const idx = this.messages.findIndex(m => m.id === assistantMsgId);
+          const idx = this.messages.findIndex(m => m.id === resumeAssistantId);
           if (idx === -1) return;
           this.messages[idx].loading = false;
           this.messages[idx].error = e.message || "恢复执行失败";
@@ -1626,6 +1622,7 @@ export default {
       this.webSearchEnabled = Boolean(enabled);
     },
     handleRetry(content) {
+      const interactionMode = typeof content === 'object' && content ? (content.interactionMode || 'normal') : 'normal'
       const fileReferences = typeof content === 'object' && content ? (content.fileReferences || []) : []
       content = typeof content === 'object' && content ? content.content : content
       // 直接重新发送消息内容，不经过输入框
@@ -1650,7 +1647,11 @@ export default {
           null,
           true,
           this.webSearchEnabled,
-          [], "", [], fileReferences,
+          [],
+          "",
+          [],
+          fileReferences,
+          interactionMode,
         );
       }
     },
