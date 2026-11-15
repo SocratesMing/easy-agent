@@ -225,7 +225,7 @@
               @retry="handleRetry"
               @approve="handleToolApproval('approve', $event)"
               @reject="handleToolApproval('reject', $event)"
-              @edit="handleToolApproval('edit', $event)"
+              @edit="handleToolApproval('edit', $event)" @respond="handleToolApproval('respond', $event)"
               @open-panel="openManagePanel"
               @open-knowledge="openManagePanel('knowledge')"
             >

@@ -42,7 +42,8 @@ const MAX_NEW_FILE_LINES = 800
 const LINE_BUDGET = {
   'App.vue': 3370,
   'features/chat/components/ChatInput.vue': 4824,
-  'features/chat/components/ChatMessage.vue': 2523,
+  // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2523 → 2499
+  'features/chat/components/ChatMessage.vue': 2499,
   'features/experts/components/ExpertListPanel.vue': 2188,
   'features/connectors/components/ConnectorListPanel.vue': 1547,
   'features/settings/components/SettingsPanel.vue': 1226,

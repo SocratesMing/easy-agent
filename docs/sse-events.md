@@ -48,6 +48,91 @@
 时只回答第一个中断。拒绝决策的 `message` 是回给模型的说明，可省略：省略时（或收到旧前端写死的「请勿重试此删除命令」时）服务端按工具生成，例如「用户拒绝了创建这个定时任务……」（DA-15）。决策与待审批中断对不上（未知 ID、数量或类型不符）时接口返回 400——批处理
 HITL 会先保存恢复值再校验，非法决策会让线程卡死，所以必须在恢复前拒绝。
 
+### 规划 / 头脑风暴确认（2026-11-14）
+
+`ask_user` 是产品级交互工具，只允许 `respond` 决策；它不受 `hitl.enabled=false` 或自定义
+`hitl.tools` 名单影响。开启 `hitl.enabled` 时它与安全审批共用同一个
+`HumanInTheLoopMiddleware`，因此刷新页面、切换会话和跨副本恢复仍沿用同一套 checkpoint /
+`approval_required` / `/agent/chat/resume` 链路。
+
+定时任务等无人值守运行由 `enable_user_interaction=False` 建 Agent，不注入 `ask_user`，
+避免自动化任务停在无法人工完成的确认中断上。
+
+`approval_required.action_requests[]` 中的 `ask_user` 项形如：
+
+```json
+{
+  "tool_call_id": "call-ask-1",
+  "tool_name": "ask_user",
+  "allowed_decisions": ["respond"],
+  "interrupt_id": "int-1",
+  "action_index": 0,
+  "arguments": {
+    "title": "确认三个项目的方案",
+    "description": "这些选择会影响后续实现顺序。",
+    "questions": [
+      {
+        "id": "project-a",
+        "title": "项目 A 采用哪种方案？",
+        "multiple": false,
+        "required": true,
+        "options": [
+          {"id": "fast", "label": "快速版本", "recommended": true},
+          {"id": "full", "label": "完整版本", "description": "覆盖更多边界"}
+        ]
+      }
+    ],
+    "submit_label": "确认并继续",
+    "allow_note": true
+  }
+}
+```
+
+前端通过输入框的 `/plan` 指令切换本轮规划模式。头脑风暴不设专用模式指令，继续使用现有
+`brainstorm` 技能。收到 `ask_user` 后，每个问题
+渲染为堆叠轮播中的一张独立卡片；当前卡片参与操作，确认后自动滑向下一张，已完成步骤保留在
+顶部进度轨道中，点击已完成步骤或按 Esc 可反向滑回。
+单选 / 多选在每张卡片标题旁明确标注；候选项按纵向编号列表展示，支持数字键选择、上下键切换、
+Enter 确认、Esc 返回上一项。全部必选项完成后，前端调用 `/agent/chat/resume`，
+决策为：
+
+```json
+{
+  "type": "respond",
+  "message": "{\"answers\":{\"project-a\":\"fast\"},\"note\":\"先做核心流程\"}",
+  "interrupt_id": "int-1",
+  "action_index": 0
+}
+```
+
+`message` 是 JSON 字符串，包含 `answers`（问题 ID → 选项 ID；多选为数组）和可选 `note`。
+`respond` 和 `approve` 一样被视为该交互已完成；同一中断若意外混入其他写工具，前端必须把
+这些工具转为 `reject`，不能在用户确认规划时顺带执行副作用。
+
+规划确认的恢复请求额外携带：
+
+```json
+{
+  "confirmation_message": "1. 项目 A：快速版本\n2. 项目 B：Web、移动端",
+  "confirmation_message_id": "plan-confirm-...",
+  "split_assistant_message": true
+}
+```
+
+服务端会：
+
+1. 将中断前的 assistant 消息标记为已完成；
+2. 把 `confirmation_message` 作为普通用户消息落库，前端以与用户需求相同的用户气泡展示；
+3. 将 `respond` 后的续写保存为新的 assistant 消息，因此刷新后的顺序仍是
+   “用户需求 → 规划卡片 → 用户确认 → 后续执行”。
+
+该确认用户消息带 `display_only=true`，只用于界面投影；会话 thread / 模型历史水合会跳过它，
+避免把同一组选择同时作为 HumanMessage 和 ToolMessage 再喂给模型。
+
+前端只发送 `interaction_mode=normal|plan`；服务端保留 `brainstorm` 值仅用于旧客户端兼容，
+新界面统一使用 `brainstorm` 技能。模式说明只加入本轮模型上下文，不写入用户原话或历史消息。
+规划模式要求模型在多个关键分支会显著影响后续工作时，先完成 `ask_user` 逐项确认，再继续执行。
+
 `thread_id` 是**审批句柄**，格式固定为 `{session_id}-{message_id}`（前端据此还原 message_id，
 恢复请求原样回传）。DA-03 起开启 `agent.session_thread` 时，图实际跑在 `thread_id = session_id`
 的会话 thread 上，由服务端把句柄映射过去；句柄对不上会话当前这一轮（会话已有新消息、审批已处理）

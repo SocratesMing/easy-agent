@@ -38,6 +38,7 @@ SOURCE_EXPERT = "expert"
 SOURCE_SCHEDULING = "scheduling"
 SOURCE_FILE_CONTEXT = "file_context"
 SOURCE_WEB_SEARCH = "web_search"
+SOURCE_INTERACTION = "interaction"
 SOURCE_MCP = "mcp"
 
 KNOWN_SOURCES = frozenset(
@@ -48,12 +49,19 @@ KNOWN_SOURCES = frozenset(
         SOURCE_SCHEDULING,
         SOURCE_FILE_CONTEXT,
         SOURCE_WEB_SEARCH,
+        SOURCE_INTERACTION,
         SOURCE_MCP,
     }
 )
 
 #: ``interrupt_on`` 允许的决策（与 ``agent.py`` 现有配置一致）。
-ALLOWED_INTERRUPT_DECISIONS = ("approve", "edit", "reject")
+ALLOWED_INTERRUPT_DECISIONS = ("approve", "edit", "reject", "respond")
+
+#: MCP / 动态工具仍只允许传统的批准、编辑、拒绝，不能把任意工具响应冒充成结果。
+MCP_INTERRUPT_DECISIONS = ("approve", "edit", "reject")
+
+#: 向用户提问是 HITL 的 ``respond`` 决策：暂停工具执行，由用户直接提供工具结果。
+INTERACTION_DECISIONS = ("respond",)
 
 #: 删除类操作只给「批准 / 拒绝」：不给改参数，避免把 rm 的目标改成通配、
 #: 把删除路径改到审批之外的位置等方式绕过策略层（目录删除在 shell 层直接拒绝）。
@@ -81,6 +89,9 @@ class ToolSpec:
     #: HITL 触发条件的可读说明（文档/排查用，不参与判定）。
     hitl_trigger_note: str = ""
     hitl_order: int = 100
+    #: 产品交互中断（如 ask_user）：不受 hitl.enabled / hitl.tools 开关影响，
+    #: 只允许 respond 决策，工具本身永不执行。
+    interaction_only: bool = False
     inject_order: int | None = None
     condition_note: str = ""
     #: 由技能带出（DA-13）：不进 agent 的工具列表，交给 SkillsMiddleware(tools=...)，模型读到或
@@ -114,6 +125,12 @@ class ToolSpec:
                 )
         elif self.interrupt_decisions:
             raise ValueError(f"非 HITL 工具 {self.name!r} 不应声明 interrupt_decisions")
+        if self.interaction_only and not self.is_hitl:
+            raise ValueError(f"交互工具 {self.name!r} 必须启用 HITL 中断")
+        if self.interaction_only and self.interrupt_decisions != INTERACTION_DECISIONS:
+            raise ValueError(
+                f"交互工具 {self.name!r} 只允许 {INTERACTION_DECISIONS!r} 决策"
+            )
         if self.hitl_conditional and not self.is_hitl:
             raise ValueError(f"hitl_conditional 仅对 HITL 工具有意义: {self.name!r}")
         if self.hitl_conditional and not self.hitl_predicate:
@@ -151,6 +168,7 @@ class ToolBuildContext:
     session_id: str = ""
     workspace_name: str = ""
     enable_hitl: bool = True
+    enable_user_interaction: bool = True
     model_name: str = ""
     #: 专家会话（挂了专家）：不提供 save_expert，避免领域专家被借来创建 / 修改别的专家
     expert_session: bool = False
@@ -193,6 +211,11 @@ def _file_context_enabled(ctx: ToolBuildContext) -> bool:
 
 def _web_search_enabled(ctx: ToolBuildContext) -> bool:
     return ctx.web_search_tool is not None
+
+
+def _user_interaction_enabled(ctx: ToolBuildContext) -> bool:
+    """Only interactive chat turns may pause for ask_user; scheduled runs stay headless."""
+    return bool(ctx.enable_user_interaction)
 
 
 # ── 工具工厂（由装配根注入，注册表保持包内无 import 边） ─────────────────
@@ -260,6 +283,11 @@ def _build_web_search_tool(ctx: ToolBuildContext) -> Any:
         return None
     logger.info(f"[{ctx.sid}] 🌐 联网搜索已开启（注入 web_search 工具）")
     return ctx.web_search_tool
+
+
+def _build_ask_user_tool(ctx: ToolBuildContext) -> Any:
+    factory = _get_factory(ctx, "ask_user")
+    return factory()
 
 
 # 联网搜索开启时追加到系统提示词的行为约束（web_search 条目的 prompt_note）
@@ -436,6 +464,20 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
         source=SOURCE_BUILTIN,
         description="派生子代理（DeepAgents 内置）",
     ),
+    # 应用注入工具：ask_user 是产品级交互入口；其余顺序与改造前一致。
+    ToolSpec(
+        name="ask_user",
+        source=SOURCE_INTERACTION,
+        description="在规划 / 头脑风暴中让用户集中确认多个关键选择",
+        is_hitl=True,
+        interrupt_decisions=INTERACTION_DECISIONS,
+        hitl_order=15,
+        interaction_only=True,
+        inject_order=5,
+        condition_note="交互式聊天注入；定时任务等无人值守运行不注入",
+        condition=_user_interaction_enabled,
+        builder=_build_ask_user_tool,
+    ),
     # 应用注入工具（顺序 10/20/30/40/50，与改造前 if/append 顺序一致）
     ToolSpec(
         name="access_knowledge_original",
@@ -561,10 +603,10 @@ def builtin_tool_names() -> tuple[str, ...]:
 
 
 def hitl_tool_specs() -> tuple[ToolSpec, ...]:
-    """全部 HITL 工具（含条件 HITL），按 ``hitl_order`` 排序。
+    """全部会暂停等待用户的工具（含条件 HITL / 产品交互），按 ``hitl_order`` 排序。
 
     该顺序即 ``agent.py`` 构造 ``interrupt_on`` 的顺序：``execute`` →
-    ``save_expert`` → ``create_scheduled_task`` → ``access_knowledge_original``。
+    ``ask_user`` → ``save_expert`` → ...；实际仍按本会话注入的工具过滤。
     """
     return tuple(
         sorted(
@@ -574,16 +616,30 @@ def hitl_tool_specs() -> tuple[ToolSpec, ...]:
     )
 
 
+def interaction_tool_specs() -> tuple[ToolSpec, ...]:
+    """产品交互工具（只允许 ``respond``，不受安全审批开关影响）。"""
+    return tuple(
+        spec for spec in hitl_tool_specs() if spec.interaction_only
+    )
+
+
+def approval_tool_specs() -> tuple[ToolSpec, ...]:
+    """安全审批工具（受 ``hitl.enabled`` / ``hitl.tools`` 控制）。"""
+    return tuple(
+        spec for spec in hitl_tool_specs() if not spec.interaction_only
+    )
+
+
 def default_interrupt_tool_names() -> tuple[str, ...]:
     """派生 ``hitl.DEFAULT_INTERRUPT_TOOLS``。
 
-    只包含**无条件** HITL 工具；``execute`` / ``access_knowledge_original`` 带
-    ``when`` 谓词，由 ``agent.py`` 按注册表的 ``hitl_predicate`` 元数据构造，
-    不在此列表内。
+    只包含**无条件的安全审批**工具；产品交互工具由 ``interaction_tool_specs``
+    单独装配，``execute`` / ``access_knowledge_original`` 带 ``when`` 谓词，
+    由 ``agent.py`` 按注册表的 ``hitl_predicate`` 元数据构造，不在此列表内。
     """
     return tuple(
         spec.name
-        for spec in hitl_tool_specs()
+        for spec in approval_tool_specs()
         if not spec.hitl_conditional
     )
 
@@ -687,10 +743,13 @@ def build_session_tools(
 __all__ = [
     "ALLOWED_INTERRUPT_DECISIONS",
     "DESTRUCTIVE_INTERRUPT_DECISIONS",
+    "INTERACTION_DECISIONS",
     "KNOWN_SOURCES",
+    "MCP_INTERRUPT_DECISIONS",
     "SOURCE_BUILTIN",
     "SOURCE_EXPERT",
     "SOURCE_FILE_CONTEXT",
+    "SOURCE_INTERACTION",
     "SOURCE_KNOWLEDGE",
     "SOURCE_MCP",
     "SOURCE_SCHEDULING",
@@ -699,12 +758,14 @@ __all__ = [
     "ToolBuildContext",
     "ToolSpec",
     "WEB_SEARCH_OFF_PROMPT_NOTE",
+    "approval_tool_specs",
     "build_session_tools",
     "builtin_tool_names",
     "default_interrupt_tool_names",
     "get_tool_spec",
     "hitl_predicate_names",
     "hitl_tool_specs",
+    "interaction_tool_specs",
     "is_hitl_tool",
     "is_mutating_tool",
     "iter_tool_specs",

@@ -25,7 +25,7 @@
         @remove="removeFile"
         @retry="retryUpload"
       />
-      
+      <SelectedModeChip v-if="interactionMode !== 'normal'" :mode="interactionMode" @clear="interactionMode = 'normal'" />
       <div class="input-row">
         <div class="input-field">
           <div
@@ -193,7 +193,6 @@
             :disabled="isStreaming || disabled"
             hidden
           />
-
 
           <ModelPicker
             :models="models"
@@ -387,6 +386,8 @@ import { getKnowledgeStatus, getWebSearchStatus, getUploadLimits } from '../../.
 import { getUserSkills } from '../../../api/skills.js'
 import { iconCategoryFor } from '../../../utils/skillCategories.js'
 import { buildMessageText, parseSlashQuery, splitByQuery } from '../../../utils/skillSlash.js'
+import SelectedModeChip from './SelectedModeChip.vue'
+import { interactionCommandItems } from '../../../shared/chat/planInteraction.js'
 // 内联技能标签：标签文字 = textarea 文本里的子串，选中/删除/发送前的剥离都走这套纯逻辑
 import {
   buildSegments,
@@ -472,7 +473,7 @@ const EXPERT_SEARCH_DEBOUNCE_MS = 300
 
 export default {
   mixins: [promptEnhancementMixin, contextUsageMixin],
-  components: { PromptEnhancementActions, FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList, PlusList, PlusSubpanelHeader },
+  components: { SelectedModeChip, PromptEnhancementActions, FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList, PlusList, PlusSubpanelHeader },
   directives: { tip },
   props: {
     compactReason: { type: String, default: '请先开始对话' },
@@ -502,7 +503,7 @@ export default {
   },
   data() {
     return {
-      message: '',
+      message: '', interactionMode: 'normal',
       // 镜像渲染层显示的文字（textarea 文字透明，用户看到的都是这一层，见 syncMirror）
       mirrorText: '',
       uploadedFiles: [],
@@ -771,7 +772,7 @@ export default {
      * 右侧的 `/目录名` 与名称基本重复，不再单独上色，避免一行出现三处蓝。
      */
     menuItems() {
-      return [...commandItems(this.skillQuery, this.compactReason, this.compactBusy), ...this.filteredSkills]
+      return [...interactionCommandItems(this.skillQuery), ...commandItems(this.skillQuery, this.compactReason, this.compactBusy), ...this.filteredSkills]
     },
     pickerGroups() {
       return [
@@ -2037,7 +2038,8 @@ export default {
           this.webSearchEnabled,
           turnSkills,
           expertEditId,
-          knowledgeBaseIds
+          knowledgeBaseIds,
+          this.interactionMode
         )
 
         this.message = ''
@@ -2047,7 +2049,7 @@ export default {
         this.selectedSkills = []
         // 预选技能与待修改专家已随本条消息提交，清掉避免影响下一条
         this.preselectedSkillDirs = []
-        this.pendingExpertEditId = ''
+        this.pendingExpertEditId = ''; this.interactionMode = 'normal'
         this.dismissUploadNotice()
         this.closeSkillPicker()
         this.$nextTick(() => this.autoResize())
@@ -2265,6 +2267,7 @@ export default {
       const cleared = base.slice(0, start) + base.slice(caret)
 
       if (skill.command) {
+        if (skill.interactionMode) { if (this.isStreaming || this.disabled) return; this.interactionMode = skill.interactionMode; this.closeSkillPicker(); this.replaceTextWithCaret({ text: cleared, caret: start }); return }
         if (this.compactReason || skill.disabled) return
         this.closeSkillPicker()
         this.replaceTextWithCaret({ text: cleared, caret: start })

@@ -342,8 +342,13 @@ def _tool_factories() -> dict[str, Callable[..., Any]]:
         from easy_agent.tools.session_file_reader import ReadUploadedFileTool  # 延迟导入：工具模块加载隔离（单模块失败只跳过该工具）
         return ReadUploadedFileTool(**kwargs)
 
+    def _ask_user() -> Any:
+        from easy_agent.tools.user_interaction import create_ask_user_tool  # 延迟导入：工具模块加载隔离
+        return create_ask_user_tool()
+
     return {
         "access_knowledge_original": extend_agent_tools,
+        "ask_user": _ask_user,
         "create_scheduled_task": _scheduled_task,
         "save_expert": _save_expert,
         "read_uploaded_file": _read_uploaded_file,
@@ -353,6 +358,7 @@ def _tool_factories() -> dict[str, Callable[..., Any]]:
 async def get_or_create_agent_for_session(
     session_id: str, username: str = "default", workspace_name: str = "",
     enable_hitl: bool = True, model_name: str | None = None,
+    enable_user_interaction: bool = True,
     enable_web_search: bool | None = None,
     system_prompt_extra: str = "",
     expert_agent_id: str | None = None,
@@ -364,6 +370,10 @@ async def get_or_create_agent_for_session(
     取 False/None 时不注入。取 None 表示「跟随缓存」——用于 HITL 审批恢复等
     不带本轮开关的场景：若该会话已有缓存 Agent 则原样复用（不因开关差异驱逐，
     否则会重建 Agent 而丢失 checkpointer 中的中断态导致恢复失败）。
+
+    ``enable_user_interaction=False`` 供定时任务等无人值守运行使用：不注入
+    ``ask_user``，避免任务停在无法完成的交互中断上。交互式聊天保持默认 True；
+    该开关变化会驱逐缓存 Agent，防止调度会话后续在 UI 中继续时沿用错误工具集。
 
     ``expert_agent_id`` 为当前选中的专家 Agent ID（``None`` 与 ``""`` 等价，都表示
     通用 Agent）。专家提示词由调用方通过 ``system_prompt_extra`` 传入，这里只负责
@@ -390,6 +400,7 @@ async def get_or_create_agent_for_session(
             username=username,
             workspace_name=workspace_name,
             enable_hitl=enable_hitl,
+            enable_user_interaction=enable_user_interaction,
             model_name=model_name,
             enable_web_search=enable_web_search,
             system_prompt_extra=system_prompt_extra,
@@ -457,6 +468,7 @@ def _try_reuse_cached_agent(
     *,
     cached,
     effective_model: str,
+    enable_user_interaction: bool,
     web_search_enabled: bool,
     enable_web_search: bool | None,
     expert_key: str,
@@ -482,11 +494,14 @@ def _try_reuse_cached_agent(
     cached_scope = getattr(cached, "skill_whitelist", None)
     cached_scope_key = None if cached_scope is None else tuple(cached_scope)
     scope_changed = cached_scope_key != current_scope
+    cached_interaction = bool(getattr(cached, "enable_user_interaction", True))
+    interaction_changed = cached_interaction != enable_user_interaction
     if (
         effective_model != getattr(cached, "model_name", None)
         or not search_matches
         or expert_changed
         or scope_changed
+        or interaction_changed
     ):
         logger.info(
             f"[{session_id[-5:]}] Agent 参数变化 | "
@@ -494,6 +509,7 @@ def _try_reuse_cached_agent(
             f"web_search: {cached_web_search} -> {web_search_enabled} | "
             f"expert: {state.expert_key or '(通用)'} -> "
             f"{expert_key or '(通用)'} | "
+            f"user_interaction: {cached_interaction} -> {enable_user_interaction} | "
             f"skill_scope: {cached_scope_key or '全量'} -> {current_scope or '全量'} | "
             f"connectors: {only_connectors if only_connectors is not None else '(全部)'} | "
             f"驱逐旧 Agent 重建 | "
@@ -594,6 +610,7 @@ def _build_session_tools_for_agent(
     session_id: str,
     workspace_name: str,
     enable_hitl: bool,
+    enable_user_interaction: bool,
     model_name: str | None,
     expert_key: str,
     web_search_tool,
@@ -610,6 +627,7 @@ def _build_session_tools_for_agent(
             session_id=session_id,
             workspace_name=workspace_name,
             enable_hitl=enable_hitl,
+            enable_user_interaction=enable_user_interaction,
             model_name=model_name or "",
             expert_session=bool(expert_key),
             web_search_tool=web_search_tool,
@@ -647,6 +665,7 @@ def _register_created_agent(
 async def _get_or_create_agent_unlocked(
     session_id: str, username: str = "default", workspace_name: str = "",
     enable_hitl: bool = True, model_name: str | None = None,
+    enable_user_interaction: bool = True,
     enable_web_search: bool | None = None,
     system_prompt_extra: str = "",
     expert_agent_id: str | None = None,
@@ -676,6 +695,7 @@ async def _get_or_create_agent_unlocked(
         session_id,
         cached=state.agent,
         effective_model=effective_model,
+        enable_user_interaction=enable_user_interaction,
         web_search_enabled=web_search_enabled,
         enable_web_search=enable_web_search,
         expert_key=expert_key,
@@ -703,6 +723,7 @@ async def _get_or_create_agent_unlocked(
         session_id=session_id,
         workspace_name=workspace_name,
         enable_hitl=enable_hitl,
+        enable_user_interaction=enable_user_interaction,
         model_name=model_name,
         expert_key=expert_key,
         web_search_tool=web_search_tool,
@@ -719,6 +740,7 @@ async def _get_or_create_agent_unlocked(
         mcp_tools=tools,
         organization_id=organization_id,
         enable_hitl=enable_hitl,
+        enable_user_interaction=enable_user_interaction,
         model_name=model_name,
         enable_web_search=web_search_enabled,
         system_prompt_extra=system_prompt_extra,

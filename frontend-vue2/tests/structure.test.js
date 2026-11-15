@@ -63,7 +63,8 @@ const LINE_BUDGET = {
   // 2026-11-05 合并 audit-improvements（注释停用 AiSidebar）后按实测值更新：2035 → 2036
   [`${MOD}EasyAgentPage.vue`]: 2057,
   [`${MOD}features/chat/components/ChatInput.vue`]: 3688,
-  [`${MOD}features/chat/components/ChatMessage.vue`]: 2644,
+  // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2644 → 2616
+  [`${MOD}features/chat/components/ChatMessage.vue`]: 2616,
   [`${MOD}features/chat/components/AiSidebar.vue`]: 1726,
   [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2253,
   [`${MOD}features/chat/mixins/chatSession.js`]: 1733,

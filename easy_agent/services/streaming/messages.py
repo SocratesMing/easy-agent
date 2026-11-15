@@ -208,6 +208,10 @@ def stable_history(rows: list[dict]) -> list[dict]:
     """旧轮次用内容、时间和顺序生成稳定 ID；追加历史不会改变已有 ID。"""
     result = []
     for index, row in enumerate(rows):
+        if row.get("role") == "user" and row.get("display_only"):
+            # Plan confirmations are visible user bubbles but the tool response already
+            # carries the same choices into graph state; never hydrate them as a new turn.
+            continue
         if row.get("role") == "user" and not row.get("turn_id"):
             identity = f"{index}:{row.get('timestamp', '')}:{row.get('content', '')}"
             row = {**row, "turn_id": "legacy-" + hashlib.sha256(identity.encode()).hexdigest()[:24]}

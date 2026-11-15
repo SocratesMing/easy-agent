@@ -212,6 +212,15 @@ def test_agent_interrupt_config_respects_enable_hitl():
     assert _agent(enable_hitl=False)._build_interrupt_config() is None
 
 
+def test_ask_user_survives_hitl_switch_and_custom_approval_list():
+    cfg = build_interrupt_config(
+        [_tool("ask_user")],
+        enable_hitl=False,
+        approval_tools=["save_expert"],
+    )
+    assert cfg == {"ask_user": {"allowed_decisions": ["respond"]}}
+
+
 def test_agent_interrupt_config_changes_with_tool_set():
     base = set(_agent()._build_interrupt_config())
     with_creator = set(

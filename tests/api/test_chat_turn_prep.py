@@ -286,6 +286,22 @@ async def test_prepare_turn_returns_plan_and_persists_user_message(db, monkeypat
     assert session.messages[0]["turn_id"] == plan.message_id
 
 
+async def test_prepare_turn_persists_interaction_mode_for_retry(db, monkeypatch):
+    repo = ChatRepository(db)
+    captured = {}
+    _patch_collaborators(monkeypatch, captured)
+
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="请先规划方案", interaction_mode="plan"),
+        http_request=_http_request(),
+        repo=repo,
+        username="alice",
+    )
+
+    session = repo.get_session(plan.session_id)
+    assert session.messages[0]["interaction_mode"] == "plan"
+
+
 async def test_prepare_turn_expert_refusal_returns_refusal_plan(db, monkeypatch):
     """专家相关性预检拒答：返回 RefusalPlan，不建 Agent、不登记 run。"""
     repo = ChatRepository(db)
