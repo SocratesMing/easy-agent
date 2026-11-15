@@ -533,7 +533,6 @@ export default {
   box-sizing: border-box;
   padding: 8px 24px 0;
   overflow-y: hidden;
-  scrollbar-gutter: stable;
 }
 .composer-plan-panel-inner {
   width: 80%;
@@ -542,6 +541,8 @@ export default {
   margin: 0 auto;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+.composer-plan-panel-inner::-webkit-scrollbar { display: none; width: 0; height: 0; }
 </style>

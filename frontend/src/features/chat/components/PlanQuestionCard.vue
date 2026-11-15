@@ -188,7 +188,7 @@ function submit () {
 .pq-card {
   width: 100%;
   box-sizing: border-box;
-  padding: 11px 12px 10px;
+  padding: 10px 11px 9px;
   border: 1px solid var(--border-color, #e2e8f0);
   border-radius: 8px;
   background: var(--bg-primary, #fff);
@@ -255,8 +255,8 @@ function submit () {
 .pq-options {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-top: 9px;
+  gap: 2px;
+  margin-top: 8px;
 }
 
 .pq-option {
@@ -275,25 +275,25 @@ function submit () {
 .pq-option-body {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   box-sizing: border-box;
-  min-height: 32px;
-  padding: 6px 9px;
-  border: 1px solid var(--border-color, #e2e8f0);
+  min-height: 30px;
+  padding: 5px 7px;
+  border: 0;
   border-radius: 6px;
-  background: var(--bg-primary, #fff);
-  transition: border-color 0.15s, background 0.15s;
+  background: transparent;
+  transition: background-color 0.15s;
 }
 
 .pq-option-number {
   display: grid;
   place-items: center;
-  flex: 0 0 18px;
-  width: 18px;
-  height: 18px;
-  border: 1px solid var(--border-color, #e2e8f0);
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  border: 0;
   border-radius: 4px;
-  background: var(--bg-primary, #fff);
+  background: var(--bg-secondary, #f8fafc);
   color: var(--text-secondary, #64748b);
   font-size: 9px;
   font-weight: 650;
@@ -301,7 +301,7 @@ function submit () {
 }
 
 .pq-option.selected .pq-option-number {
-  border-color: var(--primary-color, #0ea5e9);
+  background: rgba(14, 165, 233, 0.1);
   color: var(--primary-color, #0ea5e9);
 }
 
@@ -315,17 +315,16 @@ function submit () {
 }
 
 .pq-option:hover .pq-option-body {
-  border-color: rgba(14, 165, 233, 0.55);
+  background: var(--bg-secondary, #f8fafc);
 }
 
 .pq-native:focus-visible + .pq-option-body {
   outline: 2px solid var(--primary-color, #0ea5e9);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 
 .pq-option.selected .pq-option-body {
-  border-color: var(--primary-color, #0ea5e9);
-  background: rgba(14, 165, 233, 0.04);
+  background: rgba(14, 165, 233, 0.075);
 }
 
 .pq-card.multiple .pq-check {
@@ -358,10 +357,11 @@ function submit () {
 }
 
 .pq-check {
-  position: relative;
-  flex: 0 0 14px;
-  width: 14px;
-  height: 14px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 15px;
+  width: 15px;
+  height: 15px;
   box-sizing: border-box;
   border: 1px solid #cbd5e1;
   border-radius: 50%;
@@ -375,14 +375,11 @@ function submit () {
 
 .pq-option.selected .pq-check::after {
   content: '';
-  position: absolute;
-  left: 3px;
-  top: 0;
-  width: 3px;
+  width: 4px;
   height: 7px;
   border: solid #fff;
   border-width: 0 1.5px 1.5px 0;
-  transform: rotate(45deg);
+  transform: translateY(-0.5px) rotate(45deg);
 }
 
 .pq-option-description {
@@ -556,5 +553,13 @@ html[data-theme="dark"] .pq-recommend {
 
 html[data-theme="dark"] .pq-check {
   border-color: #475569;
+}
+
+html[data-theme="dark"] .pq-option:hover .pq-option-body {
+  background: rgba(148, 163, 184, 0.08);
+}
+
+html[data-theme="dark"] .pq-option.selected .pq-option-body {
+  background: rgba(14, 165, 233, 0.14);
 }
 </style>
