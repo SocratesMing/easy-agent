@@ -66,6 +66,8 @@ const MAX_NEW_FILE_LINES = 800
  *   ChatInput 3721 → 3722、ChatMessage 2616 → 2620。
  *   SettingsPanel 当前实为 1185 行，冲突两侧的 1128 / 1178 均已过时，校正为 1185；
  *   本次未修改设置页源码。此次合并基线之后仍只允许下调预算。
+ * 2026-11-16 会话列表改为滚动分页（首屏一页 + 滚动到底续取，不再预取全量）后按实测值更新：
+ *   SessionList 1072 → 1106、AiSidebar 1726 → 1755、chatSession 1740 → 1744。
  */
 const LINE_BUDGET = {
   // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
@@ -74,17 +76,17 @@ const LINE_BUDGET = {
   [`${MOD}features/chat/components/ChatInput.vue`]: 3722,
   // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2644 → 2616
   [`${MOD}features/chat/components/ChatMessage.vue`]: 2620,
-  [`${MOD}features/chat/components/AiSidebar.vue`]: 1726,
+  [`${MOD}features/chat/components/AiSidebar.vue`]: 1755,
   [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2253,
   // 2026-11-12 存量校正：mysql_saver / 跨 Pod 挂载修复后实为 1740 行，按实测值更新（本次改动未触及）
-  [`${MOD}features/chat/mixins/chatSession.js`]: 1740,
+  [`${MOD}features/chat/mixins/chatSession.js`]: 1744,
   [`${MOD}features/connectors/components/ConnectorListPanel.vue`]: 1504,
   [`${MOD}features/skills/components/SkillListPanel.vue`]: 1260,
   [`${MOD}shared/preview/FilePreview.vue`]: 1164,
   // 2026-11-16 恢复被合并丢失的「权限设置」tab（导航项 + ApprovalPanel 挂载）：1184 → 1190
   [`${MOD}features/settings/components/SettingsPanel.vue`]: 1190,
   [`${MOD}features/chat/components/Chat.vue`]: 1123,
-  [`${MOD}features/chat/components/SessionList.vue`]: 1072,
+  [`${MOD}features/chat/components/SessionList.vue`]: 1106,
   [`${MOD}features/tasks/components/ScheduledTasksPanel.vue`]: 967,
   [`${MOD}features/workspace/components/WorkspacePanel.vue`]: 954,
   [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1782,

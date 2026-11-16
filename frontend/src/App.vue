@@ -17,6 +17,9 @@
         :email="userProfile.email"
         :knowledgeEnabled="knowledgeEnabled"
         :showKnowledge="showKnowledge"
+        :sessionsHasMore="sessionsHasMore"
+        :sessionsLoading="sessionsLoading"
+        @loadMoreSessions="handleLoadMoreSessions"
         @createSession="handleCreateSession"
         @selectSession="handleSelectSession"
         @deleteSession="handleDeleteSession"
@@ -137,7 +140,8 @@
 import { referenceMessage } from './shared/fileReferences.js'
 import { API_BASE_URL, APP_WELCOME_TITLE, appRuntime } from './config.js'
 import { readStandaloneSessionLink } from './features/chat/services/sessionNavigation.js'
-import { loadDailySessions, sessionGuard, isSessionDeleted, isStaleSessionError, initialSessionId as resolveInitialSessionId } from './shared/sessionManagement/state.js'
+import { sessionGuard, isSessionDeleted, isStaleSessionError, initialSessionId as resolveInitialSessionId } from './shared/sessionManagement/state.js'
+import { reloadSessionList, loadMoreSessionList } from './shared/sessionManagement/sessionPager.js'
 import { ref, computed, onMounted, watch, toRef, defineAsyncComponent } from 'vue'
 import SessionList from './features/chat/components/SessionList.vue'
 import Chat from './features/chat/components/Chat.vue'
@@ -151,7 +155,7 @@ import { chatBus, chatStore, syncPendingApprovalFlag } from './features/chat/sto
 import { useAiSidebarBridge } from './features/chat/composables/useAiSidebarBridge.js'
 import WorkspacePanel from './features/workspace/components/WorkspacePanel.vue'
 const SettingsPanel = defineAsyncComponent(() => import('./features/settings/components/SettingsPanel.vue'))
-import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
+import { createSession, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
 import { applyApprovalRequests, buildApprovalResumePlan, derivePendingApproval, markApprovalDecision } from './utils/hitlApproval.js'
 import { buildPlanContinuationTurn } from './shared/chat/planConfirmationTurn.js'
 import { createStreamChunkHandler, resumeUsageBase } from './features/chat/composables/useStreamChunks.js'
@@ -162,6 +166,9 @@ import { getKnowledgeStatus, getModels as fetchModels } from './api/settings.js'
 
 // 会话列表与「进行中」集合放在 chatStore：AI 侧边栏与主页面共用同一份
 const sessions = toRef(chatStore, 'sessions')
+// 会话列表分页：是否还有更早的会话、是否正在续取（由 sessionPager 维护）
+const sessionsHasMore = toRef(chatStore, 'sessionsHasMore')
+const sessionsLoading = toRef(chatStore, 'sessionsLoading')
 const currentSessionId = ref(null)
 const currentSessionHasFiles = ref(false)
 
@@ -1317,11 +1324,15 @@ async function handlePasswordlessUrlLogin() {
 
 async function loadSessions() {
   try {
-    await loadDailySessions(
-      () => listSessions(userProfile.value.username || null, { archived: false }),
-      rows => { sessions.value = rows; hydratePendingApprovalFromServer() },
-    )
+    await reloadSessionList(userProfile.value.username || null, hydratePendingApprovalFromServer)
   } catch (e) { if (!isStaleSessionError(e)) error.value = '加载会话列表失败' }
+}
+
+// 会话列表滚动到底：续取下一页（不阻塞首屏）
+async function handleLoadMoreSessions() {
+  try {
+    await loadMoreSessionList(userProfile.value.username || null, hydratePendingApprovalFromServer)
+  } catch (e) { if (!isStaleSessionError(e)) error.value = '加载更早的会话失败' }
 }
 
 // 服务端列表已带 pending_approval（后端按「最后一条消息」判定）：刷新页面后

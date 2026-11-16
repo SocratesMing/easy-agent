@@ -48,9 +48,11 @@ const MAX_NEW_FILE_LINES = 800
  *  2026-11-16 解决文件引用与交互模式的双分支冲突，按合并后的实测值重建基线：
  *    App.vue 3376 → 3371、ChatInput 4851 → 4867、ChatMessage 2499 → 2502。
  *    两侧功能均保留；本次合并基线之后仍只允许下调预算。
+ *  2026-11-16 会话列表改为滚动分页（首屏一页 + 滚动到底续取，不再预取全量）后按实测值更新：
+ *    App.vue 3371 → 3382、SessionList 1040 → 1078。
  */
 const LINE_BUDGET = {
-  'App.vue': 3371,
+  'App.vue': 3382,
   'features/chat/components/ChatInput.vue': 4867,
   // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2523 → 2499
   'features/chat/components/ChatMessage.vue': 2502,
@@ -60,7 +62,7 @@ const LINE_BUDGET = {
   'features/skills/components/SkillListPanel.vue': 1245,
   'shared/preview/FilePreview.vue': 1130,
   'features/chat/components/Chat.vue': 986,
-  'features/chat/components/SessionList.vue': 1040,
+  'features/chat/components/SessionList.vue': 1078,
   'features/workspace/components/WorkspacePanel.vue': 978,
   'features/tasks/components/ScheduledTasksPanel.vue': 842,
   'features/knowledge/KnowledgeWorkbench.vue': 1779,

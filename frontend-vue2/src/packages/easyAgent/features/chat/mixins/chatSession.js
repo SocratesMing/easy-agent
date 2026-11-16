@@ -1,16 +1,15 @@
 import { referenceMessage } from '../../../shared/fileReferences.js'
 import { connectSessionView } from "../../../shared/sessionManagement/viewLifecycle.js";
 import {
-  loadDailySessions,
   sessionGuard,
   isSessionDeleted,
   isStaleSessionError,
 } from "../../../shared/sessionManagement/state.js";
+import { reloadSessionList, loadMoreSessionList } from "../../../shared/sessionManagement/sessionPager.js";
 import { setReactive } from "../../../utils/reactiveSet.js";
 import { parseMCPResult } from "../../../utils/mcpResult.js";
 import {
   createSession,
-  listSessions,
   getChatHistory,
   deleteSession,
   sendMessage,
@@ -126,6 +125,13 @@ export default {
       set(v) {
         chatStore.sessions = v;
       },
+    },
+    // 会话列表分页：还有更早的会话 / 正在续取
+    sessionsHasMore() {
+      return chatStore.sessionsHasMore;
+    },
+    sessionsLoading() {
+      return chatStore.sessionsLoading;
     },
     streamingSessions: {
       get() {
@@ -929,16 +935,22 @@ export default {
     },
     async loadSessions() {
       try {
-        await loadDailySessions(
-          () => listSessions(chatStore.username || null, { archived: false }),
-          rows => {
-            this.sessions = rows;
-            this.hydratePendingApprovalFromServer();
-            if (this.error === "加载会话列表失败") this.error = null;
-          },
-        );
+        await reloadSessionList(chatStore.username || null, () => {
+          this.hydratePendingApprovalFromServer();
+          if (this.error === "加载会话列表失败") this.error = null;
+        });
       } catch (e) {
         if (!isStaleSessionError(e)) this.error = "加载会话列表失败";
+      }
+    },
+    // 会话列表滚动到底：续取下一页（主页面与 AI 侧边栏共用同一份列表）
+    async loadMoreSessions() {
+      try {
+        await loadMoreSessionList(chatStore.username || null, () => {
+          this.hydratePendingApprovalFromServer();
+        });
+      } catch (e) {
+        if (!isStaleSessionError(e)) this.error = "加载更早的会话失败";
       }
     },
     // 服务端列表已带 pending_approval（后端按「最后一条消息」判定）：刷新页面后
