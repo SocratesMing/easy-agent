@@ -36,7 +36,7 @@ export function usageDateTicks(dates) {
     .filter(({ index }) => dates.length <= 7 || index % 5 === 0 || index === dates.length - 1)
 }
 
-/** Match the SVG viewport; padding keeps endpoint markers and zero values visible. */
+/** Match the SVG viewport; each date owns one slot, and model bars share that slot. */
 export function buildUsageChart(daily, hiddenIds = [], width = 720, height = 288) {
   const left = 72, right = Math.max(left + 1, width - 24), top = 20, bottom = height - 40
   const series = labelUsageSeries(daily.series)
@@ -46,16 +46,30 @@ export function buildUsageChart(daily, hiddenIds = [], width = 720, height = 288
   const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)))
   const step = Math.ceil([1, 2, 2.5, 5, 10].find(value => value * magnitude >= rawStep) * magnitude)
   const ceiling = step * 4
-  const x = index => left + index * (right - left) / Math.max(daily.dates.length - 1, 1)
+  const count = Math.max(daily.dates.length, 1)
+  const slot = (right - left) / count
+  const x = index => left + slot * (index + 0.5)
   const y = value => bottom - value / ceiling * (bottom - top)
+  const groupSize = Math.max(visible.length, 1)
+  const pad = slot * 0.14
+  const gap = groupSize > 1 ? Math.min(slot * 0.06, 4) : 0
+  const barWidth = Math.max(0, (slot - pad * 2 - gap * (groupSize - 1)) / groupSize)
   return {
-    left, right, top, bottom,
+    left, right, top, bottom, slot,
     ticks: Array.from({ length: 5 }, (_, index) => ({ value: index * step, y: y(index * step) })),
     dates: daily.dates.map((date, index) => ({ date, x: x(index), index })),
     dateTicks: usageDateTicks(daily.dates).map(tick => ({ ...tick, x: x(tick.index) })),
-    series: visible.map(item => {
-      const points = item.values.map((value, index) => ({ x: x(index), y: y(value), value }))
-      return { ...item, points, path: points.map((point, index) => `${index ? 'L' : 'M'}${point.x},${point.y}`).join(' ') }
-    }),
+    series: visible.map((item, seriesIndex) => ({
+      ...item,
+      barWidth,
+      points: item.values.map((value, index) => ({
+        x: x(index),
+        y: y(value),
+        value,
+        barX: left + slot * index + pad + seriesIndex * (barWidth + gap),
+        barWidth,
+        height: value / ceiling * (bottom - top),
+      })),
+    })),
   }
 }

@@ -53,7 +53,7 @@ test('Vue2 compiles and mounts cards, SVG, keyboard details and legend without r
     assert.match(vm.$el.querySelector('.usage-tooltip').textContent, /2026-10-24.*总Token：3,500/)
     vm.$el.querySelector('.usage-legend button').click()
     await Vue.nextTick()
-    assert.equal(vm.$el.querySelectorAll('.chart-line').length, 1)
+    assert.equal(vm.$el.querySelectorAll('.chart-bar').length, 7)
     assert.match(vm.$el.querySelector('.usage-tooltip').textContent, /deepseek-flash：3,500/)
     assert.deepEqual(errors, [])
   } finally {
