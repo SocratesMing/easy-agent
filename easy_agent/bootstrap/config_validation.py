@@ -25,7 +25,6 @@ from easy_agent.bootstrap.config_models import (
     PersonnelSyncConfig,
     PersonnelSyncPageConfig,
     ProviderConfig,
-    PromptEnhancementConfig,
     RetryConfig,
     SQLiteConfig,
     StreamingConfig,
@@ -60,7 +59,6 @@ KNOWN_TOP_LEVEL_KEYS = _fields(AgentConfig) | frozenset(
         "retry",
         "system_prompt_path",  # 旧键，兼容
         "summarization",
-        "prompt_enhancement",
         "tools",
         "web_search",
         "preset_questions",
@@ -104,7 +102,6 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
     "checkpoint.mysql": _fields(MySQLCheckpointSectionConfig),
     "hitl": _fields(HitlConfig),
     "summarization": _fields(SummarizationConfig),
-    "prompt_enhancement": _fields(PromptEnhancementConfig),
     "web_search": _fields(WebSearchConfig),
     "distributed_lock": _fields(DistributedLockConfig),
     "personnel": _fields(PersonnelConfig),

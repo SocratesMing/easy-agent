@@ -39,9 +39,9 @@ export function usageDateTicks(dates) {
     .filter(({ index }) => dates.length <= 7 || index % 5 === 0 || index === dates.length - 1)
 }
 
-/** Fixed SVG viewBox; padding keeps endpoint markers and zero values visible. */
-export function buildUsageChart(daily, hiddenIds = []) {
-  const left = 72, right = 696, top = 20, bottom = 248
+/** Match the SVG viewport; padding keeps endpoint markers and zero values visible. */
+export function buildUsageChart(daily, hiddenIds = [], width = 720, height = 288) {
+  const left = 72, right = Math.max(left + 1, width - 24), top = 20, bottom = height - 40
   const series = labelUsageSeries(daily.series)
   const visible = series.filter(item => !hiddenIds.includes(item.id))
   const peak = visible.reduce((max, item) => item.values.reduce((m, value) => Math.max(m, value), max), 0)

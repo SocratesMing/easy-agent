@@ -25,7 +25,12 @@
         @remove="removeFile"
         @retry="retryUpload"
       />
+      <SelectedModeChip v-if="interactionMode !== 'normal'" :mode="interactionMode" @clear="interactionMode = 'normal'" />
       
+      <div v-if="fileReferences.length" class="reference-tags">
+        <FileReferenceTag v-for="ref in fileReferences" :key="ref.path" :item="ref" removable @remove="removeReference(ref)" />
+      </div>
+      <FileReferencePicker ref="referencePicker" :open="referenceOpen" :session-id="sessionId || ''" :load-tree="getWorkspaceTree" :query="referenceSearch" :style="skillPickerStyle" @navigate="resetReferenceQuery" @select="selectReference" @close="closeReference" />
       <div class="input-row">
         <div class="input-field">
           <div
@@ -57,7 +62,7 @@
             ref="textareaRef"
             v-model="message"
             spellcheck="false"
-            v-tip:hover="'输入消息，Enter 发送 · Shift+Enter 换行 · 输入 / 唤起技能选择'"
+            v-tip:hover="'输入消息，Enter 发送 · Shift+Enter 换行 · 输入 / 选择技能 · 输入 @ 引用会话文件'"
             @keydown="onKeydown"
             @beforeinput="onBeforeInput"
             @paste="invalidateEnhancement"
@@ -69,7 +74,7 @@
             @keyup="updateCaretLine"
             @click="updateCaretLine"
             @scroll="updateCaretLine"
-            placeholder=""
+            placeholder="今天帮你做些什么？@ 引用会话文件，/ 调用技能与指令"
             :disabled="disabled"
             rows="1"
           ></textarea>
@@ -193,7 +198,6 @@
             :disabled="isStreaming || disabled"
             hidden
           />
-
 
           <ModelPicker
             :models="models"
@@ -382,11 +386,17 @@
 </template>
 
 <script>
-import { uploadFile, deleteFile } from '../../../api/files.js'
+import FileReferencePicker from './FileReferencePicker.vue'
+import FileReferenceTag from './FileReferenceTag.vue'
+import { referenceDraft, restoreReferenceDraft } from '../../../shared/fileReferences.js'
+import fileReferenceInputMixin from '../mixins/fileReferenceInputMixin.js'
+import { uploadFile, deleteFile, getWorkspaceTree } from '../../../api/files.js'
 import { getKnowledgeStatus, getWebSearchStatus, getUploadLimits } from '../../../api/settings.js'
 import { getUserSkills } from '../../../api/skills.js'
 import { iconCategoryFor } from '../../../utils/skillCategories.js'
 import { buildMessageText, parseSlashQuery, splitByQuery } from '../../../utils/skillSlash.js'
+import SelectedModeChip from './SelectedModeChip.vue'
+import { interactionCommandItems } from '../../../shared/chat/planInteraction.js'
 // 内联技能标签：标签文字 = textarea 文本里的子串，选中/删除/发送前的剥离都走这套纯逻辑
 import {
   buildSegments,
@@ -471,8 +481,8 @@ const PUBLIC_EXPERTS_MORE_STEP = 3
 const EXPERT_SEARCH_DEBOUNCE_MS = 300
 
 export default {
-  mixins: [promptEnhancementMixin, contextUsageMixin],
-  components: { PromptEnhancementActions, FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList, PlusList, PlusSubpanelHeader },
+  mixins: [promptEnhancementMixin, contextUsageMixin, fileReferenceInputMixin],
+  components: { SelectedModeChip, FileReferenceTag, FileReferencePicker, PromptEnhancementActions, FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList, PlusList, PlusSubpanelHeader },
   directives: { tip },
   props: {
     compactReason: { type: String, default: '请先开始对话' },
@@ -502,7 +512,7 @@ export default {
   },
   data() {
     return {
-      message: '',
+      message: '', interactionMode: 'normal',
       // 镜像渲染层显示的文字（textarea 文字透明，用户看到的都是这一层，见 syncMirror）
       mirrorText: '',
       uploadedFiles: [],
@@ -746,7 +756,7 @@ export default {
       return dirs
     },
     canSend() {
-      return this.message.trim() || this.uploadedFiles.length > 0 ||
+      return this.message.trim() || this.fileReferences.length > 0 || this.uploadedFiles.length > 0 ||
         this.selectedSkillDirs.length > 0
     },
     /**
@@ -771,7 +781,7 @@ export default {
      * 右侧的 `/目录名` 与名称基本重复，不再单独上色，避免一行出现三处蓝。
      */
     menuItems() {
-      return [...commandItems(this.skillQuery, this.compactReason, this.compactBusy), ...this.filteredSkills]
+      return [...interactionCommandItems(this.skillQuery), ...commandItems(this.skillQuery, this.compactReason, this.compactBusy), ...this.filteredSkills]
     },
     pickerGroups() {
       return [
@@ -835,6 +845,7 @@ export default {
     // 注意 oldVal 为 null（新对话加文件时触发的建会话）不清，否则会清掉刚选的文件。
     sessionId(newVal, oldVal) {
       if (newVal === oldVal) return
+      this.restoreInitialReferences(newVal, oldVal); this.closeReference()
       // 会话已切换/已创建：下一次发送需要按新的 sessionId 重新判断
       this._pendingSessionPromise = null
       if (oldVal && newVal !== oldVal) {
@@ -857,7 +868,7 @@ export default {
     },
     message(val) {
       try {
-        sessionStorage.setItem(this.draftKey, val)
+        sessionStorage.setItem(this.draftKey, referenceDraft(val, this.fileReferences, this.sessionId, sessionStorage.getItem(this.draftKey)))
       } catch (e) {
         // 隐私模式等场景下 sessionStorage 可能不可用，忽略即可
       }
@@ -890,7 +901,7 @@ export default {
     try {
       const draft = sessionStorage.getItem(this.draftKey)
       if (draft) {
-        this.message = draft
+        Object.assign(this, restoreReferenceDraft(draft, this.sessionId))
         this.$nextTick(() => this.autoResize())
       }
     } catch (e) {
@@ -950,6 +961,7 @@ export default {
     if (this._uploadNoticeTimer) clearTimeout(this._uploadNoticeTimer)
   },
   methods: {
+    getWorkspaceTree,
     async toggleWebSearch() {
       if (this.isStreaming || this.disabled) return
       // 页面加载可能早于后端配置完成（状态在 mounted 固化）：
@@ -2009,20 +2021,16 @@ export default {
       if (!this.canSend || this.disabled || this.preparingFiles || this.enhancement.pending) return
       this.preparingFiles = true
       try {
-        // 新对话的知识选择只存在本地：先取快照，再上传附件（上传会先创建会话）
         const knowledgeBaseIds = this.sessionId ? [] : [...this.pendingKnowledgeBaseIds]
 
-        // 新对话的附件此前未上传，发送时才落盘
         await this.preparePendingFiles()
 
-        // 等待所有文件上传完成
         const uploadingFiles = this.uploadedFiles.filter(f => f.uploadStatus === 'uploading')
         if (uploadingFiles.length > 0) {
           console.log('文件正在上传中，请稍候...')
           return
         }
 
-        // 只发送上传成功的文件：失败文件（无 id/file_path）不随消息发出、不在气泡中展示
         const failedFiles = this.uploadedFiles.filter(f => f.uploadStatus === 'error')
         if (failedFiles.length > 0) {
           console.warn(`[发送消息] ${failedFiles.length} 个文件上传失败，已从本次发送中剔除:`,
@@ -2040,24 +2048,11 @@ export default {
           }))
 
         const payload = this.buildPayload()
-        if (!payload && !filesToSend.length && !this.selectedSkillDirs.length) {
-          // 附件全部失败且没有正文/技能：保留文件与错误提示，不发空请求
+        if (!payload && !filesToSend.length && !this.selectedSkillDirs.length && !this.fileReferences.length) {
           return
         }
 
-        // 详细日志：记录发送操作、文件上传
-        const ts = new Date().toISOString()
-        console.log(`[${ts}] [发送消息] 内容: "${this.message.substring(0, 100)}" | 文件数: ${filesToSend.length}`)
-        if (filesToSend.length > 0) {
-          console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
-        }
-
-        // 技能以技能目录名提交（后端负责把 `/目录名` 拼进模型输入）；输入框里的内联标签只是 UI，
-        // 正文发送前会把标签整段剥掉（见 buildPayload）。连接器不随消息提交：本会话启用哪些连接器
-        // 由「+」面板的开关单独设置。
         const turnSkills = this.selectedSkillDirs
-        // 待修改专家 ID（专家面板「编辑」带入，不展示给用户）：随请求结构化字段上行，
-        // 后端校验归属后绑定为 save_expert 的修改目标
         const expertEditId = this.pendingExpertEditId
         this.$emit(
           'send',
@@ -2068,17 +2063,19 @@ export default {
           this.webSearchEnabled,
           turnSkills,
           expertEditId,
-          knowledgeBaseIds
+          knowledgeBaseIds,
+          this.fileReferences.slice(),
+          this.interactionMode
         )
 
         this.message = ''
+        this.fileReferences = []
+        this.closeReference()
         this.uploadedFiles = []
-        // 新对话选择已随消息提交；已有会话改选由选择器单独落库，这里清掉本地暂存
         if (this.sessionId) this.pendingKnowledgeBaseIds = []
         this.selectedSkills = []
-        // 预选技能与待修改专家已随本条消息提交，清掉避免影响下一条
         this.preselectedSkillDirs = []
-        this.pendingExpertEditId = ''
+        this.pendingExpertEditId = ''; this.interactionMode = 'normal'
         this.dismissUploadNotice()
         this.closeSkillPicker()
         this.$nextTick(() => this.autoResize())
@@ -2140,6 +2137,7 @@ export default {
       this.autoResize()
       this.updateCaretLine()
       this.updateSkillPicker()
+      this.updateReference(ta)
       this.syncMirror()
       this.$emit('typing')
     },
@@ -2296,6 +2294,7 @@ export default {
       const cleared = base.slice(0, start) + base.slice(caret)
 
       if (skill.command) {
+        if (skill.interactionMode) { if (this.isStreaming || this.disabled) return; this.interactionMode = skill.interactionMode; this.closeSkillPicker(); this.replaceTextWithCaret({ text: cleared, caret: start }); return }
         if (this.compactReason || skill.disabled) return
         this.closeSkillPicker()
         this.replaceTextWithCaret({ text: cleared, caret: start })
@@ -2430,6 +2429,7 @@ export default {
     /** 键盘：面板打开时接管 ↑↓ / Enter / Esc，其余情况保持原有 Enter 发送 */
     onKeydown(event) {
       if (event.isComposing || event.keyCode === 229) return
+      if (this.referenceOpen && this.$refs.referencePicker && this.$refs.referencePicker.key(event)) return
       if (this.handleTokenDeleteKey(event)) return
 
       if (this.skillPickerOpen) {
@@ -2474,6 +2474,11 @@ export default {
 
     /** 点击面板外的区域时收起技能面板 */
     closeSkillPickerOnClick(event) {
+      if (this.referenceOpen) {
+        const picker = this.$refs.referencePicker
+        if (picker && picker.$el.contains(eventTarget(event))) return
+        if (eventTarget(event) !== this.$refs.textareaRef) this.closeReference()
+      }
       if (!this.skillPickerOpen) return
       const picker = this.$refs.skillPickerRef
       if (picker && picker.contains(eventTarget(event))) return
@@ -2482,7 +2487,7 @@ export default {
 
     /** 窗口尺寸变化时重新定位（移动端键盘弹出会触发 resize） */
     handleViewportChange() {
-      if (this.skillPickerOpen) this.updateSkillPickerPosition()
+      if (this.skillPickerOpen || this.referenceOpen) this.updateSkillPickerPosition()
     },
   },
 }
@@ -3615,6 +3620,7 @@ export default {
 
 
 
+.reference-tags { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 16px 0; }
 </style>
 
 <style>

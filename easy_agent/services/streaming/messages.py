@@ -106,10 +106,18 @@ def _assistant_content_message(message: dict, reasoning: str = "") -> AIMessage:
     )
 
 
-def turn_message_text(message: str, files: list | None = None, skills: list | None = None) -> str:
-    """本轮存进 thread 的用户原话；只传文件 / 只选技能时给一个简短占位，避免空的用户消息。"""
+def turn_message_text(
+    message: str, files: list | None = None, skills: list | None = None,
+    file_references: list | None = None,
+) -> str:
+    """本轮与历史使用同一正文；仅传附件、技能或引用时避免空用户消息。"""
     if (message or "").strip():
         return message
+    if file_references:
+        return "查看引用对象：" + "、".join(
+            ref["path"] + ("/" if ref["type"] == "directory" else "")
+            for ref in file_references
+        )
     parts = []
     names = [str(f.get("filename")) for f in files or [] if isinstance(f, dict) and f.get("filename")]
     if names:
@@ -144,7 +152,10 @@ def build_context_messages(
     for message in stable_history(history_messages):
         if message.get("role") == "user":
             context_messages.append(
-                HumanMessage(content=str(message.get("content") or ""), id=message["turn_id"])
+                HumanMessage(content=turn_message_text(
+                    str(message.get("content") or ""),
+                    file_references=message.get("file_references"),
+                ), id=message["turn_id"])
             )
             continue
         if message.get("role") != "assistant":
@@ -208,6 +219,10 @@ def stable_history(rows: list[dict]) -> list[dict]:
     """旧轮次用内容、时间和顺序生成稳定 ID；追加历史不会改变已有 ID。"""
     result = []
     for index, row in enumerate(rows):
+        if row.get("role") == "user" and row.get("display_only"):
+            # Plan confirmations are visible user bubbles but the tool response already
+            # carries the same choices into graph state; never hydrate them as a new turn.
+            continue
         if row.get("role") == "user" and not row.get("turn_id"):
             identity = f"{index}:{row.get('timestamp', '')}:{row.get('content', '')}"
             row = {**row, "turn_id": "legacy-" + hashlib.sha256(identity.encode()).hexdigest()[:24]}

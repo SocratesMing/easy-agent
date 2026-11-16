@@ -41,16 +41,16 @@ function fixture(days = 7, total = 1200) {
 }
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() }
 
-test('range changes discard prior results and hide the old chart while loading', async () => {
+test('range changes keep summary cards mounted while the trend refreshes', async () => {
   const h = harness()
   assert.equal(h.pending[0].days, 7)
+  h.pending[0].resolve(fixture(7))
+  await flush()
+  const displayedUsage = h.vm.usage
   h.vm.changeDays(30)
-  assert.equal(h.pending[0].signal.aborted, true)
-  assert.equal(h.vm.usage, null)
+  assert.equal(h.vm.usage, displayedUsage)
   assert.equal(h.vm.loading, true)
   h.pending[1].resolve(fixture(30))
-  await flush()
-  h.pending[0].resolve(fixture(7, 999999))
   await flush()
   assert.equal(h.vm.usage.days, 30)
   assert.equal(h.vm.usage.summary.today, 1200)

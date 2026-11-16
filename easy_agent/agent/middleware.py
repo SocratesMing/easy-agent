@@ -2,7 +2,7 @@
 
 从 ``EasyAgent._build_middleware`` 抽出的纯函数：只依赖 ``config`` 与
 ``max_steps``，不读 ``self``。顺序：TodoList → ToolProgress → ToolError →
-ModelCallLimit → ToolCallLimit。
+ModelCallLimit → ToolCallLimit → ApprovalAudit。
 摘要中间件不在这里：它要绑定建图时的 model / backend，由 ``EasyAgent._create_agent``
 按同名原位替换框架默认项（DA-06，见 ``agent/summarization.py``）。
 """

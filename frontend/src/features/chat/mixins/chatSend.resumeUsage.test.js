@@ -4,7 +4,7 @@ import test from 'node:test'
 import { compileScript, parse } from '@vue/compiler-sfc'
 import { createStreamChunkHandler } from '../services/chunkHandler.js'
 import { resumeUsageBase } from '../services/streamUsage.js'
-import { buildResumeDecisions, markApprovalDecision } from '../../../utils/hitlApproval.js'
+import { buildApprovalResumePlan, markApprovalDecision } from '../../../utils/hitlApproval.js'
 import { setReactive } from '../../../utils/reactiveSet.js'
 
 // 执行真实审批入口和事件处理器，只替换网络请求与收尾回填。
@@ -45,9 +45,9 @@ for (const fromHistory of [false, true]) {
       onChunk({ type: 'done', usage: usage(5, 17.4), elapsed_time: 17.4 })
     }
     const handleToolApproval = new Function(
-      'resumeUsageBase', 'buildResumeDecisions', 'markApprovalDecision', 'setReactive', 'resumeStream',
+      'resumeUsageBase', 'buildApprovalResumePlan', 'markApprovalDecision', 'setReactive', 'resumeStream',
       `return ({${source.slice(method.start, method.end)}}).handleToolApproval`,
-    )(resumeUsageBase, buildResumeDecisions, markApprovalDecision, setReactive, resumeStream)
+    )(resumeUsageBase, buildApprovalResumePlan, markApprovalDecision, setReactive, resumeStream)
     await handleToolApproval.call(vm, 'approve')
     assert.equal(vm.sessionDuration, 37.4)
     assert.equal(vm.iterationCount, 10)

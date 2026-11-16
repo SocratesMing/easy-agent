@@ -157,7 +157,11 @@ def test_stream_status_uses_db_stream_owner(client, db):
         "/agent/chat/stream/status", params={"session_id": SESSION_ID}
     )
     assert active.status_code == 200
-    assert active.json() == {"session_id": SESSION_ID, "active": True}
+    assert active.json() == {
+        "session_id": SESSION_ID,
+        "active": True,
+        "replayable": False,
+    }
 
     _runtime(db).upsert_session_runtime(
         SESSION_ID, stream_owner="pod-a:123", stream_until=past
@@ -165,7 +169,11 @@ def test_stream_status_uses_db_stream_owner(client, db):
     expired = client.get(
         "/agent/chat/stream/status", params={"session_id": SESSION_ID}
     )
-    assert expired.json() == {"session_id": SESSION_ID, "active": False}
+    assert expired.json() == {
+        "session_id": SESSION_ID,
+        "active": False,
+        "replayable": False,
+    }
 
     # 其它用户 / 不存在的会话仍按 404 处理
     assert client.get(

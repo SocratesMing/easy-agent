@@ -114,6 +114,11 @@
       </div>
 
       <slot name="composer-prefix"></slot>
+      <div v-if="pendingPlanMessage" class="composer-plan-panel">
+        <div class="composer-plan-panel-inner">
+          <PlanInteractionPanel :message="pendingPlanMessage" @respond="handleRespond" />
+        </div>
+      </div>
       <ChatInput
         ref="composerRef"
         class="composer"
@@ -164,8 +169,10 @@ export default { components: { CitationPopover }, mixins: [contextCompactionMixi
 import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
+import PlanInteractionPanel from './PlanInteractionPanel.vue'
 import TodoListPanel from './TodoListPanel.vue'
 import { APP_WELCOME_TITLE } from '../../../config.js'
+import { pendingInteractionActions } from '../../../shared/chat/planInteraction.js'
 // 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
 const composerMode = ref('center')
 
@@ -201,6 +208,12 @@ const props = defineProps({
   showManageEntry: { type: Boolean, default: true }
 })
 const isSidebar = computed(() => props.variant === 'sidebar')
+const pendingPlanMessage = computed(() => {
+  const last = props.messages[props.messages.length - 1]
+  return last?.role === 'assistant' && pendingInteractionActions(last).length
+    ? last
+    : null
+})
 
 watch([() => props.messages, () => props.messages.length, () => props.sessionLoading], ([newMessages, , loading]) => {
   // 空会话显示居中输入框；有消息时输入框贴底。
@@ -246,7 +259,7 @@ const topbarFloating = computed(
   () => !showSessionTime.value && props.todos.length === 0 && showWorkspaceBtn.value
 )
 
-const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'edit', 'update:selectedModel', 'toggleWorkspace', 'clearExpert', 'selectExpert', 'expertPromptApplied', 'openPanel', 'openKnowledge', 'webSearchChange'])
+const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'edit', 'respond', 'retry', 'update:selectedModel', 'toggleWorkspace', 'clearExpert', 'selectExpert', 'expertPromptApplied', 'openPanel', 'openKnowledge', 'webSearchChange'])
 const messagesRef = ref(null)
 
 function formatSessionTime(isoStr) {
@@ -325,8 +338,8 @@ function goToNextUserMessage() {
   }
 }
 
-function handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = []) {
-  emit('sendMessage', message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds)
+function handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = [], fileReferences = [], interactionMode = 'normal') {
+  emit('sendMessage', message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds, fileReferences, interactionMode)
 }
 
 function handleRemoveFile(file, messageIndex) {
@@ -352,9 +365,8 @@ function userExpertFor(index) {
   return null
 }
 
-function handleRetry(content) {
-  // 向上传递重试事件
-  emit('retry', content)
+function handleRetry(request) {
+  emit('retry', request)
 }
 
 // payload: { interruptId }——回答哪一个待审批中断（DA-02），原样上抛
@@ -367,6 +379,10 @@ function handleApprove(payload) {
 
 function handleReject(payload) {
   emit('reject', payload)
+}
+
+function handleRespond(payload) {
+  emit('respond', payload)
 }
 
 function handleStop() {
@@ -396,10 +412,10 @@ function onVisualPrompt(event) {
   if (text) composerRef.value?.setMessage(text)
 }
 
-function onSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId = '', knowledgeBaseIds = []) {
+function onSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId = '', knowledgeBaseIds = [], fileReferences = [], interactionMode = 'normal') {
   composerMode.value = 'bottom'
   isAtBottom.value = true
-  handleSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds)
+  handleSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds, fileReferences, interactionMode)
 }
 
 // 是否贴底：用户位于滚动容器底部时为 true，向上滚动查看历史时为 false。
@@ -469,4 +485,22 @@ defineExpose({
   line-height: 20px;
 }
 .compaction-icon { width: 14px; height: 14px; flex: none; }
+.composer-plan-panel {
+  flex: 0 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 24px 0;
+  overflow-y: hidden;
+}
+.composer-plan-panel-inner {
+  width: 80%;
+  max-width: 900px;
+  max-height: min(50vh, 420px);
+  margin: 0 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.composer-plan-panel-inner::-webkit-scrollbar { display: none; width: 0; height: 0; }
 </style>

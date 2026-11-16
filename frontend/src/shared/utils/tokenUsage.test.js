@@ -50,3 +50,18 @@ test('date ticks show all seven dates and thirty-day endpoints', () => {
   assert.equal(usageDateTicks(Array.from({ length: 7 }, (_, i) => i)).length, 7)
   assert.deepEqual(usageDateTicks(Array.from({ length: 30 }, (_, i) => i)).map(t => t.index), [0, 5, 10, 15, 20, 25, 29])
 })
+
+
+test('resizing the viewport expands dates horizontally while retaining the value scale and axis insets', () => {
+  const daily = { dates: ['01', '02', '03'], series: [{ model_key: 'a', model_name: 'A', values: [0, 100, 50] }] }
+  const narrow = buildUsageChart(daily, [], 320, 220)
+  const wide = buildUsageChart(daily, [], 1000, 220)
+  assert.equal(wide.right - narrow.right, 680)
+  assert.equal(narrow.dates[0].x, wide.dates[0].x)
+  assert.equal(wide.dates.at(-1).x, 976)
+  assert.equal(narrow.dates.at(-1).x, 296)
+  assert.deepEqual(wide.ticks, narrow.ticks)
+  assert.deepEqual(wide.series[0].points.map(point => point.y), narrow.series[0].points.map(point => point.y))
+  assert.equal(wide.bottom, 180)
+  assert.equal(buildUsageChart(daily).bottom, 248)
+})

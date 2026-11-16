@@ -228,6 +228,7 @@
               @approve="handleToolApproval('approve', $event)"
               @reject="handleToolApproval('reject', $event)"
               @edit="handleToolApproval('edit', $event)"
+              @respond="handleToolApproval('respond', $event)"
               @openPanel="openManagePanel"
               @openKnowledge="openManagePanel('knowledge')"
             >

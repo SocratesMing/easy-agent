@@ -131,6 +131,7 @@
         @approve="handleToolApproval('approve', $event)"
         @reject="handleToolApproval('reject', $event)"
         @edit="handleToolApproval('edit', $event)"
+        @respond="handleToolApproval('respond', $event)"
         @open-panel="openSkillCenterPanel"
         @open-knowledge="openKnowledgeWorkbench"
         @select-expert="handleSummonExpertInPlace"
@@ -165,6 +166,7 @@
 </template>
 
 <script>
+import { referenceMessage } from './shared/fileReferences.js'
 import Vue from 'vue'
 import { loadDailySessions, sessionGuard, isSessionDeleted, isStaleSessionError, initialSessionId as resolveInitialSessionId } from './shared/sessionManagement/state.js'
 import SessionList from './features/chat/components/SessionList.vue'
@@ -1091,7 +1093,7 @@ export default {
     createStreamChunkHandler(ctx) {
       return createPageStreamChunkHandler(this, ctx)
     },
-    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = []) {
+    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = [], fileReferences = [], interactionMode = 'normal') {
       const userMsgId = `user-${Date.now()}`
       const preStreamUsage = { ...this.sessionUsage }
       // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1101,12 +1103,13 @@ export default {
       // 用于用户中途切换会话时，把用量更新写入所属会话的缓存而非当前显示
       let streamSessionId = this.currentSessionId
 
-      const contentWithFiles = message.trim() // 只去首尾空白：换行与缩进是用户原话，气泡按纯文本原样展示
+      const contentWithFiles = referenceMessage(message, fileReferences) // 保留用户换行；仅引用时与服务端占位正文一致
 
       const userMessage = {
         id: userMsgId,
         role: 'user',
         content: contentWithFiles,
+        file_references: fileReferences,
         files: files.map(f => ({
           filename: f.filename,
           size: f.size,
@@ -1115,6 +1118,7 @@ export default {
         })),
         created_at: new Date().toISOString()
       }
+      if (interactionMode !== 'normal') userMessage.interaction_mode = interactionMode
       // 结构化技能目录名（与后端落库字段同形）：气泡按它渲染技能标签，不再依赖从
       // 消息文本里反扒 `/技能名`。没有选中技能时不写该字段——手打 `/技能名` 的正文
       // 仍按老规则从文本解析，行为和改造前一致。
@@ -1240,7 +1244,7 @@ export default {
             ? this.selectedExpert.export_agent_id
             : '',
           // 新对话首条消息携带的知识库范围：后端建会话后先落 scope 再检索
-          knowledgeBaseIds && knowledgeBaseIds.length ? { knowledgeBaseIds } : null
+          { knowledgeBaseIds, fileReferences, interactionMode }
         )
 
         await this.refreshSessionFiles(null, 500)
@@ -1341,10 +1345,13 @@ export default {
       this.webSearchEnabled = Boolean(enabled)
     },
     handleRetry(content) {
+      const interactionMode = typeof content === 'object' && content ? (content.interactionMode || 'normal') : 'normal'
+      const fileReferences = typeof content === 'object' && content ? (content.fileReferences || []) : []
+      content = typeof content === 'object' && content ? content.content : content
       // 直接重新发送消息内容，不经过输入框
       console.log('[handleRetry] content type:', typeof content, 'value:', content)
 
-      if (content && typeof content === 'string' && content.trim()) {
+      if (typeof content === 'string' && (content.trim() || fileReferences.length)) {
         // 检查是否正在流式输出
         if (this.isStreaming) {
           this.error = '请等待当前消息完成'
@@ -1359,7 +1366,7 @@ export default {
 
         // 重试不经过输入框，联网开关必须从镜像取：漏传会落回 enableWebSearch 默认值 false，
         // 表现为「小地球亮着、后端收到 web_search: False」，模型据关闭态纪律回答未联网。
-        this.handleSendMessage(content.trim(), [], null, true, this.webSearchEnabled)
+        this.handleSendMessage(content.trim(), [], null, true, this.webSearchEnabled, [], '', [], fileReferences, interactionMode)
       }
     },
     handleStop() {

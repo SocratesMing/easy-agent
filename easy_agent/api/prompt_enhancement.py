@@ -5,12 +5,16 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, StrictStr, field_validator
 
-from easy_agent.bootstrap.config_models import PromptEnhancementConfig
 from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 from easy_agent.services.usage import resolve_usage_identity
 from easy_agent.utils.usage_context import usage_scope
 from easy_agent.middleware import get_current_username
-from easy_agent.services.prompt_enhancement import EnhancedPrompt, EnhancementError, enhance_prompt
+from easy_agent.services.prompt_enhancement import (
+    MAX_INPUT_CHARS,
+    EnhancedPrompt,
+    EnhancementError,
+    enhance_prompt,
+)
 
 router = APIRouter(prefix="/agent/prompts", tags=["Prompts"])
 
@@ -22,10 +26,7 @@ class EnhanceRequest(BaseModel):
     @field_validator("prompt")
     @classmethod
     def valid_prompt(cls, value: str) -> str:
-        runtime = get_runtime_agent_config() or {}
-        config = runtime.get("config")
-        settings = config.prompt_enhancement if config else PromptEnhancementConfig()
-        if not value.strip() or len(value) > settings.max_input_chars:
+        if not value.strip() or len(value) > MAX_INPUT_CHARS:
             raise ValueError("请输入有效提示词，或缩短输入内容")
         return value
 

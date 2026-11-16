@@ -111,6 +111,11 @@
       </div>
 
       <slot name="composer-prefix"></slot>
+      <div v-if="pendingPlanMessage" class="composer-plan-panel">
+        <div class="composer-plan-panel-inner">
+          <PlanInteractionPanel :message="pendingPlanMessage" @respond="handleRespond" />
+        </div>
+      </div>
       <ChatInput
         ref="composerRef"
         class="composer"
@@ -153,13 +158,15 @@ import CitationPopover from './CitationPopover.vue'
 import contextCompactionMixin from '../../../shared/compaction/mixin.js'
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
+import PlanInteractionPanel from './PlanInteractionPanel.vue'
 import TodoListPanel from './TodoListPanel.vue'
 import { getRuntime } from '../../../runtime/config.js'
+import { pendingInteractionActions } from '../../../shared/chat/planInteraction.js'
 // 预置问题卡片最多展示几张（一张卡片一条问题，多配的部分按顺序截断）
 const MAX_PRESET_CARDS = 6
 export default {
   mixins: [contextCompactionMixin, citationPopoverMixin],
-  components: { CitationPopover, ChatInput, ChatMessage, TodoListPanel },
+  components: { CitationPopover, ChatInput, ChatMessage, PlanInteractionPanel, TodoListPanel },
   props: {
   messages: {
     type: Array,
@@ -306,6 +313,12 @@ export default {
     topbarFloating() {
       return !this.showSessionTime && this.todos.length === 0 && this.showWorkspaceBtn
     },
+    pendingPlanMessage() {
+      const last = this.messages[this.messages.length - 1]
+      return last && last.role === 'assistant' && pendingInteractionActions(last).length
+        ? last
+        : null
+    },
     canGoToPrevUserMessage() {
       return this.userMessageIndices.length > 0 && this.currentUserMessageIndex < this.userMessageIndices.length - 1
     },
@@ -420,8 +433,8 @@ export default {
         })
       }
     },
-    handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = []) {
-      this.$emit('send-message', message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds)
+    handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = [], fileReferences = [], interactionMode = 'normal') {
+      this.$emit('send-message', message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds, fileReferences, interactionMode)
     },
     /**
      * 该条 assistant 消息对应哪一轮的专家（回答面板左上角的「头像 + 名称」）。
@@ -444,9 +457,8 @@ export default {
       const message = this.messages[messageIndex]
       this.$emit('remove-file', message, messageIndex, file)
     },
-    handleRetry(content) {
-      // 向上传递重试事件
-      this.$emit('retry', content)
+    handleRetry(request) {
+      this.$emit('retry', request)
     },
     // payload: { interruptId }——回答哪一个待审批中断（DA-02），原样上抛
     handleApprove(payload) {
@@ -457,6 +469,9 @@ export default {
     },
     handleEdit(payload) {
       this.$emit('edit', payload)
+    },
+    handleRespond(payload) {
+      this.$emit('respond', payload)
     },
     handleStop() {
       this.$emit('stop')
@@ -475,10 +490,10 @@ export default {
       const composer = this.$refs.composerRef
       if (composer) composer.setMessage(question)
     },
-    onSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId = '', knowledgeBaseIds = []) {
+    onSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId = '', knowledgeBaseIds = [], fileReferences = [], interactionMode = 'normal') {
       this.composerMode = 'bottom'
       this.isAtBottom = true
-      this.handleSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds)
+      this.handleSend(message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds, fileReferences, interactionMode)
     },
     handleScroll() {
       const el = this.$refs.messagesRef
@@ -509,3 +524,24 @@ export default {
 <style scoped src="../styles/chat.css"></style>
 
 <style scoped src="./compactionNotice.css"></style>
+
+<style scoped>
+.composer-plan-panel {
+  flex: 0 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 24px 0;
+  overflow-y: hidden;
+}
+.composer-plan-panel-inner {
+  width: 80%;
+  max-width: 900px;
+  max-height: min(50vh, 420px);
+  margin: 0 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.composer-plan-panel-inner::-webkit-scrollbar { display: none; width: 0; height: 0; }
+</style>
