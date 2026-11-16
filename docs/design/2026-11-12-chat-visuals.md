@@ -43,7 +43,8 @@
   `form-action 'none'`、`base-uri 'none'`。组件拿到的只有它自己的源码，也没有通道外传。
 - 组件里引用 CDN 上的 echarts / mermaid 会被换成本地托管的版本，其他外链脚本直接跳过。
 - 页面里的 markdown 仍按原规则转义模型写的原始 HTML（`renderer.html`），这次没有放宽。
-- 剩余风险：组件脚本可以让自己的 iframe 跳到外部地址（CSP 管不到导航），能带出的只有它自己的源码。
+- 剩余风险：组件脚本可以让自己的 iframe 跳到外部地址（CSP 管不到导航），而源码可能包含模型从对话中带入的数据。
+  因此 `html_widgets` 默认关闭；只有显式启用并配置出站网络限制的部署才允许交互组件。
 
 ## 配置
 
@@ -52,7 +53,7 @@
 ```yaml
 visual:
   enabled: true        # 总开关：false 时提示词不再提可视化，代码块按源码显示
-  html_widgets: true   # HTML 交互组件；false 只关这一类
+  html_widgets: false  # HTML 交互组件默认关闭；需要时显式开启并限制出站网络
 ```
 
 开关同时作用于三处：系统提示词（`agent/visual_prompt.py`，组装在联网说明之后、专家内容之前）、
