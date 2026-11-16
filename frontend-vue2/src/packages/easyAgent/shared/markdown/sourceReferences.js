@@ -5,7 +5,7 @@ import { tokenizeInlineMarkdown } from './index.js'
 import { protectCodeRegions } from './codeRegions.js'
 import { sourceUrl } from '../citations/sources.js'
 
-const REFERENCE = /\[知识(?:库)?依据\s*(\d+)\]|\[连接器依据\s+([^\]\n]+)\]|\[模型知识\]/g
+const REFERENCE = /\[知识(?:库)?依据\s*(\d+)\]|\[连接器依据\s+([^\]\n]+)\]|(?:（|\()\s*来源\s*[:：]\s*外部连接器\s*[（(]\s*([^）)\n]+?)\s*[）)]\s*(?:）|\))?|来源\s*[:：]\s*外部连接器\s*[（(]\s*([^）)\n]+?)\s*[）)]|\[模型知识\]/g
 
 /** 同一遍扫描用于分配编号与渲染，避免混合来源在表格、强调或代码中错位。 */
 export function rewriteReferences(content, reference, webLink) {
@@ -21,13 +21,24 @@ export function rewriteReferences(content, reference, webLink) {
         return token.raw.slice(0, offset) + walk(token.tokens) + token.raw.slice(offset + token.text.length)
       }
       if (token.type !== 'text') return token.raw
-      return token.raw.replace(REFERENCE, (raw, knowledge, connector) => {
+      return token.raw.replace(REFERENCE, (raw, knowledge, connector, legacyConnector, plainLegacyConnector) => {
         // 兼容已生成的旧消息：撤销的模型知识标记不再展示或分配引用编号。
-        if (!knowledge && !connector) return ''
-        const key = knowledge ? String(Number(knowledge)) : `mcp:${connector.trim()}`
+        if (!knowledge && !connector && !legacyConnector && !plainLegacyConnector) return ''
+        const key = knowledge
+          ? String(Number(knowledge))
+          : `mcp:${(connector || legacyConnector || plainLegacyConnector).trim()}`
         return reference(key, raw)
       })
     }).join('')
     return walk(tokenizeInlineMarkdown(text))
   })
+}
+
+/** 兼容旧回复只写工具名的来源说明；仅在候选 MCP 来源唯一时解析。 */
+export function resolveReferenceKey(key, candidateKeys) {
+  if (candidateKeys.includes(key)) return key
+  if (!key.startsWith('mcp:')) return key
+  const name = key.slice(4).trim()
+  const matches = candidateKeys.filter(candidate => candidate.startsWith('mcp:') && candidate.slice(4).split('/').at(-1) === name)
+  return matches.length === 1 ? matches[0] : key
 }
