@@ -96,6 +96,52 @@ def test_valid_tagged_decision_starts_the_resume(client, resume_setup):
     assert len(calls) == 1
 
 
+def test_resume_totals_reuse_writer_identity_when_username_changes(client, db, resume_setup, monkeypatch):
+    from easy_agent.db.repositories.token_usage import TokenUsageRepository
+    from easy_agent.db.repositories.user_repository import UserRepository
+    from easy_agent.services import usage
+    from easy_agent.services.streaming.sse import format_sse, parse_sse_frame
+    from easy_agent.utils.usage_context import UsageIdentity
+
+    sid, _ = resume_setup
+    users = UserRepository(db)
+    user = users.register_user("testuser", "secret123")
+    ledger = TokenUsageRepository(db)
+    lookups = []
+
+    def lookup(username):
+        lookups.append(username)
+        return users.get_user_by_username(username)
+
+    monkeypatch.setattr(usage, "get_user_repository", lambda: SimpleNamespace(get_user_by_username=lookup))
+
+    async def stream(**kwargs):
+        identity = kwargs["usage_identity"]
+        assert identity == UsageIdentity(user.user_id, sid)
+        user.username = "renamed-user"
+        users.update_user(user)
+        replacement = users.register_user("testuser", "secret123")
+        for event, user_id, incoming, outgoing in (
+            ("resumed-call", identity.user_id, 200, 20),
+            ("another-user", replacement.user_id, 900, 90),
+        ):
+            ledger.record_usage(
+                event_id=event, user_id=user_id, session_id=sid, model_key="default",
+                model_name="model", completed_at_ms=1, input_tokens=incoming, output_tokens=outgoing,
+            )
+        yield format_sse({"type": "done", "session_id": sid, "usage": {
+            "input_tokens": 1, "output_tokens": 1, "context_tokens": 200,
+        }})
+
+    monkeypatch.setattr(chat_turn, "resume_stream_generator", stream)
+    response = _resume(client, sid, [{"type": "approve", "interrupt_id": "int-A"}])
+    assert response.status_code == 200
+    events = [parse_sse_frame(line) for line in response.text.splitlines() if line.startswith("data:")]
+    done = next(event for event in events if event["type"] == "done")
+    assert done["usage"] == {"input_tokens": 200, "output_tokens": 20, "context_tokens": 200}
+    assert lookups == ["testuser"]
+
+
 def test_plan_confirmation_persists_user_message_and_splits_assistant(
     client, db, monkeypatch
 ):

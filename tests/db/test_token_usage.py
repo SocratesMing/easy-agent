@@ -11,6 +11,7 @@ import pytest
 from easy_agent.db.database import Database
 from easy_agent.db.repositories.token_usage import TokenUsageRepository
 from easy_agent.db.repositories.session_repository import SessionRepository
+from easy_agent.db.repositories.user_repository import UserRepository
 from easy_agent.db.schema import EXPECTED_TABLES, SCHEMA_VERSION
 from easy_agent.models.db import SessionModel
 
@@ -81,15 +82,74 @@ def test_session_totals_include_all_calls_and_models_without_crossing_users(db):
     record(repo, "other-user", bob.user_id, input=8000, session="chat")
     record(repo, "no-session", alice.user_id, input=7000)
 
-    assert repo.session_totals("session-alice", "chat") == {
+    assert repo.session_totals(alice.user_id, "chat") == {
         "input_tokens": 600, "output_tokens": 60,
     }
-    assert repo.session_totals("session-bob", "chat") == {
+    assert repo.session_totals(bob.user_id, "chat") == {
         "input_tokens": 8000, "output_tokens": 2,
     }
-    assert repo.session_totals("session-alice", "empty") == {
+    assert repo.session_totals(alice.user_id, "empty") == {
         "input_tokens": 0, "output_tokens": 0,
     }
+
+
+def test_session_totals_survive_rename_and_username_reuse(db):
+    users = UserRepository(db)
+    original = users.register_user("original-name", "secret123")
+    repo = TokenUsageRepository(db)
+    record(repo, "original-call", original.user_id, input=100, output=20, session="chat")
+    original.username = "renamed-user"
+    users.update_user(original)
+    replacement = users.register_user("original-name", "secret123")
+    record(repo, "replacement-call", replacement.user_id, input=900, output=90, session="chat")
+
+    assert repo.session_totals(original.user_id, "chat") == {
+        "input_tokens": 100, "output_tokens": 20,
+    }
+    assert repo.session_totals(replacement.user_id, "chat") == {
+        "input_tokens": 900, "output_tokens": 90,
+    }
+
+
+def test_session_totals_query_uses_user_and_session_index(db):
+    repo = TokenUsageRepository(db)
+    record(repo, session="chat")
+    with db.get_connection() as conn:
+        columns = [row[2] for row in conn.execute("PRAGMA index_info(idx_token_usage_user_session)")]
+        assert columns == ["user_id", "session_id"]
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT SUM(input_tokens), SUM(output_tokens) "
+            "FROM token_usage WHERE user_id=? AND session_id=?", ("alice-id", "chat"),
+        ).fetchall()
+    assert any("idx_token_usage_user_session (user_id=? AND session_id=?)" in row[3] for row in plan)
+
+
+def test_schema_18_upgrade_adds_session_index_without_changing_ledger(tmp_path):
+    config = {"type": "sqlite", "sqlite": {"path": str(tmp_path / "schema18.db")}}
+    db = Database(config)
+    db.init_tables()
+    record(TokenUsageRepository(db), session="chat")
+    with db.get_connection() as conn:
+        conn.execute("DROP INDEX IF EXISTS idx_token_usage_user_session")
+        conn.execute("UPDATE schema_meta SET meta_value='18' WHERE meta_key='schema_version'")
+    db.close()
+
+    upgraded = Database(config)
+    try:
+        upgraded.init_tables()
+        upgraded.init_tables()  # The next startup must remain idempotent.
+        with upgraded.get_connection() as conn:
+            assert [row[2] for row in conn.execute("PRAGMA index_info(idx_token_usage_user_session)")] == [
+                "user_id", "session_id",
+            ]
+            assert int(conn.execute(
+                "SELECT meta_value FROM schema_meta WHERE meta_key='schema_version'",
+            ).fetchone()[0]) == SCHEMA_VERSION
+        assert TokenUsageRepository(upgraded).session_totals("alice-id", "chat") == {
+            "input_tokens": 10, "output_tokens": 2,
+        }
+    finally:
+        upgraded.close()
 
 
 @pytest.mark.parametrize("days,model_totals", [(7, [4700, 2300]), (30, [9300, 8000])])
@@ -298,6 +358,34 @@ def mysql_usage_db(monkeypatch):
         with admin.cursor() as cursor:
             cursor.execute(f"DROP DATABASE IF EXISTS `{name}`")
         admin.close()
+
+
+def test_real_mysql_session_totals_and_schema_18_index_upgrade(mysql_usage_db):
+    db = mysql_usage_db
+    users = UserRepository(db)
+    user = users.register_user("original-name", "secret123")
+    repo = TokenUsageRepository(db)
+    record(repo, "original", user.user_id, input=100, output=20, session="chat")
+    user.username = "renamed-user"
+    users.update_user(user)
+    replacement = users.register_user("original-name", "secret123")
+    record(repo, "replacement", replacement.user_id, input=900, output=90, session="chat")
+    record(repo, "other-session", user.user_id, input=800, session="other")
+    record(repo, "no-session", user.user_id, input=700)
+
+    with db.get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("DROP INDEX idx_token_usage_user_session ON token_usage")
+            cursor.execute("UPDATE schema_meta SET meta_value='18' WHERE meta_key='schema_version'")
+    db.init_tables()
+    db.init_tables()
+    with db.get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SHOW INDEX FROM token_usage WHERE Key_name='idx_token_usage_user_session'")
+            columns = sorted(cursor.fetchall(), key=lambda row: row["Seq_in_index"])
+            assert [row["Column_name"] for row in columns] == ["user_id", "session_id"]
+    assert repo.session_totals(user.user_id, "chat") == {"input_tokens": 100, "output_tokens": 20}
+    assert repo.session_totals(replacement.user_id, "chat") == {"input_tokens": 900, "output_tokens": 90}
 
 
 def test_real_mysql_fixed_data_case_identity_and_read_committed_snapshot(

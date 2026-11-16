@@ -72,7 +72,7 @@ class TokenUsageRepository:
             finally:
                 cursor.close()
 
-    def session_totals(self, username: str, session_id: str) -> dict:
+    def session_totals(self, user_id: str, session_id: str) -> dict:
         """All recorded calls for this user's conversation, across turns/models."""
         with self._db.get_connection() as conn:
             cursor = conn.cursor()
@@ -80,12 +80,12 @@ class TokenUsageRepository:
                 self._db._execute(
                     cursor,
                     """
-                    SELECT COALESCE(SUM(t.input_tokens), 0) AS input_tokens,
-                           COALESCE(SUM(t.output_tokens), 0) AS output_tokens
-                    FROM token_usage t JOIN users u ON u.user_id = t.user_id
-                    WHERE u.username = ? AND t.session_id = ?
+                    SELECT COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                           COALESCE(SUM(output_tokens), 0) AS output_tokens
+                    FROM token_usage
+                    WHERE user_id = ? AND session_id = ?
                     """,
-                    (username, session_id),
+                    (user_id, session_id),
                 )
                 return {key: int(value) for key, value in dict(cursor.fetchone()).items()}
             finally:

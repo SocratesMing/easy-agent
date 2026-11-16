@@ -75,7 +75,7 @@ from easy_agent.services.streaming.orchestrator import (
 )
 from easy_agent.services.usage import resolve_usage_identity
 from easy_agent.tools.user_interaction import interaction_mode_context
-from easy_agent.utils.usage_context import usage_scope
+from easy_agent.utils.usage_context import UsageIdentity, usage_scope
 from easy_agent.utils.blocking import run_blocking
 from easy_agent.utils.file_parser import parse_file_content
 from easy_agent.utils.prompt_probe import describe_prompt, prompt_fingerprint
@@ -523,6 +523,7 @@ class TurnPlan:
     knowledge_chat: Any
     event_stream: AsyncGenerator[str, None]
     outcome: StreamOutcome
+    usage_identity: UsageIdentity | None
 
 
 @dataclass(frozen=True)
@@ -534,6 +535,7 @@ class RefusalPlan:
     classification: str
     refusal: str
     event_stream: AsyncGenerator[str, None]
+    usage_identity: UsageIdentity | None
 
 
 @dataclass(frozen=True)
@@ -547,6 +549,7 @@ class ResumePlan:
     run_id: str
     event_stream: AsyncGenerator[str, None]
     outcome: StreamOutcome
+    usage_identity: UsageIdentity | None
 
 
 async def prepare_turn(
@@ -723,6 +726,7 @@ async def prepare_turn(
             event_stream=expert_runtime.refusal_event_stream(
                 session_id, expert_repo, refusal
             ),
+            usage_identity=identity,
         )
 
     # 「待修改专家」绑定：用户在专家面板点「编辑」后，前端把专家 ID 放进请求的
@@ -923,6 +927,7 @@ async def prepare_turn(
         knowledge_chat=knowledge_chat,
         event_stream=event_stream,
         outcome=outcome,
+        usage_identity=identity,
     )
 
 
@@ -1081,6 +1086,7 @@ async def prepare_resume(
         ),
     )
 
+    identity = await resolve_usage_identity(username, session_id)
     outcome = StreamOutcome()
     event_stream = resume_stream_generator(
         db=repo.database,
@@ -1093,6 +1099,7 @@ async def prepare_resume(
         handle=thread_id,
         outcome=outcome,
         split_assistant=bool(confirmation_message and request.split_assistant_message),
+        usage_identity=identity,
     )
     return ResumePlan(
         session_id=session_id,
@@ -1102,4 +1109,5 @@ async def prepare_resume(
         run_id=run_id,
         event_stream=event_stream,
         outcome=outcome,
+        usage_identity=identity,
     )
