@@ -349,7 +349,7 @@
         <header>
           <div>
             <h3>权限管理</h3>
-            <p>按部门 &gt; 处室 &gt; 团队勾选可见人员，或直接搜索姓名/账号；勾选目录级即全选该级别下所有人员。保存后，仅勾选人员可查看「{{ selectedBase ? selectedBase.name : '' }}」。如需配置知识库管理员权限，请前往人员管理。</p>
+            <p>按部门、处室、团队、角色筛选并勾选可见人员，或直接搜索姓名/账号。保存后，仅勾选人员可查看「{{ selectedBase ? selectedBase.name : '' }}」。如需配置知识库管理员权限，请前往人员管理。</p>
           </div>
           <button aria-label="关闭" @click="showPermissionModal = false"><IconX /></button>
         </header>
@@ -360,12 +360,7 @@
             <span v-if="permissionRestricted">当前已限定：仅勾选人员可见</span>
             <span v-else>当前：默认可见范围（公共空间对本部门成员可见）</span>
           </div>
-          <label class="ke-search-box ke-perm-search"><IconSearch /><input v-model="permissionQuery" placeholder="搜索人员姓名或账号" /><button v-if="permissionQuery" aria-label="清空搜索" @click="permissionQuery = ''"><IconX /></button></label>
-          <div v-if="permissionQuery.trim()" class="ke-perm-tree">
-            <label v-for="user in permissionSearchResults" :key="user.user_id" class="ke-perm-user"><input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" /><span>{{ user.display_name }}</span><small>{{ user.username }}</small></label>
-            <p v-if="!permissionSearchResults.length" class="ke-perm-empty">没有匹配的人员</p>
-          </div>
-          <KnowledgePermissionTree v-else :tree="permissionTree" :collapsed="permissionCollapsed" :is-collapsed="isPermCollapsed" empty-text="暂无可选人员，请先在人员与部门中导入账号。" @toggle-expand="togglePermExpand" @toggle-node="togglePermNode" />
+          <KnowledgePermissionPicker :users="permissionDirectory" empty-text="暂无可选人员，请先在人员与部门中导入账号。" />
           <p class="ke-permission-note">
             <template v-if="permSelectedTotal > 0">保存后，该知识库仅勾选人员及所有者、空间管理员可见；未勾选人员（含本部门其他成员）不可见。</template>
             <template v-else>未勾选任何人员，保存后恢复默认可见范围（公共空间对本部门成员可见）。</template>
@@ -456,10 +451,10 @@ import FileIcon from '../../shared/components/FileIcon.vue'
 import ChatMessage from '../chat/components/ChatMessage.vue'
 import KnowledgeAskFilter from './KnowledgeAskFilter.vue'
 import KnowledgeImportMenu from './KnowledgeImportMenu.vue'
+import KnowledgePermissionPicker from './KnowledgePermissionPicker.vue'
 import KnowledgePermissionTree from './KnowledgePermissionTree.vue'
 import { attachStream, getChatHistory, sendMessage } from '../../api/chat.js'
 import { cancelMessage } from './api.js'
-import { filterPermissionUsers } from './utils/permissions.js'
 import { processingElapsedText } from './utils/presentation.js'
 import {
   defaultTeamDepartmentId,
@@ -486,6 +481,7 @@ export default {
     ExcelPreview,
     FileIcon,
     KnowledgeImportMenu,
+    KnowledgePermissionPicker,
     KnowledgePermissionTree,
     IconArrowLeft,
     IconArrowUp,
@@ -686,13 +682,10 @@ const saving = ref(false)
 const baseForm = reactive({ name: '', description: '', visibility: 'personal', department_id: '' })
 const folderForm = reactive({ id: '', name: '', parentId: '' })
 const confirmation = reactive({ open: false, title: '', description: '', confirmLabel: '确认删除', tone: 'danger' })
-// 权限管理：人员目录（含 checked 勾选态）、三级树、展开态与受限标记
+// 权限管理：人员目录（含 checked 勾选态）与受限标记；四列筛选由 KnowledgePermissionPicker 负责
 const permissionDirectory = ref([])
-const permissionTree = ref([])
 const permissionDirectoryLoading = ref(false)
 const permissionRestricted = ref(false)
-const permissionCollapsed = ref({})
-const permissionQuery = ref(''); const permissionSearchResults = computed(() => filterPermissionUsers(permissionDirectory.value, permissionQuery.value))
 let permissionLoadSeq = 0
 
 // 创建知识库时的可见人员配置（与权限管理同款三级树，独立状态避免串扰）
@@ -1119,7 +1112,7 @@ async function downloadDocument(doc) {
   } catch (error) { handleError(error) }
 }
 
-// ---------------- 权限管理（部门 > 处室 > 团队 三级勾选树） ----------------
+// ---------------- 权限树（部门 > 处室 > 团队；创建知识库的可见人员配置复用） ----------------
 
 // 将人员目录按 部门 > 处室 > 团队 组装为三级树；缺级人员挂在上一级直下。
 // 节点持有 allUsers（子树全部人员），勾选态存在人员对象上，保证响应式。
@@ -1182,19 +1175,11 @@ function buildPermissionTree(users) {
 function togglePermNode(node, checked) {
   node.allUsers.forEach(user => { user.checked = checked })
 }
-function isPermCollapsed(key) { return Boolean(permissionCollapsed.value[key]) }
-function togglePermExpand(key) {
-  const next = { ...permissionCollapsed.value }
-  if (next[key]) delete next[key]
-  else next[key] = true
-  permissionCollapsed.value = next
-}
 
 async function openPermissions() {
   const seq = ++permissionLoadSeq
   showPermissionModal.value = true
   permissionDirectoryLoading.value = true
-  permissionCollapsed.value = {}; permissionQuery.value = ''
   try {
     const baseId = selectedBaseId.value
     const [permissionResponse, directoryResponse] = await Promise.all([
@@ -1213,12 +1198,10 @@ async function openPermissions() {
       checked: checkedIds.has(item.user_id),
     }))
     permissionDirectory.value = users
-    permissionTree.value = buildPermissionTree(users)
   } catch (error) {
     if (seq !== permissionLoadSeq) return
     handleError(error)
     permissionDirectory.value = []
-    permissionTree.value = []
   } finally {
     if (seq === permissionLoadSeq) permissionDirectoryLoading.value = false
   }
@@ -1668,7 +1651,6 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
       health,
       healthClass,
       healthLabel,
-      isPermCollapsed,
       knowledgeLayoutStyle,
       lastQuestion,
       askMetadataFilter, KnowledgeAskFilter,
@@ -1682,8 +1664,8 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
       openMoveDocument,
       openPermissions,
       operations,
-      permissionCollapsed, permissionDirectoryLoading, permissionQuery, permissionRestricted, permissionSearchResults,
-      permissionTree,
+      permissionDirectory,
+      permissionDirectoryLoading, permissionRestricted,
       permDirectoryTotal,
       permSelectedTotal,
       preview,
@@ -1731,7 +1713,6 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
       teamSpaceManagement,
       teamSpaceEmptyHint,
       teamSpaceOptionSuffix,
-      togglePermExpand,
       togglePermNode,
       toast,
       viewMode,

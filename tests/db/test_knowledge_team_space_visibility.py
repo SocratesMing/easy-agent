@@ -235,14 +235,15 @@ async def test_restricted_team_base_only_visible_to_selected_users(db, tmp_path)
 async def test_permission_directory_lists_active_users_without_owner_and_admin(
     db, tmp_path
 ):
-    """人员目录：在职账号全量返回（剔除 owner 与 bootstrap admin），带部门/处室/团队字段。"""
+    """人员目录：在职账号全量返回（剔除 owner 与 bootstrap admin），带部门/处室/团队/岗位字段。"""
     _insert_user(db, "u-owner", "owner", "dept-a")
     _insert_user(db, "u-alice", "alice", "dept-a")
     with db.get_connection() as conn:
         db._execute(
             conn.cursor(),
             "UPDATE users SET display_name='爱丽丝', department_name='金融市场部', "
-            "division_name='研究处', team_name='宏观团队' WHERE user_id='u-alice'",
+            "division_name='研究处', team_name='宏观团队', position='研究员' "
+            "WHERE user_id='u-alice'",
         )
     _insert_team_base(db, "base-a", "dept-a", owner_user_id="u-owner")
 
@@ -258,6 +259,7 @@ async def test_permission_directory_lists_active_users_without_owner_and_admin(
     assert item.department_name == "金融市场部"
     assert item.division_name == "研究处"
     assert item.team_name == "宏观团队"
+    assert item.position == "研究员"
 
 
 async def test_replace_permissions_rejects_department_subjects(db, tmp_path):

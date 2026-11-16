@@ -50,12 +50,14 @@ test('trims form values and does not put a password in personnel payloads', () =
     display_name: ' 张三 ',
     department_id: ' d-01 ',
     department_name: ' 金融市场部 ',
+    position: ' 研究员 ',
     personnel_source: ' HR导出_2026-09 ',
     account_status: '启用',
   })
 
   assert.equal(payload.username, 'zhangsan')
   assert.equal(payload.display_name, '张三')
+  assert.equal(payload.position, '研究员')
   assert.equal(payload.account_status, 'active')
   assert.equal(payload.source, 'HR导出_2026-09')
   assert.equal(Object.hasOwn(payload, 'password'), false)
