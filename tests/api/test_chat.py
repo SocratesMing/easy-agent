@@ -2,7 +2,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-import easy_agent.api.chat as chat_api
+import easy_agent.services.agents.chat_turn as chat_turn
 
 
 def test_chat_stream_returns_tokens(client):
@@ -10,6 +10,56 @@ def test_chat_stream_returns_tokens(client):
     assert resp.status_code == 200
     # SSE 流：至少应返回 data: 事件行
     assert "data:" in resp.text
+
+
+def test_chat_stream_accumulates_all_calls_across_turns_and_matches_history(client, db, monkeypatch):
+    from easy_agent.db.repositories.message_repository import MessageRepository
+    from easy_agent.db.repositories.token_usage import TokenUsageRepository
+    from easy_agent.services.streaming.sse import format_sse, parse_sse_frame
+
+    user = db.register_user("testuser", "secret123")
+    repo = TokenUsageRepository(db)
+    _patch_stream(monkeypatch)
+
+    async def measured_stream(**kwargs):
+        sid, mid = kwargs["session_id"], kwargs["message_id"]
+        for step in (1, 2):
+            repo.record_usage(
+                event_id=f"{mid}:{step}", user_id=user.user_id, session_id=sid,
+                model_key="default", model_name="model", completed_at_ms=step,
+                input_tokens=step * 100, output_tokens=step * 10,
+            )
+            yield format_sse({"type": "token_usage", "input_tokens": step * 100,
+                              "output_tokens": step * 10, "context_tokens": step * 100,
+                              "reasoning_tokens": step, "step_count": step, "elapsed_time": step})
+        snapshot = {"input_tokens": 200, "output_tokens": 20, "context_tokens": 200,
+                    "reasoning_tokens": 2, "step_count": 2, "elapsed_time": 2}
+        MessageRepository(db).update_last_assistant_message(sid, {
+            "role": "assistant", "content": "answer", "usage": snapshot,
+        })
+        yield format_sse({"type": "done", "session_id": sid, "usage": snapshot})
+
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", measured_stream)
+    sid = client.post("/agent/sessions", json={}).json()["session_id"]
+    for turn in (1, 2):
+        response = client.post("/agent/chat/stream", json={
+            "session_id": sid, "message_id": f"turn-{turn}", "message": "question",
+        })
+        assert response.status_code == 200
+        events = [parse_sse_frame(line) for line in response.text.splitlines() if line.startswith("data:")]
+        snapshots = [event for event in events if event["type"] == "token_usage"]
+        assert [(event["input_tokens"], event["output_tokens"]) for event in snapshots] == [
+            ((turn - 1) * 300 + 100, (turn - 1) * 30 + 10), (turn * 300, turn * 30),
+        ]
+        done = next(event for event in events if event["type"] == "done")
+        assert done["usage"] == {
+            "input_tokens": turn * 300, "output_tokens": turn * 30, "context_tokens": 200,
+            "reasoning_tokens": 2, "step_count": 2, "elapsed_time": 2,
+        }
+        history = client.get(f"/agent/sessions/{sid}/history").json()
+        assert history["usage"]["input_tokens"] == turn * 300
+        assert history["usage"]["output_tokens"] == turn * 30
+        assert history["usage"]["context_tokens"] == 200
 
 
 def test_stream_empty_message_400(client):
@@ -45,8 +95,8 @@ def test_stream_passes_web_search_flag(client, monkeypatch):
         captured["request"] = kwargs["request"]
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_get_agent)
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_get_agent)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
 
     resp = client.post(
         "/agent/chat/stream",
@@ -64,6 +114,44 @@ def test_stream_web_search_defaults_off(client):
     from easy_agent.models.api import ChatRequest
 
     assert ChatRequest(message="hi").enable_web_search is False
+
+
+def test_interaction_mode_defaults_to_normal_and_is_closed_set():
+    import pytest
+    from pydantic import ValidationError
+
+    from easy_agent.models.api import ChatRequest
+
+    assert ChatRequest(message="hi").interaction_mode == "normal"
+    assert ChatRequest(message="hi", interaction_mode="plan").interaction_mode == "plan"
+    assert (
+        ChatRequest(message="hi", interaction_mode="brainstorm").interaction_mode
+        == "brainstorm"
+    )
+    with pytest.raises(ValidationError):
+        ChatRequest(message="hi", interaction_mode="execute-now")
+
+
+def test_stream_passes_knowledge_base_ids_to_prepare(client, monkeypatch):
+    """新对话首条消息携带的知识库范围需透传给 prepare_knowledge_chat。"""
+    from easy_agent.knowledges.chat.chat_bridge import KnowledgeChatContext
+
+    captured = {}
+
+    async def fake_prepare(**kwargs):
+        captured.update(kwargs)
+        return KnowledgeChatContext(None, [], [])
+
+    _capture_agent(monkeypatch)
+    monkeypatch.setattr(chat_turn, "prepare_knowledge_chat", fake_prepare)
+
+    resp = client.post(
+        "/agent/chat/stream",
+        json={"message": "看看研报", "knowledge_base_ids": ["base-1", "base-2"]},
+    )
+
+    assert resp.status_code == 200
+    assert captured["knowledge_base_ids"] == ["base-1", "base-2"]
 
 
 def test_page_context_max_length_128000():
@@ -100,8 +188,8 @@ def _capture_agent(monkeypatch):
     async def fake_stream(**kwargs):
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_get_agent)
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_get_agent)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
     return captured
 
 
@@ -126,7 +214,7 @@ _SKILL_DISPLAY_NAMES = {"docx": "Word 文档", "pdf": "PDF 文档"}
 
 def _patch_skills(monkeypatch):
     """把用户技能目录固定为 docx / pdf，避免用例依赖本机实际安装的技能。"""
-    from easy_agent.services import skill_library
+    from easy_agent.services.skills import library as skill_library
 
     monkeypatch.setattr(
         skill_library, "list_user_skill_dirs", lambda username: list(_SKILL_DIRS)
@@ -150,8 +238,8 @@ def _patch_stream(monkeypatch):
         captured["stream_kwargs"] = kwargs
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_get_agent)
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_get_agent)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
     return captured
 
 
@@ -256,7 +344,7 @@ def test_stream_skills_field_unknown_dir_ignored(client, db, monkeypatch):
 
 def test_stream_disabled_skill_is_not_pinned(client, db, monkeypatch):
     """已停用的技能不在技能源里，pin 不到：只记日志，落库仍记下用户选了它。"""
-    from easy_agent.services import skill_library
+    from easy_agent.services.skills import library as skill_library
 
     _patch_skills(monkeypatch)
     disabled = [{**_SKILL_DIRS[0], "enabled": False}, _SKILL_DIRS[1]]

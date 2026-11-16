@@ -4,21 +4,22 @@
 
 - **鉴权**：全部 ``Depends(get_current_username)``，再用 ``user_id`` 做归属校验；
   非本人资源一律返回 **404**（不泄露存在性），与 ``chat.py`` 现有做法一致；
-- **落库与目录**：``db/expert_store.py``（单表 CRUD）+ ``services/expert_service.py``
+- **落库与目录**：``db/expert_store.py``（单表 CRUD）+ ``services/experts/service.py``
   （LLM 生成与版本目录），本文件只做编排与参数校验；
 - **执行走唯一入口 ``/agent/chat/stream``**：专家对话不再是独立接口。前端在聊天请求里
   带上 ``expert_agent_id``，由 ``api/chat.py`` 的专家分支完成「加载提示词 → 补装依赖技能
   → 职责范围预检 → 建 Agent」，与通用对话共用同一套 SSE 事件与会话/run 生命周期。
-  运行时逻辑在 ``services/expert_runtime.py``，本文件只保留 CRUD；
+  运行时逻辑在 ``services/experts/runtime.py``，本文件只保留 CRUD；
 - **专家提示词走 ``system_prompt_extra``**：不改 ``agent.py``，专家人设通过现成通道
   追加到系统提示词末尾（recency 最高，实际效果上主导通用人设）。
 
 批次 2B 起非路由辅助逻辑（用户/记录转换、配置读取、生成落库）移到
 ``api/expert_helpers.py``；2026-10 起对话运行时（提示词加载与护栏、消息落库、相关性
-预检、短路拒答流）下沉到 ``services/expert_runtime.py``。旧内部名字经 ``__all__``
+预检、短路拒答流）下沉到 ``services/experts/runtime.py``。旧内部名字经 ``__all__``
 re-export 继续可用。
 """
 
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -32,11 +33,9 @@ from easy_agent.db.expert_store import (
     STATUS_BUILDING,
 )
 from easy_agent.middleware import get_current_username
-from easy_agent.services import (
-    invalidate_user_agents,
-)
-from easy_agent.services import public_expert_service
-from easy_agent.services.expert_service import (
+from easy_agent.services.agents.manager import invalidate_user_agents
+from easy_agent.services.experts import public as public_expert_service
+from easy_agent.services.experts.service import (
     build_expert_ids,
     load_active_prompt_file,
     remove_expert_dir,
@@ -68,6 +67,8 @@ from easy_agent.api.expert_helpers import (
     _to_public,
     _with_guardrail,
 )
+from easy_agent.services.agents import tool_scope
+from easy_agent.services.skills import provision as skill_provision
 
 logger = logging.getLogger(__name__)
 
@@ -168,17 +169,17 @@ async def add_expert(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    user_id = _current_user_id(repo, username)
+    # 数据库层是同步的：查库 / 写库都放进线程，不占事件循环
+    user_id = await asyncio.to_thread(_current_user_id, repo, username)
     name_cn = request.name_cn.strip()
     store = repo
 
     # 中文名唯一：同一用户下不允许出现同名专家（含已软删除的记录）
-    _ensure_name_available(store, user_id, name_cn)
+    await asyncio.to_thread(_ensure_name_available, store, user_id, name_cn)
 
     expert_agent_id, name_en = build_expert_ids(request.name_cn)
 
     # 专家绑定的技能包（用户选择）：归一成 canonical 目录名后落库；不传 = 不绑定
-    from easy_agent.services import tool_scope
 
     selected_skills: list[str] = []
     if request.required_skills:
@@ -195,7 +196,8 @@ async def add_expert(
 
     # 先落 building 占位行：即使生成途中进程崩溃，也能查到一条记录供前端重试。
     # tag_id 不收前端传参，先置空，由大模型自动归类后回写。
-    store.create(
+    await asyncio.to_thread(
+        store.create,
         {
             "export_agent_id": expert_agent_id,
             "session_id": request.session_id or "",
@@ -210,7 +212,7 @@ async def add_expert(
             "export_file_path": "",
             "agent_status": STATUS_BUILDING,
             "export_version": 1,
-        }
+        },
     )
 
     record = await _generate_and_store(
@@ -234,9 +236,9 @@ async def update_expert(
     username: Annotated[str, Depends(get_current_username)],
 ):
     repo = _as_expert_repository(db)
-    user_id = _current_user_id(repo, username)
+    user_id = await asyncio.to_thread(_current_user_id, repo, username)
     store = repo
-    record = store.get_owned(request.export_agent_id, user_id)
+    record = await asyncio.to_thread(store.get_owned, request.export_agent_id, user_id)
     if record is None:
         raise HTTPException(status_code=404, detail="专家不存在")
 
@@ -248,7 +250,8 @@ async def update_expert(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # 改名时同样要求唯一（排除自己，否则原样保存也会被拦下）
-    _ensure_name_available(
+    await asyncio.to_thread(
+        _ensure_name_available,
         store,
         user_id,
         name_cn,
@@ -272,7 +275,6 @@ async def update_expert(
     # 由 _generate_and_store 里的大模型自动归类结果覆盖。
     meta = {"export_name_cn": name_cn, "export_prompt": user_prompt}
     if request.required_skills is not None:
-        from easy_agent.services import tool_scope
 
         kept, dropped = tool_scope.normalize_expert_skills(
             username, request.required_skills, "update"
@@ -292,12 +294,12 @@ async def update_expert(
             request.export_agent_id,
             kept or "（清空 → 技能库全量可见）",
         )
-    store.update_fields(request.export_agent_id, meta)
+    await asyncio.to_thread(store.update_fields, request.export_agent_id, meta)
 
     # 让该用户所有缓存 Agent 失效，下次请求用新版本的提示词重建
     invalidate_user_agents(username)
 
-    updated = store.get_owned(request.export_agent_id, user_id) or {}
+    updated = await asyncio.to_thread(store.get_owned, request.export_agent_id, user_id) or {}
     logger.info("专家修改成功 | %s | v%s", request.export_agent_id, new_version)
     return _to_public(updated)
 
@@ -306,7 +308,7 @@ async def update_expert(
 def list_experts(
     db: Annotated[ExpertRepository, Depends(get_expert_repository)],
     username: Annotated[str, Depends(get_current_username)],
-    keyword: str = Query("", description="按中英文名模糊搜索"),
+    keyword: str = Query("", description="按中英文名/功能描述模糊搜索"),
     status: str = Query("", description="按状态过滤：active/failed/disabled"),
     include_disabled: bool = Query(False, description="是否包含已删除（软删）的专家"),
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
@@ -526,7 +528,6 @@ def expert_required_skills(
 
     本接口**只读**：不会触发安装，也不会驱逐缓存（触发补装的是真正发消息那一刻）。
     """
-    from easy_agent.services import skill_provision
 
     report = skill_provision.required_skills_status(username, expert_id)
     if not report["required"]:
@@ -550,15 +551,17 @@ async def delete_expert(
     username: Annotated[str, Depends(get_current_username)],
 ):
     repo = _as_expert_repository(db)
-    user_id = _current_user_id(repo, username)
+    user_id = await asyncio.to_thread(_current_user_id, repo, username)
     store = repo
-    record = store.get_owned(request.export_agent_id, user_id)
+    record = await asyncio.to_thread(store.get_owned, request.export_agent_id, user_id)
     if record is None:
         raise HTTPException(status_code=404, detail="专家不存在")
 
-    removed = store.delete(request.export_agent_id, user_id, hard=request.hard)
+    removed = await asyncio.to_thread(
+        store.delete, request.export_agent_id, user_id, hard=request.hard
+    )
     if request.hard:
-        remove_expert_dir(username, request.export_agent_id)
+        await asyncio.to_thread(remove_expert_dir, username, request.export_agent_id)
 
     invalidate_user_agents(username)
     logger.info(

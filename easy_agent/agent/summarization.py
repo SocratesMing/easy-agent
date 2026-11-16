@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 _logged_models: set[str] = set()
 
 
-def summarization_settings(config, model_key: str | None = None) -> dict:
+def summarization_settings(config, model_key: str | None = None, *, manual: bool = False) -> dict:
     """把 config 比例折成官方 ``SummarizationMiddleware`` 的 token 参数。
 
     窗口取 ``model_key`` 对应模型的 ``context_length``。``model_key`` 是 ``config.models``
@@ -28,14 +28,14 @@ def summarization_settings(config, model_key: str | None = None) -> dict:
     不能拿 ``model.model_name`` 去查：那是 API 模型名（如 ``deepseek-v4.1-flash``），
     与配置键（``deepseek``）对不上，会一律退回默认模型。
     """
-    from easy_agent.agent.model import resolve_context_length
+    from easy_agent.agent.model import resolve_context_length  # 延迟导入：导入期重依赖：避免加载 langchain/deepagents 等重依赖
 
     thr = float(getattr(config.summarization, "compression_threshold", 0.0) or 0.8)
     tgt = float(getattr(config.summarization, "compression_target", 0.0) or 0.1)
     truncate_max_length = int(
         getattr(config.summarization, "truncate_arg_max_length", 0) or 2000
     )
-    if not bool(getattr(config.summarization, "enabled", True)):
+    if not manual and not bool(getattr(config.summarization, "enabled", True)):
         # 官方 create_deep_agent 的默认栈总会挂摘要中间件，无法靠"不传"关闭；
         # 这里把阈值抬到不可达，等价关闭压缩与参数截断（同名替换默认项仍在）。
         far = 1 << 40
@@ -78,7 +78,8 @@ def build_summarization_middleware(
     """
     from deepagents.middleware.summarization import SummarizationMiddleware
 
-    from easy_agent.agent.turn_context import TurnAwareSummarizationMiddleware
+    from easy_agent.agent.turn_context import TurnAwareSummarizationMiddleware  # 延迟导入：导入期重依赖：避免加载 langchain/deepagents 等重依赖
+    from easy_agent.agent.token_counting import count_context_tokens
 
     settings = summarization_settings(config, model_key)
     label = str(getattr(model, "model_name", None) or getattr(model, "model", None) or "model")
@@ -90,4 +91,4 @@ def build_summarization_middleware(
             "摘要阈值 | %s | trigger=%s keep=%s", label, settings["trigger"], settings["keep"]
         )
     cls = TurnAwareSummarizationMiddleware if render_turn else SummarizationMiddleware
-    return cls(model, backend=backend, **settings)
+    return cls(model, backend=backend, token_counter=count_context_tokens, **settings)

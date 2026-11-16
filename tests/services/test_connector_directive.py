@@ -14,8 +14,11 @@ from types import SimpleNamespace
 import pytest
 
 from easy_agent.bootstrap.config import Config
-from easy_agent.services import agent_manager as am
-from easy_agent.services import connectors, mcp
+from easy_agent.services.agents import manager as am
+from easy_agent.services.mcp import (
+    connectors,
+    tools as mcp,
+)
 
 SID = "session-connectors"
 
@@ -199,6 +202,8 @@ class _FakeAgent:
         self.kwargs = kwargs
         self.model_name = kwargs.get("model_name") or "deepseek"
         self.enable_web_search = bool(kwargs.get("enable_web_search"))
+        # 缓存驱逐会比对审批模式：替身必须带上，否则每次都被判「模式变化」
+        self.approval_mode = kwargs.get("approval_mode") or "manual"
         self.system_prompt = "SYS"
         self.system_prompt_extra = kwargs.get("system_prompt_extra", "")
         self.workspace_dir = "/tmp/ws"
@@ -210,9 +215,7 @@ class _FakeAgent:
 @pytest.fixture
 def manager(monkeypatch, tmp_path):
     """隔离 agent_manager：只关心「以什么 server_names 加载了 MCP 工具 + 是否重建」。"""
-    am._session_agents.clear()
-    am._session_expert.clear()
-    am._session_connectors.clear()
+    am._reset_session_state()
     _FakeAgent.instances = []
     calls: list[list[str] | None] = []
 
@@ -223,7 +226,22 @@ def manager(monkeypatch, tmp_path):
     monkeypatch.setattr(am, "EasyAgent", _FakeAgent)
     monkeypatch.setattr(am, "load_mcp_tools_for_user", _record_mcp)
     monkeypatch.setattr(
-        am, "get_database", lambda: SimpleNamespace(get_user_by_username=lambda u: None)
+        am,
+        "get_user_repository",
+        lambda: SimpleNamespace(get_user_by_username=lambda u: None),
+    )
+    # T3a：会话/运行期状态改走 db.providers 的领域 repository；用进程内假端口替换。
+    class _FakeSessionRuntimeRepository:
+        def get_session_runtime(self, session_id):
+            return None
+
+        def upsert_session_runtime(self, session_id, **kwargs):
+            return None
+
+    monkeypatch.setattr(
+        am,
+        "get_session_runtime_repository",
+        lambda: _FakeSessionRuntimeRepository(),
     )
     monkeypatch.setattr(
         am,
@@ -238,9 +256,7 @@ def manager(monkeypatch, tmp_path):
         },
     )
     yield calls
-    am._session_agents.clear()
-    am._session_expert.clear()
-    am._session_connectors.clear()
+    am._reset_session_state()
 
 
 async def _get(model_name="deepseek"):

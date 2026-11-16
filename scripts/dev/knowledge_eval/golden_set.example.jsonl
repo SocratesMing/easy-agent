@@ -1,0 +1,3 @@
+{"id": "q-001", "question": "请概括这份报告的主要结论", "base_ids": ["请替换为真实知识库ID"], "expected_document_names": ["示例报告.pdf"], "expected_document_ids": [], "should_refuse": false, "answer": "", "notes": "示例条目：命中该文档任意片段即算召回成功"}
+{"id": "q-002", "question": "本行持有5%以上股份的股东有几个", "base_ids": ["请替换为真实知识库ID"], "expected_document_names": ["示例报告.pdf"], "expected_document_ids": [], "should_refuse": false, "answer": "", "notes": "示例条目：计数类问题，用于观察聚合扩写是否生效"}
+{"id": "q-003", "question": "今天北京的天气怎么样", "base_ids": ["请替换为真实知识库ID"], "expected_document_names": [], "expected_document_ids": [], "should_refuse": true, "answer": "", "notes": "示例条目：与知识库无关，期望返回空证据"}

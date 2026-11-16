@@ -19,12 +19,15 @@ from easy_agent.bootstrap.config_models import (  # noqa: F401 - 兼容重导出
     DEFAULT_APP_WELCOME_TITLE,
     DEFAULT_WEB_SEARCH_API_URLS,
     AgentConfig,
+    CheckpointConfig,
     DatabaseConfig,
     DistributedLockConfig,
     ExpertTag,
     FileContextConfig,
+    HitlConfig,
     LLMConfig,
     MCPToolConfig,
+    MySQLCheckpointSectionConfig,
     MySQLConfig,
     MySQLPoolConfig,
     PersonnelConfig,
@@ -32,9 +35,11 @@ from easy_agent.bootstrap.config_models import (  # noqa: F401 - 兼容重导出
     ProviderConfig,
     RetryConfig,
     SQLiteConfig,
+    StreamingConfig,
     SummarizationConfig,
     ToolsConfig,
     UploadLimitsConfig,
+    VisualConfig,
     WebSearchConfig,
     blank_as_false,
 )
@@ -56,6 +61,7 @@ from easy_agent.bootstrap.config_validation import (  # noqa: F401 - 兼容重�
     validate_config_keys,
 )
 from easy_agent.bootstrap.env import env_str
+from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
 logger = logging.getLogger(__name__)
 
@@ -85,10 +91,16 @@ class Config(BaseModel):
         default_factory=DistributedLockConfig
     )
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)
+    hitl: HitlConfig = Field(default_factory=HitlConfig)
     personnel: PersonnelConfig = Field(default_factory=PersonnelConfig)
     upload_limits: UploadLimitsConfig = Field(default_factory=UploadLimitsConfig)
     file_context: FileContextConfig = Field(default_factory=FileContextConfig)
     """对话附件上传限额（upload_limits 段）；缺失该段时使用默认值 10/5/20。"""
+    streaming: StreamingConfig = Field(default_factory=StreamingConfig)
+    """SSE 流式响应配置（streaming 段）；缺失时心跳默认 15 秒。"""
+    visual: VisualConfig = Field(default_factory=VisualConfig)
+    """对话内可视化（visual 段）：ECharts、Mermaid 与 HTML 交互组件默认开启。"""
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
     active_model: str = "minimax"
     preset_questions: list[PresetQuestionGroup] = Field(default_factory=list)
@@ -103,7 +115,7 @@ class Config(BaseModel):
     """专家会话是否在创建 Agent 前做「相关性预检」（一次轻量 LLM 三分类）。
 
     开启时与本专家职责无关的消息**短路拒答**，Agent 不创建、工具零可达；预检
-    异常/超时一律放行（fail-open）。见 services/expert_relevance.py。"""
+    异常/超时一律放行（fail-open）。见 services/experts/relevance.py。"""
 
     expert_relevance_strict: bool = False
     """「部分相关」消息的口径：true = 整条拒答；false（默认）= 放行，交给职责边界块
@@ -126,7 +138,7 @@ class Config(BaseModel):
 
     注意本开关只做**登记**：公共技能包本体始终在 ``tools.skills_dir`` 下，不会复制
     进用户目录（DA-13 S2）。技能包缺失时只提示、不阻断对话，见
-    ``services/skill_provision.py``。"""
+    ``services/skills/provision.py``。"""
 
     expert_tool_scope_enabled: bool = True
     """专家会话是否按「专家选定的技能包」做**硬隔离**（默认开启）。
@@ -137,7 +149,7 @@ class Config(BaseModel):
     改造前的全量可见（= 不选即全部可用）。
 
     关闭后一律全量挂载，等价于改造前行为，用于线上出问题时的快速回退
-    （不需要回滚代码）。见 ``services/tool_scope.py``。"""
+    （不需要回滚代码）。见 ``services/agents/tool_scope.py``。"""
 
     app_welcome_title: str = DEFAULT_APP_WELCOME_TITLE
 
@@ -281,7 +293,11 @@ class Config(BaseModel):
                 # 这几段写成非键值映射时按默认值处理
                 "web_search": _get_section(data, "web_search") or {},
                 "distributed_lock": _get_section(data, "distributed_lock") or {},
+                "checkpoint": _get_section(data, "checkpoint") or {},
+                "hitl": _get_section(data, "hitl") or {},
                 "file_context": _get_section(data, "file_context") or {},
+                "streaming": _get_section(data, "streaming") or {},
+                "visual": _get_section(data, "visual") or {},
                 "upload_limits": cls._parse_upload_limits(data),
                 "models": models,
                 "active_model": active_model,
@@ -451,6 +467,25 @@ class Config(BaseModel):
         """将用户名转换为安全的目录名"""
         return "".join(c for c in username if c.isalnum() or c in ("_", "-")) or "user"
 
+    @staticmethod
+    def _configured_base_dir(config: "Config | None", attr: str, fallback: str) -> Path:
+        """取 ``agent.<attr>`` 目录；未传入 config 时读运行期配置，失败回退到 fallback。
+
+        运行期配置是 ``{"config": Config, ...}``，目录在 ``["config"].agent`` 上，
+        不在顶层 ``"agent"`` 字典。``.get("config")`` 的类型是 ``Any | None``，
+        先排除 None 再读 ``.agent``，否则类型检查会把这次访问判成对 None 取属性。
+        """
+        if config is not None:
+            return Path(getattr(config.agent, attr))
+        try:
+            runtime = get_runtime_agent_config()
+            loaded = runtime.get("config") if runtime else None
+            if loaded is None:
+                return Path(fallback)
+            return Path(getattr(loaded.agent, attr))
+        except Exception:
+            return Path(fallback)
+
     @classmethod
     def get_user_workspace_dir(cls, username: str, config: "Config | None" = None) -> Path:
         """获取用户的工作空间目录路径
@@ -467,19 +502,7 @@ class Config(BaseModel):
             用户工作空间路径，如 {workspace_dir}/{username}/
         """
         safe_name = cls.sanitize_username(username)
-        if config is not None:
-            base = Path(config.agent.workspace_dir)
-        else:
-            try:
-                # 运行期配置结构为 {"config": Config, "win":..., "agent_env":...}，
-                # 真正的目录在 _cfg["config"].agent.workspace_dir（而非顶层 "agent" 字典）。
-                # 惰性导入避免与 agent_manager 形成循环依赖。
-                from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
-                _cfg = get_runtime_agent_config()
-                agent_cfg = _cfg.get("config") if _cfg else None
-                base = Path(agent_cfg.agent.workspace_dir)
-            except Exception:
-                base = Path("./workspace")
+        base = cls._configured_base_dir(config, "workspace_dir", "./workspace")
         return base / safe_name
 
     @classmethod
@@ -489,17 +512,24 @@ class Config(BaseModel):
         文件可能不存在，由调用方判断后决定是否回退到全局 mcp.json。
         """
         safe_name = cls.sanitize_username(username)
-        if config is not None:
-            base = Path(config.agent.workspace_dir)
-        else:
-            try:
-                from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
-                _cfg = get_runtime_agent_config()
-                agent_cfg = _cfg.get("config") if _cfg else None
-                base = Path(agent_cfg.agent.workspace_dir)
-            except Exception:
-                base = Path("./workspace")
+        base = cls._configured_base_dir(config, "workspace_dir", "./workspace")
         return base / safe_name / "mcp.json"
+
+    @classmethod
+    def get_user_approval_settings_path(
+        cls, username: str, config: "Config | None" = None
+    ) -> Path:
+        """获取用户级审批模式配置文件路径：{workspace_dir}/.settings/{username}.json
+
+        **故意不放在用户工作区内**（``{workspace_dir}/{username}/``）：那个目录就是 AI 的
+        工作区根，``write_file`` / ``execute`` 都能写，权限配置放进去等于让 AI 给自己提权。
+        ``.settings`` 从 backend 的 ``/workspace/`` 路由里访问不到，``fs_safety`` 也会拒绝
+        工作区根之外的越界路径。``sanitize_username`` 只保留字母数字与 ``_ -``，
+        不会产生 ``.settings`` 这种以点开头的名字，两者不会撞车。
+        """
+        safe_name = cls.sanitize_username(username)
+        base = cls._configured_base_dir(config, "workspace_dir", "./workspace")
+        return base / ".settings" / f"{safe_name}.json"
 
     @classmethod
     def get_user_sessions_dir(cls, username: str, config: "Config | None" = None) -> Path:
@@ -517,17 +547,7 @@ class Config(BaseModel):
             用户会话日志目录路径，如 {sessions_dir}/{username}/
         """
         safe_name = cls.sanitize_username(username)
-        if config is not None:
-            base = Path(config.agent.sessions_dir)
-        else:
-            try:
-                from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
-
-                _cfg = get_runtime_agent_config()
-                agent_cfg = _cfg.get("config") if _cfg else None
-                base = Path(agent_cfg.agent.sessions_dir)
-            except Exception:
-                base = Path("./sessions")
+        base = cls._configured_base_dir(config, "sessions_dir", "./sessions")
         return base / safe_name
 
     @classmethod
@@ -546,17 +566,7 @@ class Config(BaseModel):
             用户记忆目录路径，如 {memories_dir}/{username}/
         """
         safe_name = cls.sanitize_username(username)
-        if config is not None:
-            base = Path(config.agent.memories_dir)
-        else:
-            try:
-                from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
-
-                _cfg = get_runtime_agent_config()
-                agent_cfg = _cfg.get("config") if _cfg else None
-                base = Path(agent_cfg.agent.memories_dir)
-            except Exception:
-                base = Path("./memories")
+        base = cls._configured_base_dir(config, "memories_dir", "./memories")
         return base / safe_name
 
     @staticmethod

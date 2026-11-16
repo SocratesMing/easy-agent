@@ -3,7 +3,7 @@
 覆盖：追加行为、开关关闭、空提示词、防重复拼接。
 """
 
-from easy_agent.services import expert_guardrail as guardrail
+from easy_agent.services.experts import guardrail as guardrail
 
 
 def test_append_guardrail_adds_block_after_prompt():

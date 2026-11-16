@@ -20,7 +20,9 @@ import logging
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
-from easy_agent.services.session_uploads import ensure_parsed_text
+from easy_agent.services.sessions.uploads import ensure_parsed_text
+from easy_agent.utils.blocking import run_blocking
+from easy_agent.db.providers import get_file_repository
 
 logger = logging.getLogger("easy_agent.tools.session_file_reader")
 
@@ -67,11 +69,15 @@ class ReadUploadedFileTool(BaseTool):
         if not filename.strip():
             return "错误：filename 不能为空。请传入 uploads/index.md 清单中的文件名（含扩展名）。"
 
-        from easy_agent.db import get_database
 
-        db = get_database()
+        # T3b：文件域走 FileRepository；session_uploads 的端口只要求
+        # get_session / get_session_files。
+        files = get_file_repository()
         try:
-            parsed = ensure_parsed_text(self.session_id, self.username, filename, db)
+            # 解析文件 + 查库都是同步的，放进线程，不占事件循环
+            parsed = await run_blocking(
+                ensure_parsed_text, self.session_id, self.username, filename, files
+            )
         except Exception as e:
             logger.warning(
                 f"[{self.session_id[-5:]}] read_uploaded_file 异常 | {filename} | {e}"

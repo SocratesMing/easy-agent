@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from easy_agent.services import expert_relevance as rel
+from easy_agent.services.experts import relevance as rel
 
 
 class _FakeLLM:

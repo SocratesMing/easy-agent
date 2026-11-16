@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from easy_agent.services import prompt_loader
+from easy_agent.services.agents import prompts as prompt_loader
 
 
 @pytest.fixture(autouse=True)
@@ -20,7 +20,7 @@ def _use_authoritative_prompts():
     yield
     prompt_loader._CONFIGURED_DIR = old
 
-from easy_agent.services.memory_manager import (
+from easy_agent.services.memory.manager import (
     MAX_LONG_TERM_MEMORY_CHARS,
     MAX_MEMORY_CHARS,
     build_long_term_memory_update_prompt,

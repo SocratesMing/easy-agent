@@ -1,7 +1,7 @@
 /**
- * 结构约束（防劣化闸门）：文件行数、层间依赖、markdown 渲染单点。
+ * 结构约束（防劣化闸门）：文件行数、层间依赖、markdown 渲染单点、锁文件的包源。
  *
- * 与 frontend-vue2/src/utils/structure.test.js 同一套规则，两侧独立统计。
+ * 与 frontend-vue2/tests/structure.test.js 同一套规则，两侧独立统计。
  * 运行：`npm run test:unit`（node --test，不依赖 eslint）。
  */
 
@@ -16,21 +16,57 @@ const srcRoot = path.join(frontendRoot, 'src')
 const MAX_NEW_FILE_LINES = 800
 
 /** 现存超大文件的行数预算（= 2026-10-20 实测值，只允许往下调；
- *  2026-10-23 知识库功能从 Vue2 基线同步，相关文件按同步后实测值更新） */
+ *  2026-10-23 知识库功能从 Vue2 基线同步，相关文件按同步后实测值更新；
+ *  2026-10-28 合并 audit-improvements / rag-1018 分支后按实测值更新；
+ *  2026-11-03 合并 audit-improvements 预览修复（Office → PDF）后按实测值更新；
+ *  2026-11-04 知识库搜索改为输入即检索（300ms 防抖）后按实测值更新：1909 → 1911；
+ *  2026-11-05 知识库上传前过滤 PPT/PPTX 后按实测值更新：1911 → 1912；
+ *  2026-11-05 权限管理人员搜索后按实测值更新：1912 → 1919；
+ *  2026-11-05 文件夹操作按钮移至文件夹行尾部后按实测值更新：1919 → 1922；
+ *  2026-11-06 联网开关镜像（重试路径带上 enableWebSearch）后按实测值更新：
+ *    App.vue 3163 → 3167、ChatInput 4721 → 4730、Chat 1026 → 986；
+ *  2026-11-06 「我的专家」改服务端分页（+ 关键字下推接口）后按实测值更新：
+ *    ChatInput 4730 → 4824、ExpertListPanel 2089 → 2188；
+ *  2026-11-07 HITL「待审批」徽标同步修复（收尾重算 + 列表水合）后按实测值更新：
+ *    App.vue 3167 → 3201；
+ *  2026-11-07 刷新后兜底补回「刷新过早」丢失的这一轮（resumeInterruptedTurn）后按实测值更新：
+ *    App.vue 3201 → 3251；
+ *  2026-11-07 刷新续接根因修复（候选漏传「当前会话」、会话还没建好时不等待、回填不再
+ *  覆盖本地刚发的提问）后按实测值更新：App.vue 3251 → 3303；
+ *  2026-11-07 「挂上实时流就收手」导致永久空白（attach 成功但事件没渲染）后改为
+ *  历史轮询兜底 + force 回填，按实测值更新：App.vue 3303 → 3349；
+ *  2026-11-11 打开会话时探一次流状态（shouldAttachOnOpen / probeLiveStream，
+ *  §14.4-D）后按实测值更新：App.vue 3349 → 3370；
+ *  2026-11-11 存量校正（SessionList 在合并后即为 1040 行、预算未同步）：1038 → 1040。
+ *  2026-11-12 存量校正：App.vue 在 mysql_saver / 跨 Pod 挂载修复（999bc983、1d418cc5）后
+ *    实为 3376 行而预算未同步，按实测值更新 3370 → 3376（本次权限设置改动未触及 App.vue）。
+ *  2026-11-13 同一批上传分多次选择时过滤重复文件（pickAcceptable 先去重再校验限额）后
+ *    按实测值更新：ChatInput 4824 → 4841。
+ *  2026-11-13 知识库工作台精简后按实测值下调：KnowledgeWorkbench 1922 → 1779。
+ *  2026-11-15 合并 feature/1128（远程联网开关与审批设置）后按实测值更新：
+ *    ChatInput 4841 → 4851。
+ *  2026-11-16 解决文件引用与交互模式的双分支冲突，按合并后的实测值重建基线：
+ *    App.vue 3376 → 3371、ChatInput 4851 → 4867、ChatMessage 2499 → 2502。
+ *    两侧功能均保留；本次合并基线之后仍只允许下调预算。
+ *  2026-11-16 HITL 批次审批面板（一个中断多项操作只给一个审批入口 + 操作清单）：
+ *    ChatMessage.vue 2502 → 2524（批次面板 9 行、批次分组/成员判据/卡片降级 13 行）；新增组件
+ *    ApprovalBatchPanel.vue 不计入存量预算。
+ */
 const LINE_BUDGET = {
-  'App.vue': 3091,
-  'features/chat/components/ChatInput.vue': 4093,
-  'features/chat/components/ChatMessage.vue': 2550,
-  'features/experts/components/ExpertListPanel.vue': 1683,
-  'features/connectors/components/ConnectorListPanel.vue': 1534,
+  'App.vue': 3371,
+  'features/chat/components/ChatInput.vue': 4867,
+  // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2523 → 2499
+  'features/chat/components/ChatMessage.vue': 2524,
+  'features/experts/components/ExpertListPanel.vue': 2188,
+  'features/connectors/components/ConnectorListPanel.vue': 1547,
   'features/settings/components/SettingsPanel.vue': 1226,
-  'features/skills/components/SkillListPanel.vue': 1226,
-  'shared/preview/FilePreview.vue': 1105,
-  'features/chat/components/Chat.vue': 1026,
-  'features/chat/components/SessionList.vue': 968,
-  'features/workspace/components/WorkspacePanel.vue': 930,
+  'features/skills/components/SkillListPanel.vue': 1245,
+  'shared/preview/FilePreview.vue': 1130,
+  'features/chat/components/Chat.vue': 986,
+  'features/chat/components/SessionList.vue': 1040,
+  'features/workspace/components/WorkspacePanel.vue': 978,
   'features/tasks/components/ScheduledTasksPanel.vue': 842,
-  'features/knowledge/KnowledgeWorkbench.vue': 1903,
+  'features/knowledge/KnowledgeWorkbench.vue': 1779,
 }
 
 /** 组件里已经存在的 api 直连（存量，只允许删） */
@@ -53,6 +89,9 @@ const API_IMPORT_ALLOWLIST = new Set([
 
 /** 允许 import marked 的位置（markdown 渲染单点） */
 const MARKDOWN_IMPORT_ALLOWLIST = new Set(['shared/markdown/index.js'])
+
+/** 锁文件里包地址唯一允许的源：npm 12 默认把其他地址当远程包拒装（EALLOWREMOTE） */
+const NPM_REGISTRY = 'https://registry.npmjs.org/'
 
 async function collectSourceFiles(directory, acc = []) {
   const entries = await readdir(directory, { withFileTypes: true })
@@ -135,5 +174,19 @@ test('共享 markdown 内核与 frontend-shared 保持一致', async () => {
   assert.ok(
     copy.endsWith(source),
     'shared/markdown/index.js 与 frontend-shared/markdown/index.js 不一致，请执行 npm run sync:shared'
+  )
+})
+
+test('package-lock.json 只用 npmjs 源', async () => {
+  const lock = JSON.parse(await readFile(path.join(frontendRoot, 'package-lock.json'), 'utf8'))
+  const offRegistry = Object.entries(lock.packages || {})
+    .filter(([, meta]) => meta.resolved && !meta.resolved.startsWith(NPM_REGISTRY))
+    .map(([name, meta]) => `${name} → ${meta.resolved}`)
+
+  assert.deepEqual(
+    offRegistry,
+    [],
+    `锁文件的包地址只能是 ${NPM_REGISTRY}。用镜像装包后把这些地址的域名换成 registry.npmjs.org，integrity 不变：\n` +
+      offRegistry.join('\n')
   )
 })

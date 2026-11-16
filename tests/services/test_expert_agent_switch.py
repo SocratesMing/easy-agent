@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import easy_agent.services.agent_manager as am
+import easy_agent.services.agents.manager as am
 from easy_agent.bootstrap.config import Config
 
 SID = "session-abcdef"
@@ -31,6 +31,8 @@ class _FakeAgent:
         self.kwargs = kwargs
         self.model_name = kwargs.get("model_name") or "deepseek"
         self.enable_web_search = bool(kwargs.get("enable_web_search"))
+        # 缓存驱逐会比对审批模式：替身必须带上，否则每次都被判「模式变化」
+        self.approval_mode = kwargs.get("approval_mode") or "manual"
         self.system_prompt_extra = kwargs.get("system_prompt_extra", "")
         self.workspace_dir = "/tmp/ws"
         self.workspace_virtual_path = "/workspace"
@@ -42,13 +44,18 @@ class _FakeAgent:
 @pytest.fixture()
 def manager(db, monkeypatch, tmp_path):
     """把 agent_manager 的外部依赖全部换成本地假实现。"""
-    am._session_agents.clear()
-    am._session_expert.clear()
-    am._session_connectors.clear()
+    am._reset_session_state()
     _FakeAgent.instances = []
 
     monkeypatch.setattr(am, "EasyAgent", _FakeAgent)
-    monkeypatch.setattr(am, "get_database", lambda: db)
+    _fake = db
+    # T3b：agent_manager 改走 db.providers 的领域 repository；测试里整体换成假端口。
+    for _provider in (
+        "get_session_repository",
+        "get_session_runtime_repository",
+        "get_user_repository",
+    ):
+        monkeypatch.setattr(am, _provider, lambda _fake=_fake: _fake)
 
     async def _no_mcp(_user=None, server_names=None):
         return []
@@ -67,8 +74,7 @@ def manager(db, monkeypatch, tmp_path):
         },
     )
     yield am
-    am._session_agents.clear()
-    am._session_expert.clear()
+    am._reset_session_state()
 
 
 async def _get(manager, expert_id=None, prompt=""):
@@ -162,7 +168,7 @@ async def test_remove_session_agent_clears_expert_record(manager):
 
     manager.remove_session_agent(SID)
     assert manager.get_session_expert(SID) == ""
-    assert SID not in am._session_agents
+    assert am.get_session_agent(SID) is None
 
     # 清理后重新获取应该是新建实例
     a2 = await _get(manager, "expert_A", "你是A")

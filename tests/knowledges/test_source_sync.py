@@ -2,22 +2,33 @@
 
 from __future__ import annotations
 
+import os
+import time
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
-from easy_agent.knowledges.core.config import SourceSyncConfig
-from easy_agent.knowledges.core.models import DocumentMetadataFilter
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.core.config import KnowledgeConfig, SourceSyncConfig
+from easy_agent.knowledges.core.models import DocumentMetadataFilter, KnowledgePrincipal
+from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.runtime.source_sync import (
+    MAX_UPLOAD_ATTEMPTS,
+    SourceSyncEngine,
     _iter_windows,
     build_source_query,
+    build_staged_name,
     build_upload_name,
+    cleanup_stale_staging_files,
+    copy_to_staging,
     date_folder_segments,
+    ensure_staging_dir,
     fetch_source_rows,
     parse_publish_date,
-    resolve_source_file,
+    parse_source_row,
+    resolve_batchid_file,
+    resolve_staging_dir,
     resolve_table_name,
     sanitize_title,
 )
@@ -44,6 +55,26 @@ def test_parse_publish_date(value, expected):
     assert parse_publish_date(value) == expected
 
 
+def test_parse_source_row_normalizes_fields():
+    row = parse_source_row(
+        {
+            "id": 101,
+            "publishDate": "2026-10-21 08:30:00",
+            "batchid": " a.pdf ",
+            "reportTitle": "报告",
+            "reportTag": " 公告 ",
+            "reportSecondSource": " 研究部 ",
+        }
+    )
+    assert row.record_id == "101"
+    assert row.publish_date == "2026-10-21"
+    assert row.batch_id == "a.pdf"
+    assert row.title == "报告"
+    assert row.report_tag == "公告"
+    assert row.second_source == "研究部"
+    assert parse_source_row({"id": None}).record_id == ""
+
+
 def test_build_upload_name_keeps_extension_and_sanitizes_title():
     name = build_upload_name("长安银行/2011年:年度报告", "123", r"D:\reports\a.PDF")
     assert name == "长安银行_2011年_年度报告_123.PDF"
@@ -64,7 +95,8 @@ def test_build_upload_name_truncates_long_title_by_utf8_bytes():
 
 def test_date_folder_segments_use_chinese_units():
     assert date_folder_segments("2026-10-23") == ["2026年", "10月", "23日"]
-    assert date_folder_segments("2026-01-05") == ["2026年", "1月", "5日"]
+    # 月/日补零，保证按目录名字典序排列时仍是自然顺序
+    assert date_folder_segments("2026-01-05") == ["2026年", "01月", "05日"]
 
 
 def test_sanitize_title_strips_illegal_chars():
@@ -102,50 +134,375 @@ def test_metadata_filter_rejects_invalid_range():
         DocumentMetadataFilter(publish_date_from="2026/10/01")
 
 
-def test_source_table_defaults_to_builtin_and_auto_creates():
-    table, create = resolve_table_name(SourceSyncConfig())
-    assert table == "easy_agent_report"
-    assert create is True
-    query = build_source_query(table)
-    assert "FROM `easy_agent_report`" in query
+def test_source_table_required_and_validated():
+    # 未配置表名：直接报错
+    with pytest.raises(RuntimeError):
+        resolve_table_name(SourceSyncConfig())
+
+    config = SourceSyncConfig(mysql={"table": "my_reports"})
+    assert resolve_table_name(config) == "my_reports"
+
+    query = build_source_query("my_reports")
+    assert "FROM `my_reports`" in query
+    assert "batchid" in query and "attacUrl" not in query
     assert "%(start)s" in query and "%(end)s" in query
 
 
-def test_source_table_can_be_overridden_and_validated():
+def test_source_sync_start_time_validates_hh_mm_ss():
+    assert SourceSyncConfig().start_time == ""
+    assert SourceSyncConfig(start_time="08:30:00").start_time == "08:30:00"
+    with pytest.raises(ValidationError):
+        SourceSyncConfig(start_time="25:00:00")
+    with pytest.raises(ValidationError):
+        SourceSyncConfig(start_time="08:30")
+
+
+def test_source_table_name_validated():
     config = SourceSyncConfig(mysql={"table": "my_reports"})
-    table, create = resolve_table_name(config)
-    assert (table, create) == ("my_reports", False)
+    assert resolve_table_name(config) == "my_reports"
 
     with pytest.raises(RuntimeError):
         resolve_table_name(SourceSyncConfig(mysql={"table": "bad-name;"}))
 
 
-def test_resolve_source_file_requires_absolute_without_root(tmp_path):
-    config = SourceSyncConfig()
-    absolute = tmp_path / "a.pdf"
-    assert resolve_source_file(config, str(absolute)) == absolute
-    assert resolve_source_file(config, "relative/a.pdf") is None
-    assert resolve_source_file(config, "") is None
-
-
-def test_resolve_source_file_remaps_to_configured_root(tmp_path):
+def test_resolve_batchid_file_matches_disk_name(tmp_path):
     config = SourceSyncConfig(file_root=str(tmp_path))
-    # 数据库存的是别处的绝对路径：只取文件名落到配置根目录
-    assert resolve_source_file(config, str(tmp_path / "other" / "a.pdf")) == tmp_path / "a.pdf"
-    # 相对路径：保留相对目录
-    assert resolve_source_file(config, "sub/a.pdf") == tmp_path / "sub" / "a.pdf"
+    # batchid 自带扩展名：直接命中
+    (tmp_path / "batch-001.pdf").write_bytes(b"x")
+    assert resolve_batchid_file(config, "batch-001.pdf") == tmp_path / "batch-001.pdf"
+    # batchid 不带扩展名：补扩展名匹配
+    assert resolve_batchid_file(config, "batch-001") == tmp_path / "batch-001.pdf"
+    # batchid 唯一：匹配不到就是磁盘上没有，不用其它字段兜底
+    assert resolve_batchid_file(config, "batch-404") is None
+    assert resolve_batchid_file(config, "") is None
+    assert resolve_batchid_file(SourceSyncConfig(), "batch-001") is None
 
 
-def test_resolve_source_file_rejects_relative_root(tmp_path):
+def test_resolve_batchid_file_rejects_relative_root(tmp_path):
     config = SourceSyncConfig(file_root="relative/root")
     with pytest.raises(RuntimeError):
-        resolve_source_file(config, str(tmp_path / "a.pdf"))
+        resolve_batchid_file(config, "batch-001")
 
 
-def test_fetch_source_rows_requires_host_and_database():
+# ---------------------------------------------------------------------------
+# 暂存目录：配置 / 创建 / 拷贝 / 清理
+# ---------------------------------------------------------------------------
+def _staging_config(tmp_path) -> SourceSyncConfig:
+    source = tmp_path / "source"
+    source.mkdir(exist_ok=True)
+    return SourceSyncConfig(
+        file_root=str(source),
+        staging_dir=str(tmp_path / "staging"),
+        mysql={"table": "my_reports"},
+    )
+
+
+def test_resolve_staging_dir_is_optional_and_validated(tmp_path):
+    assert resolve_staging_dir(SourceSyncConfig()) is None
+
+    with pytest.raises(ValidationError):
+        SourceSyncConfig(staging_dir="relative/staging")
+
+    source = tmp_path / "source"
+    source.mkdir()
+    with pytest.raises(ValidationError):
+        SourceSyncConfig(file_root=str(source), staging_dir=str(source))
+
+    config = _staging_config(tmp_path)
+    assert resolve_staging_dir(config) == tmp_path / "staging"
+
+
+def test_ensure_and_copy_to_staging(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    source_file = source / "batch-001.pdf"
+    source_file.write_bytes(b"report")
+    staging = tmp_path / "staging" / "nested"
+    staged_file = staging / build_staged_name("报告", "101", source_file)
+
+    assert build_staged_name("报告", "101", source_file) == "报告_101.pdf"
+    ensure_staging_dir(staging)
+    assert staging.is_dir()
+
+    # 源文件 mtime 很旧，但暂存副本的 mtime 必须是“现在”，否则 TTL 清理会误删
+    old_time = time.time() - 48 * 3600
+    os.utime(source_file, (old_time, old_time))
+    assert copy_to_staging(source_file, staged_file) is True
+    assert staged_file.read_bytes() == b"report"
+    assert source_file.read_bytes() == b"report"  # 源文件不动
+    assert time.time() - staged_file.stat().st_mtime < 60
+    # 同名暂存文件已存在：下次一律用源文件最新内容覆盖
+    source_file.write_bytes(b"report-v2")
+    assert copy_to_staging(source_file, staged_file) is True
+    assert staged_file.read_bytes() == b"report-v2"
+
+
+def test_cleanup_stale_staging_files_keeps_failure_names(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    old_file = staging / "old.pdf"
+    kept_failure = staging / "报告_101.pdf"
+    recent_file = staging / "recent.pdf"
+    old_file.write_bytes(b"old")
+    kept_failure.write_bytes(b"failed")
+    recent_file.write_bytes(b"recent")
+    old_time = time.time() - 25 * 3600
+    os.utime(old_file, (old_time, old_time))
+    os.utime(kept_failure, (old_time, old_time))
+
+    removed = cleanup_stale_staging_files(
+        staging, retention_hours=24, keep_names={kept_failure.name}
+    )
+    assert removed == 1
+    assert not old_file.exists()
+    assert kept_failure.exists()  # 失败文档的暂存副本保留
+    assert recent_file.exists()
+
+
+async def test_stage_rows_batch_copies_and_reports_missing(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "batch-001.pdf").write_bytes(b"report")
+    config = _staging_config(tmp_path)
+    engine = SourceSyncEngine(
+        config=KnowledgeConfig(),
+        sync_config=config,
+        repository=object(),  # stage_rows 不访问仓储
+        service=object(),
+        principal=KnowledgePrincipal(
+            user_id="u-admin", username="admin", department_id=None
+        ),
+    )
+
+    rows = [
+        parse_source_row(
+            {"id": "101", "batchid": "batch-001", "reportTitle": "报告"}
+        )
+    ]
+
+    await engine.prepare_staging()
+    staged, errors, stage_stats = await engine.stage_rows(rows)
+    assert not errors
+    assert staged["101"].name == "报告_101.pdf"
+    assert staged["101"].is_file()
+    assert stage_stats == {"copied": 1, "copy_failed": 0, "missing_source": 0}
+
+    staged_again, _, stage_stats_again = await engine.stage_rows(rows)
+    assert staged_again["101"].is_file()
+    assert stage_stats_again["copied"] == 1  # 同名暂存文件直接覆盖
+
+    _, missing_errors, _ = await engine.stage_rows(
+        [parse_source_row({"id": "102", "batchid": "batch-404", "reportTitle": "x"})]
+    )
+    assert "batchid 未匹配到磁盘文件" in missing_errors["102"]
+
+
+class _FakeRefreshRepo:
+    """refresh_inflight 用到的仓储方法：查文档 + 更新台账。"""
+
+    def __init__(self, document: dict):
+        self.document = document
+        self.updates: list[tuple[str, dict]] = []
+
+    def get_document(self, document_id: str):
+        return dict(self.document)
+
+    def update_sync_item(self, item_id: str, **fields):
+        self.updates.append((item_id, fields))
+
+
+def _refresh_engine(tmp_path, document: dict, *, retention_hours: int = 24):
+    staging = tmp_path / "staging"
+    staging.mkdir(exist_ok=True)
+    config = SourceSyncConfig(
+        file_root=str(tmp_path / "source"),
+        staging_dir=str(staging),
+        staging_retention_hours=retention_hours,
+        mysql={"table": "my_reports"},
+    )
+    repo = _FakeRefreshRepo(document)
+    engine = SourceSyncEngine(
+        config=KnowledgeConfig(),
+        sync_config=config,
+        repository=repo,
+        service=object(),
+        principal=KnowledgePrincipal(
+            user_id="u-admin", username="admin", department_id=None
+        ),
+    )
+    return engine, repo, staging
+
+
+async def test_refresh_inflight_ready_deletes_staged_file(tmp_path):
+    engine, repo, staging = _refresh_engine(
+        tmp_path,
+        {
+            "id": "doc-1",
+            "base_id": "base-1",
+            "status": "ready",
+            "name": "报告_101.pdf",
+            "remote_document_id": "remote-1",
+        },
+    )
+    staged_file = staging / "报告_101.pdf"
+    staged_file.write_bytes(b"report")
+
+    await engine.prepare_staging()
+    remaining, stats = await engine.refresh_inflight(
+        [
+            {
+                "id": "item-1",
+                "source_record_id": "101",
+                "document_id": "doc-1",
+                "attempts": 0,
+            }
+        ],
+        base_id="base-1",
+    )
+    assert remaining == []
+    assert stats["ready"] == 1
+    assert stats["staged_deleted"] == 1
+    assert not staged_file.exists()
+    assert repo.updates[-1][1]["status"] == "ready"
+
+
+async def test_refresh_inflight_failure_keeps_staged_file(tmp_path):
+    engine, _, staging = _refresh_engine(
+        tmp_path,
+        {
+            "id": "doc-1",
+            "base_id": "base-1",
+            "status": "failed",
+            "name": "报告_101.pdf",
+            "error_message": "parse failed",
+        },
+    )
+    staged_file = staging / "报告_101.pdf"
+    staged_file.write_bytes(b"report")
+
+    await engine.prepare_staging()
+    _, stats = await engine.refresh_inflight(
+        [
+            {
+                "id": "item-1",
+                "source_record_id": "101",
+                "document_id": "doc-1",
+                "attempts": MAX_UPLOAD_ATTEMPTS,  # 已达固定重试上限，不再重试
+            }
+        ],
+        base_id="base-1",
+    )
+    assert stats["failed"] == 1
+    assert staged_file.exists()  # 失败保留，便于排查/后续人工处理
+
+
+class _FakeUploadService:
+    def __init__(self):
+        self.uploaded_bytes: bytes | None = None
+        self.filename: str | None = None
+
+    async def upload_document(self, **kwargs):
+        self.filename = kwargs["filename"]
+        self.uploaded_bytes = kwargs["content"].read()
+        return SimpleNamespace(
+            document=SimpleNamespace(id="doc-1", name=self.filename, status="parsing")
+        )
+
+
+class _FakeUploadRepo:
+    def __init__(self):
+        self.items: dict[str, dict] = {}
+        self.updates: list[tuple[str, dict]] = []
+
+    def find_document_by_source_record(self, *args, **kwargs):
+        return None
+
+    def create_or_get_sync_item(
+        self, *, source: str, source_record_id: str, publish_date: str | None = None
+    ):
+        item = self.items.setdefault(
+            source_record_id,
+            {
+                "id": "item-1",
+                "source_record_id": source_record_id,
+                "status": "queued",
+                "attempts": 0,
+                "document_id": None,
+            },
+        )
+        return dict(item)
+
+    def update_sync_item(self, item_id: str, **fields):
+        self.updates.append((item_id, fields))
+        for item in self.items.values():
+            if item["id"] == item_id:
+                item.update(fields)
+
+    def get_sync_item(self, source: str, source_record_id: str):
+        item = self.items.get(source_record_id)
+        return dict(item) if item is not None else None
+
+
+async def test_upload_row_reads_from_staged_file(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "batch-001.pdf").write_bytes(b"source-bytes")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    staged_file = staging / "报告_101.pdf"
+    staged_file.write_bytes(b"staged-bytes")
+
+    service = _FakeUploadService()
+    repo = _FakeUploadRepo()
+    config = SourceSyncConfig(
+        file_root=str(source),
+        staging_dir=str(staging),
+        mysql={"table": "my_reports"},
+    )
+    engine = SourceSyncEngine(
+        config=KnowledgeConfig(),
+        sync_config=config,
+        repository=repo,
+        service=service,
+        principal=KnowledgePrincipal(
+            user_id="u-admin", username="admin", department_id=None
+        ),
+    )
+
+    async def _fake_ensure_date_folder(base_id: str, publish_date: str):
+        return "folder-1"
+
+    engine.ensure_date_folder = _fake_ensure_date_folder  # type: ignore[method-assign]
+
+    await engine.prepare_staging()
+    item = await engine._upload_row(
+        base_id="base-1",
+        row=parse_source_row(
+            {
+                "id": "101",
+                "publishDate": "2026-10-03",
+                "batchid": "batch-001",
+                "reportTitle": "报告",
+            }
+        ),
+        staged_file=staged_file,
+    )
+    assert item is not None
+    assert service.filename == "报告_101.pdf"
+    assert service.uploaded_bytes == b"staged-bytes"
+    assert item["status"] == "parsing"
+
+
+def test_fetch_source_rows_requires_connection_config():
     now = datetime.now(UTC)
-    with pytest.raises(RuntimeError, match="配置不完整"):
+    # 表名必填：留空直接报错
+    with pytest.raises(RuntimeError, match="表名未配置"):
         fetch_source_rows(SourceSyncConfig(), now, now)
+    # 配了表名但缺 host/database：报配置不完整
+    with pytest.raises(RuntimeError, match="配置不完整"):
+        fetch_source_rows(
+            SourceSyncConfig(mysql={"table": "my_reports"}), now, now
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -273,9 +630,11 @@ def test_source_record_unique_allows_reupload_into_new_base(db):
         status="pending",
         source="source_sync",
         source_record_id="101",
+        batch_id="b-101",
         publish_date="2026-10-01",
     )
     assert str(new_doc["base_id"]) == str(new_base["id"])
+    assert new_doc["batch_id"] == "b-101"
     assert (
         repo.find_document_by_source_record(
             "source_sync", "101", base_id=str(new_base["id"])

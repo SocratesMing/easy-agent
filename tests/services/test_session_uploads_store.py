@@ -14,8 +14,8 @@ import pytest
 from langgraph.store.memory import InMemoryStore
 
 from easy_agent.bootstrap.config import Config
-from easy_agent.services import session_uploads as su
-from easy_agent.services import upload_storage as us
+from easy_agent.services.sessions import uploads as su
+from easy_agent.services.sessions import upload_storage as us
 
 
 class _FakeDB:

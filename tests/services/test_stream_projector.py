@@ -95,6 +95,20 @@ def test_mark_hitl_pending_defaults_allowed_decisions():
     assert payload[0]["allowed_decisions"] == ["approve", "edit", "reject"]
 
 
+def test_load_resume_snapshot_carries_pre_interrupt_elapsed_time():
+    """续跑要接着中断前已用的耗时计时，快照需带出这条消息落库的 elapsed_time。"""
+    messages = [
+        {"role": "user", "content": "delete it"},
+        {"role": "assistant", "content": "", "usage": {"step_count": 3, "elapsed_time": 12.5}},
+    ]
+
+    snapshot = load_resume_snapshot(messages)
+
+    assert snapshot.current_step == 3
+    assert snapshot.elapsed_time == 12.5
+    assert load_resume_snapshot([{"role": "assistant", "usage": {}}]).elapsed_time == 0.0
+
+
 def test_load_resume_snapshot_reads_last_assistant_and_pending_ids():
     messages = [
         {"role": "user", "content": "first"},

@@ -25,6 +25,7 @@ from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.db.repositories.file_repository import FileRepository
 from easy_agent.db.repositories.scheduled_task_repository import ScheduledTaskRepository
 from easy_agent.db.repositories.user_repository import UserRepository
+from easy_agent.db.repositories.token_usage import TokenUsageRepository
 from easy_agent.db.session_repository import SessionRepository
 from easy_agent.middleware.auth import get_user_repository
 
@@ -41,6 +42,7 @@ __all__ = [
     "get_scheduled_task_repository",
     "get_session_repository",
     "get_user_repository",
+    "get_token_usage_repository",
 ]
 
 
@@ -53,6 +55,13 @@ def _resolve_database(
     ``tests/conftest.py`` 对 ``get_database`` 的 override 仍沿依赖链生效。
     """
     return db
+
+
+def get_token_usage_repository(
+    db: Annotated[object, Depends(_resolve_database)],
+) -> TokenUsageRepository:
+    """FastAPI 依赖：个人 Token 账本。"""
+    return TokenUsageRepository(db)
 
 
 def get_chat_repository(

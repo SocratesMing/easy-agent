@@ -13,8 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from easy_agent.services import agent_manager as am
-from easy_agent.services import session_runtime
+from easy_agent.services.agents import manager as am
+from easy_agent.services.sessions import runtime as session_runtime
 
 
 @pytest.fixture
@@ -32,16 +32,20 @@ def recorder(monkeypatch):
 
     for name in ("acquire_stream", "release_stream", "request_cancel", "save_connectors", "save_edit_target"):
         monkeypatch.setattr(session_runtime, name, fake(name))
-    monkeypatch.setattr(am, "get_database", lambda: object())
+    _fake = object()
+    # T3b：agent_manager 改走 db.providers 的领域 repository；测试里整体换成假端口。
+    for _provider in (
+        "get_session_repository",
+        "get_session_runtime_repository",
+        "get_user_repository",
+    ):
+        monkeypatch.setattr(am, _provider, lambda _fake=_fake: _fake)
     return calls
 
 
 @pytest.fixture(autouse=True)
 def _isolated_state(monkeypatch):
-    monkeypatch.setattr(am, "_session_stream_tasks", {})
-    monkeypatch.setattr(am, "_session_agents", OrderedDict())
-    monkeypatch.setattr(am, "_session_connectors", {})
-    monkeypatch.setattr(am, "_session_edit_targets", {})
+    monkeypatch.setattr(am, "_sessions", OrderedDict())
 
 
 async def test_stream_lock_is_written_off_the_event_loop(recorder):
@@ -74,11 +78,11 @@ async def test_busy_session_is_still_rejected(recorder, monkeypatch):
 
 
 async def test_connectors_evict_on_the_loop_before_saving_off_it(recorder, monkeypatch):
-    am._session_agents["s1"] = SimpleNamespace(safe_username="u")
+    am._state_for("s1").agent = SimpleNamespace(safe_username="u")
     seen_during_save: list[bool] = []
 
     def save(*args, **kwargs):
-        seen_during_save.append("s1" in am._session_agents)
+        seen_during_save.append(am.get_session_agent("s1") is not None)
         recorder.append(("save_connectors", threading.current_thread() is threading.main_thread()))
 
     monkeypatch.setattr(session_runtime, "save_connectors", save)
@@ -103,7 +107,7 @@ async def test_edit_target_binds_on_the_loop_and_saves_off_it(recorder):
 
 async def test_cancel_flag_is_written_off_the_event_loop(recorder):
     task = asyncio.create_task(asyncio.sleep(30))
-    am._session_stream_tasks["s1"] = task
+    am._state_for("s1").stream_task = task
     try:
         assert await am.cancel_stream_task("s1") is True
     finally:

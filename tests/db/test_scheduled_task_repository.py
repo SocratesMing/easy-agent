@@ -11,6 +11,19 @@ from easy_agent.models.db import (
 )
 
 
+def _scheduled(db):
+    """T3c：定时任务/执行记录走领域 repository（Database 转发方法已删除）。"""
+    from easy_agent.db.repositories.scheduled_task_repository import (
+        ScheduledTaskRepository,
+    )
+
+    if isinstance(db, ScheduledTaskRepository):
+        return db
+    if hasattr(db, "create_scheduled_task") and not hasattr(db, "get_connection"):
+        return db
+    return ScheduledTaskRepository(db)
+
+
 def _make_db(tmp_path) -> Database:
     db = Database(
         {"type": "sqlite", "sqlite": {"path": str(tmp_path / "tasks.db")}}
@@ -34,8 +47,8 @@ def test_repository_delegates_task_crud_and_run_records(tmp_path):
     db = _make_db(tmp_path)
     repo = ScheduledTaskRepository(db)
 
-    db.create_scheduled_task(_task("task-1"))
-    db.create_scheduled_task(_task("task-2", username="bob"))
+    _scheduled(db).create_scheduled_task(_task("task-1"))
+    _scheduled(db).create_scheduled_task(_task("task-2", username="bob"))
 
     assert repo.get_scheduled_task("task-1").name == "任务-task-1"
     assert repo.get_scheduled_task("missing") is None
@@ -49,7 +62,7 @@ def test_repository_delegates_task_crud_and_run_records(tmp_path):
     assert refreshed.last_run_at == "2026-10-18T00:00:00"
     assert refreshed.next_run_at == "2026-10-19T00:00:00"
 
-    db.add_scheduled_task_run(
+    _scheduled(db).add_scheduled_task_run(
         ScheduledTaskRunModel(
             run_id="run-1",
             task_id="task-1",
@@ -110,8 +123,8 @@ def test_repository_resolves_workspace_name_like_scheduler(tmp_path):
 def test_repository_list_is_scoped_to_requested_username(tmp_path):
     db = _make_db(tmp_path)
     repo = ScheduledTaskRepository(db)
-    db.create_scheduled_task(_task("alice-task", username="alice"))
-    db.create_scheduled_task(_task("bob-task", username="bob"))
+    _scheduled(db).create_scheduled_task(_task("alice-task", username="alice"))
+    _scheduled(db).create_scheduled_task(_task("bob-task", username="bob"))
 
     alice_tasks = repo.list_scheduled_tasks("alice")
     bob_tasks = repo.list_scheduled_tasks("bob")

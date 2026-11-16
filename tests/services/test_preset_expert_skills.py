@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from easy_agent.services import skill_library as L
+from easy_agent.services.skills import library as L
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPERTS_DIR = REPO_ROOT / "experts"

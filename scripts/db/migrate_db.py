@@ -19,6 +19,9 @@ import sys
 from easy_agent.db import init_database
 from easy_agent.bootstrap.initialization import initialize_runtime
 
+import easy_agent.knowledges.core.schema  # noqa: F401 - 注册知识库 schema 初始化器
+import easy_agent.knowledges.personnel  # noqa: F401 - 注册默认管理员策略
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Easy Agent database migrate/check")
@@ -34,10 +37,6 @@ def main() -> int:
     if config is None:
         print("ERROR: 配置未加载，无法迁移数据库", file=sys.stderr)
         return 2
-
-    # 知识库建表函数和默认管理员策略在 import 时注册进 db（应用启动时由 app.py 导入）。
-    # 不导入的话只建核心表就写入最新版本号，最后报「默认管理员策略未注册」。
-    import easy_agent.knowledges.personnel  # noqa: F401
 
     db_config = config.database.model_dump()
     if args.check:

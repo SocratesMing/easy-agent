@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from easy_agent.services.stream_messages import (
+from easy_agent.services.streaming.messages import (
     _historical_tool_records,
     _partial_message_dict,
     _tool_call_tuples,
@@ -175,7 +175,7 @@ def test_build_context_messages_keeps_thinking_only_assistant_turn():
 
     assert isinstance(messages[0], AIMessage)
     assert messages[0].content == ""
-    assert not messages[0].additional_kwargs
+    assert messages[0].additional_kwargs == {"reasoning_content": "只思考没正文"}
     assert isinstance(messages[1], HumanMessage)
 
 

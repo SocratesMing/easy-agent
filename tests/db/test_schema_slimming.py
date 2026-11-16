@@ -18,13 +18,13 @@ FRESH_TABLES = {
     "generated_files",
     "knowledge_audit_events",
     "knowledge_bases",
+    "knowledge_department_managers",
     "knowledge_document_objects",
     "knowledge_documents",
     "knowledge_folders",
     "knowledge_operations",
     "knowledge_permissions",
     "knowledge_source_sync_items",
-    "knowledge_team_space_managers",
     "langgraph_store",
     "mcp_api_keys",
     "rate_limit_counters",
@@ -37,6 +37,7 @@ FRESH_TABLES = {
     "session_runtime",
     "sessions",
     "stream_events",
+    "token_usage",
     "users",
 }
 RETIRED_TABLES = {
@@ -45,7 +46,6 @@ RETIRED_TABLES = {
     "fmqt_bloom_analysis",
     "tool_call_records",
     "thinking_records",
-    "agent_checkpoints",
     "uploaded_file",
     "user_ip",
     "tool_call_record",
@@ -146,9 +146,9 @@ def _make_old_database(path, version=10):
     con.close()
 
 
-@pytest.mark.parametrize("old_version", [10, 12])
+@pytest.mark.parametrize("old_version", [10, 13])
 def test_upgrade_drops_retired_tables_and_indexes(tmp_path, old_version):
-    """10：表精简之前的库；12：上一版。两种都要走一次完整初始化，删掉退役的表和索引。"""
+    """10：表精简之前的库；13：上一版。两种都要走一次完整初始化，删掉退役的表和索引。"""
     path = tmp_path / "old.db"
     _make_old_database(path, old_version)
 
@@ -209,7 +209,8 @@ def test_upgrade_moves_the_migration_ledger_into_schema_meta(tmp_path):
     _init(path)  # 再启动一次（快速路径）：不重复导入、不重复执行
 
     with db.get_connection() as conn:
-        assert mig.applied_versions(db, conn.cursor()) == [5, 6]
+        expected = [mig.BASELINE_VERSION, *sorted(m.version for m in mig.MIGRATIONS)]
+        assert mig.applied_versions(db, conn.cursor()) == expected
 
 
 def test_upgrade_moves_original_access_audit_into_audit_events(tmp_path):

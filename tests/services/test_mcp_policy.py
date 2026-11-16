@@ -10,10 +10,10 @@ import json
 
 import pytest
 
-import easy_agent.services.connectors as connectors_service
+import easy_agent.services.mcp.connectors as connectors_service
 from easy_agent.bootstrap.config import Config
-from easy_agent.services import mcp as mcp_service
-from easy_agent.services.mcp_policy import (
+from easy_agent.services.mcp import tools as mcp_service
+from easy_agent.services.mcp.policy import (
     McpPolicyError,
     ensure_servers_allowed,
     filter_server_names,

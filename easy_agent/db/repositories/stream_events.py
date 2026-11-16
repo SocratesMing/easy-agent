@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 # 单次回放分页上限：与 /stream/live 的轮询节奏配套，避免单次查询拖住事件循环。
 DEFAULT_LIST_LIMIT = 500
@@ -62,6 +63,38 @@ def list_stream_events(
     return result
 
 
+def latest_stream_event(db, session_id: str) -> dict | None:
+    """返回该会话最后一条事件（``event_id`` 最大者），没有则 ``None``。
+
+    只读一行，给 ``/stream/status`` 判断「这一轮的过程事件还需不需要回放」用：
+    末尾是 ``done``/``error`` 说明该轮已终结，事件只是历史缓冲；否则（停在
+    ``approval_required``、进程崩溃、写入器异常）说明过程比已落库的消息多，
+    打开会话时值得挂一次 ``/stream/live`` 回放。
+
+    终态判定不在本层做：``db`` 不反向依赖 ``services``（分层门禁）。
+    """
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        db._execute(
+            cursor,
+            "SELECT event_id, session_id, payload, created_at FROM stream_events "
+            "WHERE session_id=? ORDER BY event_id DESC LIMIT 1",
+            (session_id,),
+        )
+        row = cursor.fetchone()
+    if not row:
+        return None
+    if isinstance(row, dict):
+        return dict(row)
+    # sqlite3.Row / PyMySQL tuple：按 SELECT 列序映射
+    return {
+        "event_id": row[0],
+        "session_id": row[1],
+        "payload": row[2],
+        "created_at": row[3],
+    }
+
+
 def clear_stream_events(db, session_id: str) -> int:
     """删除某会话的旧流事件，返回删除行数。
 
@@ -106,10 +139,49 @@ def delete_stream_events_before(db, cutoff_iso: str, limit: int | None = None) -
     return int(deleted or 0)
 
 
+class StreamEventRepository:
+    """SSE 事件持久化（``stream_events`` 表）repository。
+
+    ``/stream/live`` 回放、跨 Pod 写入与过期清理都走这里；写入顺序（库级自增
+    ``event_id``）与回放 wire 格式都不变。
+    """
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def append_stream_event(self, session_id: str, payload: str) -> int:
+        """追加一条完整 SSE frame，返回库级 ``event_id``。"""
+        return append_stream_event(self._db, session_id, payload)
+
+    def list_stream_events(
+        self, session_id: str, after_id: int = 0, limit: int = DEFAULT_LIST_LIMIT
+    ) -> list[dict]:
+        """按 ``event_id`` 升序返回 ``after_id`` 之后的事件（分页回放）。"""
+        return list_stream_events(
+            self._db, session_id, after_id=after_id, limit=limit
+        )
+
+    def latest_stream_event(self, session_id: str) -> dict | None:
+        """返回该会话最后一条事件（``event_id`` 最大者），没有则 ``None``。"""
+        return latest_stream_event(self._db, session_id)
+
+    def clear_stream_events(self, session_id: str) -> int:
+        """删除某会话的旧流事件（新一轮开始时调用），返回删除行数。"""
+        return clear_stream_events(self._db, session_id)
+
+    def delete_stream_events_before(
+        self, cutoff_iso: str, limit: int | None = None
+    ) -> int:
+        """删除 ``created_at`` 早于截止时间的旧事件，返回删除行数。"""
+        return delete_stream_events_before(self._db, cutoff_iso, limit=limit)
+
+
 __all__ = [
     "DEFAULT_LIST_LIMIT",
+    "StreamEventRepository",
     "append_stream_event",
     "clear_stream_events",
     "delete_stream_events_before",
+    "latest_stream_event",
     "list_stream_events",
 ]

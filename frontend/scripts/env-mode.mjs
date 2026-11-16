@@ -1,14 +1,10 @@
 /**
- * 根据「运行平台 + AGENT_ENV」解析 Vite 的 --mode，
- * 使其自动加载对应的 .env.<mode> 文件：
- *   Windows（含 AGENT_WIN=true 模拟） -> win   -> .env.win
- *   Linux + AGENT_ENV=dev   -> dev  -> .env.dev
- *   Linux + AGENT_ENV=test  -> test -> .env.test
- *   Linux + AGENT_ENV=prod  -> prod -> .env.prod
+ * 根据「运行平台 + AGENT_ENV」解析 Vite 的 --mode：
+ *   Windows（含 AGENT_WIN=true 模拟） -> win
+ *   Linux + AGENT_ENV=dev|test|prod -> dev / test / prod
  *   其余默认：build -> prod，dev -> dev
  *
- * 注意：Vite 仅在 --mode 与文件名一致时才会自动把 .env.<mode>
- * 注入到 import.meta.env，因此这里集中决定 mode，由 run-vite.mjs 传参。
+ * MODE 只用于 Vite 构建标识，不再对应任何 .env 文件。
  */
 export function resolveEnvMode(command) {
   const isWindows =
@@ -22,6 +18,6 @@ export function resolveEnvMode(command) {
   if (agentEnv === 'test') return 'test'
   if (agentEnv === 'prod') return 'prod'
 
-  // 默认：构建用 prod（对应 .env.prod），开发用 dev
+  // 默认：构建用 prod，开发用 dev
   return command === 'build' ? 'prod' : 'dev'
 }

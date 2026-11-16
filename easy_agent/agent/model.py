@@ -1,23 +1,34 @@
 """Model factory for creating LLM instances.
 
-Model selection is protocol-driven (see ``ProviderConfig.protocol``):
-- "openai":     ChatOpenAI subclass (ReasoningChatOpenAI), OpenAI-compatible API.
-- "anthropic":  ChatAnthropic, Anthropic-compatible API (e.g. MiniMax / Bedrock / Anthropic).
+Model selection is protocol-driven (see ``ProviderConfig.protocol``). The only
+supported protocol is "openai": ``ReasoningChatOpenAI`` (a ChatOpenAI subclass) on
+an OpenAI-compatible API. The Anthropic protocol has been removed; Claude-family
+models can still be used through an OpenAI-compatible gateway.
 
 Use ``create_model(config, model_name)`` to build an instance; config resolution
 is handled by the public ``resolve_llm_config``.
 """
 
+import json
 import logging
 import os
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_openai import ChatOpenAI
 
 from easy_agent.bootstrap.config import Config, LLMConfig, RetryConfig
-
+from easy_agent.agent.token_usage import (
+    USAGE_KEY,
+    TokenUsageCallback,
+    complete_usage_snapshot,
+    explicit_fields,
+)
 logger = logging.getLogger(__name__)
+#: 模型入口参数 / 发给模型的完整上下文（请求）/ 模型原始返回报文，都是 DEBUG 级别：
+#: 日志级别为 debug（``EASY_LOG_LEVEL=debug`` 或 ``easy-web --log-level debug``）时才记录。
+#: 只写 proc 文件，不进控制台（见 ``bootstrap/initialization/log.py`` 的
+#: ``LOG_CONSOLE_EXCLUDED_LOGGERS``）。报文含完整对话内容，体量大且可能含敏感信息，仅排障时开启。
+wire_logger = logging.getLogger("easy_agent.llm_wire")
 
 # Candidate field names used by various providers for model reasoning / thinking.
 # DeepSeek uses "reasoning_content"; some models use "reasoning"; others use
@@ -25,10 +36,133 @@ logger = logging.getLogger(__name__)
 # so the value round-trips correctly back to the same provider.
 _REASONING_KEYS = ("reasoning_content", "reasoning", "reason_content")
 
-# Anthropic-compatible models: extended-thinking budget and output cap.
-# Values identical to the previous hardcoded literals (Phase 1 behavior-preserving).
-ANTHROPIC_THINKING_BUDGET_TOKENS = 10000
-ANTHROPIC_MAX_TOKENS = 16000
+
+def llm_wire_log_enabled() -> bool:
+    """当前日志级别是否记录大模型请求 / 响应报文（DEBUG）。每次请求都会检查，级别调整立即生效。"""
+    return wire_logger.isEnabledFor(logging.DEBUG)
+
+
+def _mask_secret(value) -> str:
+    text = str(value or "")
+    if len(text) <= 8:
+        return "***" if text else ""
+    return f"{text[:4]}***{text[-4:]}"
+
+
+_SECRET_HEADERS = frozenset({"authorization", "x-api-key", "api-key", "proxy-authorization"})
+
+
+def _log_http_request(request) -> None:
+    """打印 SDK 最终发出的 HTTP 请求：方法、完整 URL、全部请求头与请求体。"""
+    try:
+        headers = {
+            key: _mask_secret(value) if key.lower() in _SECRET_HEADERS else value
+            for key, value in request.headers.items()
+        }
+        raw = request.content
+        try:
+            body = json.dumps(json.loads(raw), ensure_ascii=False)
+        except ValueError:
+            body = raw.decode("utf-8", errors="replace")
+        wire_logger.debug(
+            f"[LLM_REQUEST] {request.method} {request.url} | "
+            f"headers={json.dumps(headers, ensure_ascii=False)} | body={body}"
+        )
+    except Exception as exc:  # noqa: BLE001 - 日志失败不影响请求
+        logger.warning(f"[LLM_REQUEST] 打印请求失败: {exc}")
+
+
+def _log_http_response(response, chunks: list[bytes]) -> None:
+    """打印模型 endpoint 的原始返回：状态码、全部响应头与（解压后的）原始报文。
+
+    流式响应即 SSE 原文（``data: {...}`` 逐行），非流式为 JSON 原文。
+    """
+    try:
+        body = b"".join(chunks).decode(response.encoding or "utf-8", errors="replace")
+        wire_logger.debug(
+            f"[LLM_RESPONSE] {response.status_code} {response.request.method} {response.request.url} | "
+            f"headers={json.dumps(dict(response.headers.items()), ensure_ascii=False)} | "
+            f"body={body}"
+        )
+    except Exception as exc:  # noqa: BLE001 - 日志失败不影响响应
+        logger.warning(f"[LLM_RESPONSE] 打印响应失败: {exc}")
+
+
+def _tee_response_body(response) -> None:
+    # SDK 的流式解析和非流式 read() 都经 iter_bytes/aiter_bytes 读取解压后的报文；
+    # 边转发边累积，流结束（或被提前关闭）时整体打印一次，不缓冲、不影响逐字输出。
+    # SDK 读到 [DONE] 即停止迭代，因此不能用「迭代器是否耗尽」判断报文是否完整。
+    original_iter = response.iter_bytes
+    original_aiter = response.aiter_bytes
+
+    def iter_bytes(chunk_size=None):
+        chunks = []
+        try:
+            for chunk in original_iter(chunk_size):
+                chunks.append(chunk)
+                yield chunk
+        finally:
+            _log_http_response(response, chunks)
+
+    async def aiter_bytes(chunk_size=None):
+        chunks = []
+        try:
+            async for chunk in original_aiter(chunk_size):
+                chunks.append(chunk)
+                yield chunk
+        finally:
+            _log_http_response(response, chunks)
+
+    response.iter_bytes = iter_bytes
+    response.aiter_bytes = aiter_bytes
+
+
+def _sync_request_hook(request) -> None:
+    if llm_wire_log_enabled():
+        _log_http_request(request)
+
+
+async def _async_request_hook(request) -> None:
+    if llm_wire_log_enabled():
+        _log_http_request(request)
+
+
+def _sync_response_hook(response) -> None:
+    if llm_wire_log_enabled():
+        _tee_response_body(response)
+
+
+async def _async_response_hook(response) -> None:
+    if llm_wire_log_enabled():
+        _tee_response_body(response)
+
+
+def _attach_hooks(http_client, request_hook, response_hook) -> None:
+    # langchain 用 lru_cache 让同 base_url 的模型共享 httpx 客户端，重复挂会重复打印
+    if http_client is None or not hasattr(http_client, "event_hooks"):
+        return
+    hooks = http_client.event_hooks
+    if request_hook not in hooks["request"]:
+        hooks["request"].append(request_hook)
+    if response_hook not in hooks["response"]:
+        hooks["response"].append(response_hook)
+    http_client.event_hooks = hooks
+
+
+def install_request_logging(model) -> None:
+    """在模型底层 SDK 的 httpx 客户端上挂请求 / 响应钩子。
+
+    deepagents 中间件（system prompt / bind_tools / 摘要等）改写后的请求，最终都经
+    langchain → openai SDK → httpx 发出；在 httpx 层拿到的才是真正发往
+    endpoint 的 URL、请求头和请求体（含 SDK 追加的 headers、extra_body 等），以及
+    endpoint 返回的原始报文。
+    """
+    sdk_clients = [
+        (getattr(model, "root_client", None), _sync_request_hook, _sync_response_hook),
+        (getattr(model, "root_async_client", None), _async_request_hook, _async_response_hook),
+    ]
+    for sdk_client, request_hook, response_hook in sdk_clients:
+        _attach_hooks(getattr(sdk_client, "_client", None), request_hook, response_hook)
 
 
 def _extract_reasoning(source: dict):
@@ -41,6 +175,19 @@ def _extract_reasoning(source: dict):
         if val:
             return key, val
     return None
+
+
+def _first_reasoning_text(source: dict) -> str:
+    """``source`` 里按 ``_REASONING_KEYS`` 优先级取到的第一个非空字符串思考字段。
+
+    一包流式 delta 只取一个：有的网关为兼容同时下发 ``reasoning_content`` 和
+    ``reasoning`` 两份同样的内容，逐个拼接会让思考重复一遍。
+    """
+    for key in _REASONING_KEYS:
+        val = source.get(key)
+        if isinstance(val, str) and val:
+            return val
+    return ""
 
 
 def extract_reasoning(additional_kwargs) -> str:
@@ -57,17 +204,16 @@ def extract_reasoning(additional_kwargs) -> str:
 
 
 def inject_reasoning_content(payload: dict, messages: list) -> None:
-    """把 assistant 工具调用消息的思考内容写回出站请求（thinking 模式要求回传）。
+    """把每条 assistant 消息的思考写回出站请求的 ``reasoning_content`` 字段。
 
     ``langchain_openai._convert_message_to_dict`` 只序列化
     content/role/name/tool_calls，``additional_kwargs`` 里的 reasoning 会被丢弃。
-    而思考模式的上游（如 opencode 网关转发的 deepseek / glm）在「工具调用 →
-    工具结果」的续跑请求里会校验：带 ``tool_calls`` 的 assistant 消息必须带回
-    ``reasoning_content``，缺了直接 400
+    思考模式的上游要求回传：DeepSeek 文档写明请求带 ``tools`` 时，历史各轮的
+    ``reasoning_content`` 都应回传并拼进上下文，不带工具调用的回答也一样；缺了会 400
     ``The reasoning_content in the thinking mode must be passed back to the API``。
 
-    只在消息确实带思考文本时注入：非思考模型不会多出未知字段，跨轮历史
-    （``build_context_messages`` 刻意不回灌思考）也不受影响。
+    因此所有 assistant 消息都回传：本轮和历史轮次、带不带 ``tool_calls`` 一视同仁。
+    只在消息确实带思考文本时写这个字段，非思考模型产生的消息不会多出字段。
     """
     payload_messages = payload.get("messages")
     if not isinstance(payload_messages, list) or not payload_messages:
@@ -84,13 +230,42 @@ def inject_reasoning_content(payload: dict, messages: list) -> None:
         else zip(messages[-count:], payload_messages)
     )
     for message, item in pairs:
-        if not isinstance(message, AIMessage):
-            continue
-        if not (message.tool_calls or message.invalid_tool_calls):
+        if not isinstance(message, AIMessage) or item.get("role") != "assistant":
             continue
         reasoning = extract_reasoning(message.additional_kwargs)
         if reasoning:
             item["reasoning_content"] = reasoning
+
+
+def _text_of_block(block) -> str | None:
+    if isinstance(block, str):
+        return block
+    if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+        return block["text"]
+    return None
+
+
+def flatten_system_content(payload: dict) -> None:
+    """把出站请求里 system 消息的文本块数组拼回一个字符串。
+
+    deepagents 0.7 的中间件（TodoList / Skills / Memory）每次往系统提示追加一个
+    ``{"type": "text"}`` 块，langchain_openai 把块数组原样序列化。OpenAI 标准两种形状都
+    允许，但只有 string 是所有兼容接口都接受的（DeepSeek 等只接受 string）；数组的唯一
+    用处是给块挂 ``cache_control``，本项目不发。各块自带 ``\\n\\n`` 分隔，按顺序直接拼接
+    即与原文一致。含非文本块时保持原样，不丢内容。
+    """
+    payload_messages = payload.get("messages")
+    if not isinstance(payload_messages, list):
+        return
+    for item in payload_messages:
+        if not isinstance(item, dict) or item.get("role") != "system":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        texts = [_text_of_block(block) for block in content]
+        if all(text is not None for text in texts):
+            item["content"] = "".join(texts)
 
 
 try:  # LangChain 公开的「中间件内部模型调用」标记（摘要 / 工具筛选 / 工具模拟等）
@@ -260,6 +435,11 @@ def resolve_llm_config(config: Config, model_name: str | None):
     )
 
 
+def resolve_model_key(config: Config, model_name: str | None = None) -> str:
+    """Configuration identity using the same fallback as resolve_llm_config."""
+    return model_name if model_name and model_name in config.models else config.active_model
+
+
 # 未显式传 session_id 时的兜底会话标识：进程内稳定即可——网关只要求「稳定」，
 # 用于路由优化与 prompt 缓存。按会话区分时由调用方（EasyAgent）传入真实 session_id。
 _PROCESS_SESSION_ID = f"easy-agent-{os.getpid()}"
@@ -311,9 +491,8 @@ def create_model(
 ):
     """Create LLM model instance based on protocol.
 
-    The protocol field in config determines which API client to use:
-    - "openai": Use ChatOpenAI (OpenAI-compatible API)
-    - "anthropic": Use ChatAnthropic (Anthropic-compatible API)
+    The only supported protocol is "openai" (``ReasoningChatOpenAI`` on an
+    OpenAI-compatible API); any other value raises ``ValueError``.
 
     Args:
         config: Application configuration.
@@ -342,21 +521,25 @@ def create_model(
     logger.info(
         f"Creating LLM instance | model_name={model_name or config.active_model} | "
         f"provider={llm_config.provider} | model={llm_config.model} | "
-        f"protocol={protocol}"
+        f"protocol={protocol} | api_base={llm_config.api_base} | "
+        f"context_length={llm_config.context_length}"
     )
 
-    if protocol == "openai":
-        model = _create_openai_compatible(
-            llm_config, default_headers=build_request_headers(llm_config, session_id)
-        )
-    elif protocol == "anthropic":
-        model = _create_anthropic_compatible(
-            llm_config, default_headers=build_request_headers(llm_config, session_id)
-        )
-    else:
+    if protocol != "openai":
         raise ValueError(
-            f"Unsupported protocol: {protocol}. Use 'openai' or 'anthropic'."
+            f"Unsupported protocol: {protocol}. Only 'openai' (OpenAI-compatible API) is "
+            "supported; the Anthropic protocol has been removed."
         )
+    model = _create_openai_compatible(
+        llm_config, default_headers=build_request_headers(llm_config, session_id)
+    )
+    # Per-instance model identity, per-call user identity. Preserve other callbacks.
+    callbacks = list(model.callbacks or [])
+    if not any(isinstance(item, TokenUsageCallback) for item in callbacks):
+        callbacks.append(TokenUsageCallback(resolve_model_key(config, model_name), llm_config.model))
+    model.callbacks = callbacks
+    # 钩子总是挂上，每次请求再按日志级别决定是否记录（非 DEBUG 时只多一次级别判断）
+    install_request_logging(model)
     return apply_context_profile(model, llm_config.context_length)
 
 
@@ -382,8 +565,25 @@ def apply_context_profile(model, context_length: int | None):
     return model
 
 
+def _fill_cache_read_from_deepseek_usage(msg, usage) -> None:
+    """DeepSeek 原生 usage 的 ``prompt_cache_hit_tokens`` 补进 ``input_token_details.cache_read``。
+
+    LangChain 只认 OpenAI 的 ``prompt_tokens_details.cached_tokens``；DeepSeek 官方接口另用
+    ``prompt_cache_hit_tokens`` 报命中数。两者都有时以 LangChain 已解析的为准。
+    """
+    hit = (usage or {}).get("prompt_cache_hit_tokens") if isinstance(usage, dict) else None
+    metadata = getattr(msg, "usage_metadata", None)
+    if not isinstance(hit, int) or hit <= 0 or not metadata:
+        return
+    details = dict(metadata.get("input_token_details") or {})
+    if details.get("cache_read"):
+        return
+    details["cache_read"] = hit
+    msg.usage_metadata = {**metadata, "input_token_details": details}
+
+
 class ReasoningChatOpenAI(ChatOpenAI):
-    """ChatOpenAI 子类，承载三个独立职责：
+    """ChatOpenAI 子类，承载四个独立职责：
 
     职责 A - 多模态清理：在流式/非流式入口统一处理消息内容块
         （不再区分模型是否支持视觉）：
@@ -394,9 +594,10 @@ class ReasoningChatOpenAI(ChatOpenAI):
     职责 B - reasoning 提取：把 OpenAI 兼容接口返回的思考内容
         (reasoning_content / reasoning / reason_content) 写入 additional_kwargs，
         供前端展示与出站回传。
-    职责 C - reasoning 回传：出站请求里给带 tool_calls 的 assistant 消息补回
-        ``reasoning_content``（langchain 自己不序列化它），否则思考模式的
-        上游在工具续跑时 400。
+    职责 C - reasoning 回传：出站请求里给每条带思考的 assistant 消息（本轮和历史
+        轮次、带不带 tool_calls）补回 ``reasoning_content``（langchain 自己不序列化它）。
+    职责 D - system 字符串化：出站请求里 system 消息的文本块数组拼成一个字符串
+        （所有 OpenAI 兼容接口都接受 string，DeepSeek 等只接受 string）。
     """
 
     # ── 职责 A：多模态清理 ───────────────────────────────────────────
@@ -438,26 +639,30 @@ class ReasoningChatOpenAI(ChatOpenAI):
         default_chunk_class: type,
         base_generation_info: dict | None,
     ):
+        raw = explicit_fields(chunk)
+        choices = raw.get("choices") or raw.get("chunk", {}).get("choices", [])
+        # Standard include_usage tail, or a complete finish chunk. Body usage
+        # alone cannot prove this is a final cumulative snapshot.
+        final = not choices or bool(choices[0].get("finish_reason"))
+        snapshot = complete_usage_snapshot(raw.get("usage")) if final else None
         gen = super()._convert_chunk_to_generation_chunk(
-            chunk, default_chunk_class, base_generation_info
+            raw, default_chunk_class, base_generation_info
         )
         if gen is None:
             return gen
+        if snapshot is not None:
+            gen.generation_info = {**(gen.generation_info or {}), USAGE_KEY: [snapshot]}
         msg = gen.message
         if not isinstance(msg, AIMessageChunk):
             return gen
+        _fill_cache_read_from_deepseek_usage(msg, chunk.get("usage"))
 
         choices = chunk.get("choices") or chunk.get("chunk", {}).get("choices", [])
         if not choices or choices[0].get("delta") is None:
             return gen
         delta = choices[0]["delta"]
 
-        reasoning = ""
-        for key in _REASONING_KEYS:
-            val = delta.get(key)
-            if isinstance(val, str):
-                reasoning += val
-
+        reasoning = _first_reasoning_text(delta)
         if reasoning:
             existing = msg.additional_kwargs.get("reasoning_content")
             msg.additional_kwargs["reasoning_content"] = (existing or "") + reasoning
@@ -466,7 +671,13 @@ class ReasoningChatOpenAI(ChatOpenAI):
 
     def _create_chat_result(self, response, generation_info=None):
         """非流式响应也提取思考内容（调度任务等走 ``ainvoke`` 的链路）。"""
+        snapshot = complete_usage_snapshot(explicit_fields(response).get("usage"))
         result = super()._create_chat_result(response, generation_info)
+        if snapshot is not None:
+            for generation in result.generations:
+                generation.generation_info = {
+                    **(generation.generation_info or {}), USAGE_KEY: [snapshot],
+                }
         try:
             response_dict = (
                 response if isinstance(response, dict) else response.model_dump()
@@ -480,9 +691,10 @@ class ReasoningChatOpenAI(ChatOpenAI):
             logger.debug(f"非流式响应提取 reasoning 失败: {exc}")
         return result
 
-    # ── 职责 C：reasoning 回传 ────────────────────────────────────────
+    # ── 职责 C / D：reasoning 回传、system 字符串化 ──────────────────────
     def _get_request_payload(self, input_, *, stop=None, **kwargs):
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        flatten_system_content(payload)
         try:
             messages = self._convert_input(input_).to_messages()
         except Exception as exc:  # noqa: BLE001 - 对齐失败就按原载荷发送
@@ -511,29 +723,3 @@ def _create_openai_compatible(
         stream_usage=True,
         **extra,
     )
-
-
-def _create_anthropic_compatible(
-    llm_config, default_headers: dict[str, str] | None = None
-) -> ChatAnthropic:
-    """Create model using Anthropic-compatible API.
-
-    Works with any provider that exposes an Anthropic-compatible endpoint,
-    such as MiniMax, AWS Bedrock, or direct Anthropic API.
-
-    Configure api_base in config.yaml, e.g.:
-    - MiniMax China: https://api.minimaxi.com/anthropic
-    - MiniMax Global: https://api.minimax.io/anthropic
-    - Anthropic direct: https://api.anthropic.com
-    """
-    kwargs = {
-        "model": llm_config.model,
-        "api_key": llm_config.api_key,
-        "base_url": llm_config.api_base,
-        "max_retries": llm_config.retry.max_retries if llm_config.retry.enabled else 0,
-        "thinking": {"type": "enabled", "budget_tokens": ANTHROPIC_THINKING_BUDGET_TOKENS},
-        "max_tokens": ANTHROPIC_MAX_TOKENS,
-    }
-    if default_headers:
-        kwargs["default_headers"] = default_headers
-    return ChatAnthropic(**kwargs)

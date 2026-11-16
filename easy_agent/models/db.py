@@ -14,6 +14,7 @@ class SessionModel:
     username: str = ""                   # 归属用户名
     workspace_name: str = ""             # 工作目录名
     todos: list[dict[str, Any]] = field(default_factory=list)  # 任务待办列表
+    archived: bool = False                # 是否归档
     pinned: int = 0                      # 是否置顶（0/1）
 
 

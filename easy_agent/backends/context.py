@@ -150,7 +150,9 @@ class SessionCompositeBackend(CompositeBackend, SandboxBackendProtocol):
     def execute(self, command: str, *, timeout: int | None = None):
         return self._require_current().execute(command, timeout=timeout)
 
-    async def aexecute(self, command: str, *, timeout: int | None = None):
+    async def aexecute(
+        self, command: str, *, timeout: int | None = None  # noqa: ASYNC109 - 协议签名，原样透传
+    ):
         return await self._require_current().aexecute(command, timeout=timeout)
 
 

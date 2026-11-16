@@ -20,7 +20,7 @@ from easy_agent.security.prompt_guard import (
     assemble_system_prompt,
     wrap_expert_prompt,
 )
-from easy_agent.services.prompt_loader import clear_cache, load_system_prompt
+from easy_agent.services.agents.prompts import clear_cache, load_system_prompt
 from easy_agent.agent.subagents import DEFAULT_SUBAGENTS, SAFE_SUBAGENT_RULES
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "easy_agent" / "config"

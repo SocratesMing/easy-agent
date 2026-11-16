@@ -1,16 +1,11 @@
 # Multi-replica Easy Agent. Requires MySQL (application database), RWX workspace
 # storage, and the sticky-session Ingress in agent-ingress.yaml.
 #
-# HITL checkpoints use the official SQLite saver with one file per pod:
-# data/checkpoints/{pod}.db on the pod's local `data` volume, where {pod} becomes
-# EASY_POD_NAME at startup. A pending approval can only be resumed on the pod that
-# recorded it, so the Ingress pins each browser to one pod with a cookie; requests that
-# land on another pod get a 409 asking the user to resend. Deleting a session removes
-# its checkpoints on the pod that handles the request; the other pods clean up their
-# leftovers in a background pass (EASY_CHECKPOINT_GC_INTERVAL). The LangGraph Store
-# lives in MySQL (SqlStore). Never put the SQLite files on the NAS: SQLite's WAL mode
-# does not work on network filesystems.
-# See docs/design/2026-10-21-per-pod-sqlite-checkpoints.md.
+# HITL checkpoints live in shared MySQL tables (cp_checkpoints / cp_checkpoint_blobs /
+# cp_checkpoint_writes / cp_checkpoint_meta, created automatically at startup by
+# AsyncMySQLSaver.asetup with a GET_LOCK-guarded DDL), so approvals survive Pod
+# replacement and can resume on any replica. Chat threads are shared the same way.
+# The LangGraph Store also lives in MySQL (SqlStore).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -22,15 +17,20 @@ data:
   EASY_REPLICA_COUNT: "2"
   EASY_TRUST_PROXY: "1"
   EASY_SKIP_LLM_PROBE: "1"
-  EASY_CHECKPOINT_BACKEND: "auto"
-  # One file per pod, resolved against the repo root (/app), i.e. the local `data`
-  # volume below. {pod} is replaced with EASY_POD_NAME.
-  EASY_CHECKPOINT_SQLITE_PATH: "data/checkpoints/{pod}.db"
-  # Confirms the Ingress pins each browser to one pod (agent-ingress.yaml). Without it,
-  # prod refuses to start with more than one replica.
+  # Shared MySQL checkpointer (self-hosted AsyncMySQLSaver) preserves pending HITL
+  # approvals and chat threads across Pod replacement. "mysql" is a deprecated alias
+  # kept only so old ConfigMaps keep working; write mysql_saver from now on.
+  EASY_CHECKPOINT_BACKEND: "mysql_saver"
+  # Sticky sessions are no longer required (any Pod can resume any thread), but keep
+  # the Ingress annotation: it is the rollback path to the sqlite backend.
   EASY_STICKY_SESSIONS: "1"
-  # Seconds between background passes that delete leftover checkpoints of deleted sessions.
+  # Seconds between background passes: (1) reconcile threads of deleted sessions,
+  # (2) expire threads by age when record_ttl_days > 0 (0 = disabled, recommended).
   EASY_CHECKPOINT_GC_INTERVAL: "600"
+  # 0 = never expire by age. >0 deletes whole threads (not single checkpoints).
+  CHECKPOINT_TTL_DAYS: "0"
+  # Same-instance table prefix; raise it to isolate several environments in one database.
+  CHECKPOINT_MYSQL_TABLE_PREFIX: "cp_"
   # Scheduled tasks run on one pod only (the scheduler refuses to register them otherwise).
   DISTRIBUTED_LOCK_ENABLED: "true"
   # Uploaded files go to MySQL instead of the pod-local data/uploads.
@@ -79,7 +79,7 @@ spec:
             - secretRef:
                 name: easy-agent-secrets
           env:
-            # Instance name for {pod} in EASY_CHECKPOINT_SQLITE_PATH and for pending approvals.
+            # Instance name for {pod} in the checkpoint path and for pending approvals.
             - name: EASY_POD_NAME
               valueFrom:
                 fieldRef:
@@ -125,9 +125,7 @@ spec:
         - name: shared
           persistentVolumeClaim:
             claimName: easy-agent-workspace
-        # Pod-local, not the NAS: holds this pod's SQLite checkpoint file. emptyDir
-        # survives container restarts but is wiped when the pod is replaced; approvals
-        # still pending on that pod are then void and the user resends the message.
+        # Pod-local scratch space for the repo's data/ directory.
         - name: data
           emptyDir: {}
 ---

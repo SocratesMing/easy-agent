@@ -1,6 +1,7 @@
 """认证接口测试：注册、登录、资料、改密、配置。"""
 
 from datetime import timedelta
+from easy_agent.db.repositories.user_repository import UserRepository
 from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
@@ -117,7 +118,7 @@ def test_admin_can_list_users(db):
     db.register_user("admin", "admin")
     db.register_user("alice", "secret123")
 
-    users = auth_mod.list_users(db, "admin")
+    users = auth_mod.list_users(UserRepository(db), "admin")
 
     assert users.total == 2
     assert {user.username for user in users.users} == {"admin", "alice"}
@@ -162,7 +163,7 @@ def test_non_admin_cannot_list_users_or_reset_password(db):
     db.register_user("alice", "secret123")
 
     with pytest.raises(HTTPException) as list_error:
-        auth_mod.list_users(db, "alice")
+        auth_mod.list_users(UserRepository(db), "alice")
     with pytest.raises(HTTPException) as reset_error:
         auth_mod.admin_reset_password("alice", "alice", db)
 
@@ -170,7 +171,8 @@ def test_non_admin_cannot_list_users_or_reset_password(db):
     assert reset_error.value.status_code == 403
 
 
-def test_team_space_manager_can_reset_user_password_to_default(db):
+def test_department_manager_cannot_reset_user_password(db):
+    """知识库管理员只影响知识库，不能通过管理接口重置他人密码。"""
     db.register_user("dept_mgr", "secret123")
     db.register_user("alice", "secret123")
     manager_id = db.get_user_by_username("dept_mgr").user_id
@@ -182,12 +184,25 @@ def test_team_space_manager_can_reset_user_password_to_default(db):
         )
         db._execute(
             cursor,
-            "INSERT INTO knowledge_team_space_managers (user_id, granted_by, granted_at, updated_at) "
-            "VALUES (?, 'admin', '2026-10-14T00:00:00', '2026-10-14T00:00:00')",
+            "INSERT INTO knowledge_department_managers "
+            "(id, user_id, department_id, granted_by, granted_at, updated_at) "
+            "VALUES ('dm-auth', ?, 'dept-market', 'admin', '2026-10-14T00:00:00', '2026-10-14T00:00:00')",
             (manager_id,),
         )
 
-    result = auth_mod.admin_reset_password("alice", "dept_mgr", db)
+    with pytest.raises(HTTPException) as error:
+        auth_mod.admin_reset_password("alice", "dept_mgr", db)
+
+    assert error.value.status_code == 403
+    assert db.verify_user_password("alice", "123456") is None
+
+
+def test_super_admin_liufengbao_can_reset_user_password(db):
+    """免密门户总管理员 liufengbao 与 admin 同权。"""
+    db.register_user("liufengbao", "secret123")
+    db.register_user("alice", "secret123")
+
+    result = auth_mod.admin_reset_password("alice", "liufengbao", db)
 
     assert result["status"] == "success"
     assert db.verify_user_password("alice", "123456") is not None

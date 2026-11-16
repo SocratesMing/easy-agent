@@ -8,6 +8,19 @@ from easy_agent.models.db import ScheduledTaskModel
 from easy_agent.services import document_convert
 
 
+def _scheduled(db):
+    """T3c：定时任务/执行记录走领域 repository（Database 转发方法已删除）。"""
+    from easy_agent.db.repositories.scheduled_task_repository import (
+        ScheduledTaskRepository,
+    )
+
+    if isinstance(db, ScheduledTaskRepository):
+        return db
+    if hasattr(db, "create_scheduled_task") and not hasattr(db, "get_connection"):
+        return db
+    return ScheduledTaskRepository(db)
+
+
 def _token(client):
     registered = client.post(
         "/api/auth/register",
@@ -30,7 +43,7 @@ def _session_workspace_request(client):
 def _task_workspace_request(client):
     """定时任务工作目录预览：没有来源会话的任务用 ``scheduled_{task_id}`` 目录。"""
     task_id = "pdf-preview-task"
-    get_database().create_scheduled_task(
+    _scheduled(get_database()).create_scheduled_task(
         ScheduledTaskModel(
             task_id=task_id,
             username="testuser",

@@ -4,7 +4,7 @@
 设计（A3，见 ``docs/archive/design/2026-10-18-a3-skills-single-source.md``）：
 
 * 唯一可编辑源是仓库根 ``skills/``；包内树由本脚本**单向生成**，禁止反向同步。
-* 判定基于 sha256 全量清单（office 三格式共享的 12 个脚本、schema、LICENSE、
+* 判定基于 sha256 全量清单（xlsx 保留的 12 个 office 脚本、schema、LICENSE、
   SKILL.md 等全部受管文件），不做抽样校验。
 * ``.agents/skills/`` 是开发期工具技能，不参与运行时装配，也不在受管范围内。
 
@@ -34,10 +34,12 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CANONICAL = ROOT / "skills"
 DEFAULT_PACKAGED = ROOT / "easy_agent" / "skills"
 MANIFEST_VERSION = 1
-FORMATS = ("docx", "pptx", "xlsx")
+# docx / pptx 的 Node 技能已删除。office 脚本只留在 xlsx；
+# 若以后再出现多个格式目录，这些文件必须逐字节一致。
+FORMATS = ("xlsx",)
 
-# office 三格式共享的 12 个 Python 脚本（相对 ``<format>/scripts/office/``）。
-# 三份必须逐字节一致；测试同时冻结这个集合，防止“只改一个格式”的静默漂移。
+# xlsx/scripts/office/ 下冻结的 12 个 Python 脚本。
+# 测试同时冻结这个集合，防止静默增删。
 OFFICE_SCRIPT_FILES = (
     "helpers/__init__.py",
     "helpers/merge_runs.py",
@@ -163,29 +165,27 @@ def build_manifest(root: Path, *, require_skills: bool = True) -> Manifest:
 
 
 def office_problems(root: Path) -> tuple[str, ...]:
-    """校验 office 三格式共享的 12 个脚本是否逐字节一致。
+    """校验仍保留的 office 脚本目录是否含冻结的 12 个文件。
 
-    只在三格式目录都存在时生效；三格式缺一会直接报错（技能集合测试会兜底）。
+    只检查 ``FORMATS`` 里实际存在的目录。多于一份时，这些文件必须逐字节一致。
     """
     office_dirs = {fmt: root / fmt / "scripts" / "office" for fmt in FORMATS}
-    present = {fmt: path.is_dir() for fmt, path in office_dirs.items()}
-    if not any(present.values()):
+    present = [fmt for fmt, path in office_dirs.items() if path.is_dir()]
+    if not present:
         return ()
-    if not all(present.values()):
-        missing = [fmt for fmt, ok in present.items() if not ok]
-        return (f"office 三格式目录不完整（缺 {', '.join(missing)}）；docx/pptx/xlsx 必须同时存在",)
 
     problems: list[str] = []
     for rel in OFFICE_SCRIPT_FILES:
         hashes: dict[str, str] = {}
-        for fmt in FORMATS:
+        for fmt in present:
             path = office_dirs[fmt] / rel
             if not path.is_file():
                 problems.append(f"{fmt}/scripts/office/{rel}: 缺失")
             else:
                 hashes[fmt] = _sha256(path)
         if len(set(hashes.values())) > 1:
-            problems.append(f"office/{rel}: docx/pptx/xlsx 内容不一致（全量 hash 不同）")
+            joined = "/".join(present)
+            problems.append(f"office/{rel}: {joined} 内容不一致（全量 hash 不同）")
     return tuple(problems)
 
 
@@ -228,7 +228,7 @@ def _print_report(report: Report, canonical_root: Path, packaged_root: Path) -> 
         ("missing（canonical 有、副本缺）", report.missing),
         ("drift（内容不同）", report.drift),
         ("extra（副本多余）", report.extra),
-        ("office（canonical 三格式共享脚本不一致）", report.office),
+        ("office（canonical office 脚本缺失或不一致）", report.office),
     )
     for label, items in sections:
         if not items:
@@ -354,7 +354,7 @@ def run_write(canonical_root: Path, packaged_root: Path) -> int:
         return 0
     _print_report(report, canonical_root, packaged_root)
     if report.office:
-        print("  注意：--write 不会修改 canonical；请先修 canonical 的三格式共享脚本。")
+        print("  注意：--write 不会修改 canonical；请先修 canonical 的 office 脚本。")
     return 1
 
 

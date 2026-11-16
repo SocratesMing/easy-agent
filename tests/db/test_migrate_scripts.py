@@ -21,11 +21,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts" / "db"
 
 
-def _run(tmp_path, *argv, db_path):
-    """按生产用法在独立进程里跑：配置指向临时 SQLite 库，不读开发机的 .env。"""
+def _run(tmp_path, *argv, db_path, knowledge=None):
+    """按生产用法在独立进程里跑：配置指向临时 SQLite 库，不读开发机的 .env。
+
+    ``knowledge`` 给了就整段替换配置的 knowledge 段（知识库脚本要先打开模块）。
+    """
     with open(os.environ["EASY_CONFIG"], encoding="utf-8") as f:
         config = yaml.safe_load(f)
     config["database"]["sqlite"]["path"] = str(db_path)
+    if knowledge is not None:
+        config["knowledge"] = knowledge
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
     env = {
@@ -35,6 +40,11 @@ def _run(tmp_path, *argv, db_path):
         "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO_ROOT), os.environ.get("PYTHONPATH")])),
     }
     env.pop("EASY_AUTO_MIGRATE", None)
+    # 知识库参数现在支持环境变量覆盖，优先级高于 YAML：清掉开发机/父进程残留，
+    # 保证子进程只按 tmp_path 下的 config.yaml 运行。
+    for key in list(env):
+        if key.startswith(("KNOWLEDGE_", "RAGFLOW_", "SOURCE_SYNC_", "COL_SQL_")):
+            env.pop(key, None)
     return subprocess.run(
         [sys.executable, *argv],
         cwd=tmp_path,

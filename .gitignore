@@ -32,6 +32,9 @@ ENV/
 # 便携运行时（嵌入式 Python + 依赖，仅本地分发用，勿提交；仅限仓库根目录）
 /runtime/
 
+# 部署版本号（末尾为 commit id 前 6 位），由 .githooks 与发布打包生成；依赖当前 commit，不能入库
+/version.json
+
 workspace/
 *.log
 
@@ -45,7 +48,6 @@ workspace/
 *~
 
 .pytest_cache/
-.pytest_tmp/
 .coverage
 htmlcov/
 .qoder
@@ -58,6 +60,10 @@ data/
 logs/
 memories/
 sessions/
+# 运行时 sessions/ 目录忽略，但 services 子包同名（T15），需显式放行；
+# 只放行目录本身，内部 __pycache__ 仍按上面的规则忽略
+!easy_agent/services/sessions/
+easy_agent/services/sessions/__pycache__/
 node_modules/
 
 # Local config with secrets (use config-example.yaml as template)
@@ -71,26 +77,6 @@ offline_deps/
 
 # IDE 智能体工作目录（含跨会话记忆，勿提交）
 .codebuddy/
-.codebuddy/
-
-# 测试运行时残留（环境变量未展开产生的字面量路径，如 ${TEST_DB_PATH}）
-${TEST_*}/
-${TEST_*}
-
-# macOS 元数据（Windows 上无意义，勿提交）
-.DS_Store
-
-# 打包产物（如拷贝到内网的 mcp-server.zip / tar.gz，大体积二进制勿提交）
-*.zip
-*.zip.0*
-*.tar.gz
-*.tar
-
-# 一次性临时脚本（改名前缀约定：_tmp_*.py），跑完即删，勿提交
-_tmp_*.py
-.tmp_*/
-
-# 来自 vue26-1013
 .workbuddy/
 
 # playwright-cli 本地运行产物（浏览器截图/快照/控制台日志）

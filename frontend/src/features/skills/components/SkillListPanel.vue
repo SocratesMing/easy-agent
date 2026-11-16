@@ -230,7 +230,9 @@ import {
   importSkill,
   getSkillCategories,
 } from '../../../api/skills.js'
+import { formatRelativeDate as formatTime } from '../../../utils/format.js'
 import { DEFAULT_CATEGORY, iconCategoryFor } from '../../../utils/skillCategories.js'
+import { validateSkillZip } from '../../../utils/skillZip.js'
 import SkillIcon from '../../../shared/components/SkillIcon.vue'
 import SkillDetailPanel from './SkillDetailPanel.vue'
 import ToggleSwitch from '../../../shared/components/ToggleSwitch.vue'
@@ -267,21 +269,6 @@ function formatSize(bytes) {
   if (value < 1024) return `${value} B`
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
   return `${(value / 1024 / 1024).toFixed(1)} MB`
-}
-
-function formatTime(iso) {
-  if (!iso) return '—'
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return '—'
-  const diff = date.getTime() - Date.now()
-  const day = 86400000
-  const hour = 3600000
-  const minute = 60000
-  const rtf = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' })
-  if (Math.abs(diff) >= day && Math.abs(diff) <= 30 * day) return rtf.format(Math.round(diff / day), 'day')
-  if (Math.abs(diff) >= hour && Math.abs(diff) < day) return rtf.format(Math.round(diff / hour), 'hour')
-  if (Math.abs(diff) < hour) return rtf.format(Math.round(diff / minute), 'minute')
-  return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' }).format(date)
 }
 
 /**
@@ -509,6 +496,14 @@ function triggerImport() {
 async function handleImportFile(event) {
   const file = event.target.files?.[0]
   if (!file) return
+  // 上传前置校验：非 zip、或名称不是「小写字母/数字/单个连字符」，当场拦下不发请求
+  const invalid = validateSkillZip(file)
+  if (invalid) {
+    showToast(invalid, 'error')
+    // 清空选择，否则同一个文件再次选中不会触发 change
+    if (fileInputRef.value) fileInputRef.value.value = ''
+    return
+  }
   importing.value = true
   try {
     const result = await importSkill(file)

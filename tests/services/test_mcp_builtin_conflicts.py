@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 
-from easy_agent.services import mcp
+from easy_agent.services.mcp import tools as mcp
 from easy_agent.tools.registry import builtin_tool_names
 
 

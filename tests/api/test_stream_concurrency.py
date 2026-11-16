@@ -9,9 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import easy_agent.api.chat as chat_api
-import easy_agent.services.expert_runtime as expert_runtime
-from easy_agent.services import agent_manager
+import easy_agent.services.agents.chat_turn as chat_turn
+import easy_agent.services.experts.runtime as expert_runtime
+from easy_agent.services.agents import manager as agent_manager
 
 BUSY = "本会话正在生成回复，请等待完成或先取消当前生成"
 
@@ -24,9 +24,11 @@ def busy_session(client):
     drain_stream_tasks 会去等这个假任务。
     """
     session_id = client.post("/agent/sessions", json={}).json()["session_id"]
-    agent_manager._session_stream_tasks[session_id] = SimpleNamespace(done=lambda: False)
+    agent_manager._sessions[session_id] = agent_manager.SessionState(
+        stream_task=SimpleNamespace(done=lambda: False)
+    )
     yield session_id
-    agent_manager._session_stream_tasks.pop(session_id, None)
+    agent_manager._sessions.pop(session_id, None)
 
 
 @pytest.fixture(autouse=True)
@@ -34,7 +36,7 @@ def _no_agent(monkeypatch):
     async def must_not_build(*args, **kwargs):
         raise AssertionError("会话正忙时不应创建 Agent")
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", must_not_build)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", must_not_build)
 
 
 def test_expert_run_on_a_busy_session_is_409(client, db, busy_session, monkeypatch):
@@ -75,8 +77,17 @@ def test_resume_on_a_busy_session_is_409(client, busy_session):
     assert resp.json()["detail"] == BUSY
 
 
-def test_a_finished_stream_does_not_block_the_next_turn(busy_session):
-    """登记的任务已结束（done）时不算忙：只看运行中的任务。"""
-    agent_manager._session_stream_tasks[busy_session] = SimpleNamespace(done=lambda: True)
+async def test_a_finished_stream_does_not_block_the_next_turn(busy_session):
+    """登记的任务已结束（done）时不算忙：只看运行中的任务 + DB 里的流锁。"""
+    agent_manager._sessions[busy_session] = agent_manager.SessionState(
+        stream_task=SimpleNamespace(done=lambda: True)
+    )
 
-    chat_api.reject_concurrent_stream(busy_session)
+    class _Runtime:
+        """跨副本流锁仓储的最小替身：没有锁 = 没人在生成。"""
+
+        def get_session_runtime(self, session_id):
+            return None
+
+    # 进程内没在跑 + DB 里没锁 → 放行（不抛 ConflictError）
+    await chat_turn.reject_concurrent_stream(busy_session, _Runtime())

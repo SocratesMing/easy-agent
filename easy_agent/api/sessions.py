@@ -13,13 +13,16 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from easy_agent.agent.backend import agent_artifacts_dir
 from easy_agent.persistence.checkpoints import delete_session_threads
-from easy_agent.db.session_repository import SessionRepository
+from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     as_session_repository as _as_session_repository,
     get_session_repository,
 )
 from easy_agent.models.db import SessionModel
 from easy_agent.models.api import (
+    CompactContextRequest,
+    ArchiveSessionRequest,
+    SessionArchiveResponse,
     SessionPinUpdateResponse,
     SessionTitleUpdateResponse,
     SessionUploadResponse,
@@ -36,13 +39,20 @@ from easy_agent.models.api import (
 )
 from easy_agent.middleware import get_current_username
 from easy_agent.bootstrap.config import Config
-from easy_agent.services import clear_session_connectors, get_agent_config, remove_session_agent
-from easy_agent.services.session_uploads import (
+from easy_agent.services.agents.manager import (
+    clear_session_connectors,
+    get_agent_config,
+    remove_session_agent,
+)
+from easy_agent.services.sessions.uploads import (
     UploadTooLargeError,
     append_manifest,
     save_upload_streaming,
     store_parsed_content,
 )
+
+from easy_agent.services.sessions import compaction as compaction_service
+from easy_agent.services.usage import session_usage_totals
 
 logger = logging.getLogger(__name__)
 
@@ -67,12 +77,10 @@ def _latest_usage(messages: list[dict]) -> dict:
 
 
 def compute_session_usage(messages: list[dict]) -> dict | None:
-    """会话详情 / 历史接口的用量，与流式 ``token_usage`` 同一口径。
+    """提取消息快照及会话耗时/步数；接口再从账本填入输入/输出累计。
 
-    每条 assistant 消息落库的是该轮**最近一次模型调用**的用量，而每次调用的输入已包含
-    之前各轮的全部历史：跨轮相加会把历史重复计算（三轮 10k / 20k / 30k 加成 60k），
-    既不是上下文占用也不是计费量，还和对话进行中显示的值对不上。所以 token 字段取最后
-    一条有用量的 assistant 消息；``elapsed_time`` / ``step_count`` 可以相加，仍按会话累计。
+    消息只保留每轮最后一次调用，无法从消息还原多步消耗。上下文和思考仍取最后一条
+    有用量的 assistant 消息；输入/输出由 ``session_usage_totals`` 查询逐调用账本。
 
     Returns:
         包含 input_tokens/output_tokens/reasoning_tokens/context_tokens/
@@ -126,7 +134,7 @@ def get_context_length() -> int | None:
         cfg = get_agent_config()
         if cfg and cfg.get("config"):
             return cfg["config"].llm.context_length
-    except Exception:
+    except Exception:  # noqa: S110 - 运行期配置不可用时回退到下面对 Config.load() 的兜底读取
         pass
     try:
         cfg = Config.load()
@@ -165,7 +173,7 @@ router = APIRouter(
 
 
 @router.post("", summary="创建新会话", response_model=CreateSessionResponse)
-async def create_session(
+def create_session(
     request: CreateSessionRequest,
     db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
@@ -205,15 +213,28 @@ async def create_session(
 
 
 @router.get("", summary="获取会话列表", response_model=list[SessionInfo])
-async def list_sessions(
+def list_sessions(
     db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    archived: bool = False,
+    q: str | None = None,
 ):
     repo = _as_session_repository(db)
 
-    sessions = repo.list_sessions(limit=limit, offset=offset, username=username)
+    sessions = repo.list_sessions(
+        limit=limit,
+        offset=offset,
+        username=username,
+        archived=archived,
+        q=q,
+    )
+    # 批量判定待审批：前端刷新后靠列表字段点亮全部「待审批」徽标，
+    # 不必逐个会话拉历史重建（那样只有点进去的那个会话才会亮）
+    pending_ids = repo.list_pending_approval_session_ids(
+        [s.session_id for s in sessions]
+    )
 
     return [
         SessionInfo(
@@ -223,19 +244,23 @@ async def list_sessions(
             updated_at=s.updated_at,
             message_count=len(s.messages),
             pinned=s.pinned,
+            archived=s.archived,
+            pending_approval=s.session_id in pending_ids,
         )
         for s in sessions
     ]
 
 
 @router.get("/count", summary="获取会话总数", response_model=SessionCountResponse)
-async def count_sessions(
+def count_sessions(
     db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
+    archived: bool | None = None,
+    q: str | None = None,
 ):
     repo = _as_session_repository(db)
 
-    total = repo.count_sessions(username=username)
+    total = repo.count_sessions(username=username, archived=archived, q=q)
     return SessionCountResponse(total_sessions=total)
 
 
@@ -247,13 +272,16 @@ async def get_session(
 ):
     repo = _as_session_repository(db)
 
-    session = repo.get_owned_session(session_id, username)
+    session = await asyncio.to_thread(repo.get_owned_session, session_id, username)
 
-    usage = compute_session_usage(session.messages or [])
+    usage = await session_usage_totals(
+        compute_session_usage(session.messages or []), username, session_id,
+    )
     context_length = session_context_length(session.messages or [])
 
     return SessionDetail(
         session_id=session.session_id,
+        archived=session.archived,
         title=session.title,
         created_at=session.created_at,
         updated_at=session.updated_at,
@@ -261,11 +289,25 @@ async def get_session(
         todos=session.todos,
         usage=usage,
         context_length=context_length,
+        compactions=await compaction_service.records(session_id),
     )
 
 
+@router.put("/{session_id}/archive", summary="设置会话归档状态", response_model=SessionArchiveResponse)
+def archive_session(
+    session_id: str,
+    request: ArchiveSessionRequest,
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
+    username: Annotated[str, Depends(get_current_username)],
+):
+    repo = _as_session_repository(db)
+    repo.get_owned_session_meta(session_id, username)
+    repo.set_session_archived(session_id, username, request.archived)
+    return SessionArchiveResponse(session_id=session_id, archived=request.archived)
+
+
 @router.put("/{session_id}/title", summary="更新会话标题", response_model=SessionTitleUpdateResponse)
-async def update_title(
+def update_title(
     session_id: str,
     request: UpdateTitleRequest,
     db: Annotated[SessionRepository, Depends(get_session_repository)],
@@ -284,7 +326,7 @@ async def update_title(
 
 
 @router.put("/{session_id}/pin", summary="切换会话置顶", response_model=SessionPinUpdateResponse)
-async def toggle_pin(
+def toggle_pin(
     session_id: str,
     db: Annotated[SessionRepository, Depends(get_session_repository)],
     username: Annotated[str, Depends(get_current_username)],
@@ -310,17 +352,10 @@ async def delete_session(
 ):
     repo = _as_session_repository(db)
 
-    session = repo.get_owned_session(session_id, username)
+    # 查库和删文件都放进线程；Agent 缓存、连接器开关和 checkpoint thread 留在事件循环上处理
+    session = await asyncio.to_thread(repo.get_owned_session, session_id, username)
 
-    session_files = repo.get_session_files(session_id)
-    for f in session_files:
-        file_path = Path(f["file_path"])
-        if file_path.exists():
-            try:
-                file_path.unlink()
-                logger.info(f"删除会话文件 | 路径: {file_path}")
-            except Exception as e:
-                logger.warning(f"删除会话文件失败: {file_path} | {e}")
+    await asyncio.to_thread(_delete_session_uploads, repo, session_id)
 
     # 先移除缓存 Agent 实例，避免后台记忆更新线程在删除后用 mkdir 重建工作区目录
     try:
@@ -337,7 +372,7 @@ async def delete_session(
     # 删除该会话的 checkpoint：官方 saver 里的会话 thread 与每条消息一个的旧 thread
     # （message_id 取自 agent_runs），以及 legacy 快照（DA-03）
     try:
-        message_ids = repo.list_run_message_ids(session_id)
+        message_ids = await asyncio.to_thread(repo.list_run_message_ids, session_id)
     except Exception as e:
         logger.warning(f"读取会话 run 记录失败，只删除会话 thread: {e}")
         message_ids = []
@@ -346,6 +381,29 @@ async def delete_session(
     except Exception as e:
         logger.warning(f"删除会话 checkpoint 失败: {e}")
 
+    await asyncio.to_thread(_delete_session_dirs, username, session, session_id)
+
+    await asyncio.to_thread(repo.delete_session, session_id)
+
+    logger.info(f"删除会话 | ID: {session_id}")
+
+    return DeleteSessionResponse(session_id=session_id)
+
+
+def _delete_session_uploads(repo: SessionRepository, session_id: str) -> None:
+    """删除会话上传的文件（查库 + 文件 IO，调用方放进线程执行）。"""
+    for f in repo.get_session_files(session_id):
+        file_path = Path(f["file_path"])
+        if file_path.exists():
+            try:
+                file_path.unlink()
+                logger.info(f"删除会话文件 | 路径: {file_path}")
+            except Exception as e:
+                logger.warning(f"删除会话文件失败: {file_path} | {e}")
+
+
+def _delete_session_dirs(username: str, session: SessionModel, session_id: str) -> None:
+    """删除会话工作区目录与框架产物目录（rmtree，调用方放进线程执行）。"""
     user_workspace_dir = Config.get_user_workspace_dir(username)
     # 候选工作区目录名：workspace_name（首轮/重命名后）与 session_id（旧会话回退）
     # agent.py 在 workspace_name 为空时会用 session_id 作目录名，故两者都尝试。
@@ -386,12 +444,6 @@ async def delete_session(
         except Exception as e:
             logger.warning(f"删除会话产物目录失败: {artifacts_dir} | {e}")
 
-    repo.delete_session(session_id)
-
-    logger.info(f"删除会话 | ID: {session_id}")
-
-    return DeleteSessionResponse(session_id=session_id)
-
 
 @router.get(
     "/{session_id}/history",
@@ -405,26 +457,30 @@ async def get_chat_history(
 ):
     repo = _as_session_repository(db)
 
-    session = repo.get_owned_session(session_id, username)
+    session = await asyncio.to_thread(repo.get_owned_session, session_id, username)
 
-    usage = compute_session_usage(session.messages or [])
+    usage = await session_usage_totals(
+        compute_session_usage(session.messages or []), username, session_id,
+    )
     context_length = session_context_length(session.messages or [])
 
     return GetChatHistoryResponse(
         session_id=session.session_id,
+        archived=session.archived,
         title=session.title,
         messages=session.messages,
         created_at=session.created_at,
         updated_at=session.updated_at,
         usage=usage,
         context_length=context_length,
+        compactions=await compaction_service.records(session_id),
     )
 
 
 @router.post(
     "/{session_id}/messages", summary="添加消息", response_model=AddMessageResponse
 )
-async def add_message(
+def add_message(
     session_id: str,
     request: AddMessageRequest,
     db: Annotated[SessionRepository, Depends(get_session_repository)],
@@ -456,7 +512,7 @@ async def upload_session_file(
 ):
     repo = _as_session_repository(db)
 
-    repo.get_owned_session(session_id, username)
+    await asyncio.to_thread(repo.get_owned_session, session_id, username)
 
     Config.sanitize_username(username)
     upload_dir = Config.get_user_workspace_dir(username) / "uploadfiles"
@@ -494,7 +550,8 @@ async def upload_session_file(
 
     ext = os.path.splitext(safe_filename)[1].lstrip(".") or "unknown"
 
-    repo.add_session_file(
+    await asyncio.to_thread(
+        repo.add_session_file,
         session_id=session_id,
         filename=safe_filename,
         file_path=str(file_path),
@@ -521,12 +578,12 @@ async def upload_session_file(
             filename=safe_filename,
             size=size,
             file_type=ext,
-            db=repo.database,
+            db=repo,
             source_name=saved_name,
         )
         if parsed_entry:
             await asyncio.to_thread(
-                append_manifest, session_id, username, [parsed_entry], repo.database
+                append_manifest, session_id, username, [parsed_entry], repo
             )
     except Exception as e:
         # 解析/清单失败不能影响上传本身：文件已落盘、记录已入库，用户仍可继续对话
@@ -551,3 +608,24 @@ async def upload_session_file(
         "parsed_path": parsed_entry.get("stored_path") if parsed_entry else None,
         "parse_status": parsed_entry.get("status") if parsed_entry else None,
     }
+
+
+@router.post("/{session_id}/context/compact", summary="手动压缩会话上下文")
+async def compact_context(
+    session_id: str,
+    request: CompactContextRequest,
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
+    username: Annotated[str, Depends(get_current_username)],
+):
+    return await compaction_service.compact(
+        _as_session_repository(db), session_id, username, request.model, request.request_id,
+    )
+
+
+@router.get("/{session_id}/context", summary="查询压缩状态与持久结果")
+async def get_context_status(
+    session_id: str,
+    db: Annotated[SessionRepository, Depends(get_session_repository)],
+    username: Annotated[str, Depends(get_current_username)],
+):
+    return await compaction_service.context_status(_as_session_repository(db), session_id, username)

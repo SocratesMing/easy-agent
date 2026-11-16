@@ -1,7 +1,7 @@
 """进程内运行期 Agent 配置的只读持有者（打破 config -> services 反向依赖）。
 
 `config.py` 的目录辅助方法（get_user_workspace_dir 等）需要“运行期加载的配置”，
-但直接 import `services.agent_manager` 会让基础层依赖服务层并形成循环导入。
+但直接 import `services.agents.manager` 会让基础层依赖服务层并形成循环导入。
 这里放一个最小、无依赖的持有者：
 
     agent_manager.init_agent_config()  -> set_runtime_agent_config({...})
@@ -38,7 +38,7 @@ _agent_invalidator = None
 
 
 def set_agent_invalidator(fn) -> None:
-    """由 services.agent_manager 注册“按用户驱逐 Agent 缓存”的实现。
+    """由 services.agents.manager 注册“按用户驱逐 Agent 缓存”的实现。
 
     tools.expert_writer 等下层模块通过这里调用，避免 tools -> services 的
     反向 import（ARCH-03 Phase 1）。

@@ -17,6 +17,13 @@ async def _async_noop(*args, **kwargs):
     """替换写流锁的异步函数（aregister / aunregister_stream_task）。"""
     return None
 
+def _runtime(db):
+    """T3c：会话运行期状态走领域 repository（Database 转发方法已删除）。"""
+    from easy_agent.db.repositories.session_runtime import SessionRuntimeRepository
+
+    return SessionRuntimeRepository(db)
+
+
 SESSION_ID = "sess-cross-pod"
 
 
@@ -131,7 +138,7 @@ async def test_new_stream_replaces_previous_turn_events(db, monkeypatch):
     ]
     assert chunks == frames
 
-    from easy_agent.services.stream_events import flush_all_stream_events
+    from easy_agent.services.streaming.events import flush_all_stream_events
 
     await flush_all_stream_events()
     rows = list_stream_events(db, SESSION_ID)
@@ -143,22 +150,30 @@ def test_stream_status_uses_db_stream_owner(client, db):
     future = (datetime.now(UTC) + timedelta(minutes=5)).isoformat(timespec="seconds")
     past = (datetime.now(UTC) - timedelta(minutes=5)).isoformat(timespec="seconds")
 
-    db.upsert_session_runtime(
+    _runtime(db).upsert_session_runtime(
         SESSION_ID, stream_owner="pod-a:123", stream_until=future
     )
     active = client.get(
         "/agent/chat/stream/status", params={"session_id": SESSION_ID}
     )
     assert active.status_code == 200
-    assert active.json() == {"session_id": SESSION_ID, "active": True}
+    assert active.json() == {
+        "session_id": SESSION_ID,
+        "active": True,
+        "replayable": False,
+    }
 
-    db.upsert_session_runtime(
+    _runtime(db).upsert_session_runtime(
         SESSION_ID, stream_owner="pod-a:123", stream_until=past
     )
     expired = client.get(
         "/agent/chat/stream/status", params={"session_id": SESSION_ID}
     )
-    assert expired.json() == {"session_id": SESSION_ID, "active": False}
+    assert expired.json() == {
+        "session_id": SESSION_ID,
+        "active": False,
+        "replayable": False,
+    }
 
     # 其它用户 / 不存在的会话仍按 404 处理
     assert client.get(

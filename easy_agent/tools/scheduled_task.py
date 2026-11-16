@@ -13,9 +13,14 @@ from langchain_core.tools import BaseTool
 from apscheduler.triggers.cron import CronTrigger
 from pydantic import BaseModel, Field
 
-from easy_agent.db import get_database
+from easy_agent.db.providers import (
+    get_scheduled_task_repository,
+    get_session_repository,
+)
 from easy_agent.models.db import ScheduledTaskModel
+from easy_agent.utils.blocking import run_blocking
 from easy_agent.utils.task_logger import log_task_event
+from easy_agent.services.scheduler import preview_next_run, reconcile_scheduled_tasks
 
 logger = logging.getLogger("easy_agent.tools.scheduled_task")
 
@@ -78,27 +83,30 @@ class CreateScheduledTaskTool(BaseTool):
             updated_at=now,
         )
 
-        db = get_database()
+        # 数据库层是同步的：查库 / 写库放进线程；对账（改本进程调度器）留在事件循环上
+        scheduled_repo = get_scheduled_task_repository()
+        session_repo = get_session_repository()
         # 解析工作目录：若由会话生成则复用该会话目录，否则使用独立目录
         workspace_name = ""
         if self.session_id:
-            session = db.get_session(self.session_id)
+            session = await run_blocking(session_repo.get_session, self.session_id)
             if session and getattr(session, "workspace_name", ""):
                 workspace_name = session.workspace_name
         if not workspace_name:
             workspace_name = f"scheduled_{task_id}"
         task.workspace_name = workspace_name
 
-        db.create_scheduled_task(task)
+        await run_blocking(scheduled_repo.create_scheduled_task, task)
 
         # 只写库。本进程若已有调度器，立刻对账装上 job；其它副本靠周期对账在数秒内装上。
-        from easy_agent.services.scheduler import preview_next_run, reconcile_scheduled_tasks
 
         next_run = preview_next_run(schedule_cron)
         if next_run:
-            db.update_scheduled_task_run_times(task_id, "", next_run)
+            await run_blocking(
+                scheduled_repo.update_scheduled_task_run_times, task_id, "", next_run
+            )
         try:
-            reconcile_scheduled_tasks()
+            await reconcile_scheduled_tasks()
         except Exception as exc:  # noqa: BLE001 - 库已写入，对账失败由周期任务补
             logger.warning(f"定时任务已入库，本进程对账失败: {exc}")
 

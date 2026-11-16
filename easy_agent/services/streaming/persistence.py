@@ -15,9 +15,48 @@ from datetime import datetime
 from pathlib import Path
 
 from easy_agent.bootstrap.env import env_bool
-from easy_agent.services.stream_messages import _partial_message_dict, tool_call_records_to_dicts
+from easy_agent.db.database import Database
+from easy_agent.db.repositories.file_repository import FileRepository
+from easy_agent.db.repositories.message_repository import MessageRepository
+from easy_agent.db.repositories.session_repository import SessionRepository
+from easy_agent.services.streaming.messages import _partial_message_dict, tool_call_records_to_dicts
 
 logger = logging.getLogger("easy_agent.chat_service")
+
+
+def _message_port(db):
+    """消息域数据端口：``MessageRepository``、``Database`` 连接或测试替身。
+
+    T3c 起 orchestrator 以 ``db=`` 传入的 ``Database`` 在这里被包成
+    ``MessageRepository``（Database 上的消息转发已随 T3c 删除）；测试替身直接
+    实现同名方法时按 duck typing 使用。本适配不改变持久化语义与异常策略。
+    """
+    if isinstance(db, MessageRepository):
+        return db
+    if isinstance(db, Database):
+        return MessageRepository(db)
+    return db
+
+
+def _session_port(db):
+    """会话域数据端口：``SessionRepository``，或提供 ``get_session`` 的旧数据端口。"""
+    if callable(getattr(db, "get_session", None)):
+        return db
+    return SessionRepository(db)
+
+
+def _file_port(db):
+    """文件域数据端口：``FileRepository``，或提供 ``add_generated_file`` 的旧数据端口。
+
+    T3b 之后生产路径应传 ``FileRepository``；迁移期 orchestrator 仍以 ``db=``
+    传入 ``Database``（文件域方法保留给 ``streaming/side_effects`` 等未迁移调用方），
+    测试替身则直接实现 ``add_generated_file``。本适配不改变持久化语义。
+    """
+    if isinstance(db, FileRepository):
+        return db
+    if isinstance(db, Database):
+        return FileRepository(db)
+    return db
 
 
 def persist_incremental(
@@ -29,7 +68,7 @@ def persist_incremental(
     """
     try:
         msg = _partial_message_dict(proc, time.time() - start_time)
-        db.update_last_assistant_message(session_id, msg)
+        _message_port(db).update_last_assistant_message(session_id, msg)
     except Exception as e:
         logger.warning(f"[{sid}] 增量持久化失败: {e}")
 
@@ -102,16 +141,22 @@ def persist_partial(
     start_time: float,
     with_approval: bool = False,
     raise_on_error: bool = False,
+    fallback_note: str | None = None,
 ) -> None:
     """保存「进行中」的 assistant 消息（取消 / 异常 / HITL 中断共用）。
 
     ``raise_on_error=True`` 用于恢复流取消路径：原实现不吞异常，保持行为一致。
+    ``fallback_note`` 只在异常兜底时传：截断时的兜底文案随消息一起落库（进
+    ``extra_data``），前端刷新/切会话后仍显示；默认 ``None`` 时消息结构与改动前一致。
     """
     try:
         partial_msg = _partial_message_dict(
-            proc, time.time() - start_time, with_approval=with_approval
+            proc,
+            time.time() - start_time,
+            with_approval=with_approval,
+            fallback_note=fallback_note,
         )
-        db.update_last_assistant_message(session_id, partial_msg)
+        _message_port(db).update_last_assistant_message(session_id, partial_msg)
     except Exception as e:
         if raise_on_error:
             raise
@@ -145,8 +190,8 @@ def persist_tool_result_event(
                 step=step,
                 message_id=message_id,
             )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - 会话日志写失败不影响流式输出
+            logger.warning(f"[{sid}] 会话日志记录工具调用失败: {exc}")
     if tool_name in ("write_file", "write_tool"):
         try:
             file_args = tool_args if isinstance(tool_args, dict) else {}
@@ -158,7 +203,7 @@ def persist_tool_result_event(
             if filename:
                 base_name = os.path.basename(filename) if filename else "unknown"
                 ext = os.path.splitext(base_name)[1].lstrip(".") or "txt"
-                db.add_generated_file(
+                _file_port(db).add_generated_file(
                     session_id=session_id,
                     message_id=message_id,
                     filename=base_name,
@@ -176,14 +221,21 @@ def persist_tool_result_event(
 def persist_todos(db, session_id: str, todos: list, sid: str) -> None:
     """持久化 Todo list（失败只记日志）。"""
     try:
-        db.update_session_todos(session_id, todos)
+        # ``update_session_todos`` 已从 Database 门面删除（T3a）：旧数据端口
+        # （测试替身 / 迁移期调用方）有同名方法就直接用，否则走会话领域 repository。
+        port = (
+            db
+            if callable(getattr(db, "update_session_todos", None))
+            else SessionRepository(db)
+        )
+        port.update_session_todos(session_id, todos)
     except Exception as e:
         logger.warning(f"[{sid}] 持久化 Todo list 失败: {e}")
 
 
 def persist_final_message(db, session_id: str, message: dict) -> None:
     """写入最终 assistant 消息（异常向上抛，由生成器统一转 error 事件）。"""
-    db.update_last_assistant_message(session_id, message)
+    _message_port(db).update_last_assistant_message(session_id, message)
 
 
 def persist_approval_decisions(
@@ -194,7 +246,7 @@ def persist_approval_decisions(
     if not status_by_id:
         return
     try:
-        sess = db.get_session(session_id)
+        sess = _session_port(db).get_session(session_id)
         if not sess or not sess.messages:
             return
         last = sess.messages[-1]
@@ -211,7 +263,7 @@ def persist_approval_decisions(
             ):
                 b["approval_status"] = status_by_id[b["tool_call_id"]]
                 b.pop("pending_approval", None)
-        db.update_last_assistant_message(session_id, last)
+        _message_port(db).update_last_assistant_message(session_id, last)
     except Exception as e:
         logger.warning(f"[{sid}] 持久化审批决策失败: {e}")
 
@@ -239,7 +291,7 @@ def write_session_context_snapshot(
         log_dir.mkdir(parents=True, exist_ok=True)
         context_path = log_dir / context_filename
 
-        session = db.get_session(session_id)
+        session = _session_port(db).get_session(session_id)
         all_messages = session.messages if session else []
 
         context_data = {

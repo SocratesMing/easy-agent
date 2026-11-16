@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from easy_agent.services.prompt_loader import (
+from easy_agent.services.agents.prompts import (
     DEFAULT_SYSTEM_PROMPT,
     clear_cache,
     configure_prompts_dir,

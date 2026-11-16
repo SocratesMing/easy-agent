@@ -25,7 +25,16 @@
         @remove="removeFile"
         @retry="retryUpload"
       />
+      <SelectedModeChip
+        v-if="interactionMode !== 'normal'"
+        :mode="interactionMode"
+        @clear="interactionMode = 'normal'"
+      />
       
+      <div v-if="fileReferences.length" class="reference-tags">
+        <FileReferenceTag v-for="ref in fileReferences" :key="ref.path" :item="ref" removable @remove="removeReference(ref)" />
+      </div>
+      <FileReferencePicker ref="referencePicker" :open="referenceOpen" :session-id="sessionId || ''" :load-tree="getWorkspaceTree" :query="referenceSearch" :style="skillPickerStyle" @navigate="resetReferenceQuery" @select="selectReference" @close="closeReference" />
       <div class="input-row">
         <div class="input-field">
           <div
@@ -55,16 +64,19 @@
             ref="textareaRef"
             v-model="message"
             spellcheck="false"
-            v-tip.hover="'输入消息，Enter 发送 · Shift+Enter 换行 · 输入 / 唤起技能选择'"
+            v-tip.hover="'输入消息，Enter 发送 · Shift+Enter 换行 · 输入 / 选择技能 · 输入 @ 引用会话文件'"
             @keydown="onKeydown"
             @beforeinput="onBeforeInput"
+            @paste="invalidateEnhancement"
+            @compositionstart="enhancementCompositionStart"
+            @compositionend="enhancementCompositionEnd"
             @input="onInput"
             @focus="updateCaretLine"
             @blur="hideCaretLine"
             @keyup="updateCaretLine"
             @click="updateCaretLine"
             @scroll="updateCaretLine"
-            placeholder=""
+            placeholder="今天帮你做些什么？@ 引用会话文件，/ 调用技能与指令"
             :disabled="disabled"
             rows="1"
           ></textarea>
@@ -154,9 +166,10 @@
               ref="knowledgeScope"
               :session-id="sessionId || ''"
               :disabled="disabled || isStreaming"
+              :pending-base-ids="pendingKnowledgeBaseIds"
               hide-trigger
               anchor-selector=".plus-menu-item-knowledge"
-              @create-session="emit('createSession')"
+              @change="handleKnowledgeScopeChange"
               @manage="openKnowledgeManage"
               @mouseenter="cancelPlusClose"
               @mouseleave="schedulePlusClose"
@@ -245,15 +258,16 @@
                 </div>
                 <div v-if="plusListLoading" class="skill-sub-hint">加载中…</div>
                 <div v-else-if="plusListError" class="skill-sub-hint error">{{ plusListError }}</div>
-                <div v-else class="skill-sub-list plus-experts" :class="{ stacked: compact }" @scroll="onExpertsScroll">
-                  <!-- 上区：我的专家（仅「可用」状态，与专家 Tab 的召唤约束一致）。
-                       有搜索词时清空的区连标题一起收起，避免「标题 + 空白」的空壳。 -->
+                <div v-else class="skill-sub-list plus-experts" :class="{ stacked: compact }">
+                  <!-- 上区：我的专家（服务端按 status=active 下发，且已按关键字过滤 + 分页）。
+                       有搜索词时清空的区连标题一起收起，避免「标题 + 空白」的空壳；
+                       搜索请求在飞时保留标题，否则它会闪一下再出现。 -->
                   <div v-if="showMineSection" class="plus-experts-section">
                     <span class="plus-experts-section-label">我的专家</span>
-                    <span v-if="filteredMyExperts.length" class="plus-experts-section-count">{{ filteredMyExperts.length }}</span>
+                    <span v-if="myExpertsTotal" class="plus-experts-section-count">{{ myExpertsTotal }}</span>
                   </div>
                   <button
-                    v-for="item in visibleMyExperts"
+                    v-for="item in myExperts"
                     :key="`mine:${item.export_agent_id}`"
                     type="button"
                     class="plus-expert-row"
@@ -271,21 +285,24 @@
                     </span>
                     <span v-if="!compact && isExpertSelected(item)" class="plus-expert-state">已选</span>
                   </button>
-                  <div v-if="!subpanelKeyword && !filteredMyExperts.length" class="plus-expert-empty">
+                  <div v-if="myExpertsLoading && !myExperts.length" class="skill-sub-hint">加载中…</div>
+                  <div v-if="!subpanelKeyword && !myExperts.length && !myExpertsLoading && !myExpertsError" class="plus-expert-empty">
                     <span class="plus-expert-empty-text">您还没有创建自己的专家</span>
                     <button type="button" class="plus-expert-create" @click="handleMenuPanel('experts')">
                       「去创建」
                     </button>
                   </div>
-                  <!-- 兜底：内容未超出容器高度时不会产生滚动条，用可点击的「还有 N 位」保证可达 -->
+                  <!-- 加载更多：只在「已加载 < 总数」时出现，全部加载完就不再展示 -->
                   <button
-                    v-if="filteredMyExperts.length > visibleMyExperts.length"
+                    v-if="hasMoreMine"
                     type="button"
                     class="plus-expert-more"
-                    @click="loadMoreExperts"
+                    :disabled="myExpertsLoading"
+                    @click="loadMoreMyExperts"
                   >
-                    还有 {{ filteredMyExperts.length - visibleMyExperts.length }} 位 · 点击加载
+                    {{ myExpertsLoading ? '加载中…' : (myExpertsError ? '加载失败，点击重试' : '点击加载更多') }}
                   </button>
+                  <div v-else-if="myExpertsError" class="skill-sub-hint error">{{ myExpertsError }}</div>
 
                   <div v-if="showMineSection && showPublicSection" class="plus-experts-divider"></div>
 
@@ -315,18 +332,19 @@
                     <span v-if="!compact && isExpertSelected(item)" class="plus-expert-state">已选</span>
                   </button>
                   <div v-if="!subpanelKeyword && !filteredPublicExperts.length" class="skill-sub-hint">公共专家目录为空</div>
-                  <!-- 搜索无命中：两区都空时给一句统一提示 -->
+                  <!-- 搜索无命中：两区都空时给一句统一提示；我的专家还在查时先不提示 -->
                   <div
-                    v-if="subpanelKeyword && !filteredMyExperts.length && !filteredPublicExperts.length"
+                    v-if="subpanelKeyword && !myExperts.length && !filteredPublicExperts.length && !myExpertsLoading"
                     class="skill-sub-hint"
                   >
                     未找到匹配的专家
                   </div>
+                  <!-- 公共专家是本地分页（目录全量下发），与「我的专家」的服务端分页互不影响 -->
                   <button
                     v-if="filteredPublicExperts.length > visiblePublicExperts.length"
                     type="button"
                     class="plus-expert-more"
-                    @click="loadMoreExperts"
+                    @click="loadMorePublicExperts"
                   >
                     还有 {{ filteredPublicExperts.length - visiblePublicExperts.length }} 位 · 点击加载
                   </button>
@@ -460,7 +478,6 @@
             hidden
           />
 
-
           <ModelPicker
             :models="models"
             :selected-model="selectedModel"
@@ -511,6 +528,7 @@
         </div>
         
         <div class="right-actions">
+          <PromptEnhancementActions :enabled="canEnhance" :state="enhancement" @enhance="enhancePrompt" />
           <div 
             v-if="showTokenRing" 
             ref="ringRef"
@@ -541,7 +559,7 @@
                 <div class="token-popup-divider"></div>
                 <div class="token-popup-section">
                 <div class="token-popup-row">
-                  <span class="token-popup-label">本轮上下文占用</span>
+                  <span class="token-popup-label">本轮上下文占用{{ sessionUsage.context_estimated ? '（估算）' : '' }}</span>
                 </div>
                 <div class="token-popup-context-row">
                   <span class="token-popup-context-value">{{ formatTokens(sessionUsage.context_tokens) }}/{{ formatTokens(sessionUsage.context_length) }}</span>
@@ -574,7 +592,7 @@
             @click="send"
             class="action-btn send-btn"
             :class="{ active: canSend }"
-            :disabled="!canSend || disabled"
+            :disabled="!canSend || disabled || preparingFiles || enhancement.pending"
             v-tip="'发送（Enter）'"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -606,35 +624,38 @@
         @click.stop
       >
         <div class="skill-picker-header">
-          <span>选择技能</span>
           <span class="skill-picker-hint">↑↓ 选择 · Enter 确认 · Esc 关闭</span>
         </div>
 
         <div v-if="skillPickerLoading" class="skill-picker-state">正在加载技能…</div>
-        <div v-else-if="filteredSkills.length === 0" class="skill-picker-state">
-          {{ skillOptions.length === 0 ? '还没有可用的技能，先到技能中心添加并启用' : '没有匹配的技能' }}
+        <div v-if="menuItems.length === 0 && !skillPickerLoading" class="skill-picker-state">
+          {{ skillOptions.length === 0 ? '没有匹配项，可到技能中心添加并启用技能' : '没有匹配的指令或技能' }}
         </div>
 
-        <ul v-else class="skill-picker-list" role="listbox" aria-label="可用技能">
-          <li
-            v-for="(row, index) in skillRows"
-            :key="row.skill.dir_name"
-            class="skill-picker-item"
-            :class="{ active: index === skillPickerIndex }"
-            role="option"
-            :aria-selected="index === skillPickerIndex ? 'true' : 'false'"
-            @mouseenter="skillPickerIndex = index"
-            @mousedown.prevent="selectSkill(row.skill)"
-            @click="selectSkill(row.skill)"
-          >
-            <SkillIcon :icon="row.skill.icon" :category="iconCategoryFor(row.skill.category_id)" size="xs" />
-            <span class="skill-picker-body">
-              <span class="skill-picker-name"><span v-for="(part, pi) in row.nameParts" :key="'n' + pi" :class="{ 'skill-picker-hit': part.hit }">{{ part.text }}</span></span>
-              <span class="skill-picker-desc"><span v-for="(part, pi) in row.descParts" :key="'d' + pi" :class="{ 'skill-picker-hit': part.hit }">{{ part.text }}</span></span>
-            </span>
-            <span class="skill-picker-slash">/{{ row.skill.dir_name }}</span>
-          </li>
-        </ul>
+        <div v-if="menuItems.length" class="skill-picker-list" role="listbox" aria-label="指令和技能">
+          <ul v-for="group in pickerGroups" :key="group.title" class="picker-group" role="group" :aria-label="group.title">
+            <li class="picker-group-title" role="presentation">{{ group.title }} ({{ group.rows.length }})</li>
+            <li
+              v-for="row in group.rows"
+              :key="(row.skill.command ? 'command:' : 'skill:') + row.skill.dir_name"
+              class="skill-picker-item"
+              :class="{ active: row.index === skillPickerIndex, unavailable: row.skill.disabled }"
+              :aria-disabled="row.skill.disabled ? 'true' : 'false'"
+              role="option"
+              :aria-selected="row.index === skillPickerIndex ? 'true' : 'false'"
+              @mouseenter="skillPickerIndex = row.index"
+              @mousedown.prevent="selectSkill(row.skill)"
+              @click="selectSkill(row.skill)"
+            >
+              <SkillIcon :icon="row.skill.icon" :category="iconCategoryFor(row.skill.category_id)" size="xs" />
+              <span class="skill-picker-body">
+                <span class="skill-picker-name"><span v-for="(part, pi) in row.nameParts" :key="'n' + pi" :class="{ 'skill-picker-hit': part.hit }">{{ part.text }}</span></span>
+                <span class="skill-picker-desc"><span v-for="(part, pi) in row.descParts" :key="'d' + pi" :class="{ 'skill-picker-hit': part.hit }">{{ part.text }}</span></span>
+              </span>
+              <span class="skill-picker-slash">/{{ row.skill.dir_name }}</span>
+            </li>
+          </ul>
+        </div>
       </div>
     </Teleport>
 
@@ -646,10 +667,16 @@
 
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
-import { uploadFile, deleteFile } from '../../../api/files.js'
+import { commandItems } from '../../../shared/compaction/state.js'
+import FileReferencePicker from './FileReferencePicker.vue'
+import FileReferenceTag from './FileReferenceTag.vue'
+import { restoreReferenceDraft } from '../../../shared/fileReferences.js'
+import { uploadFile, deleteFile, getWorkspaceTree } from '../../../api/files.js'
 import { getKnowledgeStatus, getWebSearchStatus, getUploadLimits } from '../../../api/settings.js'
 import { getUserSkills, importSkill } from '../../../api/skills.js'
 import { iconCategoryFor } from '../../../utils/skillCategories.js'
+import SelectedModeChip from './SelectedModeChip.vue'
+import { interactionCommandItems } from '../../../shared/chat/planInteraction.js'
 
 // 镜像层为画出技能芯片的外扩留白，把裁剪盒向外扩了这么多 px（见 .input-mirror 的 padding/margin）：
 // 补滚动条占位时要一起加上，否则镜像内容比 textarea 窄、换行位置对不上。
@@ -677,7 +704,11 @@ import { expertAvatarChar, expertAvatarClass } from '../../../utils/expertAvatar
 import { formatSize } from '../../../utils/format.js'
 import SkillPicker from './SkillPicker.vue'
 import UploadTray from './UploadTray.vue'
+import { useContextDuration, useContextRing } from '../composables/useContextUsage.js'
+import { useFileReferences } from '../composables/useFileReferences.js'
+import { usePromptEnhancement } from '../composables/usePromptEnhancement.js'
 import ModelPicker from './ModelPicker.vue'
+import PromptEnhancementActions from './PromptEnhancementActions.vue'
 import KnowledgeScopeSelector from '../../knowledge/KnowledgeScopeSelector.vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
 import SkillIcon from '../../../shared/components/SkillIcon.vue'
@@ -689,6 +720,8 @@ const TEXTAREA_LINE_HEIGHT = 24
 const TEXTAREA_MAX_HEIGHT = TEXTAREA_MAX_ROWS * TEXTAREA_LINE_HEIGHT
 
 const props = defineProps({
+  compactReason: { type: String, default: '请先开始对话' },
+  compactBusy: { type: Boolean, default: false },
   disabled: {
     type: Boolean,
     default: false
@@ -748,11 +781,21 @@ const props = defineProps({
   compact: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['send', 'stop', 'createSession', 'update:selectedModel', 'typing', 'clearExpert', 'selectExpert', 'prefillApplied', 'openPanel', 'openKnowledge'])
+const emit = defineEmits(['compact-context', 'send', 'stop', 'createSession', 'update:selectedModel', 'typing', 'clearExpert', 'selectExpert', 'prefillApplied', 'openPanel', 'openKnowledge', 'webSearchChange'])
 
 const message = ref('')
+const { fileReferences, referenceOpen, referenceSearch, referencePicker, updateReference,
+  closeReference, resetReferenceQuery, selectReference, removeReference, restoreInitialReferences } = useFileReferences({
+  props, message, replaceTextWithCaret, closeSkillPicker, updateSkillPickerPosition,
+})
+const interactionMode = ref('normal')
 const textareaRef = ref(null)
 const uploadedFiles = ref([])
+// 新对话里勾选的知识库：只暂存在前端，首条消息发送时随请求提交，
+// 避免“选知识库”阶段提前创建空会话（已有会话仍走 knowledge-scope 接口保存）。
+const pendingKnowledgeBaseIds = ref([])
+// 发送前正在把“待发送”附件上传到刚创建/已有会话，防止重复点击发送
+const preparingFiles = ref(false)
 
 // 并行上传时共享的「等待会话创建」Promise（避免重复触发 createSession）
 let pendingSessionPromise = null
@@ -820,30 +863,57 @@ async function loadUploadLimits() {
  * 选出本批可以上传的文件（入列前校验，避免"传了一半才发现超限"）。
  *
  * 规则：
- * - enabled=false 时不限；
- * - 数量不满足（已有非失败数 + 本批数 > 上限）→ **整批拒绝**，让用户重新选择；
+ * - 先做**重复过滤**：文件名 + 大小 + 修改时间都相同视为同一文件，
+ *   与本轮已添加的文件（含本批内互相重复）只保留一个，其余忽略；
+ *   上传失败（error）的条目不算已添加，允许重新选择同一个文件再传；
+ *   uploadedFiles 在发送后清空，因此去重只作用于本轮，不影响其它轮次；
+ * - enabled=false 时不限额度；
+ * - 数量不满足（已有非失败数 + 去重后本批数 > 上限）→ **整批拒绝**，让用户重新选择；
  * - 逐个文件检查单文件大小与总大小 → **只跳过超限的那一个**，其余照常上传；
  * - 失败文件不占额度，因此删除/失败都会立即释放名额与空间。
  */
+function uploadFileKey(file) {
+  return `${file.name}\u0000${file.size}\u0000${file.lastModified ?? ''}`
+}
+
 function pickAcceptable(files) {
   const L = uploadLimits.value
-  if (!L.enabled) return { accepted: [...files], rejected: [], batchRejected: false }
+
+  // 重复过滤：与本轮已添加文件重复、或本批内互相重复的，只保留第一个
+  const existingKeys = new Set(
+    uploadedFiles.value
+      .filter(f => f.uploadStatus !== 'error')
+      .map(f => `${f.filename}\u0000${f.size}\u0000${f.file?.lastModified ?? ''}`)
+  )
+  const deduped = []
+  const rejected = []
+  const batchKeys = new Set()
+  for (const file of files) {
+    const key = uploadFileKey(file)
+    if (existingKeys.has(key) || batchKeys.has(key)) {
+      rejected.push({ file, reason: 'duplicate' })
+      continue
+    }
+    batchKeys.add(key)
+    deduped.push(file)
+  }
+
+  if (!L.enabled) return { accepted: deduped, rejected, batchRejected: false }
 
   let count = usedCount.value
   let total = usedBytes.value
   const accepted = []
-  const rejected = []
 
-  if (count + files.length > L.maxFiles) {
+  if (count + deduped.length > L.maxFiles) {
     return {
       accepted: [],
-      rejected: files.map(f => ({ file: f, reason: 'count' })),
+      rejected,
       batchRejected: true,
       message: `最多只能上传 ${L.maxFiles} 个文件（已用 ${count} 个），请重新选择`,
     }
   }
 
-  for (const file of files) {
+  for (const file of deduped) {
     if (file.size > mbToBytes(L.maxFileSizeMb)) {
       rejected.push({ file, reason: 'file_size' })
       continue
@@ -863,6 +933,9 @@ function pickAcceptable(files) {
 function buildRejectNotice(result, acceptedCount) {
   const L = uploadLimits.value
   const parts = result.rejected.map(({ file, reason }) => {
+    if (reason === 'duplicate') {
+      return `${file.name}（与本轮已添加文件重复，已过滤）`
+    }
     if (reason === 'file_size') {
       return `${file.name}（超过单文件上限 ${L.maxFileSizeMb}MB）`
     }
@@ -871,9 +944,12 @@ function buildRejectNotice(result, acceptedCount) {
     }
     return file.name
   })
+  const onlyDuplicates = result.rejected.length > 0 && result.rejected.every(r => r.reason === 'duplicate')
   const head = acceptedCount > 0
     ? `已添加 ${acceptedCount} 个文件，忽略 ${result.rejected.length} 个：`
-    : `无法上传，已忽略 ${result.rejected.length} 个文件：`
+    : (onlyDuplicates
+      ? `已忽略 ${result.rejected.length} 个重复文件：`
+      : `无法上传，已忽略 ${result.rejected.length} 个文件：`)
   return head + parts.join('；')
 }
 
@@ -985,6 +1061,12 @@ const preselectedSkillDirs = ref(new Set())
 // pending_expert_id 字段上行，后端校验归属后绑定为 save_expert 的修改目标。
 const pendingExpertEditId = ref('')
 
+const { enhancement, canEnhance, invalidateEnhancement, enhancePrompt,
+  enhancementCompositionStart, enhancementCompositionEnd } = usePromptEnhancement({
+  props, message, fileReferences, tokenMap, knownSkills, preselectedSkillDirs, pendingExpertEditId,
+  preparingFiles, textareaRef, autoResize, syncMirror,
+})
+
 const selectedSkillDirs = computed(() => {
   const dirs = new Set(preselectedSkillDirs.value)
   for (const dir of skillDirsInText(message.value, tokenMap.value)) dirs.add(dir)
@@ -1007,19 +1089,20 @@ const filteredSkills = computed(() => {
   return skillOptions.value.filter(s => (s.description || '').toLowerCase().includes(q))
 })
 
-/**
- * 技能面板的行数据：把名称 / 描述按查询词切成片段，命中片段由模板上色。
- * 筛选结果与高亮同源（都吃 filteredSkills），两者不会出现「显示却不高亮」的错位；
- * 名称命中时描述里的同词也一并上色，方便一眼看出为什么这条被选中。
- * 右侧的 `/目录名` 与名称基本重复，不再单独上色，避免一行出现三处蓝。
- */
+// 按类型纵向分组，键盘索引仅包含可选择的行。
+const menuItems = computed(() => [...interactionCommandItems(skillQuery.value), ...commandItems(skillQuery.value, props.compactReason, props.compactBusy), ...filteredSkills.value])
 const skillRows = computed(() =>
-  filteredSkills.value.map(skill => ({
-    skill,
+  menuItems.value.map((skill, index) => ({
+    skill, index,
     nameParts: splitByQuery(skill.name || skill.dir_name, skillQuery.value),
     descParts: splitByQuery(skill.description || '暂无描述', skillQuery.value),
   }))
 )
+
+const pickerGroups = computed(() => [
+  { title: '指令', rows: skillRows.value.filter(row => row.skill.command) },
+  { title: '技能', rows: skillRows.value.filter(row => !row.skill.command) },
+].filter(group => group.rows.length))
 
 async function loadSkillOptions() {
   const now = Date.now()
@@ -1068,7 +1151,7 @@ function updateSkillPickerPosition() {
 /** 键盘切换选项时把当前高亮项滚进可视区（只滚列表本身，不带动外层级） */
 function scrollActiveSkillIntoView() {
   const list = skillPickerRef.value?.querySelector('.skill-picker-list')
-  const item = list?.children[skillPickerIndex.value]
+  const item = list?.querySelectorAll('.skill-picker-item')[skillPickerIndex.value]
   if (!list || !item) return
   const top = item.offsetTop
   const bottom = top + item.offsetHeight
@@ -1116,6 +1199,21 @@ async function selectSkill(skill) {
   const slash = parseSlashQuery(base, caret)
   const start = slash ? slash.start : caret
   const cleared = base.slice(0, start) + base.slice(caret)
+
+  if (skill.command) {
+    if (skill.interactionMode) {
+      if (isStreaming.value || props.disabled) return
+      interactionMode.value = skill.interactionMode
+      closeSkillPicker()
+      replaceTextWithCaret({ text: cleared, caret: start })
+      return
+    }
+    if (props.compactReason || skill.disabled) return
+    closeSkillPicker()
+    replaceTextWithCaret({ text: cleared, caret: start })
+    emit('compact-context')
+    return
+  }
 
   rememberSkills([skill])
   const existing = skillSegments(cleared, tokenMap.value)
@@ -1189,7 +1287,15 @@ function restorePendingSkill() {
     const list = Array.isArray(parsed?.skills) ? parsed.skills : (parsed ? [parsed] : [])
     for (const skill of list) {
       if (!skill?.dir_name) continue
-      rememberSkills([skill])
+      if (skill.command) {
+    if (props.compactReason || skill.disabled) return
+    closeSkillPicker()
+    replaceTextWithCaret({ text: cleared, caret: start })
+    emit('compact-context')
+    return
+  }
+
+  rememberSkills([skill])
       if (skill.insert_token === false) {
         preselectedSkillDirs.value.add(skill.dir_name)
         continue
@@ -1230,6 +1336,7 @@ function handleTokenDeleteKey(event) {
  * 拦截后自行整段删标签；拦不到的情况由 onInput 的差分自愈兜底（见 reconcileTokenDeletion）。
  */
 function onBeforeInput(event) {
+  invalidateEnhancement()
   if (event.isComposing) return
   const deleteBackward = event.inputType === 'deleteContentBackward'
   const deleteForward = event.inputType === 'deleteContentForward'
@@ -1248,10 +1355,12 @@ function onBeforeInput(event) {
 
 /** 键盘：面板打开时接管 ↑↓ / Enter / Esc，其余情况保持原有 Enter 发送 */
 function onKeydown(event) {
+  if (event.isComposing || event.keyCode === 229) return
+  if (referenceOpen.value && referencePicker.value?.key(event)) return
   if (handleTokenDeleteKey(event)) return
 
   if (skillPickerOpen.value) {
-    const count = filteredSkills.value.length
+    const count = menuItems.value.length
     if (event.key === 'ArrowDown' && count > 0) {
       event.preventDefault()
       skillPickerIndex.value = (skillPickerIndex.value + 1) % count
@@ -1270,7 +1379,7 @@ function onKeydown(event) {
       return
     }
     if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
-      const skill = filteredSkills.value[skillPickerIndex.value]
+      const skill = menuItems.value[skillPickerIndex.value]
       if (skill) {
         event.preventDefault()
         selectSkill(skill)
@@ -1292,6 +1401,10 @@ function onKeydown(event) {
 
 /** 点击面板外的区域时收起技能面板 */
 function closeSkillPickerOnClick(event) {
+  if (referenceOpen.value) {
+    if (referencePicker.value?.$el.contains(event.target)) return
+    if (event.target !== textareaRef.value) closeReference()
+  }
   if (!skillPickerOpen.value) return
   const picker = skillPickerRef.value
   if (picker && picker.contains(event.target)) return
@@ -1300,7 +1413,7 @@ function closeSkillPickerOnClick(event) {
 
 /** 窗口尺寸变化时重新定位（移动端键盘弹出会触发 resize） */
 function handleViewportChange() {
-  if (skillPickerOpen.value) updateSkillPickerPosition()
+  if (skillPickerOpen.value || referenceOpen.value) updateSkillPickerPosition()
 }
 
 // ========== 联网搜索 ==========
@@ -1453,6 +1566,12 @@ function openKnowledgeManage() {
   emit('openKnowledge')
 }
 
+// 知识库勾选变化：已有会话由选择器立即 PUT 落库；新对话只暂存，
+// 等首条消息发送时随 /agent/chat/stream 提交，由后端建会话后落库。
+function handleKnowledgeScopeChange(baseIds) {
+  pendingKnowledgeBaseIds.value = props.sessionId ? [] : [...baseIds]
+}
+
 // ========== 「+」二级列表：展示当前用户自己的条目（不跳转页面） ==========
 // 数据来源均为当前用户：
 //   技能   → GET /agent/skill-center/user-skills（workspace/{user}/skills，含已停用）
@@ -1468,16 +1587,35 @@ const SUBPANEL_GAP = 6
 // 按行高约 44px 算，560px ≈ 列表能露出 10 行，比原来的 320px 一屏 5 行舒服很多。
 const SUBPANEL_MAX_HEIGHT = 560
 
+// 「+」→ 专家：上区「我的专家」走服务端分页（后端 /agent/list 支持 keyword/status/page），
+// 一页 5 条，首屏取第 1 页，之后点「点击加载更多」再取下一页。
+// 不再用「一次拉全量 + 本地 slice」：库里第 N 页的专家从来没被请求过，关键字再准也搜不到。
+const PLUS_EXPERTS_PAGE_SIZE = 5
+// 下区「公共专家」是随发行包内置的目录（只有个位数），继续本地过滤 + 本地分页。
+const PUBLIC_EXPERTS_PAGE_SIZE = 6
+const PUBLIC_EXPERTS_MORE_STEP = 3
+// 专家搜索防抖：连续输入时只在停手后打一次接口
+const EXPERT_SEARCH_DEBOUNCE_MS = 300
+
 const subpanelCategory = ref(null) // 当前展开的二级面板：'skills' | 'experts' | 'connectors' | null
 const plusListCategory = ref('')
 const plusList = ref([])
 const plusListLoading = ref(false)
 const plusListError = ref('')
-// 专家快捷面板：上区我的专家 / 下区公共（预置）专家
+// 专家快捷面板：上区我的专家（服务端分页 + 关键字） / 下区公共（预置）专家（本地过滤 + 分页）
 const myExperts = ref([])
+const myExpertsTotal = ref(0)
+const myExpertsPage = ref(0)
+const myExpertsLoading = ref(false)
+const myExpertsError = ref('')
 const publicExperts = ref([])
-// 两个区块默认各展示 6 位（单行布局后一屏放得下 6 行），滚动到底部再放出 3 位
-const plusExpertsLimit = ref(6)
+// 公共专家首屏 6 行，点「还有 N 位」再放 3 行（目录全量下发，只在本地切）
+const publicExpertsLimit = ref(PUBLIC_EXPERTS_PAGE_SIZE)
+// 上一次真正提交给接口的关键字：面板打开时清空搜索词不该再触发一次「按关键字重查」
+const expertsKeyword = ref('')
+// 请求序号：快速连续输入会有多个请求在飞，只认最后一次的结果
+let expertsRequestSeq = 0
+let expertsSearchTimer = null
 // 子面板搜索（专家 / 技能 / 连接器共用一个关键词，切换分类时清空）
 const subpanelKeyword = ref('')
 
@@ -1494,14 +1632,11 @@ const plusListSearchPlaceholder = computed(() => {
   return meta[plusListCategory.value] || '搜索'
 })
 
-// 我的专家：仅保留「可用」（active）状态，与专家 Tab 的召唤约束一致
-const myExpertsActive = computed(() =>
-  myExperts.value.filter((item) => item && item.agent_status === 'active')
-)
-
 /**
- * 专家搜索：名称 / 描述 / 依赖技能名。
- * 带上技能名是因为用户常按「这个专家用了什么技能」来找，而描述里未必出现该词。
+ * 专家搜索：中英文名 / 功能描述。
+ *
+ * 注意只用于**公共专家**（目录全量下发、在本地过滤）；「我的专家」的关键字已下推
+ * 给接口（服务端分页，本地拿不到未加载的条目，过滤会漏）。
  */
 function filterExperts(list) {
   const kw = subpanelKeyword.value.trim().toLowerCase()
@@ -1509,36 +1644,33 @@ function filterExperts(list) {
   return (list || []).filter((item) => {
     if (!item) return false
     const name = String(item.export_name_cn || '').toLowerCase()
+    const nameEn = String(item.export_name_en || '').toLowerCase()
     const desc = String(item.export_description || '').toLowerCase()
-    const skills = Array.isArray(item.export_skills_names)
-      ? item.export_skills_names.join(' ').toLowerCase()
-      : String(item.export_skills_names || '').toLowerCase()
-    return name.includes(kw) || desc.includes(kw) || skills.includes(kw)
+    return name.includes(kw) || nameEn.includes(kw) || desc.includes(kw)
   })
 }
 
-const filteredMyExperts = computed(() => filterExperts(myExpertsActive.value))
 const filteredPublicExperts = computed(() => filterExperts(publicExperts.value))
-// 有搜索词时，清空的区连标题一起收起（避免「标题 + 空白」的空壳）
-const showMineSection = computed(() => !subpanelKeyword.value.trim() || filteredMyExperts.value.length > 0)
+// 有搜索词时，清空的区连标题一起收起；搜索请求在飞时保留标题，否则它会闪一下再出现
+const showMineSection = computed(
+  () => !subpanelKeyword.value.trim() || myExperts.value.length > 0 || myExpertsLoading.value
+)
 const showPublicSection = computed(() => !subpanelKeyword.value.trim() || filteredPublicExperts.value.length > 0)
 
-// 搜索时全量展示（避免「搜到第 4 条却藏在『还有 N 位』后面」），否则按 limit 分页
-const visibleMyExperts = computed(() =>
-  subpanelKeyword.value.trim()
-    ? filteredMyExperts.value
-    : filteredMyExperts.value.slice(0, plusExpertsLimit.value)
-)
+// 还有下一页（我的专家：加载满 total 后按钮消失）
+const hasMoreMine = computed(() => myExperts.value.length < myExpertsTotal.value)
+
+// 公共专家：搜索时全量展示（避免「搜到第 4 条却藏在『还有 N 位』后面」），否则按 limit 分页
 const visiblePublicExperts = computed(() =>
   subpanelKeyword.value.trim()
     ? filteredPublicExperts.value
-    : filteredPublicExperts.value.slice(0, plusExpertsLimit.value)
+    : filteredPublicExperts.value.slice(0, publicExpertsLimit.value)
 )
 
-// 标题右侧计数：过滤后的条数（专家 = 两区之和，技能 = 技能列表过滤后条数）
+// 标题右侧计数：专家 = 已加载的我的专家 + 公共专家命中数；技能 = 技能列表过滤后条数
 const plusListCount = computed(() => {
   if (plusListCategory.value === 'experts') {
-    return filteredMyExperts.value.length + filteredPublicExperts.value.length
+    return myExperts.value.length + filteredPublicExperts.value.length
   }
   if (plusListCategory.value === 'skills') return filteredSkillList.value.length
   return filteredPlusList.value.length
@@ -1547,7 +1679,7 @@ const plusListCount = computed(() => {
 // 空列表时不显示搜索框（免得对着空列表以为「搜不到」）
 const hasPanelItems = computed(() =>
   plusListCategory.value === 'experts'
-    ? myExpertsActive.value.length + publicExperts.value.length > 0
+    ? myExperts.value.length + publicExperts.value.length > 0
     : plusList.value.length > 0
 )
 
@@ -1558,10 +1690,22 @@ function openPlusList(category) {
   plusList.value = []
   // 每次打开都重新拉取（接口很轻，且公共专家目录是服务端实时扫描的）
   myExperts.value = []
+  myExpertsTotal.value = 0
+  myExpertsPage.value = 0
+  myExpertsLoading.value = false
+  myExpertsError.value = ''
   publicExperts.value = []
-  plusExpertsLimit.value = 6
+  publicExpertsLimit.value = PUBLIC_EXPERTS_PAGE_SIZE
   // 三个面板共用一份搜索词：切分类时一律清空，避免把上一个面板的关键字带过来
   subpanelKeyword.value = ''
+  // 同步记下「已提交的关键字」，让清空动作不触发 subpanelKeyword 的按关键字重查
+  expertsKeyword.value = ''
+  if (expertsSearchTimer) {
+    clearTimeout(expertsSearchTimer)
+    expertsSearchTimer = null
+  }
+  // 作废上一轮还在飞的请求，避免旧结果落到新面板上
+  expertsRequestSeq += 1
   if (category === 'connectors') {
     // 开关状态随连接器目录一起拉取（loadPlusList）
     clearConnectorNotice()
@@ -1648,12 +1792,16 @@ function hoverPlusItem(category, event) {
 async function loadPlusList(category) {
   try {
     if (category === 'experts') {
-      // 并行拉取：我的专家（数据库） + 公共专家（内置目录）
+      // 并行拉取：我的专家第 1 页（服务端 status=active + 分页） + 公共专家（内置目录，全量）
       const [mine, preset] = await Promise.all([
-        listExperts({ includeDisabled: false }),
+        listExperts({ status: 'active', page: 1, pageSize: PLUS_EXPERTS_PAGE_SIZE }),
         listPublicExperts(),
       ])
+      // 期间用户已切到别的分类：这批结果直接丢弃，避免串到技能 / 连接器面板
+      if (plusListCategory.value !== 'experts') return
       myExperts.value = mine.items || []
+      myExpertsTotal.value = Number(mine.total) || 0
+      myExpertsPage.value = 1
       publicExperts.value = preset.items || []
     } else if (category === 'skills') {
       const data = await getUserSkills()
@@ -1751,23 +1899,54 @@ function toggleExpert(item) {
   cancelPlusClose()
 }
 
-/** 列表滚动到底部附近时，每区多放出 3 条（防止面板一次性过高） */
-function onExpertsScroll(e) {
-  const el = e?.target
-  if (!el) return
-  const reachedBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 8
-  if (!reachedBottom) return
-  loadMoreExperts()
+/**
+ * 拉「我的专家」的某一页（服务端分页 + 关键字过滤）。
+ *
+ * page=1 替换列表（首次打开 / 搜索），page>1 追加（点「点击加载更多」）。
+ * 请求序号保证搜索时连续输入的多个请求只认最后一次；失败只提示、不清空已加载内容，
+ * 用户再点一次「点击加载更多」即可重试。
+ */
+async function loadMyExpertsPage(page = 1) {
+  const seq = (expertsRequestSeq += 1)
+  myExpertsLoading.value = true
+  myExpertsError.value = ''
+  try {
+    const data = await listExperts({
+      keyword: expertsKeyword.value,
+      status: 'active',
+      page,
+      pageSize: PLUS_EXPERTS_PAGE_SIZE,
+    })
+    if (seq !== expertsRequestSeq) return
+    const items = data.items || []
+    myExperts.value = page === 1 ? items : myExperts.value.concat(items)
+    myExpertsTotal.value = Number(data.total) || 0
+    myExpertsPage.value = page
+  } catch (e) {
+    if (seq !== expertsRequestSeq) return
+    myExpertsError.value = e?.message || '加载失败'
+  } finally {
+    if (seq === expertsRequestSeq) {
+      myExpertsLoading.value = false
+      // 条数变了，面板高度要跟着重算（变高才允许向上长）
+      nextTick(syncSubpanelBox)
+    }
+  }
 }
 
-/** 每区多放出 3 条（滚动到底 / 点「还有 N 位」都会走到这里） */
-function loadMoreExperts() {
-  const total = Math.max(myExpertsActive.value.length, publicExperts.value.length)
-  if (plusExpertsLimit.value < total) {
-    plusExpertsLimit.value += 3
-    // 内容变多是唯一允许面板长高的场景（向上长），重算一次尺寸
-    nextTick(syncSubpanelBox)
-  }
+/** 「点击加载更多」：再取一页追加；已加载满 total 时按钮本身不渲染 */
+function loadMoreMyExperts() {
+  if (myExpertsLoading.value) return
+  if (myExperts.value.length >= myExpertsTotal.value) return
+  loadMyExpertsPage(myExpertsPage.value + 1)
+}
+
+/** 公共专家本地分页：再放 3 条 */
+function loadMorePublicExperts() {
+  if (publicExpertsLimit.value >= filteredPublicExperts.value.length) return
+  publicExpertsLimit.value += PUBLIC_EXPERTS_MORE_STEP
+  // 内容变多是唯一允许面板长高的场景（向上长），重算一次尺寸
+  nextTick(syncSubpanelBox)
 }
 
 // 列表底部入口：跳到「专家·技能·连接器」面板做完整管理（启用/停用、编辑等）
@@ -2172,6 +2351,9 @@ let selfCreatedSession = false
 
 watch(() => props.sessionId, (newVal, oldVal) => {
   if (newVal === oldVal) return
+  restoreInitialReferences(newVal, oldVal); closeReference()
+  // 会话已切换/已创建：下一次发送需要按新的 sessionId 重新判断
+  pendingSessionPromise = null
   // 本组件自己发起的建会话（上传文件 / 切换连接器开关）仍属「输入阶段的连续操作」，
   // 不要收起正在用的「+」面板（否则点一下开关面板就消失，看不出刚做了什么）。
   const ownCreate = selfCreatedSession
@@ -2180,6 +2362,8 @@ watch(() => props.sessionId, (newVal, oldVal) => {
   // 技能标签是文本的一部分：切会话时把标签从草稿里剥掉（等价于旧的「令牌复位」），
   // 避免标签跟着草稿残留到历史会话的输入框里；本组件自己发起的建会话不算切换，保留标签。
   if (!ownCreate) message.value = stripSkillTokens(message.value, tokenMap.value)
+  // 切到其他会话/回到新对话：新对话暂存的知识选择不再适用
+  if (!newVal || (oldVal && newVal !== oldVal)) pendingKnowledgeBaseIds.value = []
   // 注：连接器开关不随会话走（它反映连接器自身的启用状态，与会话无关）
   subpanelKeyword.value = ''
 })
@@ -2207,6 +2391,7 @@ async function handleSkillImportFile(event) {
 const canSend = computed(() => {
   return (
     message.value.trim() ||
+    fileReferences.value.length > 0 ||
     uploadedFiles.value.length > 0 ||
     selectedSkillDirs.value.length > 0
   )
@@ -2217,52 +2402,42 @@ const showTokenPopup = ref(false)
 // ========== 会话耗时 ==========
 // 后台未返回耗时数据（sessionDuration<=0）且「会话信息」弹窗打开时，前端按 1s
 // 间隔本地计时，让会话耗时实时更新；后台有数据时直接用后台值。
-const liveDuration = ref(0)
-let durationTimer = null
-const shouldCountLive = computed(
-  () => showTokenPopup.value && (!props.sessionDuration || props.sessionDuration <= 0)
+const formattedDuration = useContextDuration(props, showTokenPopup)
+
+// 联网开关的真身在本组件，但发送动作不止「输入框回车」一条：消息下方「重新发送」
+// 走的是页面层的 handleRetry，不经过这里。父级没有镜像就只能用默认值 false 发请求，
+// 于是出现「按钮亮着、请求却是关网」。所以状态一变就上报，immediate 保证挂载时先对齐一次。
+watch(
+  webSearchEnabled,
+  (val) => emit('webSearchChange', Boolean(val)),
+  { immediate: true }
 )
-const displayDuration = computed(() =>
-  shouldCountLive.value ? liveDuration.value : (props.sessionDuration || 0)
-)
-function startLiveDuration() {
-  stopLiveDuration()
-  liveDuration.value = 0
-  durationTimer = setInterval(() => {
-    liveDuration.value += 1
-  }, 1000)
-}
-function stopLiveDuration() {
-  if (durationTimer) {
-    clearInterval(durationTimer)
-    durationTimer = null
-  }
-}
-watch(shouldCountLive, (on) => {
-  if (on) startLiveDuration()
-  else stopLiveDuration()
-})
 
 // 搜索词一变，列表条数就变，面板高度必须跟着重算（底边会随条数上下浮动，
 // 变多/变少都要重算；是否关闭由 schedulePlusClose 的「聚焦保护」负责）。
-watch(subpanelKeyword, () => nextTick(syncSubpanelBox))
+// 专家面板额外做一件事：关键字交给接口查（服务端分页），本地只保留公共专家那半区的过滤。
+watch(subpanelKeyword, (val) => {
+  nextTick(syncSubpanelBox)
+  if (subpanelCategory.value !== 'experts') return
+  const kw = String(val || '').trim()
+  // 面板打开时会主动清空搜索词（openPlusList），那不是用户输入，不该再打一次接口
+  if (kw === expertsKeyword.value) return
+  expertsKeyword.value = kw
+  if (expertsSearchTimer) clearTimeout(expertsSearchTimer)
+  expertsSearchTimer = setTimeout(() => {
+    expertsSearchTimer = null
+    // 防抖窗口内面板可能已关闭 / 已切到别的分类
+    if (subpanelCategory.value !== 'experts') return
+    myExperts.value = []
+    myExpertsTotal.value = 0
+    myExpertsPage.value = 0
+    loadMyExpertsPage(1)
+  }, EXPERT_SEARCH_DEBOUNCE_MS)
+})
 // 技能面板用的是自己的 skillSearch（不是 subpanelKeyword）：漏了这一条，在技能面板里
 // 搜索时列表变了但面板高度不重算 —— 表现就是「搜索后高度不跟着收，只有专家面板对」。
 watch(skillSearch, () => nextTick(syncSubpanelBox))
 
-const formattedDuration = computed(() => {
-  const total = Math.floor(displayDuration.value)
-  const h = Math.floor(total / 3600)
-  const m = Math.floor((total % 3600) / 60)
-  const s = total % 60
-  if (h > 0) {
-    return `${h}小时${m}分${s}秒`
-  }
-  if (m > 0) {
-    return `${m}分${s}秒`
-  }
-  return `${s}秒`
-})
 
 function toggleTokenPopup() {
   showTokenPopup.value = !showTokenPopup.value
@@ -2274,29 +2449,7 @@ function closeTokenPopup() {
   }
 }
 
-const showTokenRing = computed(() => {
-  // 首页（尚未进入任何会话）不展示会话级用量：登录/注册后会从全局配置把
-  // context_length 写进 sessionUsage，但此时没有任何实际用量，
-  // 不能凭这个就显示上下文占用环。
-  if (!props.sessionId) return false
-  return props.sessionUsage.input_tokens > 0 || props.sessionUsage.output_tokens > 0 || props.sessionUsage.reasoning_tokens > 0 || props.sessionUsage.context_tokens > 0 || props.sessionDuration > 0 || props.iterationCount > 0
-})
-
-const contextPercent = computed(() => {
-  const u = props.sessionUsage
-  if (!u.context_length || u.context_length <= 0) return 0
-  // 分子使用「当前轮次的上下文窗口占用」(context_tokens)：即本轮喂给模型的输入 token 数，
-  // 与 context_length（上下文窗口上限）对比（已不再统计会话累计总量）。
-  const ctxTokens = u.context_tokens || 0
-  return Math.min(100, Math.round(ctxTokens / u.context_length * 100))
-})
-
-const contextColor = computed(() => {
-  const p = contextPercent.value
-  if (p >= 80) return '#ef4444'
-  if (p >= 50) return '#f59e0b'
-  return '#22c55e'
-})
+const { showTokenRing, contextPercent, contextColor } = useContextRing(props)
 
 const ringRef = ref(null)
 
@@ -2321,28 +2474,35 @@ function formatTokens(n) {
  * 确保会话存在并返回 sessionId（并行上传共享同一个创建 Promise，
  * 避免一次选择多个文件时重复触发 createSession）。
  *
- * 本组件自己发起的建会话会让 sessionId 变化：watcher 据此不收起「+」面板、
- * 也不剥离输入框里的技能标签（此刻仍是「用户输入阶段」，文件刚选、技能刚选）。
- * 连接器开关也走这里：新建态下切换开关时先建会话，再按 session_id 提交给后端。
+ * 仅在“发送”阶段调用：新对话选附件时不再提前建会话，附件先以待上传状态
+ * 留在前端，用户点发送后才创建会话并上传。
  */
 function ensureSessionId() {
   if (props.sessionId) return Promise.resolve(props.sessionId)
   if (!pendingSessionPromise) {
-    pendingSessionPromise = new Promise((resolve) => {
-      // 创建一个临时的监听器来等待会话创建完成
-      const unwatch = watch(
+    pendingSessionPromise = new Promise((resolve, reject) => {
+      let unwatch = null
+      // 会话创建失败（接口异常等）时避免上传链路永久挂起
+      const timer = setTimeout(() => {
+        if (unwatch) unwatch()
+        reject(new Error('会话创建超时，请重试'))
+      }, 15000)
+      unwatch = watch(
         () => props.sessionId,
         (newSessionId) => {
-          if (newSessionId) {
-            unwatch()
-            resolve(newSessionId)
-          }
+          if (!newSessionId) return
+          clearTimeout(timer)
+          unwatch()
+          resolve(newSessionId)
         }
       )
       // 触发会话创建（标记为「自己发起」，watcher 据此不收起「+」面板）
       selfCreatedSession = true
       emit('createSession')
-    }).then((sessionId) => sessionId)
+    }).catch((error) => {
+      pendingSessionPromise = null
+      throw error
+    })
   }
   return pendingSessionPromise
 }
@@ -2430,13 +2590,13 @@ function retryUpload(index) {
     }
   }
 
-  item.uploadStatus = 'uploading'
+  // 重试同样遵循「发送时才上传」：回到待发送状态，用户点发送时再上传。
+  item.uploadStatus = 'pending'
   item.uploadProgress = 0
   item.errorMessage = ''
   item.retryable = false
   item.cancelled = false
   uploadedFiles.value = [...uploadedFiles.value]
-  uploadOneFile(item)
 }
 
 async function handleFileSelect(event) {
@@ -2458,14 +2618,15 @@ async function handleFileSelect(event) {
     showUploadNotice(buildRejectNotice(result, result.accepted.length))
   }
 
-  // 并行上传：每个文件独立开始、独立进度，互不排队
+  // 统一「发送时上传」：无论新对话还是已有会话，选完文件都只留在前端（pending），
+  // 点发送时 preparePendingFiles 才真正落盘（已有会话直接用当前 sessionId）。
   for (const file of result.accepted) {
     // 创建文件项
     const fileItem = {
       file: file,
       filename: file.name,
       size: file.size,
-      uploadStatus: 'uploading',
+      uploadStatus: 'pending',
       uploadProgress: 0,
       cancelled: false,
       xhrHolder: null,
@@ -2478,8 +2639,6 @@ async function handleFileSelect(event) {
 
     // 强制触发初始渲染
     uploadedFiles.value = [...uploadedFiles.value]
-
-    uploadOneFile(fileItem)
   }
 }
 
@@ -2513,68 +2672,105 @@ async function removeFile(index) {
   uploadedFiles.value = [...uploadedFiles.value]
 }
 
-async function send() {
-  if (!canSend.value || props.disabled) return
-  
-  // 等待所有文件上传完成
-  const uploadingFiles = uploadedFiles.value.filter(f => f.uploadStatus === 'uploading')
-  if (uploadingFiles.length > 0) {
-    // 显示上传中提示
-    console.log('文件正在上传中，请稍候...')
-    // 可以添加一个loading状态或提示信息
-    return
+/** 发送前把“待发送”附件上传到会话（新对话此时才会创建会话） */
+async function preparePendingFiles() {
+  const pending = uploadedFiles.value.filter(f => f.uploadStatus === 'pending')
+  if (!pending.length) return
+  for (const item of pending) {
+    if (item.cancelled) continue
+    item.uploadStatus = 'uploading'
+    item.uploadProgress = 0
+    item.errorMessage = ''
+    item.retryable = false
   }
-  
-  // 只发送上传成功的文件：失败文件（无 id/file_path）不随消息发出、不在气泡中展示
-  const failedFiles = uploadedFiles.value.filter(f => f.uploadStatus === 'error')
-  if (failedFiles.length > 0) {
-    console.warn(`[发送消息] ${failedFiles.length} 个文件上传失败，已从本次发送中剔除:`,
-      failedFiles.map(f => f.filename).join(', '))
-  }
-  const filesToSend = uploadedFiles.value
-    .filter(f => f.uploadStatus === 'completed')
-    .map(f => ({
-      id: f.id,
-      filename: f.filename,
-      size: f.size,
-      file: f.file,
-      file_path: f.filePath || null,
-      type: f.file?.type || f.fileType || ''
-    }))
-
-  // 详细日志：记录发送操作、文件上传
-  const ts = new Date().toISOString()
-  console.log(`[${ts}] [发送消息] 内容: "${message.value.substring(0, 100)}" | 文件数: ${filesToSend.length}`)
-  if (filesToSend.length > 0) {
-    console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
-  }
-
-  // 已选技能以 skills（技能目录名）参数单独交给后端；输入框里的内联标签只是 UI，
-  // 正文发送前会把标签整段剥掉（否则气泡/标题/历史里会露出 `/技能名` 这类暗号）。
-  // 连接器不随消息提交：本会话启用哪些连接器由「+」面板的连接器开关单独设置。
-  const turnSkills = selectedSkillDirs.value
-  // 待修改专家 ID（专家面板「编辑」带入，不展示给用户）：随请求结构化字段上行，
-  // 后端校验归属后绑定为 save_expert 的修改目标
-  const expertEditId = pendingExpertEditId.value
-  emit(
-    'send',
-    buildPayload(),
-    filesToSend,
-    null,
-    true,
-    webSearchEnabled.value,
-    turnSkills,
-    expertEditId
+  uploadedFiles.value = [...uploadedFiles.value]
+  await Promise.all(
+    pending.filter(item => !item.cancelled).map(item => uploadOneFile(item))
   )
+}
 
-  message.value = ''
-  uploadedFiles.value = []
-  // 预选技能与待修改专家已随本条消息提交，清掉避免影响下一条
-  preselectedSkillDirs.value = new Set()
-  pendingExpertEditId.value = ''
-  dismissUploadNotice()
-  closeSkillPicker()
-  nextTick(() => autoResize())
+async function send() {
+  if (!canSend.value || props.disabled || preparingFiles.value || enhancement.value.pending) return
+  preparingFiles.value = true
+  try {
+    // 新对话的知识选择只存在本地：先取快照，再上传附件（上传会先创建会话）
+    const knowledgeBaseIds = props.sessionId ? [] : [...pendingKnowledgeBaseIds.value]
+
+    await preparePendingFiles()
+
+    const uploadingFiles = uploadedFiles.value.filter(f => f.uploadStatus === 'uploading')
+    if (uploadingFiles.length > 0) {
+      console.log('文件正在上传中，请稍候...')
+      return
+    }
+
+    // 只发送上传成功的文件：失败文件（无 id/file_path）不随消息发出、不在气泡中展示
+    const failedFiles = uploadedFiles.value.filter(f => f.uploadStatus === 'error')
+    if (failedFiles.length > 0) {
+      console.warn(`[发送消息] ${failedFiles.length} 个文件上传失败，已从本次发送中剔除:`,
+        failedFiles.map(f => f.filename).join(', '))
+    }
+    const filesToSend = uploadedFiles.value
+      .filter(f => f.uploadStatus === 'completed')
+      .map(f => ({
+        id: f.id,
+        filename: f.filename,
+        size: f.size,
+        file: f.file,
+        file_path: f.filePath || null,
+        type: f.file?.type || f.fileType || ''
+      }))
+
+    const payload = buildPayload()
+    if (!payload && !filesToSend.length && !selectedSkillDirs.value.length && !fileReferences.value.length) {
+      // 附件全部失败且没有正文/技能：保留文件与错误提示，不发空请求
+      return
+    }
+
+    // 详细日志：记录发送操作、文件上传
+    const ts = new Date().toISOString()
+    console.log(`[${ts}] [发送消息] 内容: "${message.value.substring(0, 100)}" | 文件数: ${filesToSend.length}`)
+    if (filesToSend.length > 0) {
+      console.log(`[${ts}] [文件上传] ${filesToSend.map(f => `${f.filename}(${f.size}B)`).join(', ')}`)
+    }
+
+    // 已选技能以 skills（技能目录名）参数单独交给后端；输入框里的内联标签只是 UI，
+    // 正文发送前会把标签整段剥掉（否则气泡/标题/历史里会露出 `/技能名` 这类暗号）。
+    // 连接器不随消息提交：本会话启用哪些连接器由「+」面板的连接器开关单独设置。
+    const turnSkills = selectedSkillDirs.value
+    // 待修改专家 ID（专家面板「编辑」带入，不展示给用户）：随请求结构化字段上行，
+    // 后端校验归属后绑定为 save_expert 的修改目标
+    const expertEditId = pendingExpertEditId.value
+    emit(
+      'send',
+      payload,
+      filesToSend,
+      null,
+      true,
+      webSearchEnabled.value,
+      turnSkills,
+      expertEditId,
+      knowledgeBaseIds,
+      [...fileReferences.value],
+      interactionMode.value
+    )
+
+    message.value = ''
+    fileReferences.value = []
+    closeReference()
+    uploadedFiles.value = []
+    // 新对话选择已随消息提交；已有会话改选由选择器单独落库，这里清掉本地暂存
+    if (props.sessionId) pendingKnowledgeBaseIds.value = []
+    // 预选技能与待修改专家已随本条消息提交，清掉避免影响下一条
+    preselectedSkillDirs.value = new Set()
+    pendingExpertEditId.value = ''
+    interactionMode.value = 'normal'
+    dismissUploadNotice()
+    closeSkillPicker()
+    nextTick(() => autoResize())
+  } finally {
+    preparingFiles.value = false
+  }
 }
 
 /**
@@ -2598,6 +2794,7 @@ function autoResize() {
 }
 
 function onInput(event) {
+  invalidateEnhancement()
   const ta = event?.target || textareaRef.value
   // 移动端兜底（见 utils/skillPillTokens.js 的 reconcileTokenDeletion）：Android Chrome 的
   // Backspace 不给 keydown、部分浏览器也没有 beforeinput，浏览器只啃掉标签的一两个字时，
@@ -2614,17 +2811,10 @@ function onInput(event) {
   autoResize()
   updateCaretLine()
   updateSkillPicker()
+  updateReference(ta)
   syncMirror()
   emit('typing')
 }
-
-watch(message, (val) => {
-  try {
-    sessionStorage.setItem(props.draftKey, val)
-  } catch (e) {
-    // 隐私模式等场景下 sessionStorage 可能不可用，忽略即可
-  }
-})
 
 // 程序化赋值（恢复草稿、切会话、发送后清空）不触发 input 事件，镜像层在这里补同步
 watch(message, () => nextTick(syncMirror))
@@ -2640,7 +2830,9 @@ onMounted(() => {
   try {
     const draft = sessionStorage.getItem(props.draftKey)
     if (draft) {
-      message.value = draft
+      const restored = restoreReferenceDraft(draft, props.sessionId)
+      message.value = restored.message
+      fileReferences.value = restored.fileReferences
       nextTick(() => autoResize())
     }
   } catch (e) {
@@ -2688,8 +2880,8 @@ onUnmounted(() => {
   document.removeEventListener('click', closePlusMenu)
   if (offConnectorsChanged) offConnectorsChanged()
   if (connectorNoticeTimer) clearTimeout(connectorNoticeTimer)
+  if (expertsSearchTimer) clearTimeout(expertsSearchTimer)
   cancelPlusClose()
-  stopLiveDuration()
   if (uploadNoticeTimer) clearTimeout(uploadNoticeTimer)
 })
 
@@ -3975,6 +4167,13 @@ html[data-theme="dark"] .plus-list-tag.custom {
   color: var(--accent-color);
 }
 
+/* 请求在飞时按钮变「加载中…」且禁用：不做悬停高亮，避免看起来还能点 */
+.plus-expert-more:disabled {
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: default;
+}
+
 
 
 
@@ -4655,4 +4854,13 @@ html[data-theme="dark"] .plus-list-tag.custom {
   font-size: 12px;
   color: var(--text-secondary);
 }
+.reference-tags { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 16px 0; }
+</style>
+
+<style scoped>
+.picker-group { margin: 0; padding: 0; list-style: none; }
+.picker-group + .picker-group { margin-top: 12px; }
+.picker-group-title { padding: 8px 10px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.skill-picker-header { justify-content: flex-end; }
+.skill-picker-item.unavailable { opacity: .55; cursor: not-allowed; }
 </style>

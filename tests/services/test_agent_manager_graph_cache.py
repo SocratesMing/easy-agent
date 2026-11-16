@@ -11,33 +11,16 @@ from langgraph.checkpoint.memory import MemorySaver
 import easy_agent.agent.core as agent_mod
 from easy_agent.agent.graph_cache import get_agent_graph_cache, reset_agent_graph_cache
 from easy_agent.bootstrap.config import Config
-from easy_agent.services import agent_manager as am
+from easy_agent.services.agents import manager as am
 
 
 @pytest.fixture(autouse=True)
 def _restore_state(monkeypatch):
-    saved = (
-        OrderedDict(am._session_agents),
-        dict(am._session_expert),
-        dict(am._session_connectors),
-        dict(am._session_edit_targets),
-        dict(am._session_create_locks),
-    )
-    am._session_agents = OrderedDict()
-    am._session_expert = {}
-    am._session_connectors = {}
-    am._session_edit_targets = {}
-    am._session_create_locks = {}
+    # 每个用例一份新的会话状态注册表；用例结束后 monkeypatch 恢复原对象。
+    monkeypatch.setattr(am, "_sessions", OrderedDict())
     reset_agent_graph_cache()
     monkeypatch.setenv("EASY_AGENT_GRAPH_CACHE", "1")
     yield
-    (
-        am._session_agents,
-        am._session_expert,
-        am._session_connectors,
-        am._session_edit_targets,
-        am._session_create_locks,
-    ) = saved
     reset_agent_graph_cache()
 
 
@@ -66,15 +49,21 @@ def compiled(monkeypatch):
         return []
 
     monkeypatch.setattr(am, "load_mcp_tools_for_user", _no_mcp)
-    monkeypatch.setattr(
-        am,
-        "get_database",
-        lambda: SimpleNamespace(
-            get_user_by_username=lambda username: None,
-            get_session=lambda session_id: None,
-        ),
+    _fake = SimpleNamespace(
+        get_user_by_username=lambda username: None,
+        get_session=lambda session_id: None,
+        get_session_runtime=lambda session_id: None,
+        upsert_session_runtime=lambda *args, **kwargs: None,
     )
-    am._session_connectors = {"s1": (), "s2": ()}
+    # T3b：agent_manager 改走 db.providers 的领域 repository；测试里整体换成假端口。
+    for _provider in (
+        "get_session_repository",
+        "get_session_runtime_repository",
+        "get_user_repository",
+    ):
+        monkeypatch.setattr(am, _provider, lambda _fake=_fake: _fake)
+    for sid in ("s1", "s2"):
+        am._sessions[sid] = am.SessionState(connectors=())
     return calls
 
 
@@ -134,4 +123,4 @@ async def test_invalidate_user_agents_drops_graph_cache(config, compiled):
 
     am.invalidate_user_agents("u1")
     assert cache.stats()["entries"] == 0
-    assert "s1" not in am._session_agents
+    assert am.get_session_agent("s1") is None

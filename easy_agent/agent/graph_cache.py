@@ -17,7 +17,8 @@
    真正调用时按 ``ToolRuntime.context`` 克隆出本次会话的工具实例；因此同一
    张图可以安全地服务多个会话。
 4. **无法安全共享时显式降级**：模型请求头里含 ``{session_id}``、或
-   checkpointer 仍是按 session 创建的 legacy ``PersistentMemorySaver`` 时，
+   checkpointer 是按 session 创建的进程内 ``MemorySaver``（``shared_checkpointer_active()``
+   为假）时，
    ``EasyAgent._create_agent`` 不写缓存、按会话建图，并在日志中给出原因
    （见 docs/archive/design/2026-10-18-d2-graph-reuse.md）。
 
@@ -46,12 +47,18 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, StructuredTool
 
+from easy_agent.bootstrap.config_models import (
+    DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT,
+    DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT,
+    DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT,
+    DEFAULT_TOOL_PROGRESS_STOP_LIMIT,
+)
 from easy_agent.bootstrap.env import env_str
 
 logger = logging.getLogger("easy-agent.graph_cache")
 
 # 改动编译图结构/键语义时递增，旧进程内缓存自然失效。
-GRAPH_CACHE_VERSION = 1
+GRAPH_CACHE_VERSION = 2
 
 _DEFAULT_MAX_ENTRIES = 32
 _MAX_ENTRIES_ENV = "EASY_AGENT_GRAPH_CACHE_SIZE"
@@ -92,7 +99,7 @@ class SessionContext:
     #: 本会话用户已添加且启用的公共技能（目录名）
     builtin_skills: tuple[str, ...] = ()
     #: 技能作用域（专家技能硬隔离）：``None`` = 全量可见（改造前行为）；
-    #: 非 None 时只有这些目录进技能清单、其内容可读，见 ``services/tool_scope.py``。
+    #: 非 None 时只有这些目录进技能清单、其内容可读，见 ``services/agents/tool_scope.py``。
     #: 属于**运行期**差异，不进编译图指纹（backend 每次请求按它构建）。
     skill_whitelist: tuple[str, ...] | None = None
 
@@ -138,7 +145,7 @@ def _schema_fingerprint(schema: Any) -> Any:
     if hasattr(schema, "model_json_schema"):
         try:
             return schema.model_json_schema()
-        except Exception:  # noqa: BLE001 - 指纹失败时退回 repr
+        except Exception:  # noqa: BLE001, S110 - 指纹失败时退回 repr
             pass
     return repr(schema)
 
@@ -183,6 +190,8 @@ def tool_fingerprint(tool: Any) -> dict[str, Any]:
             if not callable(value):
                 payload[name] = value
     # 知识库原文工具：只取非敏感的配置身份，避免把 api_key 写进键材料。
+    # embedding_model 不再出现在 config 里（运行时从共享数据集解析），
+    # 指纹里留 shared_dataset_id 即可——同一个数据集绑定同一个模型。
     knowledge_config = getattr(tool, "knowledge_config", None)
     if knowledge_config is not None:
         payload["knowledge_config"] = {
@@ -190,9 +199,6 @@ def tool_fingerprint(tool: Any) -> dict[str, Any]:
             "base_url": str(getattr(knowledge_config, "base_url", "") or ""),
             "shared_dataset_id": str(
                 getattr(knowledge_config, "shared_dataset_id", "") or ""
-            ),
-            "embedding_model": str(
-                getattr(getattr(knowledge_config, "embedding", None), "model", "") or ""
             ),
         }
     if hasattr(tool, "agent_id"):
@@ -287,6 +293,24 @@ def config_fingerprint(config: Any) -> dict[str, Any]:
         "tool_progress_enabled": bool(
             getattr(agent_cfg, "tool_progress_enabled", True)
         ),
+        # 四个止损阈值同样进中间件构造参数，改值必须重建图。
+        # 兜底值取 config_models 的常量，避免同一数字在多处各写一份。
+        "tool_progress_empty_limit": int(
+            getattr(agent_cfg, "tool_progress_empty_limit", None)
+            or DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT
+        ),
+        "tool_progress_converge_limit": int(
+            getattr(agent_cfg, "tool_progress_converge_limit", None)
+            or DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT
+        ),
+        "tool_progress_stop_limit": int(
+            getattr(agent_cfg, "tool_progress_stop_limit", None)
+            or DEFAULT_TOOL_PROGRESS_STOP_LIMIT
+        ),
+        "tool_progress_empty_hard_limit": int(
+            getattr(agent_cfg, "tool_progress_empty_hard_limit", None)
+            or DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT
+        ),
         "result_log_truncate": int(
             getattr(tools_cfg, "result_log_truncate", 0) or 0
         ),
@@ -320,6 +344,7 @@ class GraphKey:
 def build_graph_key(
     *,
     model: Mapping[str, Any],
+    model_key: str,
     tools: Iterable[Any] | None,
     system_prompt: str,
     middleware: Iterable[Any] | None,
@@ -338,6 +363,7 @@ def build_graph_key(
     parts: dict[str, Any] = {
         "version": GRAPH_CACHE_VERSION,
         "model": dict(model),
+        "model_key": model_key,
         "tools": tools_fingerprint(tools),
         "system_prompt": system_prompt,
         "middleware": middleware_fingerprint(middleware),
@@ -560,13 +586,13 @@ def resolve_tool_for_context(tool: Any, context: Any) -> Any:
     if callable(model_copy):
         try:
             return model_copy(update=updates)
-        except Exception:  # noqa: BLE001 - 非 pydantic 工具退回浅拷贝
+        except Exception:  # noqa: BLE001, S110 - 非 pydantic 工具退回浅拷贝
             pass
     clone = copy.copy(tool)
     for name, value in updates.items():
         try:
             setattr(clone, name, value)
-        except Exception:  # noqa: BLE001 - 只读字段忽略
+        except Exception:  # noqa: BLE001, S110 - 只读字段忽略
             pass
     return clone
 

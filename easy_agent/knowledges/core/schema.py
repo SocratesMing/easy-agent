@@ -37,6 +37,8 @@ _BASE_P0_COLUMNS = (
     ("purge_after", "VARCHAR(50) DEFAULT NULL"),
     # 权限管理勾选名单模式：1=仅勾选人员可见（屏蔽公共空间默认同部门可见）
     ("access_restricted", "INTEGER NOT NULL DEFAULT 0"),
+    # 存量文档是否已回填 base_id 元数据：1=检索走 meta 过滤（不受 500 篇上限）
+    ("meta_backfilled", "INTEGER NOT NULL DEFAULT 0"),
 )
 _DOCUMENT_P0_COLUMNS = (
     ("deleted_at", "VARCHAR(50) DEFAULT NULL"),
@@ -47,6 +49,7 @@ _DOCUMENT_P0_COLUMNS = (
     # 业务元数据（文档 SQL 批量同步写入；检索时作为硬过滤条件）
     ("source", "VARCHAR(127) DEFAULT NULL"),
     ("source_record_id", "VARCHAR(255) DEFAULT NULL"),
+    ("batch_id", "VARCHAR(255) DEFAULT NULL"),
     ("report_title", "VARCHAR(255) DEFAULT NULL"),
     ("report_tag", "VARCHAR(127) DEFAULT NULL"),
     ("report_second_source", "VARCHAR(127) DEFAULT NULL"),
@@ -80,7 +83,8 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
             deleted_at VARCHAR(50) DEFAULT NULL,
             deleted_by VARCHAR(255) DEFAULT NULL,
             purge_after VARCHAR(50) DEFAULT NULL,
-            access_restricted INTEGER NOT NULL DEFAULT 0
+            access_restricted INTEGER NOT NULL DEFAULT 0,
+            meta_backfilled INTEGER NOT NULL DEFAULT 0
         )
     """)
     for column, definition in _BASE_P0_COLUMNS:
@@ -304,16 +308,25 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
         cursor, "idx_knowledge_audit_object", "knowledge_audit_events", "object_type, object_id, created_at"
     )
 
-    # ---- 公共空间管理白名单（仅按 PK user_id 查询，无需二级索引） ----
+    # ---- 知识库管理员（可在本部门创建知识库，管理自己创建的库） ----
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS knowledge_team_space_managers (
-            user_id VARCHAR(255) PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS knowledge_department_managers (
+            id VARCHAR(255) PRIMARY KEY,
+            user_id VARCHAR(255) NOT NULL,
+            department_id VARCHAR(255) NOT NULL,
             granted_by VARCHAR(255) NOT NULL,
             granted_at VARCHAR(50) NOT NULL,
             updated_at VARCHAR(50) NOT NULL,
+            UNIQUE(user_id, department_id),
             FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )
     """)
+    db._create_index(
+        cursor,
+        "idx_knowledge_dept_managers_dept",
+        "knowledge_department_managers",
+        "department_id",
+    )
 
     _cleanup_legacy_schema(db, cursor)
 
@@ -322,7 +335,8 @@ def _cleanup_legacy_schema(db: Database, cursor) -> None:
     """幂等清除废弃的表与索引（仅限显式列出的对象，逐个容错跳过）。
 
     - knowledge_tasks：数据库任务队列设计已被进程内 worker 取代，全库无读写；
-    - knowledge_team_space_viewers：从来没有写入和读取（只有删除人员时的一句 DELETE）；
+    - knowledge_team_space_viewers / knowledge_team_space_managers：公共空间查看 / 管理
+      白名单已废弃（改由 knowledge_department_managers + 单库勾选名单承载）；
     - knowledge_original_access_audit：并入 knowledge_audit_events，旧行先搬过去再删表；
     - knowledge_alerts / knowledge_reconciliation_runs / knowledge_reconciliation_issues /
       knowledge_runtime_heartbeats / knowledge_schema_migrations：旧版 easy_agent/knowledge/
@@ -335,6 +349,7 @@ def _cleanup_legacy_schema(db: Database, cursor) -> None:
     for table in (
         "knowledge_tasks",
         "knowledge_team_space_viewers",
+        "knowledge_team_space_managers",
         "knowledge_alerts",
         "knowledge_reconciliation_issues",
         "knowledge_reconciliation_runs",
@@ -356,7 +371,6 @@ def _cleanup_legacy_schema(db: Database, cursor) -> None:
         ("knowledge_folders", "idx_knowledge_folders_base"),
         ("knowledge_document_objects", "idx_knowledge_document_objects_document"),
         ("knowledge_document_objects", "idx_knowledge_document_objects_status"),
-        ("knowledge_team_space_managers", "idx_knowledge_team_managers_granted_by"),
     )
     for table, index in legacy_indexes:
         try:
@@ -364,8 +378,7 @@ def _cleanup_legacy_schema(db: Database, cursor) -> None:
                 cursor.execute(f"DROP INDEX `{index}` ON `{table}`")
             else:
                 cursor.execute(f"DROP INDEX IF EXISTS `{index}`")
-        except Exception:  # noqa: BLE001
-            # 索引不存在（新装库）即目标状态，静默跳过
+        except Exception:  # noqa: BLE001, S110 - 索引不存在（新装库）即目标状态
             pass
 
 

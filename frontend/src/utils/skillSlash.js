@@ -2,7 +2,7 @@
  * 输入框技能选择（slash 检索）的纯逻辑，便于单独验证与两版前端复用。
  *
  * - `parseSlashQuery`：判断光标前是否刚输入了「/查询词」（/ 必须位于开头或空白之后）
- * - `buildMessageText`：归一化实际发送的消息正文（压缩空白，不拼任何指令前缀）
+ * - `buildMessageText`：归一化实际发送的消息正文（只去首尾空白，换行与缩进原样保留；不拼任何指令前缀）
  *
  * 已选技能不进消息文本：以请求体的 `skills` 字段（技能目录名）单独传给后端，
  * 由后端决定怎么交给模型（见 `api/chat.js` / `api/expert.js` 的 payload）。这样气泡、
@@ -31,15 +31,17 @@ export function parseSlashQuery(text, caret) {
 }
 
 /**
- * 实际发送的消息正文：只做归一化（去首尾空白、压缩连续空白）。
+ * 实际发送的消息正文：只去首尾空白，换行与缩进原样保留（换行符统一成 \n）。
  *
  * 技能以结构化字段单独提交，正文就是用户输入的原话——这样落库内容、气泡与会话
- * 标题天然干净，不需要任何字符串清洗。
+ * 标题天然干净，不需要任何字符串清洗。用户用 Shift+Enter 分的行、贴进来的代码 / 日志
+ * 要原样交给模型；2026-11-06 之前这里会压缩全部连续空白，多行输入发出去只剩一行。
+ * 会话标题由后端压成一行（chat_turn.generate_session_title）。
  *
  * @param {string} text 用户输入
  */
 export function buildMessageText(text) {
-  return (text || '').trim().replace(/\s+/g, ' ')
+  return (text || '').replace(/\r\n?/g, '\n').trim()
 }
 
 /**

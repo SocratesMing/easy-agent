@@ -57,7 +57,7 @@ def _make_worker(lock):
         poll_interval_seconds=5.0,
         lock_provider=lambda: lock,
     )
-    worker._pending_base_ids = lambda db: ["b1"]
+    worker._refreshable_base_ids = lambda db: ["b1"]
     worker_mod.KnowledgeRepository = fake_repo
     worker_mod.KnowledgeService = fake_service
     return worker, service

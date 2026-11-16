@@ -1,0 +1,2 @@
+# git hook 由 sh 执行（Windows 上是 Git for Windows 自带的 sh），CRLF 会让 shebang 失效
+.githooks/** text eol=lf

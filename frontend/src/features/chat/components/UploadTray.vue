@@ -20,7 +20,8 @@
               <span class="progress-text">{{ file.uploadProgress }}%</span>
             </div>
             <span v-else-if="file.uploadStatus === 'completed'" class="upload-status completed">上传完成</span>
-            <template v-else-if="file.uploadStatus === 'error'">
+            <span v-else-if="file.uploadStatus === 'pending'" class="upload-status pending">发送时上传</span>
+            <template v-else-if="file.uploadStatus === 'error' && !isErrorHidden(file, index)">
               <span class="upload-status error" :title="file.errorMessage || '上传失败'">上传失败</span>
               <button
                 v-if="file.retryable"
@@ -51,16 +52,45 @@
 </template>
 
 <script setup>
+import { onBeforeUnmount, reactive, watch } from 'vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
 import { formatSize } from '../../../utils/format.js'
 
-defineProps({
+const props = defineProps({
   files: { type: Array, default: () => [] },
   limitsText: { type: String, default: '' },
   limitsFull: { type: Boolean, default: false },
 })
 
 defineEmits(['remove', 'retry'])
+
+// 上传失败状态只短暂提示：5 秒后自动隐藏（key = 序号:文件名）
+const hiddenErrorKeys = reactive({})
+const errorHideTimers = {}
+
+function errorKey(file, index) { return `${index}:${file.filename}` }
+function isErrorHidden(file, index) { return Boolean(hiddenErrorKeys[errorKey(file, index)]) }
+function syncErrorAutoHide() {
+  props.files.forEach((file, index) => {
+    const key = errorKey(file, index)
+    if (file.uploadStatus !== 'error' || !file.errorMessage) {
+      if (errorHideTimers[key]) {
+        clearTimeout(errorHideTimers[key])
+        delete errorHideTimers[key]
+      }
+      delete hiddenErrorKeys[key]
+      return
+    }
+    if (hiddenErrorKeys[key] || errorHideTimers[key]) return
+    errorHideTimers[key] = setTimeout(() => {
+      delete errorHideTimers[key]
+      hiddenErrorKeys[key] = true
+    }, 5000)
+  })
+}
+
+watch(() => props.files, () => { syncErrorAutoHide() }, { deep: true, immediate: true })
+onBeforeUnmount(() => { Object.values(errorHideTimers).forEach((timer) => clearTimeout(timer)) })
 </script>
 
 <style scoped>
@@ -90,8 +120,12 @@ defineEmits(['remove', 'retry'])
 
 .uploaded-files-list {
   width: 100%;
-  display: flex;
-  flex-wrap: wrap;
+  /* 网格布局：列宽由整个网格统一决定、跨行一致，换行后的文件块与上一行逐列对齐。
+     之前用 flex 换行时，剩余空间按「本行文件数」独立分配（flex-grow 逐行拉伸），
+     最后一行文件数不满时卡片会被拉宽，行与行对不齐。
+     一行放几个由 220px 起步宽自动算（与改动前 flex 的分列规则一致）。 */
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px;
 }
 
@@ -105,8 +139,7 @@ defineEmits(['remove', 'retry'])
   /* 右侧 26px 预留给卡片内右上角的 × 按钮，防止文件名顶到 × 下面 */
   padding: 6px 26px 6px 10px;
   border-radius: 12px;
-  /* 自适应等分：一行最多放 3 个（220px 起步、300px 封顶），宽度随容器伸缩 */
-  flex: 1 1 220px;
+  /* 宽度交给网格列统一分配（跨行一致）；不再用 flex 逐行伸缩 */
   max-width: 300px;
   min-width: 0;
   box-sizing: border-box;
@@ -200,6 +233,11 @@ defineEmits(['remove', 'retry'])
 .upload-status.completed {
   color: #15803d;
   background: #dcfce7;
+}
+
+.upload-status.pending {
+  color: #64748b;
+  background: #f1f5f9;
 }
 
 .upload-status.error {

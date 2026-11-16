@@ -23,6 +23,13 @@ class ScheduledTaskRepository:
     def __init__(self, db: "Database"):
         self._db = db
 
+    # ── 任务 CRUD ────────────────────────────────────────────────
+
+    def create_scheduled_task(
+        self, task: ScheduledTaskModel
+    ) -> ScheduledTaskModel:
+        return scheduled_tasks_repo.create_scheduled_task(self._db, task)
+
     def get_scheduled_task(self, task_id: str) -> ScheduledTaskModel | None:
         return scheduled_tasks_repo.get_scheduled_task(self._db, task_id)
 
@@ -51,6 +58,10 @@ class ScheduledTaskRepository:
             self._db, username, enabled_only=enabled_only
         )
 
+    def list_all_enabled_scheduled_tasks(self) -> list[ScheduledTaskModel]:
+        """全部用户已启用的任务（启动重载 / 周期对账用）。"""
+        return scheduled_tasks_repo.list_all_enabled_scheduled_tasks(self._db)
+
     def delete_scheduled_task(self, task_id: str) -> bool:
         return scheduled_tasks_repo.delete_scheduled_task(self._db, task_id)
 
@@ -62,6 +73,32 @@ class ScheduledTaskRepository:
     ) -> None:
         scheduled_tasks_repo.update_scheduled_task_run_times(
             self._db, task_id, last_run_at, next_run_at
+        )
+
+    def update_scheduled_task_workspace(
+        self, task_id: str, workspace_name: str
+    ) -> None:
+        scheduled_tasks_repo.update_scheduled_task_workspace(
+            self._db, task_id, workspace_name
+        )
+
+    # ── 执行记录 ────────────────────────────────────────────────
+
+    def add_scheduled_task_run(
+        self, run: ScheduledTaskRunModel
+    ) -> ScheduledTaskRunModel:
+        return scheduled_tasks_repo.add_scheduled_task_run(self._db, run)
+
+    def update_scheduled_task_run(
+        self,
+        run_id: str,
+        status: str,
+        finished_at: str,
+        result_summary: str = "",
+        error_message: str = "",
+    ) -> None:
+        scheduled_tasks_repo.update_scheduled_task_run(
+            self._db, run_id, status, finished_at, result_summary, error_message
         )
 
     def list_scheduled_task_runs(

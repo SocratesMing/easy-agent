@@ -9,7 +9,7 @@ import pytest
 
 from easy_agent.knowledges.api import KnowledgePrincipal
 from easy_agent.knowledges.core.config import KnowledgeConfig
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.service import (
     KnowledgeService,
     KnowledgeServiceError,
@@ -92,6 +92,31 @@ async def _upload(
         request_id=f"req-{filename}",
         relative_path=relative_path,
     )
+
+
+@pytest.mark.parametrize("filename", ["legacy.ppt", "deck.pptx"])
+async def test_presentation_upload_returns_actionable_message(db, tmp_path, filename):
+    service = _make_service(db, _FakeRagflow(), tmp_path)
+    base = _create_base_row(db)
+    content = b"PK\x03\x04probe"
+
+    with pytest.raises(KnowledgeServiceError) as exc_info:
+        await service.upload_document(
+            base_id=str(base["id"]),
+            folder_id=None,
+            filename=filename,
+            content_type="application/octet-stream",
+            size_bytes=len(content),
+            content=io.BytesIO(content),
+            principal=_principal(),
+            request_id=f"req-{filename}",
+            relative_path=None,
+        )
+
+    assert exc_info.value.code == "KNOWLEDGE_FILE_TYPE_NOT_ALLOWED"
+    assert "PPT/PPTX" in exc_info.value.message
+    assert "PDF" in exc_info.value.message
+    assert "DOCX" in exc_info.value.message
 
 
 @pytest.fixture(autouse=True)
@@ -295,7 +320,8 @@ def _endpoint_client(service, principal):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from easy_agent.knowledges.api import _service, get_knowledge_principal, router
+    from easy_agent.knowledges.api import get_knowledge_principal, router
+    from easy_agent.knowledges.api.deps import _service
 
     app = FastAPI()
     app.include_router(router)

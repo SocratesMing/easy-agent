@@ -29,7 +29,8 @@ def scan(root: Path) -> list[str]:
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         for name, pattern in RULES.items():
-            if name == "literal_secret" and path.suffix.lower() not in {".yaml", ".yml", ".json", ".env"} and path.name != "runtime-config.js":
+            # runtime-config.js 已随运行期配置注入链路删除，无需再为其开白名单。
+            if name == "literal_secret" and path.suffix.lower() not in {".yaml", ".yml", ".json", ".env"}:
                 continue
             if pattern.search(text):
                 findings.append(f"{name}: {path.relative_to(root)}")

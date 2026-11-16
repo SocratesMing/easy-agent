@@ -1,4 +1,4 @@
-"""专家依赖技能自动补装（services/skill_provision.py）的测试。
+"""专家依赖技能自动补装（services/skills/provision.py）的测试。
 
 DA-13 S2 语义：补装 = 往 ``workspace/{u}/builtin-skills.json`` 记一条，**不复制技能包**。
 覆盖点：
@@ -23,10 +23,10 @@ from pathlib import Path
 
 import pytest
 
-import easy_agent.services.agent_manager as agent_manager
+import easy_agent.services.agents.manager as agent_manager
 from easy_agent.agent import builtin_skills
 from easy_agent.bootstrap.config import Config
-from easy_agent.services import skill_provision as S
+from easy_agent.services.skills import provision as S
 
 
 @pytest.fixture()
@@ -297,7 +297,7 @@ def test_status_is_read_only(env, monkeypatch):
 
 def test_required_skills_of_reads_public_config(env, monkeypatch, tmp_path):
     """required_skills_of 走 public_expert_service（这里用假实现验证接线）。"""
-    from easy_agent.services import public_expert_service
+    from easy_agent.services.experts import public as public_expert_service
 
     monkeypatch.setattr(
         public_expert_service, "required_skills_of_public_expert", lambda expert_id: ["a", "b"]

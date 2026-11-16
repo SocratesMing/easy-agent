@@ -1,4 +1,4 @@
-"""Import graph scanner core (AST, SCC, whitelist comparison).
+"""Import graph scanner core (AST, SCC, whitelist comparison, layer direction).
 
 CLI lives in :mod:`scripts.quality.import_graph`; this module is importable by
 tests and by the CLI, keeping the command-line surface small.
@@ -15,6 +15,7 @@ from pathlib import Path
 DEFAULT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PACKAGE = "easy_agent"
 DEFAULT_WHITELIST = Path(__file__).with_name("import_graph_whitelist.json")
+DEFAULT_LAYERS = Path(__file__).with_name("import_layers.json")
 
 # Directories that never contain importable runtime modules.
 _SKIP_DIRS = {
@@ -46,6 +47,8 @@ class ImportGraph:
     modules: dict[str, Path] = field(default_factory=dict)
     init_modules: set[str] = field(default_factory=set)
     edges: list[Edge] = field(default_factory=list)
+    #: ``import_module(...)`` calls whose module name is not an absolute literal
+    warnings: list[str] = field(default_factory=list)
 
     def adjacency(self) -> dict[str, set[str]]:
         graph = {module: set() for module in self.modules}
@@ -140,6 +143,43 @@ def _import_edges(
     return edges
 
 
+def _is_import_module_call(node: ast.Call) -> bool:
+    """``importlib.import_module(...)`` or a bare ``import_module(...)``."""
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr == "import_module"
+    return isinstance(func, ast.Name) and func.id == "import_module"
+
+
+def _dynamic_import_edges(
+    tree: ast.AST, module: str, modules: dict[str, Path]
+) -> tuple[list[Edge], list[str]]:
+    """Treat ``import_module("pkg.x")`` with a literal name as an ordinary edge.
+
+    A name that is not an absolute string literal (an f-string, a variable, a
+    relative name) cannot be resolved; it is reported as a warning instead.
+    """
+    edges: list[Edge] = []
+    warnings: list[str] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and _is_import_module_call(node)):
+            continue
+        arg = node.args[0] if node.args else None
+        if (
+            isinstance(arg, ast.Constant)
+            and isinstance(arg.value, str)
+            and not arg.value.startswith(".")
+        ):
+            target = _resolve_module(arg.value, modules)
+            if target and target != module:
+                edges.append(Edge(module, target, node.lineno, f'import_module("{arg.value}")'))
+        else:
+            warnings.append(
+                f"{module}:{node.lineno} 动态导入的模块名不是绝对字面量，门禁看不到这条边"
+            )
+    return edges, warnings
+
+
 def build_graph(root: str | Path, package: str = DEFAULT_PACKAGE) -> ImportGraph:
     """Parse every module of ``package`` under ``root`` and build the graph."""
     root = Path(root).resolve()
@@ -162,6 +202,9 @@ def build_graph(root: str | Path, package: str = DEFAULT_PACKAGE) -> ImportGraph
         graph.edges.extend(
             _import_edges(tree, module, module in graph.init_modules, graph.modules)
         )
+        dynamic_edges, warnings = _dynamic_import_edges(tree, module, graph.modules)
+        graph.edges.extend(dynamic_edges)
+        graph.warnings.extend(warnings)
     return graph
 
 
@@ -339,6 +382,176 @@ def compare_sccs(
     return errors
 
 
+def load_layers(
+    path: str | Path, package: str = DEFAULT_PACKAGE
+) -> tuple[dict[str, int], list[dict]]:
+    """Load and validate the layer model and its allow list.
+
+    Canonical format::
+
+        {
+          "schema_version": 1,
+          "layers": {"pkg": 6, "pkg.db": 1},
+          "allow": [{"from": "pkg.a", "to": "pkg.b", "reason": "..."}]
+        }
+
+    The root package itself must have a layer so that every module gets one
+    (the longest matching prefix wins, see :func:`layer_of`).
+    """
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("layer config root must be a JSON object")
+    raw_layers = data.get("layers")
+    if not isinstance(raw_layers, dict) or not raw_layers:
+        raise ValueError('layer config must map module prefixes to layers under "layers"')
+
+    layers: dict[str, int] = {}
+    for prefix, level in raw_layers.items():
+        if isinstance(level, bool) or not isinstance(level, int) or level < 0:
+            raise ValueError(f"layers[{prefix!r}] must be a non-negative integer")
+        layers[_normalize_module(str(prefix), package)] = level
+    if package not in layers:
+        raise ValueError(
+            f'layers must assign the root package "{package}" so every module has a layer'
+        )
+
+    raw_allow = data.get("allow", [])
+    if not isinstance(raw_allow, list):
+        raise ValueError('"allow" must be a list')
+    allow: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for position, raw in enumerate(raw_allow):
+        if not isinstance(raw, dict):
+            raise ValueError(f"allow[{position}] must be an object")
+        source = _normalize_module(str(raw.get("from", "")), package)
+        target = _normalize_module(str(raw.get("to", "")), package)
+        if not source or not target:
+            raise ValueError(f'allow[{position}] must name both "from" and "to"')
+        reason = str(raw.get("reason", "")).strip()
+        if not reason:
+            raise ValueError(
+                f"allow[{position}] must document a non-empty reason "
+                "(allowed violations are frozen debt, not a mute button)"
+            )
+        if (source, target) in seen:
+            raise ValueError(f"allow[{position}] duplicates {source} -> {target}")
+        seen.add((source, target))
+        allow.append({"from": source, "to": target, "reason": reason})
+    return layers, allow
+
+
+def layer_of(module: str, layers: dict[str, int]) -> int | None:
+    """Layer of ``module``: the longest matching module prefix wins."""
+    best: str | None = None
+    for prefix in layers:
+        if module == prefix or module.startswith(f"{prefix}."):
+            if best is None or len(prefix) > len(best):
+                best = prefix
+    return layers[best] if best is not None else None
+
+
+def check_layers(
+    graph: ImportGraph, layers: dict[str, int], allow: list[dict]
+) -> list[str]:
+    """Return gate errors for imports from a lower layer into a higher one.
+
+    Imports within a layer are fine. Every violating module pair must be in
+    ``allow``; an allow entry that no longer matches a violation is stale and
+    fails too, so the list only shrinks.
+    """
+    violations: dict[tuple[str, str], set[int]] = {}
+    for edge in graph.edges:
+        source_layer = layer_of(edge.source, layers)
+        target_layer = layer_of(edge.target, layers)
+        if source_layer is None or target_layer is None:
+            continue
+        if source_layer < target_layer:
+            violations.setdefault((edge.source, edge.target), set()).add(edge.line)
+
+    allowed = {(entry["from"], entry["to"]) for entry in allow}
+    errors: list[str] = []
+    for (source, target), lines in sorted(violations.items()):
+        if (source, target) in allowed:
+            continue
+        errors.append(
+            f"下层依赖上层：{source}（L{layer_of(source, layers)}）导入 "
+            f"{target}（L{layer_of(target, layers)}），第 "
+            + ", ".join(str(line) for line in sorted(lines))
+            + " 行"
+        )
+    for entry in allow:
+        if (entry["from"], entry["to"]) not in violations:
+            errors.append(
+                f"白名单过期：{entry['from']} → {entry['to']} 已不再违规；"
+                "请删除该条目（白名单只减不增）"
+            )
+    return errors
+
+
+def load_init_allow(path: str | Path, package: str = DEFAULT_PACKAGE) -> list[dict]:
+    """Load the packages whose ``__init__.py`` may import project modules.
+
+    They live under ``init_allow`` in the layer config::
+
+        {"init_allow": [{"package": "pkg.api", "reason": "..."}]}
+    """
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("layer config root must be a JSON object")
+    raw_entries = data.get("init_allow", [])
+    if not isinstance(raw_entries, list):
+        raise ValueError('"init_allow" must be a list')
+
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for position, raw in enumerate(raw_entries):
+        if not isinstance(raw, dict):
+            raise ValueError(f"init_allow[{position}] must be an object")
+        name = _normalize_module(str(raw.get("package", "")), package)
+        if not name:
+            raise ValueError(f'init_allow[{position}] must name a "package"')
+        reason = str(raw.get("reason", "")).strip()
+        if not reason:
+            raise ValueError(
+                f"init_allow[{position}] must document a non-empty reason "
+                "(allowed imports are frozen debt, not a mute button)"
+            )
+        if name in seen:
+            raise ValueError(f"init_allow[{position}] duplicates {name}")
+        seen.add(name)
+        entries.append({"package": name, "reason": reason})
+    return entries
+
+
+def check_package_inits(graph: ImportGraph, init_allow: list[dict]) -> list[str]:
+    """Return gate errors for package ``__init__.py`` files that import project modules.
+
+    Importing any submodule runs every parent ``__init__.py`` first, so an import
+    there is loaded for every module below it. Packages in ``init_allow`` are exempt;
+    an entry whose ``__init__.py`` no longer imports a project module is stale and fails.
+    """
+    importing: dict[str, set[str]] = {}
+    for edge in graph.edges:
+        if edge.source in graph.init_modules:
+            importing.setdefault(edge.source, set()).add(edge.target)
+
+    allowed = {entry["package"] for entry in init_allow}
+    errors: list[str] = []
+    for package_name, targets in sorted(importing.items()):
+        if package_name not in allowed:
+            errors.append(
+                f"包入口 {package_name}（__init__.py）导入了 {', '.join(sorted(targets))}："
+                "包入口不导入项目内的模块，导入它下面的任何子模块都会先执行它"
+            )
+    for entry in init_allow:
+        if entry["package"] not in importing:
+            errors.append(
+                f"白名单过期：{entry['package']} 的 __init__.py 已不导入项目内的模块；"
+                "请删除该条目（白名单只减不增）"
+            )
+    return errors
+
+
 def graph_report(graph: ImportGraph) -> dict:
     adjacency = graph.adjacency()
     cycles = graph.cycles()
@@ -365,6 +578,7 @@ def graph_report(graph: ImportGraph) -> dict:
         "sccs": [
             {"size": len(cycle), "modules": cycle} for cycle in cycles
         ],
+        "warnings": list(graph.warnings),
     }
 
 

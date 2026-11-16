@@ -51,6 +51,7 @@ MODULE_LABELS = [
     ("/agent/sessions", "会话"),
     ("/agent/files", "文件"),
     ("/agent/settings", "设置"),
+    ("/agent/usage", "Token统计"),
     ("/agent/skill-center", "技能中心"),
     ("/agent/scheduled-tasks", "定时任务"),
     ("/agent/prompts", "提示词"),
@@ -63,6 +64,7 @@ MODULE_LABELS = [
     ("/agent/list", "专家"),
     ("/agent/public-list", "专家"),
     ("/agent/del", "专家"),
+    ("/agent/session-experts", "专家"),
     ("/agent/knowledge", "知识库"),
     ("/agent/personnel", "人员"),
     ("/agent/terminal", "终端"),
@@ -72,7 +74,6 @@ MODULE_LABELS = [
     ("/agent/ready", "健康检查"),
     ("/agent/config", "配置"),
     # 兼容宿主/旧前端的 /api 前缀（后端 LegacyHostRoutes 之外，少量直挂路由）
-    ("/api/personnel", "人员(legacy)"),
     ("/api/health", "健康检查(legacy)"),
     ("/api/live", "健康检查(legacy)"),
     ("/api/ready", "健康检查(legacy)"),
@@ -81,7 +82,6 @@ MODULE_LABELS = [
 
 # /api 旧前缀中允许保留的直挂路由（兼容旧前端/探针）。
 ALLOWED_LEGACY_PREFIXES = (
-    "/api/personnel",
     "/api/health",
     "/api/live",
     "/api/ready",

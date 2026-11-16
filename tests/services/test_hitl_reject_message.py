@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from easy_agent.services.hitl_state import HitlInterrupt, plan_resume, reject_message
+from easy_agent.services.streaming.approvals import HitlInterrupt, plan_resume, reject_message
 
 LEGACY = "用户拒绝了此操作，请勿重试此删除命令。"
 

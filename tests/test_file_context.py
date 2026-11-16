@@ -10,7 +10,7 @@
 - 本轮预览：从落盘正文取开头片段；``preview_max_chars=0`` 时不注入；
 - ``enabled=false`` 时整体跳过（不落盘、不建清单），回退旧行为。
 
-背景见 ``easy_agent/services/session_uploads.py`` 顶部说明：改造前解析全文只塞进
+背景见 ``easy_agent/services/sessions/uploads.py`` 顶部说明：改造前解析全文只塞进
 "本轮带文件"的提示词，第二轮起模型看不到内容；改造后正文落盘、清单进记忆，
 模型按需用 grep/read_file 检索。
 """
@@ -18,9 +18,10 @@
 from pathlib import Path
 
 import pytest
+from easy_agent.db.repositories.file_repository import FileRepository
 
 from easy_agent.bootstrap.config import Config, FileContextConfig
-from easy_agent.services import session_uploads as su
+from easy_agent.services.sessions import uploads as su
 
 _MINIMAL_CONFIG = """
 model: test-model
@@ -100,7 +101,7 @@ def _ws_dir(db, session_id: str) -> Path:
 
 def _patch_fc(monkeypatch, **kwargs):
     """改全局配置里的 file_context（模拟 config.yaml 被修改）。"""
-    import easy_agent.services.agent_manager as am
+    import easy_agent.services.agents.manager as am
 
     if not am._agent_config or not am._agent_config.get("config"):
         pytest.skip("全局 Agent 配置未初始化")
@@ -307,7 +308,7 @@ def _seed_source_file(db, sid: str, name: str, data: bytes) -> Path:
     upload_dir.mkdir(parents=True, exist_ok=True)
     saved = upload_dir / f"ab12cd34_{name}"
     saved.write_bytes(data)
-    db.add_session_file(
+    FileRepository(db).add_session_file(
         session_id=sid,
         filename=name,
         file_path=str(saved),
@@ -455,7 +456,7 @@ def test_agent_manager_injects_read_tool(client, db, monkeypatch):
     import asyncio
 
     import easy_agent.agent.core as agent_mod
-    import easy_agent.services.agent_manager as am
+    import easy_agent.services.agents.manager as am
 
     if not am._agent_config or not am._agent_config.get("config"):
         pytest.skip("全局 Agent 配置未初始化")
@@ -493,7 +494,7 @@ def test_agent_loads_manifest_as_memory(client, db, monkeypatch):
     import os
 
     import easy_agent.agent.core as agent_mod
-    import easy_agent.services.agent_manager as am
+    import easy_agent.services.agents.manager as am
 
     if not am._agent_config or not am._agent_config.get("config"):
         pytest.skip("全局 Agent 配置未初始化")

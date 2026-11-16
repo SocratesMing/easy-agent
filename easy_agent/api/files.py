@@ -25,13 +25,13 @@ from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     as_file_repository as _as_file_repository,
     get_file_repository,
 )
-from easy_agent.utils import parse_file_content
+from easy_agent.utils.file_parser import parse_file_content
 from easy_agent.bootstrap.config import Config
-from easy_agent.services.session_uploads import (
+from easy_agent.services.sessions.uploads import (
     UploadTooLargeError,
     save_upload_streaming,
 )
-from easy_agent.services.upload_storage import (
+from easy_agent.services.sessions.upload_storage import (
     UploadStorageError,
     UploadStoreAccessDenied,
     UploadStoreNotFound,
@@ -42,6 +42,7 @@ from easy_agent.services.upload_storage import (
     save_upload_to_store,
     store_mode_enabled,
 )
+from easy_agent.middleware.auth import verify_token_sso
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,41 @@ _MIME_MAP = {
     ".conf": "text/plain; charset=utf-8",
     ".log": "text/plain; charset=utf-8",
     ".vue": "text/plain; charset=utf-8",
+    # 与前端 FilePreview 的 textExts 对齐：这些扩展名前端都按文本渲染，
+    # 漏配会让响应退化成 application/octet-stream（缺 charset，非 ASCII 可能乱码）。
+    ".htm": "text/plain; charset=utf-8",
+    ".jsonl": "text/plain; charset=utf-8",
+    ".jsx": "text/plain; charset=utf-8",
+    ".tsx": "text/plain; charset=utf-8",
+    ".hpp": "text/plain; charset=utf-8",
+    ".bat": "text/plain; charset=utf-8",
+    ".scss": "text/plain; charset=utf-8",
+    ".less": "text/plain; charset=utf-8",
+    ".rb": "text/plain; charset=utf-8",
+    ".php": "text/plain; charset=utf-8",
+    ".swift": "text/plain; charset=utf-8",
+    ".kt": "text/plain; charset=utf-8",
+    ".scala": "text/plain; charset=utf-8",
+    ".lua": "text/plain; charset=utf-8",
+    ".pl": "text/plain; charset=utf-8",
+    ".r": "text/plain; charset=utf-8",
+    ".dart": "text/plain; charset=utf-8",
+    ".ex": "text/plain; charset=utf-8",
+    ".exs": "text/plain; charset=utf-8",
+    ".erl": "text/plain; charset=utf-8",
+    ".hs": "text/plain; charset=utf-8",
+    ".ml": "text/plain; charset=utf-8",
+    ".jl": "text/plain; charset=utf-8",
+    ".tf": "text/plain; charset=utf-8",
+    ".proto": "text/plain; charset=utf-8",
+    ".graphql": "text/plain; charset=utf-8",
+    ".env": "text/plain; charset=utf-8",
+    ".properties": "text/plain; charset=utf-8",
+    ".gradle": "text/plain; charset=utf-8",
+    ".cmake": "text/plain; charset=utf-8",
+    ".makefile": "text/plain; charset=utf-8",
+    # 老 Office 二进制格式：前端不支持时也要给出正确 MIME（下载/转换用）
+    ".doc": "application/msword",
 }
 
 
@@ -154,6 +190,9 @@ def build_workspace_tree(workspace_dir: Path, path: str = "") -> list:
     # 框架内部文件不列给用户：点开头（如记忆锁 ``.memory.jsonl.lock``）与锁文件。
     # 前者是运行时产物，后者是 ``memory_lock()`` 的跨进程锁，删不得也看不到才有意义。
     _HIDDEN_SUFFIXES = (".lock",)
+    # memory.md 的结构化 sidecar（``memory_locks.store_path_for``）：只在记忆写入时
+    # 用于去重 / 记版本，agent 读记忆不读它；用户看和改的仍是 memory.md。
+    _HIDDEN_FILES = {"memory.jsonl"}
     items = []
     try:
         for entry in sorted(
@@ -163,7 +202,9 @@ def build_workspace_tree(workspace_dir: Path, path: str = "") -> list:
                 continue
             if entry.is_dir() and entry.name in _HIDDEN_DIRS:
                 continue
-            if entry.is_file() and entry.name.endswith(_HIDDEN_SUFFIXES):
+            if entry.is_file() and (
+                entry.name in _HIDDEN_FILES or entry.name.endswith(_HIDDEN_SUFFIXES)
+            ):
                 continue
             items.append(
                 {
@@ -180,13 +221,15 @@ def build_workspace_tree(workspace_dir: Path, path: str = "") -> list:
 
 def resolve_workspace_file(workspace_dir: Path, file_path: str) -> Path:
     """解析工作区文件绝对路径，并防止路径穿越攻击。"""
-    full_path = (workspace_dir / file_path).resolve()
-    base = workspace_dir.resolve()
-    if full_path != base and base not in full_path.parents:
-        raise HTTPException(status_code=400, detail="非法的文件路径")
-    if not full_path.exists() or not full_path.is_file():
-        raise HTTPException(status_code=404, detail="文件不存在")
-    return full_path
+    from easy_agent.models.exceptions import BadRequestError, NotFoundError
+    from easy_agent.services.sessions.workspace import resolve_workspace_path
+
+    try:
+        return resolve_workspace_path(workspace_dir, file_path)
+    except BadRequestError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.message) from exc
 
 
 def _resolve_download_file(upload_dir: Path, workspace_dir: Path, file_path: str) -> Path:
@@ -208,6 +251,64 @@ def _resolve_download_file(upload_dir: Path, workspace_dir: Path, file_path: str
         root = base.resolve()
         if root in stored.parents and stored.is_file():
             return stored
+    raise HTTPException(status_code=404, detail="文件不存在")
+
+
+def _user_file_roots(username: str) -> tuple[Path, ...]:
+    """调用者自己的上传目录 / 工作区目录（SEC-06 允许解析的本地范围）。
+
+    ``get_user_dirs`` 给出 ``uploads/`` 与 ``workspace/``，运行期配置的工作区
+    （``Config.get_user_workspace_dir``）也接受（会话工作区在其 ``session/`` 子目录下）。
+    """
+    upload_dir, workspace_dir = get_user_dirs(username)
+    roots = (upload_dir, workspace_dir, Config.get_user_workspace_dir(username))
+    resolved = []
+    for root in roots:
+        try:
+            resolved.append(Path(root).resolve())
+        except OSError:  # 单个目录不可解析时跳过，不影响其余根目录
+            continue
+    return tuple(resolved)
+
+
+def _is_inside_any(path: Path, roots: tuple[Path, ...]) -> bool:
+    return any(path == root or root in path.parents for root in roots)
+
+
+def resolve_local_parse_file(username: str, file_path: str) -> Path:
+    """校验并解析「允许解析」的本地文件（SEC-06）。
+
+    只允许调用者 ``uploads/`` / 工作区目录内的文件：
+    - 含 ``..`` 穿越、NUL 等非法输入 → 400「非法的文件路径」；
+    - 解析后落在调用者目录外（如 ``/etc/hostname``、其他用户的文件）→ 403「无权访问该文件」；
+    - 目录内但不存在 → 404「文件不存在」。
+    """
+    raw = (file_path or "").strip()
+    if not raw or "\x00" in raw:
+        raise HTTPException(status_code=400, detail="非法的文件路径")
+    # 反斜杠在 Linux 上不是分隔符，但 Windows 客户端可能传；统一按 / 判断穿越。
+    if ".." in Path(raw.replace("\\", "/")).parts:
+        logger.warning(f"拒绝解析含路径穿越的文件 | user={username} | path={raw}")
+        raise HTTPException(status_code=400, detail="非法的文件路径")
+
+    roots = _user_file_roots(username)
+    candidates: list[Path] = []
+    try:
+        candidates.append(Path(raw).resolve())
+    except OSError:
+        pass
+    if not Path(raw).is_absolute():
+        for root in roots:
+            candidates.append((root / raw).resolve())
+    allowed = [candidate for candidate in candidates if _is_inside_any(candidate, roots)]
+    if not allowed:
+        logger.warning(f"拒绝解析用户目录外的文件 | user={username} | path={raw}")
+        raise HTTPException(status_code=403, detail="无权访问该文件")
+    for candidate in allowed:
+        if candidate.exists():
+            if not candidate.is_file():
+                raise HTTPException(status_code=400, detail="路径不是文件")
+            return candidate
     raise HTTPException(status_code=404, detail="文件不存在")
 
 
@@ -240,7 +341,7 @@ def serve_pdf_preview(full_path: Path, file_path: str) -> FileResponse:
     不支持的文件类型返回 400，转换失败返回 500。
     """
     try:
-        from easy_agent.services.document_convert import convert_to_pdf
+        from easy_agent.services.document_convert import convert_to_pdf  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
         pdf_path = convert_to_pdf(full_path, "pdf")
     except ValueError as e:
@@ -257,7 +358,7 @@ def serve_pdf_preview(full_path: Path, file_path: str) -> FileResponse:
 
 
 @router.get("/session/{session_id}", summary="获取会话生成的文件列表", response_model=list[SessionGeneratedFileInfo])
-async def get_session_generated_files(
+def get_session_generated_files(
     session_id: str,
     db: Annotated[FileRepository, Depends(get_file_repository)],
     username: Annotated[str, Depends(get_current_username)],
@@ -300,7 +401,7 @@ async def upload_file(
 
     # 归属校验前置：被拒绝的上传不应留下本地文件或 Store 对象（孤儿副本）。
     if session_id:
-        repo.get_owned_session_meta(session_id, username)
+        await asyncio.to_thread(repo.get_owned_session_meta, session_id, username)
 
     try:
         store_mode = store_mode_enabled()
@@ -340,7 +441,8 @@ async def upload_file(
 
     file_id = None
     if session_id:
-        file_id = repo.add_session_file(
+        file_id = await asyncio.to_thread(
+            repo.add_session_file,
             session_id=session_id,
             filename=safe_filename,
             file_path=stored_path,
@@ -399,8 +501,8 @@ async def delete_file(
 ):
     repo = _as_file_repository(db)
     # 先取记录：DB 行删除后还要凭 file_path 判断是否需要清理 Store 对象。
-    record = repo.get_file_record(file_id, username=username)
-    success = repo.delete_file(file_id, username=username)
+    record = await asyncio.to_thread(repo.get_file_record, file_id, username=username)
+    success = await asyncio.to_thread(repo.delete_file, file_id, username=username)
     if not success:
         raise HTTPException(status_code=404, detail="文件不存在")
 
@@ -422,15 +524,20 @@ async def parse_file(
     username: Annotated[str, Depends(get_current_username)],
     file_path: str = Query(..., description="文件路径"),
 ):
-    local_path = file_path
     if is_store_uri(file_path):
-        # 对象存储里的原始文件不在本地：先 materialize 再解析。
+        # 对象存储里的原始文件不在本地：先 materialize 再解析（URI 里的用户名
+        # 必须与调用者一致，跨用户由 materialize_upload 拒绝）。
         try:
             local_path = str(
                 await asyncio.to_thread(materialize_upload, file_path, username)
             )
         except UploadStorageError as exc:
             raise _store_http_error(exc) from exc
+    else:
+        # SEC-06：本地路径只允许调用者自己的上传目录 / 工作区，越界 403、穿越 400。
+        local_path = str(
+            await asyncio.to_thread(resolve_local_parse_file, username, file_path)
+        )
     content = await asyncio.to_thread(parse_file_content, local_path)
     return {"file_path": file_path, "content": content}
 
@@ -459,22 +566,21 @@ async def preview_file(
     username = None
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
-        from easy_agent.middleware.auth import verify_token_sso
 
-        username = verify_token_sso(auth_header[7:], user_repo)
+        username = await asyncio.to_thread(verify_token_sso, auth_header[7:], user_repo, request)
     if not username and token:
-        from easy_agent.middleware.auth import verify_token_sso
 
-        username = verify_token_sso(token, user_repo)
+        username = await asyncio.to_thread(verify_token_sso, token, user_repo, request)
     if not username:
-        default_user = repo.get_or_create_default_user()
-        username = default_user.username
+        # SEC-07：删除 get_or_create_default_user 回退，未登录不能再读默认用户工作区。
+        # iframe 等无法设置 Header 的场景仍可用 token 查询参数（同样走 SSO 校验）。
+        raise HTTPException(status_code=401, detail="未认证，请先登录")
 
     workspace_dir = Config.get_user_workspace_dir(username)
 
     if session_id and repo:
         # 校验会话归属，防止通过他人 session_id 访问其工作区文件
-        session_meta = repo.get_owned_session_meta(session_id, username)
+        session_meta = await asyncio.to_thread(repo.get_owned_session_meta, session_id, username)
         if session_meta["workspace_name"]:
             workspace_dir = workspace_dir / "session" / session_meta["workspace_name"]
         else:
@@ -490,13 +596,9 @@ async def preview_file(
         except UploadStorageError as exc:
             raise _store_http_error(exc) from exc
     else:
-        full_path = workspace_dir / file_path
-
-        if not full_path.exists():
-            raise HTTPException(status_code=404, detail="文件不存在")
-
-        if not full_path.is_file():
-            raise HTTPException(status_code=400, detail="路径不是文件")
+        # 先判越界再看存在性：若反过来，「越界且不存在」返回 404、「越界但存在」
+        # 返回 400，等于给调用者一个探测他人目录里有哪些文件的口子。
+        full_path = resolve_workspace_file(workspace_dir, file_path)
 
     # 目标格式转换（如 PPT/XLS/DOC → PDF）
     if target and target.lower() == "pdf":
@@ -517,7 +619,7 @@ async def preview_file(
 
 
 @router.get("/workspace/tree", summary="获取工作区文件树")
-async def get_workspace_tree(
+def get_workspace_tree(
     username: Annotated[str, Depends(get_current_username)],
     path: str = Query(default="", description="目录路径"),
     session_id: Optional[str] = Query(

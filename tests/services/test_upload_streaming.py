@@ -5,7 +5,7 @@ import io
 import pytest
 from starlette.datastructures import UploadFile
 
-from easy_agent.services import session_uploads as su
+from easy_agent.services.sessions import uploads as su
 
 
 def _upload(data: bytes, name: str = "a.txt") -> UploadFile:

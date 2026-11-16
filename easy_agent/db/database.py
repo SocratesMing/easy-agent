@@ -21,15 +21,7 @@ try:
 except ImportError:
     PooledDB = None
 
-from easy_agent.models.db import ScheduledTaskModel, ScheduledTaskRunModel
-from easy_agent.db.repositories import session_runtime as session_runtime_repo
-from easy_agent.db.repositories import stream_events as stream_events_repo
-from easy_agent.db.repositories import agent_runs as agent_runs_repo
-from easy_agent.db.repositories import agent_state as agent_state_repo
-from easy_agent.db.repositories import scheduled_tasks as scheduled_tasks_repo
 from easy_agent.db.repositories import sessions as sessions_repo
-from easy_agent.db.repositories import files as files_repo
-from easy_agent.db.repositories import mcp_api_keys as mcp_api_keys_repo
 from easy_agent.db.repositories import users as users_repo
 from easy_agent.db import schema
 from easy_agent.bootstrap.env import env_bool, env_str
@@ -44,14 +36,13 @@ from easy_agent.db.schema import (  # noqa: F401 - 兼容重导出（tests/db �
     SCHEMA_VERSION,
     SCHEMA_VERSION_KEY,
 )
-
+from easy_agent.utils.deployment import detect_worker_count
 
 
 def _mysql_sqlite_fallback_forbidden() -> bool:
     """生产多副本连不上 MySQL 时不能改写本地 SQLite。单机开发允许降级启动。"""
     if str(env_str("AGENT_ENV", "dev")).strip().lower() != "prod":
         return False
-    from easy_agent.utils.deployment import detect_worker_count
 
     return detect_worker_count() > 1
 
@@ -234,14 +225,31 @@ class Database:
 
     @contextmanager
     def get_connection(self):
+        """事务内借用连接；MySQL 必须归还池，SQLite 保留共享连接。
+
+        连接和 cursor 不得逃出上下文。清理失败记录 traceback；已有事务异常
+        时保留原异常，成功提交后的 close 失败则直接向调用方报告。
+        """
         if self.db_type == "mysql":
             conn = self._get_connection()
+            failed = False
             try:
                 yield conn
                 conn.commit()
-            except Exception:
-                conn.rollback()
+            except BaseException:
+                failed = True
+                try:
+                    conn.rollback()
+                except Exception:
+                    logger.exception("MySQL rollback failed; preserving transaction error")
                 raise
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    logger.exception("MySQL connection return failed")
+                    if not failed:
+                        raise
             return
         # SQLite：单连接多线程共享，整段访问（含 commit/rollback）持锁串行化
         with self._sqlite_lock:
@@ -344,80 +352,18 @@ class Database:
     def create_session(self, *args, **kwargs):
         return sessions_repo.create_session(self, *args, **kwargs)
 
-    def get_session_owner(self, *args, **kwargs):
-        return sessions_repo.get_session_owner(self, *args, **kwargs)
-
-    def _get_legacy_session_messages(self, *args, **kwargs):
-        return sessions_repo._get_legacy_session_messages(self, *args, **kwargs)
-
-    def update_session_meta(self, *args, **kwargs):
-        return sessions_repo.update_session_meta(self, *args, **kwargs)
-
     def get_session(self, *args, **kwargs):
         return sessions_repo.get_session(self, *args, **kwargs)
-
-    def list_sessions(self, *args, **kwargs):
-        return sessions_repo.list_sessions(self, *args, **kwargs)
-
-    def update_session(self, *args, **kwargs):
-        return sessions_repo.update_session(self, *args, **kwargs)
-
-    def delete_session(self, *args, **kwargs):
-        return sessions_repo.delete_session(self, *args, **kwargs)
 
     def update_session_workspace_name(self, *args, **kwargs):
         return sessions_repo.update_session_workspace_name(self, *args, **kwargs)
 
-    def update_session_todos(self, *args, **kwargs):
-        return sessions_repo.update_session_todos(self, *args, **kwargs)
-
-    def update_generated_file_paths(self, *args, **kwargs):
-        return sessions_repo.update_generated_file_paths(self, *args, **kwargs)
-
-    def add_message(self, *args, **kwargs):
-        return sessions_repo.add_message(self, *args, **kwargs)
-
-    def _sanitize_message_for_storage(self, *args, **kwargs):
-        return sessions_repo._sanitize_message_for_storage(self, *args, **kwargs)
-
     def update_last_assistant_message(self, *args, **kwargs):
         return sessions_repo.update_last_assistant_message(self, *args, **kwargs)
 
-    def _sanitize_blocks(self, *args, **kwargs):
-        return sessions_repo._sanitize_blocks(self, *args, **kwargs)
-
-    def _sanitize_tool_calls(self, *args, **kwargs):
-        return sessions_repo._sanitize_tool_calls(self, *args, **kwargs)
-
-    def _sanitize_extra_data(self, *args, **kwargs):
-        return sessions_repo._sanitize_extra_data(self, *args, **kwargs)
-
-    def add_message_row(self, *args, **kwargs):
-        return sessions_repo.add_message_row(self, *args, **kwargs)
-
-    def update_last_assistant_message_row(self, *args, **kwargs):
-        return sessions_repo.update_last_assistant_message_row(self, *args, **kwargs)
-
-    def get_messages_from_rows(self, *args, **kwargs):
-        return sessions_repo.get_messages_from_rows(self, *args, **kwargs)
-
-    def get_messages(self, *args, **kwargs):
-        return sessions_repo.get_messages(self, *args, **kwargs)
-
-    def count_sessions(self, *args, **kwargs):
-        return sessions_repo.count_sessions(self, *args, **kwargs)
-
-    def update_session_title(self, *args, **kwargs):
-        return sessions_repo.update_session_title(self, *args, **kwargs)
-
-    def toggle_session_pin(self, *args, **kwargs):
-        return sessions_repo.toggle_session_pin(self, *args, **kwargs)
-
-    @staticmethod
-    def _try_repair_json(raw: str) -> dict | None:
-        return sessions_repo.try_repair_json(raw)
-
     # ARCH-03 Phase 2: users SQL 已抽到 db/repositories/users.py
+    # T3b 起用户的登录/资料/管理员接口走 UserRepository；下列方法保留给
+    # knowledges/personnel（人员管理纵向切片，后续批次迁移）。
     def create_user(self, *args, **kwargs):
         return users_repo.create_user(self, *args, **kwargs)
 
@@ -427,35 +373,8 @@ class Database:
     def get_user_by_id(self, *args, **kwargs):
         return users_repo.get_user_by_id(self, *args, **kwargs)
 
-    def get_user_by_employee_id(self, *args, **kwargs):
-        return users_repo.get_user_by_employee_id(self, *args, **kwargs)
-
-    def get_user_by_account(self, *args, **kwargs):
-        return users_repo.get_user_by_account(self, *args, **kwargs)
-
-    def update_user(self, *args, **kwargs):
-        return users_repo.update_user(self, *args, **kwargs)
-
-    def bind_user_ip(self, *args, **kwargs):
-        return users_repo.bind_user_ip(self, *args, **kwargs)
-
-    def get_user_bound_ip(self, *args, **kwargs):
-        return users_repo.get_user_bound_ip(self, *args, **kwargs)
-
     def increment_user_token_version(self, *args, **kwargs):
         return users_repo.increment_user_token_version(self, *args, **kwargs)
-
-    def get_user_token_version(self, *args, **kwargs):
-        return users_repo.get_user_token_version(self, *args, **kwargs)
-
-    def touch_user_activity(self, *args, **kwargs):
-        return users_repo.touch_user_activity(self, *args, **kwargs)
-
-    def get_user_activity_time(self, *args, **kwargs):
-        return users_repo.get_user_activity_time(self, *args, **kwargs)
-
-    def clear_user_activity(self, *args, **kwargs):
-        return users_repo.clear_user_activity(self, *args, **kwargs)
 
     def register_user(self, *args, **kwargs):
         return users_repo.register_user(self, *args, **kwargs)
@@ -469,94 +388,13 @@ class Database:
     def update_user_password(self, *args, **kwargs):
         return users_repo.update_user_password(self, *args, **kwargs)
 
-    def delete_user(self, *args, **kwargs):
-        return users_repo.delete_user(self, *args, **kwargs)
-
-    def get_or_create_default_user(self, *args, **kwargs):
-        return users_repo.get_or_create_default_user(self, *args, **kwargs)
-
-    def list_users(self, *args, **kwargs):
-        return users_repo.list_users(self, *args, **kwargs)
-
-    def count_users(self, *args, **kwargs):
-        return users_repo.count_users(self, *args, **kwargs)
-
-    @staticmethod
-    def _row_to_user(row):
-        return users_repo.row_to_user(row)
-
     # ARCH-03 Phase 2: MCP API Key SQL 已抽到 db/repositories/mcp_api_keys.py
-    def issue_mcp_api_key(self, *args, **kwargs):
-        return mcp_api_keys_repo.issue_mcp_api_key(self, *args, **kwargs)
-
-    def revoke_mcp_api_key(self, *args, **kwargs):
-        return mcp_api_keys_repo.revoke_mcp_api_key(self, *args, **kwargs)
-
-    def get_mcp_api_keys(self, *args, **kwargs):
-        return mcp_api_keys_repo.get_mcp_api_keys(self, *args, **kwargs)
 
     # ARCH-03 Phase 2: 文件 SQL 已抽到 db/repositories/files.py
-    def add_session_file(self, *args, **kwargs):
-        return files_repo.add_session_file(self, *args, **kwargs)
-
-    def get_session_files(self, session_id: str) -> list[dict]:
-        return files_repo.get_session_files(self, session_id)
-
-    def delete_file(self, file_id: int, username: str | None = None) -> bool:
-        return files_repo.delete_file(self, file_id, username)
-
-    def add_generated_file(self, *args, **kwargs):
-        return files_repo.add_generated_file(self, *args, **kwargs)
-
-    def get_generated_files(self, session_id: str) -> list[dict]:
-        return files_repo.get_generated_files(self, session_id)
-
-    def delete_generated_file(self, file_id: int) -> bool:
-        return files_repo.delete_generated_file(self, file_id)
-
-    def get_generated_filenames(self, username: str) -> set[str]:
-        return files_repo.get_generated_filenames(self, username)
+    # T3b 起上传/生成文件接口走 FileRepository；下列生成文件方法保留给
+    # streaming/side_effects.py（T3c 迁移）。
 
     # ARCH-03 Phase 2: 定时任务 SQL 已抽到 db/repositories/scheduled_tasks.py
-    def create_scheduled_task(self, task: ScheduledTaskModel) -> ScheduledTaskModel:
-        return scheduled_tasks_repo.create_scheduled_task(self, task)
-
-    def get_scheduled_task(self, task_id: str) -> ScheduledTaskModel | None:
-        return scheduled_tasks_repo.get_scheduled_task(self, task_id)
-
-    def list_scheduled_tasks(self, username: str, enabled_only: bool = False) -> list[ScheduledTaskModel]:
-        return scheduled_tasks_repo.list_scheduled_tasks(self, username, enabled_only=enabled_only)
-
-    def list_all_enabled_scheduled_tasks(self) -> list[ScheduledTaskModel]:
-        return scheduled_tasks_repo.list_all_enabled_scheduled_tasks(self)
-
-    def delete_scheduled_task(self, task_id: str) -> bool:
-        return scheduled_tasks_repo.delete_scheduled_task(self, task_id)
-
-    def update_scheduled_task_status(self, task_id: str, enabled: bool):
-        return scheduled_tasks_repo.update_scheduled_task_status(self, task_id, enabled)
-
-    def update_scheduled_task_run_times(self, task_id: str, last_run_at: str, next_run_at: str):
-        return scheduled_tasks_repo.update_scheduled_task_run_times(
-            self, task_id, last_run_at, next_run_at
-        )
-
-    def update_scheduled_task_workspace(self, task_id: str, workspace_name: str):
-        return scheduled_tasks_repo.update_scheduled_task_workspace(
-            self, task_id, workspace_name
-        )
-
-    def add_scheduled_task_run(self, run: ScheduledTaskRunModel) -> ScheduledTaskRunModel:
-        return scheduled_tasks_repo.add_scheduled_task_run(self, run)
-
-    def update_scheduled_task_run(self, run_id: str, status: str, finished_at: str,
-                                  result_summary: str = "", error_message: str = ""):
-        return scheduled_tasks_repo.update_scheduled_task_run(
-            self, run_id, status, finished_at, result_summary, error_message
-        )
-
-    def list_scheduled_task_runs(self, task_id: str, limit: int = 50) -> list[ScheduledTaskRunModel]:
-        return scheduled_tasks_repo.list_scheduled_task_runs(self, task_id, limit)
 
     def ping(self) -> bool:
         with self.get_connection() as conn:
@@ -566,116 +404,10 @@ class Database:
         return True
 
     # ARCH-03 Phase 2: store SQL 已抽到 db/repositories/agent_state.py（业务库不再存 checkpoint）
-    def store_get(self, namespace: str, item_key: str) -> dict | None:
-        return agent_state_repo.store_get(self, namespace, item_key)
-
-    def store_put(self, namespace: str, item_key: str, value: str) -> None:
-        return agent_state_repo.store_put(self, namespace, item_key, value)
-
-    def store_delete(self, namespace: str, item_key: str) -> None:
-        return agent_state_repo.store_delete(self, namespace, item_key)
-
-    def store_search(self, namespace_prefix: str, *, limit: int = 10, offset: int = 0) -> list[dict]:
-        return agent_state_repo.store_search(
-            self, namespace_prefix, limit=limit, offset=offset
-        )
-
-    def store_list_namespaces(self) -> list[str]:
-        return agent_state_repo.store_list_namespaces(self)
 
     # ARCH-03 Phase 2: session_runtime SQL 已抽到 db/repositories/session_runtime.py
-    def get_session_runtime(self, session_id: str) -> dict | None:
-        return session_runtime_repo.get_session_runtime(self, session_id)
-
-    def try_acquire_session_stream(
-        self, session_id: str, owner: str, until_iso: str, now_iso: str
-    ) -> tuple[bool, dict | None]:
-        return session_runtime_repo.try_acquire_session_stream(
-            self, session_id, owner, until_iso, now_iso
-        )
-
-    def renew_session_stream(
-        self, session_id: str, owner: str, until_iso: str, now_iso: str
-    ) -> bool:
-        return session_runtime_repo.renew_session_stream(
-            self, session_id, owner, until_iso, now_iso
-        )
-
-    def upsert_session_runtime(
-        self,
-        session_id: str,
-        *,
-        connectors=None,
-        edit_target=None,
-        stream_owner=None,
-        stream_until=None,
-        cancel_requested=None,
-        clear_connectors: bool = False,
-    ) -> None:
-        session_runtime_repo.upsert_session_runtime(
-            self,
-            session_id,
-            connectors=connectors,
-            edit_target=edit_target,
-            stream_owner=stream_owner,
-            stream_until=stream_until,
-            cancel_requested=cancel_requested,
-            clear_connectors=clear_connectors,
-        )
 
     # 多副本 Phase 2A: SSE 事件持久化已抽到 db/repositories/stream_events.py
-    def append_stream_event(self, session_id: str, payload: str) -> int:
-        return stream_events_repo.append_stream_event(self, session_id, payload)
-
-    def list_stream_events(
-        self, session_id: str, after_id: int = 0, limit: int = 500
-    ) -> list[dict]:
-        return stream_events_repo.list_stream_events(
-            self, session_id, after_id=after_id, limit=limit
-        )
-
-    def delete_stream_events_before(self, cutoff_iso: str) -> int:
-        return stream_events_repo.delete_stream_events_before(self, cutoff_iso)
-
-    # 多副本 Phase 2B: run 租约已抽到 db/repositories/agent_runs.py
-    def start_run(
-        self,
-        run_id: str,
-        session_id: str,
-        username: str,
-        message_id: str,
-        request_json: str,
-        owner: str,
-        lease_until: str,
-    ) -> bool:
-        return agent_runs_repo.start_run(
-            self,
-            run_id,
-            session_id,
-            username,
-            message_id,
-            request_json,
-            owner,
-            lease_until,
-        )
-
-    def renew_run(self, run_id: str, owner: str, lease_until: str) -> bool:
-        return agent_runs_repo.renew_run(self, run_id, owner, lease_until)
-
-    def finish_run(self, run_id: str, status: str, error: str = "") -> bool:
-        return agent_runs_repo.finish_run(self, run_id, status, error)
-
-    def get_run(self, run_id: str) -> dict | None:
-        return agent_runs_repo.get_run(self, run_id)
-
-    def list_stale_running(
-        self, now_iso: str, limit: int = 500
-    ) -> list[dict]:
-        return agent_runs_repo.list_stale_running(self, now_iso, limit)
-
-    def mark_interrupted(self, run_id: str, error: str) -> bool:
-        return agent_runs_repo.mark_interrupted(self, run_id, error)
-
 
 _db_instance = None
 
@@ -688,7 +420,7 @@ def init_database(db_config: dict = None) -> Database:
     else:
         # 多副本：迁移由一次性 Job/脚本完成，Pod 启动只校验，不并发 DDL。
         db.verify_schema_current()
-    db.get_or_create_default_user()
+    users_repo.get_or_create_default_user(db)
     _db_instance = db
     logger.info("✅ 数据库初始化完成")
     return db

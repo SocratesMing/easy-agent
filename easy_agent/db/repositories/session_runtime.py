@@ -6,8 +6,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
+
+#: 会话流锁的租期（秒）：持有者崩溃后最多这么久，别的实例就能接管。
+#:
+#: 从 30 分钟收紧到 180 秒（配合 ``api/chat.py`` 的 60 秒续约间隔）。旧值在去掉
+#: Ingress 粘性之后会变成"假活跃"：Pod 崩溃后锁要挂半小时才失效，这期间任何 Pod 的
+#: ``/stream/status`` 都报 active，客户端刷新后一直显示"生成中"。
+STREAM_TTL_SECONDS = 180
 
 
 def get_session_runtime(db, session_id: str) -> dict | None:
@@ -85,11 +92,27 @@ def renew_session_stream(
         db._execute(
             cursor,
             "UPDATE session_runtime SET stream_until=?, updated_at=? "
-            "WHERE session_id=? AND stream_owner=?",
-            (until_iso, now_iso, session_id, owner),
+            "WHERE session_id=? AND stream_owner=? AND stream_until>?",
+            (until_iso, now_iso, session_id, owner, now_iso),
         )
         return cursor.rowcount > 0
 
+
+def renew_stream_lease(
+    db, session_id: str, owner: str, *, ttl_seconds: int = STREAM_TTL_SECONDS
+) -> bool:
+    """为 ``owner`` 持有的流锁续约一个租期；owner 已变化时返回 False（锁被接管）。
+
+    services 层的 ``session_runtime.renew_stream`` 和仓储的 ``renew_stream`` 心跳都走这里。
+    """
+    now = datetime.now(UTC)
+    return renew_session_stream(
+        db,
+        session_id,
+        owner,
+        (now + timedelta(seconds=ttl_seconds)).isoformat(timespec="seconds"),
+        now.isoformat(timespec="seconds"),
+    )
 
 
 def release_session_stream(db, session_id: str, owner: str, now_iso: str) -> bool:
@@ -116,58 +139,112 @@ def upsert_session_runtime(
     cancel_requested: Any = None,
     clear_connectors: bool = False,
 ) -> None:
-    now = datetime.now().isoformat()
-    current = get_session_runtime(db, session_id) or {}
+    # 只更新显式字段，避免先读整行再写回时覆盖新取得的租约。
+    fields: dict[str, Any] = {"updated_at": datetime.now(UTC).isoformat()}
+    for name, value in (("connectors", connectors), ("edit_target", edit_target),
+                        ("stream_owner", stream_owner), ("stream_until", stream_until),
+                        ("cancel_requested", cancel_requested)):
+        if value is not None:
+            fields[name] = int(value) if name == "cancel_requested" else value
     if clear_connectors:
-        connectors_val = None
-    elif connectors is not None:
-        connectors_val = connectors
-    else:
-        connectors_val = current.get("connectors")
-    values = (
-        session_id,
-        connectors_val,
-        edit_target if edit_target is not None else current.get("edit_target") or "",
-        stream_owner if stream_owner is not None else current.get("stream_owner") or "",
-        stream_until if stream_until is not None else current.get("stream_until") or "",
-        int(cancel_requested)
-        if cancel_requested is not None
-        else int(current.get("cancel_requested") or 0),
-        now,
-    )
+        fields["connectors"] = None
+    columns = ["session_id", *fields]
+    updates = ", ".join(f"{key}=VALUES({key})" if db.db_type == "mysql"
+                        else f"{key}=excluded.{key}" for key in fields)
+    suffix = "ON DUPLICATE KEY UPDATE" if db.db_type == "mysql" else "ON CONFLICT(session_id) DO UPDATE SET"
     with db.get_connection() as conn:
-        cursor = conn.cursor()
-        if db.db_type == "mysql":
-            db._execute(
+        db._execute(conn.cursor(),
+                    f"INSERT INTO session_runtime ({', '.join(columns)}) "
+                    f"VALUES ({', '.join('?' for _ in columns)}) {suffix} {updates}",
+                    (session_id, *fields.values()))
+
+
+class SessionRuntimeRepository:
+    """会话运行期状态（``session_runtime`` 表）repository。
+
+    覆盖流锁（原子抢占 / 续约 / 条件释放）、连接器开关缓存与待修改专家绑定。
+    :mod:`easy_agent.services.sessions.runtime` 的函数只调用同名方法，因此服务层
+    可以直接接收本对象（duck typing），不必再依赖 ``Database``。
+
+    方法签名写全；SQL、事务边界与状态语义仍在模块级函数里，本类不改变它们。
+    """
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def guarded_commit(self, session_id: str, owner: str, commit) -> Any:
+        """持有业务库行写锁直到 checkpoint 提交结束，堵住检查与写入间的接管窗口。
+
+        commit 必须只访问独立 checkpoint 库；本函数在线程运行，避免阻塞事件循环。
+        UPDATE 同时验证每次操作独立的 owner、未过期和未取消。
+        """
+        now = datetime.now(UTC).isoformat(timespec="microseconds")
+        with self._db.get_connection() as conn:
+            cursor = conn.cursor()
+            self._db._execute(
                 cursor,
-                """
-                INSERT INTO session_runtime
-                (session_id, connectors, edit_target, stream_owner, stream_until, cancel_requested, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE
-                  connectors=VALUES(connectors),
-                  edit_target=VALUES(edit_target),
-                  stream_owner=VALUES(stream_owner),
-                  stream_until=VALUES(stream_until),
-                  cancel_requested=VALUES(cancel_requested),
-                  updated_at=VALUES(updated_at)
-                """,
-                values,
+                "UPDATE session_runtime SET updated_at=? WHERE session_id=? "
+                "AND stream_owner=? AND stream_until>? AND cancel_requested=0",
+                (now, session_id, owner, now),
             )
-        else:
-            db._execute(
-                cursor,
-                """
-                INSERT INTO session_runtime
-                (session_id, connectors, edit_target, stream_owner, stream_until, cancel_requested, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(session_id) DO UPDATE SET
-                  connectors=excluded.connectors,
-                  edit_target=excluded.edit_target,
-                  stream_owner=excluded.stream_owner,
-                  stream_until=excluded.stream_until,
-                  cancel_requested=excluded.cancel_requested,
-                  updated_at=excluded.updated_at
-                """,
-                values,
-            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("压缩租约已丢失或操作已取消，未提交")
+            return commit()
+
+    def get_session_runtime(self, session_id: str) -> dict | None:
+        return get_session_runtime(self._db, session_id)
+
+    def try_acquire_session_stream(
+        self,
+        session_id: str,
+        owner: str,
+        until_iso: str,
+        now_iso: str,
+    ) -> tuple[bool, dict | None]:
+        """原子抢占会话流锁；成功返回 ``(True, None)``，被占用返回 ``(False, row)``。"""
+        return try_acquire_session_stream(
+            self._db, session_id, owner, until_iso, now_iso
+        )
+
+    def renew_session_stream(
+        self, session_id: str, owner: str, until_iso: str, now_iso: str
+    ) -> bool:
+        return renew_session_stream(self._db, session_id, owner, until_iso, now_iso)
+
+    def renew_stream_lease(
+        self, session_id: str, owner: str, *, ttl_seconds: int = STREAM_TTL_SECONDS
+    ) -> bool:
+        """为 ``owner`` 持有的流锁续约一个租期；owner 已变化时返回 False。"""
+        return renew_stream_lease(
+            self._db, session_id, owner, ttl_seconds=ttl_seconds
+        )
+
+    def release_session_stream(
+        self, session_id: str, owner: str, now_iso: str
+    ) -> bool:
+        """条件释放会话流锁：只有锁仍归 ``owner`` 时才清空。"""
+        return release_session_stream(self._db, session_id, owner, now_iso)
+
+    def upsert_session_runtime(
+        self,
+        session_id: str,
+        *,
+        connectors: Any = None,
+        edit_target: Any = None,
+        stream_owner: Any = None,
+        stream_until: Any = None,
+        cancel_requested: Any = None,
+        clear_connectors: bool = False,
+    ) -> None:
+        """按字段部分更新（未传的字段保留原值）；``clear_connectors`` 清空连接器缓存。"""
+        upsert_session_runtime(
+            self._db,
+            session_id,
+            connectors=connectors,
+            edit_target=edit_target,
+            stream_owner=stream_owner,
+            stream_until=stream_until,
+            cancel_requested=cancel_requested,
+            clear_connectors=clear_connectors,
+        )
+

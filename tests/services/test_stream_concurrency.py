@@ -9,15 +9,20 @@ import asyncio
 
 import pytest
 
-from easy_agent.services import agent_manager as am
-from easy_agent.services import session_runtime
+from easy_agent.services.agents import manager as am
+from easy_agent.services.sessions import runtime as session_runtime
 
 
 @pytest.mark.asyncio
 async def test_register_stream_task_rejects_second_active_stream(monkeypatch):
     monkeypatch.setattr(session_runtime, "acquire_stream", lambda *a, **k: "owner")
-    monkeypatch.setattr(am, "get_database", lambda: None)
-    am._session_stream_tasks.clear()
+    for _provider in (
+        "get_session_repository",
+        "get_session_runtime_repository",
+        "get_user_repository",
+    ):
+        monkeypatch.setattr(am, _provider, lambda: None)
+    am._reset_session_state()
     t1 = asyncio.create_task(asyncio.sleep(30))
     t2 = asyncio.create_task(asyncio.sleep(30))
     try:
@@ -26,28 +31,33 @@ async def test_register_stream_task_rejects_second_active_stream(monkeypatch):
         with pytest.raises(session_runtime.SessionBusyError):
             am.register_stream_task("session-x", t2)
         # 原任务仍注册在案，未被 cancel/覆盖
-        assert am._session_stream_tasks["session-x"] is t1
+        assert am._sessions["session-x"].stream_task is t1
         assert not t1.cancelled()
     finally:
         t1.cancel()
         t2.cancel()
         await asyncio.gather(t1, t2, return_exceptions=True)
-        am._session_stream_tasks.pop("session-x", None)
+        am._sessions.pop("session-x", None)
 
 
 @pytest.mark.asyncio
 async def test_register_stream_task_allows_after_finish(monkeypatch):
     monkeypatch.setattr(session_runtime, "acquire_stream", lambda *a, **k: "owner")
-    monkeypatch.setattr(am, "get_database", lambda: None)
-    am._session_stream_tasks.clear()
+    for _provider in (
+        "get_session_repository",
+        "get_session_runtime_repository",
+        "get_user_repository",
+    ):
+        monkeypatch.setattr(am, _provider, lambda: None)
+    am._reset_session_state()
     t1 = asyncio.create_task(asyncio.sleep(0))
     await asyncio.gather(t1, return_exceptions=True)
     t2 = asyncio.create_task(asyncio.sleep(30))
     try:
         am.register_stream_task("session-y", t1)  # done task 允许登记
         am.register_stream_task("session-y", t2)
-        assert am._session_stream_tasks["session-y"] is t2
+        assert am._sessions["session-y"].stream_task is t2
     finally:
         t2.cancel()
         await asyncio.gather(t2, return_exceptions=True)
-        am._session_stream_tasks.pop("session-y", None)
+        am._sessions.pop("session-y", None)

@@ -2,7 +2,7 @@
 
 从 ``EasyAgent._build_middleware`` 抽出的纯函数：只依赖 ``config`` 与
 ``max_steps``，不读 ``self``。顺序：TodoList → ToolProgress → ToolError →
-ModelCallLimit → ToolCallLimit。
+ModelCallLimit → ToolCallLimit → ApprovalAudit。
 摘要中间件不在这里：它要绑定建图时的 model / backend，由 ``EasyAgent._create_agent``
 按同名原位替换框架默认项（DA-06，见 ``agent/summarization.py``）。
 """
@@ -32,19 +32,21 @@ def framework_provides_todolist() -> bool:
         return False
 
 
-def build_agent_middleware(config, max_steps) -> list:
+def build_agent_middleware(config, max_steps, *, approval_mode: str | None = None) -> list:
     """构建自定义中间件列表。
 
     Args:
-        config: 应用配置对象（读取 ``tools.result_log_truncate``）。
+        config: 应用配置对象（读取 ``tools.result_log_truncate`` 与 ``hitl.tools``）。
         max_steps: Agent 最大步数，用于推导 Model/Tool 调用上限。
+        approval_mode: 用户级审批模式（``manual`` / ``auto``）。只给审批审计中间件用；
+            ``None`` 按 ``manual`` 处理（不打印「跳过人工审批」）。
 
     Returns:
         按固定顺序排列的中间件列表。
     """
     from langchain.agents.middleware import TodoListMiddleware
 
-    from easy_agent.agent.tool_errors import build_tool_error_middleware
+    from easy_agent.agent.tool_errors import build_tool_error_middleware  # 延迟导入：导入期重依赖：避免加载 langchain/deepagents 等重依赖
 
     middleware = []
     # 0.7 起 write_todos 需要显式 TodoListMiddleware（0.6.8 是默认内置）；
@@ -54,13 +56,39 @@ def build_agent_middleware(config, max_steps) -> list:
     # 放在 ToolError **之前**：先定义的中间件在最外层，只有这样才能拿到
     # ToolErrorMiddleware 转换后的 ToolMessage（异常已变成错误文本），
     # 从而对「空结果」补终止信号。错误文本自带重试提示，这里会跳过不重复加。
-    from easy_agent.agent.tool_progress import ToolProgressMiddleware
+    from easy_agent.agent.tool_progress import ToolProgressMiddleware  # 延迟导入：导入期重依赖：避免加载 langchain/deepagents 等重依赖
+    from easy_agent.bootstrap.config_models import (  # 阈值默认值的唯一来源，不在本文件重写数字
+        DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT,
+        DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT,
+        DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT,
+        DEFAULT_TOOL_PROGRESS_STOP_LIMIT,
+    )
 
+    agent_cfg = getattr(config, "agent", None)
     middleware.append(
         ToolProgressMiddleware(
-            enabled=bool(
-                getattr(getattr(config, "agent", None), "tool_progress_enabled", True)
-            )
+            enabled=bool(getattr(agent_cfg, "tool_progress_enabled", True)),
+            # 四个阈值都取自 config.yaml 的 agent 段（AgentConfig.tool_progress_*），
+            # 这里 getattr 的第二个参数只是「配置对象没有该属性时」的兜底
+            # （测试用 SimpleNamespace 构造配置），值来自 config_models 的常量。
+            # 四个键都进图缓存指纹（graph_cache.config_fingerprint），
+            # 改配置会重建图，不会沿用旧中间件实例。
+            empty_limit=int(
+                getattr(agent_cfg, "tool_progress_empty_limit", None)
+                or DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT
+            ),
+            converge_limit=int(
+                getattr(agent_cfg, "tool_progress_converge_limit", None)
+                or DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT
+            ),
+            stop_limit=int(
+                getattr(agent_cfg, "tool_progress_stop_limit", None)
+                or DEFAULT_TOOL_PROGRESS_STOP_LIMIT
+            ),
+            empty_hard_limit=int(
+                getattr(agent_cfg, "tool_progress_empty_hard_limit", None)
+                or DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT
+            ),
         )
     )
     middleware.append(
@@ -73,6 +101,18 @@ def build_agent_middleware(config, max_steps) -> list:
     # 超限时显式报错，避免「模型步数用尽但前端以为正常结束」；
     # 错误会经 streaming 的异常分支转成 SSE error。
     middleware.extend(build_call_limit_middleware(max_steps, exit_behavior="error"))
+    # 审批审计：auto 模式下框架不装 HumanInTheLoopMiddleware，靠它补
+    # 「用户已选择自动审批，跳过人工审批」日志。名单与 build_interrupt_config
+    # 同源（config.hitl.tools），名单外的只读工具本来就不进审批，不该记日志。
+    from easy_agent.agent.approval_audit import ApprovalAuditMiddleware  # 延迟导入：导入期重依赖：避免加载 langchain/deepagents 等重依赖
+
+    hitl_cfg = getattr(config, "hitl", None)
+    middleware.append(
+        ApprovalAuditMiddleware(
+            approval_mode=approval_mode or "",
+            approval_tools=getattr(hitl_cfg, "tools", None),
+        )
+    )
     return middleware
 
 

@@ -5,7 +5,7 @@
 1. **声明**：每个工具的 ``name`` / ``source`` / 是否内置 / 是否写操作 /
    是否 HITL / 审批决策，集中在一处（``TOOL_REGISTRY``）；
 2. **装配**：按既有条件与顺序返回会话工具列表（``build_session_tools``），
-   使 ``services/agent_manager.py`` 不再逐个工具写 ``if/append``。
+   使 ``services/agents/manager.py`` 不再逐个工具写 ``if/append``。
 
 约束（与改造前逐项等价）：
 
@@ -17,7 +17,7 @@
 - 带 ``when`` 谓词的条件 HITL（``execute`` / ``access_knowledge_original``）的
   决策与谓词名同样登记在表内，``agent.py`` 按注册表元数据构造 ``interrupt_on``；
   谓词名到函数的绑定留在 ``agent.py``，注册表保持无包内 import 的叶子模块；
-- MCP 工具由 ``services/mcp.py`` 运行时加载，本模块不静态枚举；未登记的名字
+- MCP 工具由 ``services/mcp/tools.py`` 运行时加载，本模块不静态枚举；未登记的名字
   一律视为 ``mcp``（见 :func:`resolve_tool_source`）。
 
 设计文档：``docs/archive/design/2026-10-18-d1-tool-registry.md``。
@@ -38,6 +38,7 @@ SOURCE_EXPERT = "expert"
 SOURCE_SCHEDULING = "scheduling"
 SOURCE_FILE_CONTEXT = "file_context"
 SOURCE_WEB_SEARCH = "web_search"
+SOURCE_INTERACTION = "interaction"
 SOURCE_MCP = "mcp"
 
 KNOWN_SOURCES = frozenset(
@@ -48,12 +49,19 @@ KNOWN_SOURCES = frozenset(
         SOURCE_SCHEDULING,
         SOURCE_FILE_CONTEXT,
         SOURCE_WEB_SEARCH,
+        SOURCE_INTERACTION,
         SOURCE_MCP,
     }
 )
 
 #: ``interrupt_on`` 允许的决策（与 ``agent.py`` 现有配置一致）。
-ALLOWED_INTERRUPT_DECISIONS = ("approve", "edit", "reject")
+ALLOWED_INTERRUPT_DECISIONS = ("approve", "edit", "reject", "respond")
+
+#: MCP / 动态工具仍只允许传统的批准、编辑、拒绝，不能把任意工具响应冒充成结果。
+MCP_INTERRUPT_DECISIONS = ("approve", "edit", "reject")
+
+#: 向用户提问是 HITL 的 ``respond`` 决策：暂停工具执行，由用户直接提供工具结果。
+INTERACTION_DECISIONS = ("respond",)
 
 #: 删除类操作只给「批准 / 拒绝」：不给改参数，避免把 rm 的目标改成通配、
 #: 把删除路径改到审批之外的位置等方式绕过策略层（目录删除在 shell 层直接拒绝）。
@@ -81,11 +89,16 @@ class ToolSpec:
     #: HITL 触发条件的可读说明（文档/排查用，不参与判定）。
     hitl_trigger_note: str = ""
     hitl_order: int = 100
+    #: 产品交互中断（如 ask_user）：不受 hitl.enabled / hitl.tools 开关影响，
+    #: 只允许 respond 决策，工具本身永不执行。
+    interaction_only: bool = False
     inject_order: int | None = None
     condition_note: str = ""
     #: 由技能带出（DA-13）：不进 agent 的工具列表，交给 SkillsMiddleware(tools=...)，模型读到或
     #: pin 了在 ``metadata.include_tools`` 里声明它的技能之后才出现
     skill_gated: bool = False
+    #: 工具开启时追加到系统提示词的行为约束（``agent/core.py`` 从这里读，不反向依赖工具实现）
+    prompt_note: str = ""
     builder: Callable[["ToolBuildContext"], Any] | None = field(
         default=None, repr=False, compare=False
     )
@@ -112,6 +125,12 @@ class ToolSpec:
                 )
         elif self.interrupt_decisions:
             raise ValueError(f"非 HITL 工具 {self.name!r} 不应声明 interrupt_decisions")
+        if self.interaction_only and not self.is_hitl:
+            raise ValueError(f"交互工具 {self.name!r} 必须启用 HITL 中断")
+        if self.interaction_only and self.interrupt_decisions != INTERACTION_DECISIONS:
+            raise ValueError(
+                f"交互工具 {self.name!r} 只允许 {INTERACTION_DECISIONS!r} 决策"
+            )
         if self.hitl_conditional and not self.is_hitl:
             raise ValueError(f"hitl_conditional 仅对 HITL 工具有意义: {self.name!r}")
         if self.hitl_conditional and not self.hitl_predicate:
@@ -149,6 +168,7 @@ class ToolBuildContext:
     session_id: str = ""
     workspace_name: str = ""
     enable_hitl: bool = True
+    enable_user_interaction: bool = True
     model_name: str = ""
     #: 专家会话（挂了专家）：不提供 save_expert，避免领域专家被借来创建 / 修改别的专家
     expert_session: bool = False
@@ -191,6 +211,11 @@ def _file_context_enabled(ctx: ToolBuildContext) -> bool:
 
 def _web_search_enabled(ctx: ToolBuildContext) -> bool:
     return ctx.web_search_tool is not None
+
+
+def _user_interaction_enabled(ctx: ToolBuildContext) -> bool:
+    """Only interactive chat turns may pause for ask_user; scheduled runs stay headless."""
+    return bool(ctx.enable_user_interaction)
 
 
 # ── 工具工厂（由装配根注入，注册表保持包内无 import 边） ─────────────────
@@ -238,8 +263,9 @@ def _build_save_expert_tool(ctx: ToolBuildContext) -> Any:
         session_id=ctx.session_id or "",
         config_model=ctx.model_name or "",
         tag_options=getattr(ctx.config, "expert_tags", None),
-        edit_targets=ctx.edit_targets or {},
-        turn_skills=ctx.turn_skills or {},
+        # 传同一张表（不能 ``or {}``：空表会被换成新字典），之后写入的绑定和技能工具才看得到
+        edit_targets=ctx.edit_targets if ctx.edit_targets is not None else {},
+        turn_skills=ctx.turn_skills if ctx.turn_skills is not None else {},
     )
     logger.info(f"[{ctx.sid}] 🧑‍🔬 已注入 save_expert 工具")
     return tool
@@ -257,6 +283,107 @@ def _build_web_search_tool(ctx: ToolBuildContext) -> Any:
         return None
     logger.info(f"[{ctx.sid}] 🌐 联网搜索已开启（注入 web_search 工具）")
     return ctx.web_search_tool
+
+
+def _build_ask_user_tool(ctx: ToolBuildContext) -> Any:
+    factory = _get_factory(ctx, "ask_user")
+    return factory()
+
+
+# 联网搜索开启时追加到系统提示词的行为约束（web_search 条目的 prompt_note）
+#
+# 「来源标注」小节是硬要求：只写「关键结论请给出来源链接」时，模型会把来源理解成
+# 一串媒体名（「来源：网络搜索（新华社、央行官网…）」），正文里没有任何可跳转链接。
+# 这里把「写法 / 位置 / 数量 / 禁止项 / 示例」全部写成可照做的规则：
+#   表格来源列 / 正文句末 `[媒体名](链接)` → 前端 renderer.link 渲染成新标签页可点链接
+#   （表格单元格内的链接同样走 renderer.link；beautifySourceLinks 的三个正则都要求整行匹配，
+#    表格行以 `|` 开头不会命中，因此不会被误当成来源卡片）；
+#   主聊天把与工具结果匹配的链接展示为数字引用，悬浮查看来源详情。
+# 链接必须原样取自工具结果的「链接」字段，Model 侧不做任何改写。
+#
+# 粒度：事实给链接、观点不给。早期版本要求「凡是事实、数据、结论都逐句标」，模型会把
+# 自身的推断也挂上链接，还会在相邻两句重复挂同一个 URL；清单型回答（Top 10 之类）则因为
+# 表格单元格里没有「句末」，整列来源退化为纯文本。故按「结构化列优先，叙述次之，观点不标」
+# 分组重写。
+_WEB_SEARCH_PROMPT_NOTE = """## 联网搜索
+
+- 用户已开启「联网搜索」，你可以调用 `web_search` 工具检索公开网页信息。
+- 涉及实时/时效性内容（新闻、政策、行情、价格、版本号、人物动态、近期事件）或你不确定的事实时，先调用 `web_search` 核实再回答。
+- 检索结果来自公网，可能不完整或不准确；关键结论请交叉验证。
+
+### 来源标注（硬要求，不可省略）
+
+**核心原则：事实给链接，观点不给。** 从检索结果里读到的事件、数字、时间，必须落在带链接的位置——
+要么表格 / 清单的「来源 / 时间」列，要么正文句末；你自己做的分析、推断、排序理由、风险判断、建议
+不标链接，那是你的观点，标了会让人误以为原文这么说过。
+
+- **表格 / 清单的来源列必须带链接**：凡用表格或清单罗列多条信息，就在「来源 / 时间」这类列里把每个
+  媒体名写成 `[媒体名](链接)`，时间写在链接外面：`[第一财经](https://…) 11-05 18:00；[NBC](https://…) 11-05 07:51`。
+  列成表却不给链接，读者无法逐条核对，视为不合格。
+- **时间一律换算成北京时间（UTC+8）**：按 `MM-dd HH:mm` 格式书写（如 `11-06 14:30`），不要出现「UTC」字样；
+  检索结果里只有 UTC 或其他时区时间时，先换算再写。
+- **不要输出裸 URL 或用反引号包裹 URL**：链接一律走 `[媒体名](URL)` 语法——反引号里的 URL
+  不会渲染成可点击链接，用户无法跳转。
+- **正文叙述标在句末标点之后**：`……收益率下行 3bp。[新华社](https://…)`；
+  不要写成 `……下行 3bp[新华社](https://…)。`——媒体名会看起来像句子的一部分。
+- **同一篇来源只挂一次链接**：第一次出现时标出，后文再提到写纯媒体名即可；
+  不要在相邻两句里重复挂同一个 URL，也不要把同一篇的多个转载当成多个来源分别标。
+- **一句话含多个来源时**，在对应分句后各标一个，一句不超过 2 个。
+- **链接必须原样照抄**工具结果里该条的「链接」字段，不要改写、拼接、缩略，也不要凭记忆或经验编写。
+- **一条结果 = 一个链接 = 一篇报道**：一次检索里每条结果对应一个页面，只能用来支撑一条事件的来源。
+  不得把某条结果里顺带提到的其他新闻拆成多行、再统一挂上这一个链接——那样每行都指向同一篇文章，
+  读者点开只会看到与文字无关的内容，这是最严重的错误。
+- **列表页 / 频道页 / 关键词聚合页不能当来源**：结果里标注了「该页是列表/频道/关键词聚合页」的条目，
+  只能当作检索线索。想引用其中某条标题，必须先用该标题再检索一次，拿到文章页链接后才能写进来源列。
+- **同一个链接不得出现在表格的多行里**：出现这种情况说明你把一个页面当成了多条新闻，
+  必须改成逐条重新检索、各给各的文章页链接。
+- **媒体名写法**：优先用结果里的中文站名（`新华社`、`证券时报`）；只有域名时（`www.pbc.gov.cn`）
+  取主体 `pbc.gov.cn`。不要拼接成 `中信建投 via 新浪财经` 这类自造形式，媒体名一律写站名本身；
+  也不要写「网络搜索」「搜索结果」「公开资料」这类泛称。
+- **总结段不重复标注**：对前文表格、清单做的归纳、排序、交叉验证、风险提示，不再逐句挂链接——
+  前面已经标过，重复标注会让正文读起来像一串脚注。
+- **来源随事实展示**：来源只放在正文句末或表格对应行，不在文末再列 `参考来源` 清单。
+  主聊天会把与本轮搜索结果匹配的链接转换为数字引用，悬浮查看原始标题、摘要与链接；
+  检索到但没用上的结果不要列为引用。
+- **禁止无链接的来源汇总**：不得只写「来源：网络搜索（新华社、央行官网、中新网等）」这类没有 URL 的一句话——
+  没有链接就等于没有来源，会被判定为不合格回答。
+- **不得张冠李戴**：链接必须与该条事实对应；检索结果里没有的内容，不要配一个看起来像的链接。
+
+示例（列成表格时链接进来源列，分析段不标）：
+
+```
+| # | 事件 | 来源 / 时间 |
+|---|---|---|
+| 1 | 央行开展 2630 亿元 7 天逆回购 | [新华社](https://www.news.cn/xxx.html) 11-05 17:00 |
+| 2 | 10 年期国债收益率 1.65% | [央行官网](https://www.pbc.gov.cn/xxx.html) 11-05 17:20 |
+
+……10 年期国债收益率运行在 1.65% 附近，较上月末下行 3bp。[央行官网](https://www.pbc.gov.cn/xxx.html)
+
+两点判断：逆回购放量说明短端流动性偏松；长端仍停在 1.65% 附近，说明市场更在意供给压力。
+
+```
+
+（上例最后一段是分析，没有链接；表格中的事实与正文引用保留原始来源链接。）
+
+### 检索纪律
+
+- 单轮回答的检索次数尽量控制在 1~3 次：先想清楚检索词再调用，结果不足时更换关键词，不要机械重复相同查询。
+- 工具报错或结果为空时如实告知用户，不要编造结果，也不要输出任何来源链接。
+"""
+
+
+# 联网搜索关闭/未配置时追加到系统提示词的纪律约束（agent/core.py 在关闭分支引用）。
+# 背景：关闭联网搜索只挡住了 web_search 工具，挡不住模型借 execute/shell 里的
+# curl / Python urllib 等直发网络请求（沙箱网络默认 host）。这段纪律明确禁止
+# 规划与执行任何联网取数步骤，把「地球按钮」变成 Agent 的网络总闸。
+# 注意：MCP/连接器等进程内工具调用不在此约束范围（它们不走 shell）。
+WEB_SEARCH_OFF_PROMPT_NOTE = """## 联网搜索（当前关闭）
+
+- 本轮未开启「联网搜索」：你没有 web_search 工具，禁止规划或执行任何访问外网获取数据的步骤，包括在 execute/shell 中用 curl、wget、ping 或 Python 的 urllib / requests / httpx 等方式发起网络请求来检索、下载数据。
+- 规划任务（write_todos）时不得出现「联网搜索 / 网上查询 / 检索最新数据」类步骤；所需信息只能来自：用户上传的文件、工作区文件、知识库，以及你已有的知识。
+- 复述本会话此前检索到的结果时，引用来源一律使用 markdown 链接格式 `[媒体名](完整URL)`，不要输出裸 URL，也不要用反引号包裹 URL；提到的时间一律换算成北京时间（UTC+8），按 `MM-dd HH:mm` 格式书写（如 11-06 14:30），不要出现「UTC」字样。
+- 如果任务确实需要最新的外部数据，或用户给出 URL 要求抓取网页，如实告知用户"当前未开启联网搜索"，请用户点击输入框的地球图标开启后再继续，不要自行尝试其他联网途径。
+"""
 
 
 # ── 注册表本体 ───────────────────────────────────────────────────────────
@@ -322,7 +449,7 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="delete",
         source=SOURCE_BUILTIN,
-        description="删除文件（DeepAgents 0.7 新增；默认进 HITL）",
+        description="删除文件或目录（DeepAgents 0.7 新增；默认进 HITL）",
         mutating=True,
         is_hitl=True,
         interrupt_decisions=DESTRUCTIVE_INTERRUPT_DECISIONS,
@@ -333,15 +460,29 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
         source=SOURCE_BUILTIN,
         description="派生子代理（DeepAgents 内置）",
     ),
+    # 应用注入工具：ask_user 是产品级交互入口；其余顺序与改造前一致。
+    ToolSpec(
+        name="ask_user",
+        source=SOURCE_INTERACTION,
+        description="在规划 / 头脑风暴中让用户集中确认多个关键选择",
+        is_hitl=True,
+        interrupt_decisions=INTERACTION_DECISIONS,
+        hitl_order=15,
+        interaction_only=True,
+        inject_order=5,
+        condition_note="交互式聊天注入；定时任务等无人值守运行不注入",
+        condition=_user_interaction_enabled,
+        builder=_build_ask_user_tool,
+    ),
     # 应用注入工具（顺序 10/20/30/40/50，与改造前 if/append 顺序一致）
     ToolSpec(
         name="access_knowledge_original",
         source=SOURCE_KNOWLEDGE,
-        description="按权限访问知识库原文（list/metadata/materialize）",
+        description="按权限访问知识库原文（list/metadata/extract/materialize）",
         mutating=True,
         is_hitl=True,
         interrupt_decisions=("approve", "edit", "reject"),
-        # 仅 action=materialize 触发审批（list/metadata 只读，无需审批）。
+        # 仅 action=materialize 触发审批（list/metadata/extract 只读，无需审批）。
         hitl_conditional=True,
         hitl_predicate="is_knowledge_materialize",
         hitl_trigger_note="args.action == 'materialize'",
@@ -395,6 +536,7 @@ TOOL_REGISTRY: tuple[ToolSpec, ...] = (
         description="联网搜索（需配置 api_url/api_key）",
         inject_order=50,
         condition_note="本轮开启且 create_web_search_tool 返回工具",
+        prompt_note=_WEB_SEARCH_PROMPT_NOTE,
         condition=_web_search_enabled,
         builder=_build_web_search_tool,
     ),
@@ -457,10 +599,10 @@ def builtin_tool_names() -> tuple[str, ...]:
 
 
 def hitl_tool_specs() -> tuple[ToolSpec, ...]:
-    """全部 HITL 工具（含条件 HITL），按 ``hitl_order`` 排序。
+    """全部会暂停等待用户的工具（含条件 HITL / 产品交互），按 ``hitl_order`` 排序。
 
     该顺序即 ``agent.py`` 构造 ``interrupt_on`` 的顺序：``execute`` →
-    ``save_expert`` → ``create_scheduled_task`` → ``access_knowledge_original``。
+    ``ask_user`` → ``save_expert`` → ...；实际仍按本会话注入的工具过滤。
     """
     return tuple(
         sorted(
@@ -470,16 +612,30 @@ def hitl_tool_specs() -> tuple[ToolSpec, ...]:
     )
 
 
+def interaction_tool_specs() -> tuple[ToolSpec, ...]:
+    """产品交互工具（只允许 ``respond``，不受安全审批开关影响）。"""
+    return tuple(
+        spec for spec in hitl_tool_specs() if spec.interaction_only
+    )
+
+
+def approval_tool_specs() -> tuple[ToolSpec, ...]:
+    """安全审批工具（受 ``hitl.enabled`` / ``hitl.tools`` 控制）。"""
+    return tuple(
+        spec for spec in hitl_tool_specs() if not spec.interaction_only
+    )
+
+
 def default_interrupt_tool_names() -> tuple[str, ...]:
     """派生 ``hitl.DEFAULT_INTERRUPT_TOOLS``。
 
-    只包含**无条件** HITL 工具；``execute`` / ``access_knowledge_original`` 带
-    ``when`` 谓词，由 ``agent.py`` 按注册表的 ``hitl_predicate`` 元数据构造，
-    不在此列表内。
+    只包含**无条件的安全审批**工具；产品交互工具由 ``interaction_tool_specs``
+    单独装配，``execute`` / ``access_knowledge_original`` 带 ``when`` 谓词，
+    由 ``agent.py`` 按注册表的 ``hitl_predicate`` 元数据构造，不在此列表内。
     """
     return tuple(
         spec.name
-        for spec in hitl_tool_specs()
+        for spec in approval_tool_specs()
         if not spec.hitl_conditional
     )
 
@@ -583,10 +739,13 @@ def build_session_tools(
 __all__ = [
     "ALLOWED_INTERRUPT_DECISIONS",
     "DESTRUCTIVE_INTERRUPT_DECISIONS",
+    "INTERACTION_DECISIONS",
     "KNOWN_SOURCES",
+    "MCP_INTERRUPT_DECISIONS",
     "SOURCE_BUILTIN",
     "SOURCE_EXPERT",
     "SOURCE_FILE_CONTEXT",
+    "SOURCE_INTERACTION",
     "SOURCE_KNOWLEDGE",
     "SOURCE_MCP",
     "SOURCE_SCHEDULING",
@@ -594,12 +753,15 @@ __all__ = [
     "TOOL_REGISTRY",
     "ToolBuildContext",
     "ToolSpec",
+    "WEB_SEARCH_OFF_PROMPT_NOTE",
+    "approval_tool_specs",
     "build_session_tools",
     "builtin_tool_names",
     "default_interrupt_tool_names",
     "get_tool_spec",
     "hitl_predicate_names",
     "hitl_tool_specs",
+    "interaction_tool_specs",
     "is_hitl_tool",
     "is_mutating_tool",
     "iter_tool_specs",

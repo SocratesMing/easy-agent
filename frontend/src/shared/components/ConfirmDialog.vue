@@ -1,6 +1,6 @@
 <template>
   <Teleport to="body">
-    <div v-if="visible" class="confirm-dialog-overlay" @click.self="handleCancel">
+    <div v-if="visible" ref="overlay" class="confirm-dialog-overlay" @click.self="handleCancel" @keydown="handleKeydown" tabindex="-1" role="dialog" aria-modal="true" :aria-label="title">
       <div class="confirm-dialog">
         <div class="confirm-icon" :class="type">
           <svg v-if="type === 'warning'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -26,7 +26,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, nextTick, onBeforeUnmount } from 'vue'
 
 const props = defineProps({
   title: {
@@ -54,10 +54,22 @@ const props = defineProps({
 const emit = defineEmits(['confirm', 'cancel'])
 
 const visible = ref(false)
+const overlay = ref(null)
+let previousFocus = null
 let resolvePromise = null
+function handleKeydown(event) {
+  if (event.key === 'Escape') { event.stopPropagation(); handleCancel(); return }
+  if (event.key !== 'Tab') return
+  const buttons = overlay.value.querySelectorAll('button')
+  if (event.shiftKey && document.activeElement === buttons[0]) { event.preventDefault(); buttons[1].focus() }
+  if (!event.shiftKey && document.activeElement === buttons[1]) { event.preventDefault(); buttons[0].focus() }
+}
+onBeforeUnmount(() => { if (resolvePromise) resolvePromise(false) })
 
 function show() {
+  previousFocus = document.activeElement
   visible.value = true
+  nextTick(() => overlay.value?.querySelector('button')?.focus())
   return new Promise((resolve) => {
     resolvePromise = resolve
   })
@@ -65,6 +77,7 @@ function show() {
 
 function handleConfirm() {
   visible.value = false
+  previousFocus?.focus()
   if (resolvePromise) {
     resolvePromise(true)
     resolvePromise = null
@@ -74,6 +87,7 @@ function handleConfirm() {
 
 function handleCancel() {
   visible.value = false
+  previousFocus?.focus()
   if (resolvePromise) {
     resolvePromise(false)
     resolvePromise = null
@@ -194,18 +208,18 @@ defineExpose({ show })
 }
 
 .btn-confirm.warning {
-  background: #f59e0b;
+  background: #b45309;
 }
 
 .btn-confirm.warning:hover {
-  background: #d97706;
+  background: #92400e;
 }
 
 .btn-confirm.danger {
-  background: #ef4444;
+  background: #dc2626;
 }
 
 .btn-confirm.danger:hover {
-  background: #dc2626;
+  background: #b91c1c;
 }
 </style>

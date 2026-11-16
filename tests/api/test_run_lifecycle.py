@@ -13,14 +13,24 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
+from langchain_core.messages import AIMessageChunk
 
 import easy_agent.api.chat as chat_api
-import easy_agent.services.expert_runtime as expert_runtime
+import easy_agent.services.agents.chat_turn as chat_turn
+from easy_agent.services.streaming import runs as run_registry
+from easy_agent.services.streaming import orchestrator
+from easy_agent.services.streaming.emitter import SSEEmitter
+from easy_agent.services.streaming.outcome import StreamOutcome
+from easy_agent.services.streaming.sse import SSE_HEARTBEAT_FRAME
+import easy_agent.services.experts.runtime as expert_runtime
 from easy_agent.models.db import SessionModel
 from easy_agent.db.repositories import agent_runs as agent_runs_repo
-from easy_agent.services.run_registry import new_run_id, start_run
+from easy_agent.db.repositories.message_repository import MessageRepository
+from easy_agent.services.streaming.runs import new_run_id, start_run
 
 
 async def _async_noop(*args, **kwargs):
@@ -54,7 +64,7 @@ def _patch_agent(monkeypatch):
     async def fake_agent(session_id, username, workspace_name, **kwargs):
         return SimpleNamespace(workspace_dir=None, workspace_virtual_path="/workspace")
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_agent)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_agent)
 
 
 def test_chat_stream_creates_run_and_marks_completed(client, db, monkeypatch):
@@ -66,7 +76,7 @@ def test_chat_stream_creates_run_and_marks_completed(client, db, monkeypatch):
         yield 'data: {"type": "start"}\n\n'
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
 
     resp = client.post(
         "/agent/chat/stream",
@@ -76,7 +86,7 @@ def test_chat_stream_creates_run_and_marks_completed(client, db, monkeypatch):
     assert resp.status_code == 200
     assert '"type": "done"' in resp.text
 
-    run = db.get_run(new_run_id(sid, "msg-complete"))
+    run = agent_runs_repo.get_run(db, new_run_id(sid, "msg-complete"))
     assert run is not None
     assert run["session_id"] == sid
     assert run["username"] == "testuser"
@@ -97,7 +107,7 @@ def test_chat_stream_exception_marks_failed_and_emits_error(client, db, monkeypa
         yield 'data: {"type": "start"}\n\n'
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
 
     resp = client.post(
         "/agent/chat/stream",
@@ -108,14 +118,89 @@ def test_chat_stream_exception_marks_failed_and_emits_error(client, db, monkeypa
     assert '"type": "error"' in resp.text
     assert "boom" in resp.text
 
-    run = db.get_run(new_run_id(sid, "msg-fail"))
+    run = agent_runs_repo.get_run(db, new_run_id(sid, "msg-fail"))
     assert run["status"] == "failed"
     assert "RuntimeError" in run["error"]
     assert "boom" in run["error"]
     assert run["lease_until"] == ""
 
 
-async def test_cancelled_stream_marks_run_cancelled(db, monkeypatch):
+@pytest.mark.parametrize("exception_type", [httpx.ReadError, RuntimeError, asyncio.TimeoutError])
+def test_chat_error_frame_marks_failed_and_releases_lock(client, db, monkeypatch, exception_type):
+    """真实异常编排：无需反解析 SSE，仍保留半截回复、记失败并释放锁。"""
+    sid = "sess-run-error-frame"
+    _seed_session(db, sid)
+
+    class InterruptedGraph:
+        async def aget_state(self, config):
+            return SimpleNamespace(values={"messages": []})
+
+        async def astream(self, *args, **kwargs):
+            yield ("messages", (AIMessageChunk(content="已完成部分分析"), {}))
+            raise exception_type("upstream failure detail" if exception_type is RuntimeError else "")
+
+    async def fake_agent(*args, **kwargs):
+        return SimpleNamespace(workspace_dir=None, config=None, agent=InterruptedGraph())
+
+    def unexpected_parse(*args, **kwargs):
+        raise AssertionError("运行结果不应通过反解析 SSE JSON 获取")
+
+    # 仅禁止驱动层的旧解析入口；事件落库和断线回放仍需要合法解析 SSE。
+    monkeypatch.setattr(chat_api, "parse_sse_frame", unexpected_parse, raising=False)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_agent)
+    resp = client.post("/agent/chat/stream", json={
+        "message": "hi", "session_id": sid, "message_id": "msg-error-frame",
+    })
+    assert resp.status_code == 200
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in resp.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert events[-1]["type"] == "error"
+    assert "done" not in [event["type"] for event in events]
+    assert "".join(
+        event["content"] for event in events if event["type"] == "content"
+    ) == "已完成部分分析"
+    timed_out = exception_type is asyncio.TimeoutError
+    if timed_out:
+        assert events[-1]["code"] == "timeout"
+    else:
+        assert "code" not in events[-1]
+    if exception_type is httpx.ReadError:
+        assert "模型连接中断" in events[-1]["content"]
+    run = agent_runs_repo.get_run(db, new_run_id(sid, "msg-error-frame"))
+    assert run["status"] == "failed"
+    assert run["error"] == events[-1]["content"]
+    assert run["lease_until"] == ""
+    assert client.get("/agent/chat/stream/status", params={"session_id": sid}).json()["active"] is False
+    messages = client.get(f"/agent/sessions/{sid}/history").json()["messages"]
+    assert messages[-1]["content"] == "已完成部分分析"
+    assert messages[-1]["blocks"][0]["content"] == "已完成部分分析"
+    assert messages[-1]["fallback_note"] == (
+        orchestrator.TIMEOUT_FALLBACK_NOTE if timed_out else orchestrator.ERROR_FALLBACK_NOTE
+    )
+    assert "error" not in messages[-1]
+    assert "upstream failure detail" not in json.dumps(messages[-1], ensure_ascii=False)
+
+
+def test_history_preserves_legacy_message_error(client, db):
+    """收敛异常持久化参数后，旧消息中的 error 仍能经历史接口回填。"""
+    sid = "sess-legacy-error"
+    _seed_session(db, sid)
+    MessageRepository(db).add_message(sid, {
+        "role": "assistant", "content": "旧版部分回复", "error": "旧版中断提示",
+    })
+
+    resp = client.get(f"/agent/sessions/{sid}/history")
+    assert resp.status_code == 200
+    [message] = resp.json()["messages"]
+    assert message["content"] == "旧版部分回复"
+    assert message["error"] == "旧版中断提示"
+
+
+@pytest.mark.parametrize("swallow_cancel", [False, True])
+async def test_cancelled_stream_marks_run_cancelled(db, monkeypatch, swallow_cancel):
     sid = "sess-run-cancel"
     run_id = "run-cancel-1"
     assert start_run(db, run_id, sid, message_id="msg-cancel") is True
@@ -132,7 +217,13 @@ async def test_cancelled_stream_marks_run_cancelled(db, monkeypatch):
 
     async def fake_gen():
         started.set()
-        await asyncio.sleep(3600)
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            if not swallow_cancel:
+                raise
+            yield 'data: {"type":"error","content":"请求被取消"}\n\n'
+            return
         yield 'data: {"type": "done"}\n\n'  # pragma: no cover - 取消后不可达
 
     agen = chat_api._detached_event_stream(
@@ -142,23 +233,120 @@ async def test_cancelled_stream_marks_run_cancelled(db, monkeypatch):
     await asyncio.wait_for(started.wait(), timeout=5)
 
     bg_tasks[sid].cancel()
-    with pytest.raises(StopAsyncIteration):
-        await asyncio.wait_for(consumer, timeout=5)
+    if swallow_cancel:
+        assert "请求被取消" in await asyncio.wait_for(consumer, timeout=5)
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(agen.__anext__(), timeout=5)
+    else:
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(consumer, timeout=5)
 
-    run = db.get_run(run_id)
+    run = agent_runs_repo.get_run(db, run_id)
     assert run["status"] == "cancelled"
     assert run["lease_until"] == ""
 
 
-def test_resume_creates_run_with_decisions(client, db, monkeypatch):
+@pytest.mark.parametrize("case, status, error", [
+    ("content", "completed", ""),
+    ("tool_failure", "completed", ""),
+    ("approval", "completed", ""),
+    ("empty_error", "failed", "处理失败"),
+    ("error_then_done", "failed", "模型中断"),
+])
+async def test_driver_uses_shared_outcome_and_forwards_frames(monkeypatch, case, status, error):
+    """驱动只转发帧；空错误有兜底，工具失败不等于 run 失败，done 不抹掉错误。"""
+    outcome = StreamOutcome()
+    emitter = SSEEmitter("s1", outcome=outcome)
+    frames = []
+    record_end = AsyncMock()
+    unregister = AsyncMock()
+    monkeypatch.setattr(chat_api, "aregister_stream_task", _async_noop)
+    monkeypatch.setattr(chat_api, "aunregister_stream_task", unregister)
+    monkeypatch.setattr(chat_api, "_record_run_end", record_end)
+    received = []
+    hub = SimpleNamespace(broadcast=received.append, close=lambda: received.append(None))
+
+    async def stream():
+        # 注释帧不是 JSON，驱动无需知道其编码或内容。
+        frames.append(SSE_HEARTBEAT_FRAME)
+        yield frames[-1]
+        if case == "content":
+            payload = {"type": "content", "content": '正文中提到 "type": "error"'}
+        elif case == "tool_failure":
+            payload = {"type": "tool_result", "success": False, "result": "工具失败"}
+        elif case == "approval":
+            payload = {"type": "approval_required", "thread_id": "s1-m1", "action_requests": []}
+        else:
+            payload = {"type": "error", "content": "" if case == "empty_error" else "模型中断"}
+        frames.append(emitter.frame(payload))
+        yield frames[-1]
+        if case == "error_then_done":
+            frames.append(emitter.done())
+            yield frames[-1]
+
+    await chat_api._drive_stream(
+        stream(), hub, asyncio.Queue(), emitter, "s1", "s1", None, None,
+        object(), None, "run1", outcome=outcome,
+    )
+
+    assert received == [*frames, None]
+    assert outcome.error == error
+    assert record_end.await_args.args[1:4] == ("run1", status, error)
+    unregister.assert_awaited_once()
+
+
+@pytest.mark.parametrize("swallow_cancel", [False, True])
+async def test_lease_loss_marks_failed_even_if_generator_swallows_cancel(monkeypatch, swallow_cancel):
+    outcome = StreamOutcome()
+    emitter = SSEEmitter("s1", outcome=outcome)
+    started = asyncio.Event()
+    record_end = AsyncMock()
+    unregister = AsyncMock()
+    monkeypatch.setattr(chat_api, "aregister_stream_task", _async_noop)
+    monkeypatch.setattr(chat_api, "aunregister_stream_task", unregister)
+    monkeypatch.setattr(chat_api, "_record_run_end", record_end)
+
+    async def lose_lease(session_id, sid, renew_stream, runs, run_id, owner_task, lease_lost):
+        await started.wait()
+        lease_lost.set()
+        owner_task.cancel()
+
+    monkeypatch.setattr(chat_api, "_stream_heartbeat", lose_lease)
+    received = []
+    hub = SimpleNamespace(broadcast=received.append, close=lambda: received.append(None))
+
+    async def stream():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            if not swallow_cancel:
+                raise
+            yield emitter.error("请求被取消")
+
+    worker = asyncio.create_task(chat_api._drive_stream(
+        stream(), hub, asyncio.Queue(), emitter, "s1", "s1", None, None,
+        object(), None, "run1", outcome=outcome,
+    ))
+    await asyncio.wait_for(asyncio.gather(worker, return_exceptions=True), timeout=5)
+
+    assert record_end.await_args.args[1:4] == ("run1", "failed", chat_api._LEASE_LOST_MESSAGE)
+    assert received[-1] is None
+    unregister.assert_awaited_once()
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_resume_creates_run_with_decisions(client, db, monkeypatch, failed):
     sid = "sess-run-resume"
     _seed_session(db, sid)
     _patch_agent(monkeypatch)
 
     async def fake_resume(**kwargs):
-        yield 'data: {"type": "done"}\n\n'
+        assert isinstance(kwargs["outcome"], StreamOutcome)
+        emitter = SSEEmitter(sid, outcome=kwargs["outcome"])
+        yield emitter.error("恢复失败") if failed else emitter.done()
 
-    monkeypatch.setattr(chat_api, "resume_stream_generator", fake_resume)
+    monkeypatch.setattr(chat_turn, "resume_stream_generator", fake_resume)
 
     resp = client.post(
         "/agent/chat/resume",
@@ -171,9 +359,10 @@ def test_resume_creates_run_with_decisions(client, db, monkeypatch):
     )
 
     assert resp.status_code == 200
-    run = db.get_run(new_run_id(sid, "msg-approve"))
+    run = agent_runs_repo.get_run(db, new_run_id(sid, "msg-approve"))
     assert run is not None
-    assert run["status"] == "completed"
+    assert run["status"] == ("failed" if failed else "completed")
+    assert run["error"] == ("恢复失败" if failed else "")
     payload = json.loads(run["request_json"])
     assert payload["session_id"] == sid
     assert payload["decisions"] == [{"type": "approve"}]
@@ -188,7 +377,7 @@ def test_resume_without_message_id_still_creates_run(client, db, monkeypatch):
     async def fake_resume(**kwargs):
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "resume_stream_generator", fake_resume)
+    monkeypatch.setattr(chat_turn, "resume_stream_generator", fake_resume)
 
     resp = client.post(
         "/agent/chat/resume",
@@ -217,8 +406,8 @@ def test_run_registry_failure_does_not_break_chat(client, db, monkeypatch):
     async def fake_stream(**kwargs):
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
-    monkeypatch.setattr(chat_api, "start_run", lambda *args, **kwargs: False)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(run_registry, "start_run", lambda *args, **kwargs: False)
 
     resp = client.post(
         "/agent/chat/stream",
@@ -226,7 +415,7 @@ def test_run_registry_failure_does_not_break_chat(client, db, monkeypatch):
     )
 
     assert resp.status_code == 200
-    assert db.get_run(new_run_id(sid, "msg-x")) is None
+    assert agent_runs_repo.get_run(db, new_run_id(sid, "msg-x")) is None
 
 
 # ── 专家对话（统一入口 /agent/chat/stream） ───────────────────────────
@@ -236,8 +425,8 @@ def _patch_chat_stream(monkeypatch, fake_stream):
     async def fake_agent(session_id, username, workspace_name, **kwargs):
         return SimpleNamespace(workspace_dir=None, workspace_virtual_path="/workspace")
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_agent)
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_agent)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
 
 
 def test_expert_run_creates_run_and_marks_completed(client, db, monkeypatch):
@@ -255,7 +444,7 @@ def test_expert_run_creates_run_and_marks_completed(client, db, monkeypatch):
     )
 
     assert resp.status_code == 200
-    run = db.get_run(new_run_id(sid, "msg-expert"))
+    run = agent_runs_repo.get_run(db, new_run_id(sid, "msg-expert"))
     assert run is not None
     assert (run["status"], run["username"], run["message_id"]) == (
         "completed",
@@ -286,7 +475,7 @@ def test_expert_run_exception_marks_failed(client, db, monkeypatch):
 
     assert resp.status_code == 200
     assert "expert boom" in resp.text
-    run = db.get_run(new_run_id(sid, "msg-expert-fail"))
+    run = agent_runs_repo.get_run(db, new_run_id(sid, "msg-expert-fail"))
     assert run["status"] == "failed"
     assert "RuntimeError: expert boom" in run["error"]
 
@@ -314,7 +503,7 @@ def test_expert_refusal_does_not_create_a_run(client, db, monkeypatch):
 
     assert resp.status_code == 200
     assert "这个问题不在本专家的职责范围内" in resp.text
-    assert db.get_run(new_run_id(sid, "msg-refused")) is None
+    assert agent_runs_repo.get_run(db, new_run_id(sid, "msg-refused")) is None
 
 
 def test_run_registry_failure_does_not_break_expert_run(client, db, monkeypatch):
@@ -325,7 +514,7 @@ def test_run_registry_failure_does_not_break_expert_run(client, db, monkeypatch)
         yield 'data: {"type": "done"}\n\n'
 
     _patch_chat_stream(monkeypatch, fake_stream)
-    monkeypatch.setattr(chat_api, "start_run", lambda *args, **kwargs: False)
+    monkeypatch.setattr(run_registry, "start_run", lambda *args, **kwargs: False)
 
     resp = client.post(
         "/agent/chat/stream",
@@ -334,4 +523,4 @@ def test_run_registry_failure_does_not_break_expert_run(client, db, monkeypatch)
 
     assert resp.status_code == 200
     assert '"type": "done"' in resp.text
-    assert db.get_run(new_run_id(sid, "msg-expert-x")) is None
+    assert agent_runs_repo.get_run(db, new_run_id(sid, "msg-expert-x")) is None

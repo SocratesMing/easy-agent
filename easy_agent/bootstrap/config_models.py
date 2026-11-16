@@ -13,6 +13,17 @@ from pydantic import BaseModel, Field, field_validator
 # 应用默认欢迎标题（Config.app_welcome_title 的兜底值）。
 DEFAULT_APP_WELCOME_TITLE = "Easy Agent，让工作更简单"
 
+# 工具进度中间件阈值的默认值（唯一来源）。
+# AgentConfig 字段默认值、build_agent_middleware 的 getattr 兜底、图缓存指纹三处
+# 都引用这里的常量——同一批数字只写一份，改默认值不会三处不同步。
+DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT = 3
+DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT = 8
+DEFAULT_TOOL_PROGRESS_STOP_LIMIT = 12
+# 硬顶：同一工具连续空结果到这个次数，无论本轮是否取到过数据都升级为「停止」。
+# 默认 = empty_limit * 3，覆盖「先取到 A 的数据、再对 B 反复空查」时
+# 「按工具计数 + has_data_once」判不出来的场景。
+DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT = DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT * 3
+
 # 联网搜索默认地址（config.yaml 未显式配置 api_url 时按 provider 取用）：
 #   tavily   —— Tavily Search API（https://docs.tavily.com）
 #   internal —— 内网 WebSearch 接口文档中的测试环境地址，生产地址需自行覆盖
@@ -44,7 +55,7 @@ class ProviderConfig(BaseModel):
     api_base: str = ""
     # 未显式配置时的默认上下文窗口（1M）；实际值以各 provider 段配置为准。
     context_length: int = 1_000_000
-    protocol: str = "openai"  # "openai" or "anthropic"
+    protocol: str = "openai"  # 目前只支持 "openai"（OpenAI 兼容接口）
     # 额外的请求头（透传给 LLM 客户端）。值里可用 ``{session_id}`` 占位符，
     # 调用时会替换为当前会话标识——部分网关（如 OpenCode Go）强制要求稳定的
     # 会话标识（x-opencode-session）与自定义 User-Agent，缺失会直接 400。
@@ -64,7 +75,7 @@ class LLMConfig(BaseModel):
     model: str = "claude-sonnet-4-6"
     provider: str = "minimax"
     context_length: int = 1_000_000  # Model context window size
-    protocol: str = "openai"  # "openai" or "anthropic"
+    protocol: str = "openai"  # 目前只支持 "openai"（OpenAI 兼容接口）
     headers: dict[str, str] = Field(default_factory=dict)
     retry: RetryConfig = Field(default_factory=RetryConfig)
 
@@ -85,7 +96,7 @@ class ToolsConfig(BaseModel):
     工具错误日志（``agent/tool_errors.py``）与流式日志。
     """
     experts_dir: str = "./experts"
-    """公共（预置）专家目录：只读扫描，见 services/public_expert_service.py。
+    """公共（预置）专家目录：只读扫描，见 services/experts/public.py。
 
     可写绝对路径（推荐生产环境，如 ``/qts/experts``）或相对路径；相对路径按
     「进程 CWD → 项目根」顺序解析，因此改这里的目录后无需调整启动方式。
@@ -141,8 +152,34 @@ class AgentConfig(BaseModel):
     的信号，容易在错误路径上反复重试直到把 ``max_steps`` 烧完。开启后给这类空结果
     补一句终止提示，并对「同工具 + 同参数连续重复」点名次数。只改工具结果文本，
     不改工具行为；出问题可置 false 一键回到旧行为。"""
+    tool_progress_empty_limit: int = DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT
+    """同一 MCP 工具连续空结果到几次注入「停止查询」指令（默认 3）。
+
+    只对「本轮从未取到过任何数据」生效：一旦取到过数据，空结果只提示
+    「该区间无数据」——分页到底、按月份分段遍历遇到空区间都是正常情况。
+    取到过数据后仍连续空查到 ``tool_progress_empty_hard_limit`` 次，照样会止损。"""
+    tool_progress_converge_limit: int = DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT
+    """同一 MCP 工具连续「无进展」到几次注入收敛提示（默认 8）。
+
+    无进展 = 空结果，或结果与之前某次**逐字节相同**（同一批数据被反复取回）。
+    分页取数每页内容不同，永不触发。"""
+    tool_progress_stop_limit: int = DEFAULT_TOOL_PROGRESS_STOP_LIMIT
+    """同一 MCP 工具连续无进展到几次要求停止并输出数据质量报告（默认 12）。
+
+    不得小于 ``tool_progress_converge_limit``，小了会被自动抬到该值。"""
+    tool_progress_empty_hard_limit: int = DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT
+    """同一 MCP 工具连续空结果到这个次数，无条件止损（默认 9 = 3 × 3）。
+
+    兜住「按工具名计数」判不出来的场景：先查 A 拿到了数据，再对 B 反复空查时
+    ``has_data_once`` 已经是 true，普通阈值不会升级。不得小于
+    ``tool_progress_empty_limit``，小了会被自动抬到该值。"""
     workspace_dir: str = "./workspace"
     memories_dir: str = "./memories"
+    memory_model: str = ""
+    """整理记忆（会话记忆、长期记忆）用的模型：填 ``models`` 段里的键；留空 = 用会话当前的对话模型。
+
+    记忆整理在后台跑、输出很短，用不上推理能力：单独配一个便宜、快的模型能省成本，也不跟
+    主对话抢同一个模型的限流额度。键不在 ``models`` 里或建模型失败时告警并回落到对话模型。"""
     sessions_dir: str = "./sessions"
     prompt_path: str = "prompts"
     """提示词目录（相对配置目录），内含 system.md、fragments/ 与 memory_*.md。
@@ -317,6 +354,159 @@ class DistributedLockConfig(BaseModel):
     """``acquire(wait_seconds>0)`` 等待抢锁时的轮询间隔（秒）。"""
 
 
+class MySQLCheckpointSectionConfig(BaseModel):
+    """``config.yaml`` 的 ``checkpoint.mysql`` 段（自研 ``AsyncMySQLSaver``）。
+
+    **连接参数留空即复用 ``database.mysql.*``**（同实例同库不同表），这是生产默认形态：
+    只要把后端切成 ``mysql_saver`` 就能跑，不需要额外填一套连接串。表名前缀
+    ``table_prefix`` 是同库隔离的唯一手段，**不允许为空**（否则 cp_ 表会写进业务表名空间）。
+
+    ``record_ttl_days`` 默认 0（不按时间过期）：checkpoint 是"用户点开会话就能续聊"的
+    唯一依据，贸然按天数清理会出现"列表里还在、点进去是空的"。要开 TTL 必须同时满足
+    ``ttl_only_archived=true``（只清已归档会话）与业务侧会话保留策略已经上线。
+    """
+
+    enabled: bool = True
+    """业务库是 MySQL 时是否允许 ``auto`` 选中本后端。"""
+
+    host: str = ""
+    """留空 = 复用 ``database.mysql.host``。"""
+
+    port: int = 0
+    """0 = 复用业务库端口。"""
+
+    user: str = ""
+    """留空 = 复用业务库账号。"""
+
+    password: str = ""
+    """留空 = 复用业务库密码。"""
+
+    database: str = ""
+    """留空 = 复用业务库库名。"""
+
+    charset: str = "utf8mb4"
+    """连接字符集。**必须 utf8mb4**：它同时决定建表时中文表/列注释能否正确入库。"""
+
+    table_prefix: str = Field(default="cp_", min_length=1)
+    """表名前缀，多环境共库时靠它隔离；为空直接启动失败。"""
+
+    pool_min_size: int = Field(default=2, ge=1)
+    pool_max_size: int = Field(default=10, ge=1)
+    """单 Pod 连接数上限；多副本时总连接数 = Pod 数 × 该值，需 ≤ MySQL ``max_connections`` 的 30%。"""
+
+    connect_timeout: int = Field(default=5, ge=1)
+    """建连超时（秒）。"""
+
+    read_timeout: int = Field(default=10, ge=1)
+    """单次查询超时（秒），落到服务端 ``max_execution_time``（只对 SELECT 生效）。"""
+
+    auto_setup: bool = True
+    """启动时幂等建表 + 执行未应用的迁移。多 Pod 并发启动用 ``GET_LOCK`` 串行化。"""
+
+    auto_setup_lock_wait: int = Field(default=60, ge=0)
+    """抢建表串行锁的等待秒数；超时则**启动失败**，不静默跳过建表。"""
+
+    gc_interval_seconds: int = Field(default=600, ge=0)
+    """巡检间隔；0 = 完全关闭（已删会话对账 + TTL 一起关）。"""
+
+    record_ttl_days: int = Field(default=0, ge=0)
+    """0 = 不按时间过期（推荐）；>0 时按"整 thread"删除。"""
+
+    ttl_basis: str = "session_updated_at"
+    """过期判定依据：``session_updated_at``（推荐，语义是用户真的没再动过）或
+    ``checkpoint_created_at``（只跟 checkpoint 表自身耦合）。"""
+
+    ttl_only_archived: bool = True
+    """只清理 ``archived=1`` 的会话，避免"列表里还在、点进去空了"。"""
+
+    ttl_batch_size: int = Field(default=200, ge=1)
+    """单轮最多删多少个 thread，分批提交，避免 LONGBLOB 的 DELETE 撑爆 redo。"""
+
+    ttl_protect_active_stream: bool = True
+    """删除前跳过有活跃流锁的 thread，防误删正在跑的回合。"""
+
+    @field_validator("table_prefix")
+    @classmethod
+    def _strip_prefix(cls, value: str) -> str:
+        prefix = (value or "").strip()
+        if not prefix:
+            raise ValueError("checkpoint.mysql.table_prefix 不能为空")
+        return prefix
+
+    @field_validator("ttl_basis")
+    @classmethod
+    def _check_ttl_basis(cls, value: str) -> str:
+        basis = (value or "session_updated_at").strip() or "session_updated_at"
+        if basis not in {"session_updated_at", "checkpoint_created_at"}:
+            raise ValueError(
+                "checkpoint.mysql.ttl_basis 只能是 session_updated_at 或 checkpoint_created_at"
+            )
+        return basis
+
+
+class CheckpointConfig(BaseModel):
+    """HITL 人工审批的 checkpoint（config.yaml 的 ``checkpoint`` 段）。
+
+    ``sqlite_path`` 供官方 ``AsyncSqliteSaver``（dev/test 与生产回滚）；
+    ``mysql`` 子段供自研 ``AsyncMySQLSaver``（生产多副本共享）。
+    """
+
+    sqlite_path: str = ""
+    """SQLite 文件路径，``{pod}`` 启动时换成实例名（``EASY_POD_NAME`` → ``POD_NAME`` →
+    ``HOSTNAME``），每个 pod 一个文件；相对路径按项目根解析。留空时用旧环境变量
+    ``EASY_CHECKPOINT_SQLITE_PATH``，也没有时默认 ``/qts/checkpoint/{pod}.db``
+    （见 ``persistence/checkpoints.py``）。"""
+
+    mysql: MySQLCheckpointSectionConfig = Field(default_factory=MySQLCheckpointSectionConfig)
+    """MySQL 共享后端配置（``checkpoint.mysql``），不配置时全部走默认值。"""
+
+
+class HitlConfig(BaseModel):
+    """人工审批（config.yaml 的 ``hitl`` 段）。"""
+
+    enabled: bool = True
+    """关闭后对话里也不审批，和定时任务一样：工具审批、``interrupt_sensitive_writes`` 的写入审批
+    都不生效，也不提供 ``create_scheduled_task``（建定时任务必须有人确认）。"""
+    tools: list[str] | None = None
+    """执行前要人工审批的工具名；不配时用内置名单 ``agent.hitl.DEFAULT_APPROVAL_TOOLS``。
+    ``execute`` 只拦删除类命令、``access_knowledge_original`` 只拦 materialize；MCP 工具写名字即可
+    （带不带服务前缀都行），没列出的 MCP 工具仍按服务端标注 / 名字自动判断（见 ``agent/hitl.py``）。"""
+
+
+class PersonnelSyncPageConfig(BaseModel):
+    """人员接口同步的分页参数；外部接口支持分页时才开启。"""
+
+    enabled: bool = False
+    param: str = "page"
+    size_param: str = "page_size"
+    size: int = 500
+
+
+class PersonnelSyncConfig(BaseModel):
+    """人员管理「更新人员信息」按钮所调用的外部接口。
+
+    ``items_path`` 指向响应中的人员数组（点号路径），``field_mapping`` 使用
+    「本地字段 -> 外部字段名」覆盖默认的同名读取；``source_name`` 写入
+    ``personnel_source``，用于数据追溯。
+    """
+
+    enabled: bool = False
+    source_name: str = "接口同步"
+    url: str = ""
+    token: str = ""
+    token_header: str = "Authorization"
+    token_prefix: str = "Bearer "
+    timeout_seconds: float = 20.0
+    items_path: str = "data.items"
+    field_mapping: dict[str, str] = Field(default_factory=dict)
+    page: PersonnelSyncPageConfig = Field(default_factory=PersonnelSyncPageConfig)
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _blank_switch_is_off(cls, value):
+        return blank_as_false(value)
+
+
 class PersonnelConfig(BaseModel):
     """Personnel provisioning and account-source policy."""
 
@@ -327,6 +517,9 @@ class PersonnelConfig(BaseModel):
 
     passwordless_login_enabled: bool = False
     """门户免密登录开关：默认关闭；启用后外部系统可通过用户名+用户ID 直登。"""
+
+    sync: PersonnelSyncConfig = Field(default_factory=PersonnelSyncConfig)
+    """「更新人员信息」按钮调用的外部接口同步配置。"""
 
 
 class UploadLimitsConfig(BaseModel):
@@ -359,7 +552,7 @@ class FileContextConfig(BaseModel):
     请求不再带文件，模型就看不到内容了（且首轮内容挂在内存中的 Agent 缓存上，
     缓存一驱逐即丢失）。
 
-    机制（详见 ``services/session_uploads.py``）：
+    机制（详见 ``services/sessions/uploads.py``）：
     1. 上传即解析：解析文本落盘到会话工作区 ``uploads/{文件名}.txt``，一次解析、
        全程复用；
     2. 上传即记清单：文件名/大小/时间/解析状态写入 ``uploads/index.md``，该文件由
@@ -388,3 +581,34 @@ class FileContextConfig(BaseModel):
 
     preview_max_chars: int = Field(default=2000, ge=0)
     """本轮上传文件注入模型的开头预览字符数（多文件合计）；0 = 不注入预览。"""
+
+
+class VisualConfig(BaseModel):
+    """对话内可视化（config.yaml 的 ``visual`` 段）：ECharts 图表、Mermaid 流程图、HTML 交互组件。
+
+    三类内容都在沙箱 iframe（``/agent/viz/frame.html``）里渲染，ECharts / Mermaid 由后端托管、
+    按需加载，不打进前端包。``enabled=False`` 时提示词不再教模型写可视化代码块，框架页拒绝渲染，
+    前端退回显示源码；``html_widgets=False`` 只关掉 HTML 交互组件（它要在沙箱里执行模型写的
+    脚本），图表与流程图照常。设计见 ``docs/design/2026-11-12-chat-visuals.md``。
+    """
+
+    enabled: bool = True
+    """总开关：false 时三类可视化都不渲染、提示词也不再提。"""
+
+    html_widgets: bool = True
+    """是否允许模型写的 HTML 交互组件在沙箱里运行（滑块、参数切换等需要脚本的演示）。"""
+
+
+class StreamingConfig(BaseModel):
+    """SSE 流式响应配置（config.yaml 的 ``streaming`` 段）。
+
+    心跳帧用于穿过反向代理的空闲超时：模型长思考 / 长工具调用期间流上可能几十秒
+    没有任何事件，nginx 默认 ``proxy_read_timeout 60s`` 会掐断连接，浏览器报
+    ``ERR_INCOMPLETE_CHUNKED_ENCODING 200``。
+
+    心跳是 SSE 注释行（``: keep-alive``），**不是事件**：不进 hub 历史、不落
+    ``stream_events`` 表，前端只解析 ``data: `` 行所以会自动忽略。
+    """
+
+    sse_heartbeat_seconds: float = 15.0
+    """空闲多久补一帧心跳（秒）；<= 0 关闭心跳。须小于反向代理的读超时（nginx 默认 60s）。"""

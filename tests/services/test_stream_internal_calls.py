@@ -11,7 +11,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from easy_agent.agent.model import is_internal_model_call
-from easy_agent.services.stream_processor import StreamProcessor
+from easy_agent.services.streaming.processor import StreamProcessor
 
 
 def _chunk(content="", **kwargs):

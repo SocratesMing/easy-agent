@@ -2,6 +2,8 @@
 
 import pytest
 
+from langgraph.checkpoint.memory import MemorySaver
+
 from easy_agent.persistence import checkpoints as ck
 
 
@@ -51,18 +53,18 @@ async def test_sqlite_saver_uses_wal_with_normal_sync(tmp_path):
 @pytest.mark.asyncio
 async def test_shutdown_clears_legacy_session_cache():
     first = ck.get_session_checkpointer("legacy-session")
-    assert isinstance(first, ck.PersistentMemorySaver)
+    assert isinstance(first, MemorySaver)
     try:
         await ck.shutdown_checkpointers()
         second = ck.get_session_checkpointer("legacy-session")
         assert second is not first
-        assert isinstance(second, ck.PersistentMemorySaver)
+        assert isinstance(second, MemorySaver)
     finally:
         await ck.shutdown_checkpointers()
 
 
 def test_relative_sqlite_path_is_resolved_against_project_root():
-    resolved = ck.resolve_sqlite_path(ck.DEFAULT_SQLITE_PATH)
+    resolved = ck.resolve_sqlite_path("data/checkpoints.db")
     assert resolved.is_absolute()
     assert resolved.name == "checkpoints.db"
     assert resolved.parent.name == "data"

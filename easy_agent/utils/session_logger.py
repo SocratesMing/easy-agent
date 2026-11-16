@@ -14,6 +14,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
+from easy_agent.bootstrap.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,6 @@ def _resolve_session_log_dir(username: str = "", log_date: Optional[str] = None)
     ``logs/sessions`` 保持兼容。
     """
     try:
-        from easy_agent.bootstrap.config import Config
 
         base = Config.get_user_sessions_dir(username)
         if log_date:
@@ -117,7 +118,6 @@ class SessionLogger:
     def _resolve_workspace(username: str) -> str:
         """推导用户工作目录：{workspace_dir}/{username}/"""
         try:
-            from easy_agent.bootstrap.config import Config
 
             return str(Config.get_user_workspace_dir(username))
         except Exception:
@@ -127,12 +127,11 @@ class SessionLogger:
     def _resolve_system_prompt() -> str:
         """从运行期 agent 配置中读取 system_prompt"""
         try:
-            from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
 
             _cfg = get_runtime_agent_config()
             if _cfg:
                 return _cfg.get("system_prompt", "") or ""
-        except Exception:
+        except Exception:  # noqa: S110 - 配置未初始化时返回空提示词
             pass
         return ""
 
@@ -140,7 +139,6 @@ class SessionLogger:
     def _resolve_memories_dir(username: str) -> str:
         """推导用户长期记忆目录：{memories_dir}/{username}/"""
         try:
-            from easy_agent.bootstrap.config import Config
 
             return str(Config.get_user_memories_dir(username))
         except Exception:
@@ -149,7 +147,7 @@ class SessionLogger:
     def log_user_message(
         self, message: str, files: Optional[list] = None, message_id: str = ""
     ):
-        entry = {
+        entry: dict[str, Any] = {
             "type": "user_message",
             "message_id": message_id,
             "content": message,

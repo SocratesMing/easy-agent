@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from easy_agent.bootstrap.config import Config
-from easy_agent.services import agent_manager as am
+from easy_agent.services.agents import manager as am
 from easy_agent.tools import registry
 from easy_agent.tools.registry import ToolSpec
 
@@ -32,6 +32,7 @@ class _SpyAgent:
         self.system_prompt = kwargs.get("system_prompt", "")
         self.safe_username = Config.sanitize_username(kwargs.get("username", ""))
         self.enable_web_search = bool(kwargs.get("enable_web_search", False))
+        self.enable_user_interaction = bool(kwargs.get("enable_user_interaction", True))
 
 
 def _fake_extender(tools, *, config, username, session_id, workspace_name):
@@ -57,18 +58,7 @@ def _injected_names() -> list[str]:
 
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch):
-    saved = (
-        am._session_agents,
-        am._session_expert,
-        am._session_connectors,
-        am._session_edit_targets,
-        am._session_create_locks,
-    )
-    am._session_agents = OrderedDict()
-    am._session_expert = {}
-    am._session_connectors = {}
-    am._session_edit_targets = {}
-    am._session_create_locks = {}
+    monkeypatch.setattr(am, "_sessions", OrderedDict())
     _SpyAgent.last_kwargs = {}
 
     config = SimpleNamespace(
@@ -89,11 +79,16 @@ def _isolate(monkeypatch):
         },
     )
     monkeypatch.setattr(am, "EasyAgent", _SpyAgent)
-    monkeypatch.setattr(
-        am,
-        "get_database",
-        lambda: (_ for _ in ()).throw(RuntimeError("db disabled in test")),
-    )
+    for _provider in (
+        "get_session_repository",
+        "get_session_runtime_repository",
+        "get_user_repository",
+    ):
+        monkeypatch.setattr(
+            am,
+            _provider,
+            lambda: (_ for _ in ()).throw(RuntimeError("db disabled in test")),
+        )
     monkeypatch.setattr(
         Config,
         "get_user_mcp_path",
@@ -103,13 +98,24 @@ def _isolate(monkeypatch):
     monkeypatch.setattr(am, "load_mcp_tools_for_user", _fake_load_mcp)
     yield config
 
-    (
-        am._session_agents,
-        am._session_expert,
-        am._session_connectors,
-        am._session_edit_targets,
-        am._session_create_locks,
-    ) = saved
+
+async def test_hitl_disabled_in_config_turns_approvals_off(monkeypatch, _isolate):
+    """config.yaml 的 hitl.enabled=false：对话和定时任务一样不审批，也不提供建定时任务的工具。"""
+    _isolate.hitl = SimpleNamespace(enabled=False, tools=None)
+    monkeypatch.setattr(am, "create_web_search_tool", lambda *a, **k: None)
+
+    await am._get_or_create_agent_unlocked(
+        "session-hitl0",
+        username="u",
+        workspace_name="ws",
+        enable_hitl=True,
+        enable_user_interaction=False,
+        enable_web_search=False,
+    )
+
+    assert _SpyAgent.last_kwargs["enable_hitl"] is False
+    assert _SpyAgent.last_kwargs["enable_user_interaction"] is False
+    assert "create_scheduled_task" not in _injected_names()
 
 
 async def test_tool_set_matches_legacy_when_hitl_and_file_context_on(monkeypatch):
@@ -130,7 +136,7 @@ async def test_tool_set_matches_legacy_when_hitl_and_file_context_on(monkeypatch
         "save_expert",
         "read_uploaded_file",
     ]
-    assert agent is am._session_agents["session-abcde"]
+    assert agent is am.get_session_agent("session-abcde")
 
 
 async def test_expert_session_gets_no_save_expert(monkeypatch):
@@ -211,10 +217,17 @@ async def test_session_connectors_are_loaded_off_the_event_loop(monkeypatch):
     """建 Agent 时从 DB 读会话连接器：放进线程，不占事件循环。"""
     import threading
 
-    from easy_agent.services import session_runtime
+    from easy_agent.services.sessions import runtime as session_runtime
 
     monkeypatch.setattr(am, "create_web_search_tool", lambda *a, **k: None)
-    monkeypatch.setattr(am, "get_database", lambda: object())
+    _fake = object()
+    # T3b：agent_manager 改走 db.providers 的领域 repository；测试里整体换成假端口。
+    for _provider in (
+        "get_session_repository",
+        "get_session_runtime_repository",
+        "get_user_repository",
+    ):
+        monkeypatch.setattr(am, _provider, lambda _fake=_fake: _fake)
     loop_thread = threading.get_ident()
     off_loop: list[bool] = []
 
@@ -233,4 +246,4 @@ async def test_session_connectors_are_loaded_off_the_event_loop(monkeypatch):
     )
 
     assert off_loop == [True]
-    assert am._session_connectors["session-conn"] == ("srv_a",)
+    assert am.get_session_connectors("session-conn") == ("srv_a",)

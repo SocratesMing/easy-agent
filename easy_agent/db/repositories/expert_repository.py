@@ -14,7 +14,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from easy_agent.models.db import SessionModel
+from easy_agent.utils.deployment import instance_owner
 from easy_agent.db.repositories import files as files_repo
+from easy_agent.db.repositories import session_runtime as session_runtime_repo
 from easy_agent.db.repositories import sessions as sessions_repo
 from easy_agent.db.repositories import users as users_repo
 
@@ -36,7 +38,7 @@ class ExpertRepository:
 
     def _store(self):
         """延迟构造 ``ExpertStore``（避免 db 层导入期环）。"""
-        from easy_agent.db.expert_store import ExpertStore
+        from easy_agent.db.expert_store import ExpertStore  # 延迟导入：循环导入：db.repositories 与 db 包内模块互相引用，保持函数内导入
 
         return ExpertStore(self._db)
 
@@ -136,9 +138,7 @@ class ExpertRepository:
     # ── 流锁续约（供 _detached_event_stream 心跳） ────────────────────
 
     def renew_stream(self, session_id: str) -> bool:
-        from easy_agent.services.session_runtime import renew_stream
-
-        return renew_stream(self._db, session_id)
+        return session_runtime_repo.renew_stream_lease(self._db, session_id, instance_owner())
 
 
 __all__ = ["ExpertRepository"]

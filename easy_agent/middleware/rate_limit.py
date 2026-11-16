@@ -33,11 +33,25 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from easy_agent.bootstrap.env import env_str
 from easy_agent.utils.deployment import detect_worker_count
+from easy_agent.utils.blocking import run_blocking
+from easy_agent.db.providers import get_rate_limit_repository
 
 logger = logging.getLogger(__name__)
 
 RATE_LIMIT_DETAIL = "请求过于频繁，请稍后再试"
 RATE_LIMIT_CODE = "RATE_LIMITED"
+
+#: 只读的流式端点：与「发起流」共用同一路径前缀，但**必须**单独放行。
+#:
+#: 限流规则按前缀匹配（``path == prefix or path.startswith(prefix + "/")``），于是
+#: ``/chat/stream/status`` 与 ``/chat/stream/live`` 也被算进了 ``/chat/stream`` 的
+#: 30 次/分 配额。刷新续接每 1.5 秒探一次状态，45 秒就能把额度耗光；此后
+#: ``/stream/live`` 挂载被 429 拒绝，表现正是「刷新后再也接不回来、只能等回答落库」。
+#: 这两个端点是幂等只读（不触发模型、不写库），放行不会带来刷额度风险。
+_READ_ONLY_STREAM_PATHS = (
+    "/chat/stream/status",
+    "/chat/stream/live",
+)
 
 _DEFAULT_RULES: list[tuple[str, int, float]] = [
     ("/agent/auth/login", 20, 60.0),
@@ -48,6 +62,10 @@ _DEFAULT_RULES: list[tuple[str, int, float]] = [
     ("/api/chat/stream", 30, 60.0),
     ("/agent/chat/resume", 30, 60.0),
     ("/api/chat/resume", 30, 60.0),
+    # SEC-09：公共对话补全直接透传大模型（可指定 system/模型），按 IP 限流避免被刷额度
+    ("/agent/completion/chat", 30, 60.0),
+    ("/agent/prompts/enhance", 30, 60.0),
+    ("/api/completion/chat", 30, 60.0),
 ]
 
 
@@ -107,56 +125,22 @@ class DBRateLimitCounter:
         self._fallback = InMemorySlidingWindowCounter()
         self._db_failed = False
 
-    def _db(self):
+    def _repo(self):
         if self._db_provider is not None:
             return self._db_provider()
-        from easy_agent.db import get_database
 
-        return get_database()
-
-    @staticmethod
-    def _window_start(now: float, window_seconds: float) -> int:
-        width = max(1, int(window_seconds))
-        return int(now // width) * width
+        return get_rate_limit_repository()
 
     def allow(self, key: str, limit: int, window_seconds: float) -> bool:
         now = time.time()
-        window_start = self._window_start(now, window_seconds)
         try:
-            db = self._db()
-            with db.get_connection() as conn:
-                cursor = conn.cursor()
-                # 清理本 bucket 的过期窗口，避免公网大基数下无界增长
-                db._execute(
-                    cursor,
-                    "DELETE FROM rate_limit_counters WHERE bucket=? AND window_start < ?",
-                    (key, window_start - max(1, int(window_seconds))),
-                )
-                db._execute(
-                    cursor,
-                    "UPDATE rate_limit_counters SET count=count+1, updated_at=? "
-                    "WHERE bucket=? AND window_start=? AND count < ?",
-                    (time.strftime("%Y-%m-%d %H:%M:%S"), key, window_start, limit),
-                )
-                if cursor.rowcount > 0:
-                    return True
-                try:
-                    db._execute(
-                        cursor,
-                        "INSERT INTO rate_limit_counters "
-                        "(bucket, window_start, count, updated_at) VALUES (?, ?, 1, ?)",
-                        (key, window_start, time.strftime("%Y-%m-%d %H:%M:%S")),
-                    )
-                    return True
-                except Exception:
-                    # 并发 INSERT 冲突：对方刚创建窗口，重试条件 UPDATE。
-                    db._execute(
-                        cursor,
-                        "UPDATE rate_limit_counters SET count=count+1, updated_at=? "
-                        "WHERE bucket=? AND window_start=? AND count < ?",
-                        (time.strftime("%Y-%m-%d %H:%M:%S"), key, window_start, limit),
-                    )
-                    return cursor.rowcount > 0
+            port = self._repo()
+            try_allow = getattr(port, "try_allow", None)
+            if callable(try_allow):
+                return try_allow(key, limit, window_seconds, now)
+            # 迁移期兼容：直接传进来的 Database / 旧测试替身走模块级 SQL 入口
+            from easy_agent.db.repositories.rate_limits import try_allow  # 延迟导入：局部变量遮蔽：函数内重新导入以取得模块级 SQL 入口，避开同名局部变量
+            return try_allow(port, key, limit, window_seconds, now)
         except Exception as exc:  # 计数器故障不阻断业务
             if not self._db_failed:
                 self._db_failed = True
@@ -225,9 +209,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if env_str("PYTEST_CURRENT_TEST"):
             return await call_next(request)
         path = request.url.path
+        # 只读的流探测 / 回放不吃「发起流」的配额（见 _READ_ONLY_STREAM_PATHS 注释）。
+        if request.method in ("GET", "HEAD") and path.endswith(_READ_ONLY_STREAM_PATHS):
+            return await call_next(request)
         # 延迟 import：utils 包会导入 auth（bcrypt/jose），放在模块顶层会拖慢
         # app 启动早期 import，也更容易形成 middleware <-> utils 的环。
-        from easy_agent.utils.client_ip import get_client_ip
+        from easy_agent.utils.client_ip import get_client_ip  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
         client = get_client_ip(request)
         for prefix, limit, window in self.rules:
@@ -252,6 +239,5 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not getattr(self.counter, "is_shared", False):
             return self.counter.allow(key, limit, window)
         # 延迟 import，原因同 dispatch 里的 get_client_ip
-        from easy_agent.utils.blocking import run_blocking
 
         return await run_blocking(self.counter.allow, key, limit, window)

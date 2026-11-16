@@ -3,6 +3,20 @@
 from easy_agent.utils import deployment
 
 
+def test_instance_owner_is_stable_until_process_changes(monkeypatch):
+    deployment._owner_for_pid.cache_clear()
+    try:
+        monkeypatch.setattr(deployment.os, "getpid", lambda: 101)
+        monkeypatch.setattr(deployment.socket, "gethostname", lambda: "before")
+        assert deployment.instance_owner() == "before:101"
+        monkeypatch.setattr(deployment.socket, "gethostname", lambda: "after")
+        assert deployment.instance_owner() == "before:101"
+        monkeypatch.setattr(deployment.os, "getpid", lambda: 102)
+        assert deployment.instance_owner() == "after:102"
+    finally:
+        deployment._owner_for_pid.cache_clear()
+
+
 def test_prod_multi_worker_sqlite_is_error():
     errors = deployment.deployment_errors(db_type="sqlite", agent_env="prod", workers=2)
     assert errors

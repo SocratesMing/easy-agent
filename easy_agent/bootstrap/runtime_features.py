@@ -61,6 +61,29 @@ def load_runtime_features(env: Mapping[str, str] | None = None) -> RuntimeFeatur
     )
 
 
+def _checkpoint_shared_across_replicas() -> bool:
+    """当前配置下 HITL checkpointer 是否跨副本共享（决定严格门禁要不要报错）。
+
+    判断依据与 ``persistence/checkpoints.py::resolve_checkpoint_backend`` 的 ``auto``
+    语义一致：只有 ``mysql_saver`` 是共享的；``sqlite`` 是每 Pod 一个文件、``legacy``
+    是进程内内存，两者都不能跨副本。
+
+    这里**在配置加载之前**就可能被调用（``check_multi_replica_startup`` 在 lifespan
+    靠前位置），所以只能读环境变量；业务库类型拿不到时按"不共享"处理——严格模式本身
+    是 opt-in 门禁，宁可多报一条也不要静默放行。生产按部署清单会显式写
+    ``EASY_CHECKPOINT_BACKEND=mysql_saver``，那条路径不受影响。
+    """
+    backend = env_str("EASY_CHECKPOINT_BACKEND", "auto").strip().lower()
+    if backend in {"mysql_saver", "mysql"}:
+        return True
+    if backend == "auto":
+        # 只能用环境变量判断：本模块是 L0，不能 import ``easy_agent.persistence``（L1）；
+        # 读的是 config.yaml ``database.type: ${DB_TYPE:-mysql}`` 同一个变量。
+        # 变量没显式给值时按"不共享"处理（见上面 docstring）。
+        return env_str("DB_TYPE", "").strip().lower() == "mysql"
+    return False
+
+
 def multi_replica_errors(
     *,
     agent_env: str,
@@ -77,11 +100,15 @@ def multi_replica_errors(
     if count <= 1:
         return []
 
-    # Store 在业务库里（SqlStore），副本之间本来就共享；HITL checkpointer 只有 SQLite 文件和
-    # 业务库快照两种，都不能跨副本共享（Postgres checkpointer 已移除）。
-    errors: list[str] = [
-        "HITL checkpointer（SQLite 文件 / 业务库快照）不能跨副本共享，多副本需要先接入共享的 checkpointer"
-    ]
+    # Store 在业务库里（SqlStore），副本之间本来就共享；HITL checkpointer 现在有
+    # mysql_saver（4 张表共享）与 sqlite（每 Pod 一个文件）/legacy（进程内）两类，
+    # 只有前者能跨副本，所以这条错误要按后端判断，不能写死。
+    errors: list[str] = []
+    if not _checkpoint_shared_across_replicas():
+        errors.append(
+            "HITL checkpointer 当前后端不能跨副本共享（sqlite 每 Pod 一个文件 / legacy 进程内），"
+            "多副本请用 EASY_CHECKPOINT_BACKEND=mysql_saver"
+        )
 
     for attr, label in (
         ("stream_backend", "EASY_STREAM_BACKEND"),

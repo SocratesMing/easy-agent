@@ -13,21 +13,28 @@ from pydantic import BaseModel
 
 from easy_agent.bootstrap.config_models import (
     AgentConfig,
+    CheckpointConfig,
     DatabaseConfig,
     DistributedLockConfig,
     FileContextConfig,
+    HitlConfig,
+    MySQLCheckpointSectionConfig,
     MySQLConfig,
     MySQLPoolConfig,
     PersonnelConfig,
+    PersonnelSyncConfig,
+    PersonnelSyncPageConfig,
     ProviderConfig,
     RetryConfig,
     SQLiteConfig,
+    StreamingConfig,
     SummarizationConfig,
     ToolsConfig,
     UploadLimitsConfig,
+    VisualConfig,
     WebSearchConfig,
 )
-from easy_agent.bootstrap.env import env_bool, env_str
+from easy_agent.bootstrap.env import env_bool, env_str, is_unset_placeholder
 
 # 日志分类沿用 "easy_agent.bootstrap.config"：启动日志与 caplog 过滤按该名称订阅，
 # 拆分模块不改变告警归属（见 tests/test_config_validation.py）。
@@ -56,10 +63,14 @@ KNOWN_TOP_LEVEL_KEYS = _fields(AgentConfig) | frozenset(
         "web_search",
         "preset_questions",
         "database",
+        "checkpoint",
+        "hitl",
         "personnel",
         "distributed_lock",
         "upload_limits",
         "file_context",
+        "streaming",
+        "visual",
         "expert",
         "expert_tags",
         "expert_guardrail_enabled",
@@ -87,12 +98,19 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
     "database.sqlite": _fields(SQLiteConfig),
     "database.mysql": _fields(MySQLConfig),
     "database.mysql.pool": _fields(MySQLPoolConfig),
+    "checkpoint": _fields(CheckpointConfig),
+    "checkpoint.mysql": _fields(MySQLCheckpointSectionConfig),
+    "hitl": _fields(HitlConfig),
     "summarization": _fields(SummarizationConfig),
     "web_search": _fields(WebSearchConfig),
     "distributed_lock": _fields(DistributedLockConfig),
     "personnel": _fields(PersonnelConfig),
+    "personnel.sync": _fields(PersonnelSyncConfig),
+    "personnel.sync.page": _fields(PersonnelSyncPageConfig),
     "upload_limits": _fields(UploadLimitsConfig),
     "file_context": _fields(FileContextConfig),
+    "streaming": _fields(StreamingConfig),
+    "visual": _fields(VisualConfig),
     # 以下各段与模型字段名不同（expert 段对应 Config.expert_*）或不归 Config 管（knowledge）
     "expert": frozenset(
         {
@@ -113,11 +131,25 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "embedding",
             "audit",
             "limits",
+            "retrieval",
             "source_sync",
         }
     ),
-    "knowledge.embedding": frozenset({"model"}),
     "knowledge.audit": frozenset({"enabled", "max_details_bytes"}),
+    "knowledge.retrieval": frozenset(
+        {
+            "similarity_threshold",
+            "fallback_similarity_threshold",
+            "aggregation_similarity_threshold",
+            "minimum_evidence_score",
+            "vector_similarity_weight",
+            "top_k",
+            "page_size",
+            "rerank_model",
+            "per_base_quota",
+            "top_n",
+        }
+    ),
     "knowledge.limits": frozenset(
         {
             "max_file_size_mb",
@@ -125,6 +157,7 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "max_filename_utf8_bytes",
             "allowed_extensions",
             "max_documents_per_query",
+            "max_documents_per_base",
             "parse_timeout_seconds",
         }
     ),
@@ -133,14 +166,14 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
             "enabled",
             "owner_username",
             "file_root",
+            "staging_dir",
+            "staging_retention_hours",
             "base_id",
             "base_name",
             "lookback_days",
-            "start_date",
+            "start_time",
             "interval_minutes",
             "max_inflight",
-            "poll_interval_seconds",
-            "max_attempts",
             "mysql",
         }
     ),
@@ -161,20 +194,6 @@ KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
     ),
 }
 
-# models.<provider> 下允许的键（provider 名本身是动态的）。
-KNOWN_PROVIDER_KEYS = frozenset(
-    {
-        "provider",
-        "api_key",
-        "model",
-        "api_base",
-        "context_length",
-        "max_input_tokens",  # 旧键，from_yaml 会映射为 context_length
-        "protocol",
-        "headers",
-    }
-)
-
 # 已废弃但仍兼容的键 -> 提示信息。不参与 unknown 判定，也不参与
 # config.yaml / config-example.yaml 的键集合漂移比较。
 DEPRECATED_CONFIG_KEYS: dict[str, str] = {
@@ -182,6 +201,9 @@ DEPRECATED_CONFIG_KEYS: dict[str, str] = {
     "system_prompt_path": "system_prompt_path 已由 prompt_path 取代，当前仍兼容读取",
     "log": "log 段不再由 Config 读取（日志由 initialization/log.py 管理）",
     "log_dir": "log_dir 不再由 Config 读取（日志由 initialization/log.py 管理）",
+    "knowledge.embedding": (
+        "knowledge.embedding 已废弃：embedding 模型由 RAGFlow 共享数据集决定，该键不再生效"
+    ),
 }
 
 
@@ -294,7 +316,7 @@ def _ensure_project_env_loaded() -> None:
     shell 里 export 的变量常常传不进进程，这里保证无论入口如何都能取到 .env 的值。
     """
     try:
-        from easy_agent.utils.env_loader import load_project_env
+        from easy_agent.utils.env_loader import load_project_env  # 延迟导入：可选依赖：包在 try/except 中，导入失败走降级分支
     except Exception as e:  # pragma: no cover - 兜底，不影响配置解析
         logger.debug(f"跳过项目根 .env 加载: {e}")
         return
@@ -311,7 +333,7 @@ def _expand_env(value: str, missing: set[str]) -> str:
         name = match.group(1)
         default = match.group(2)
         env_value = env_str(name, strip=False)  # 密钥等值原样替换，不 strip
-        if env_value:
+        if env_value and not is_unset_placeholder(env_value):
             return env_value
         if default is not None:
             return default

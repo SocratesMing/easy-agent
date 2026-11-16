@@ -1,22 +1,34 @@
-"""本轮请求准备函数测试：聊天与专家执行共用的空请求校验、技能解析、取会话和上传文件上下文。"""
+"""本轮请求准备测试：聊天与专家执行共用的准备函数，以及不经 HTTP 的 ``prepare_turn``。
+
+T4 之后准备逻辑在 ``services/agents/chat_turn.py``（路由只剩「参数校验 → prepare → SSE 响应」），
+因此这里直接调用服务函数、不经过 HTTP，覆盖：空请求校验、技能解析、取会话、上传文件
+上下文，以及 ``prepare_turn`` 的专家拒答 / 并发 409 / 待修改专家越权三种关键场景。
+"""
+
+import json
+from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
 
-import easy_agent.api.chat as chat_api
+import easy_agent.services.agents.chat_turn as chat_turn
 from easy_agent.db.repositories.chat_repository import ChatRepository
 from easy_agent.db.repositories.expert_repository import ExpertRepository
-
+from easy_agent.knowledges.chat.chat_bridge import KnowledgeChatContext
+from easy_agent.models.api import ChatRequest
+from easy_agent.models.exceptions import BadRequestError, ConflictError, NotFoundError
+from easy_agent.services.skills import provision as skill_provision
+from easy_agent.services.experts import runtime as expert_runtime
+from easy_agent.services.agents import manager as agent_manager
 
 @pytest.fixture(autouse=True)
 def _no_user_skills(monkeypatch):
     """标题生成会查用户技能目录：固定为空，避免用例依赖本机安装的技能。"""
-    monkeypatch.setattr(chat_api.skill_library, "list_user_skill_dirs", lambda username: [])
+    monkeypatch.setattr(chat_turn.skill_library, "list_user_skill_dirs", lambda username: [])
 
 
 def _session(repo, username="alice", message="第一条消息"):
     session_id = f"sess-{username}"
-    chat_api.create_new_session(repo, session_id, username, message, None)
+    chat_turn.create_new_session(repo, session_id, username, message, None)
     return session_id
 
 
@@ -25,9 +37,9 @@ def _session(repo, username="alice", message="第一条消息"):
 
 @pytest.mark.parametrize("message", ["", "   ", None])
 def test_empty_turn_is_rejected(message):
-    with pytest.raises(HTTPException) as exc:
-        chat_api.require_turn_content(message, None, None)
-    assert exc.value.status_code == 400
+    with pytest.raises(BadRequestError) as exc_info:
+        chat_turn.require_turn_content(message, None, None)
+    assert exc_info.value.message == "消息内容不能为空"
 
 
 @pytest.mark.parametrize(
@@ -35,7 +47,7 @@ def test_empty_turn_is_rejected(message):
     [("你好", None, None), ("", [{"filename": "a.txt"}], None), ("", None, ["docx"])],
 )
 def test_turn_with_text_files_or_skills_is_accepted(message, files, skills):
-    chat_api.require_turn_content(message, files, skills)
+    chat_turn.require_turn_content(message, files, skills)
 
 
 # ── resolve_request_skills ───────────────────────────────────────────
@@ -47,12 +59,12 @@ def test_request_skills_pin_only_enabled_skills(monkeypatch):
         {"dir_name": "pdf", "name": "PDF", "enabled": False},
     ]
     monkeypatch.setattr(
-        chat_api.skill_library,
+        chat_turn.skill_library,
         "resolve_turn_skills",
         lambda skills, message, username: (items, ["missing"]),
     )
 
-    turn = chat_api.resolve_request_skills(["docx", "pdf", "missing"], "", "alice", "s1")
+    turn = chat_turn.resolve_request_skills(["docx", "pdf", "missing"], "", "alice", "s1")
 
     assert turn.dirs == ["docx", "pdf"]
     assert turn.pinned == ["Word 文档"]
@@ -61,12 +73,12 @@ def test_request_skills_pin_only_enabled_skills(monkeypatch):
 
 def test_request_without_skills(monkeypatch):
     monkeypatch.setattr(
-        chat_api.skill_library, "resolve_turn_skills", lambda skills, message, username: ([], [])
+        chat_turn.skill_library, "resolve_turn_skills", lambda skills, message, username: ([], [])
     )
 
-    turn = chat_api.resolve_request_skills(None, "你好", "alice", "s1")
+    turn = chat_turn.resolve_request_skills(None, "你好", "alice", "s1")
 
-    assert turn == chat_api.TurnSkills(dirs=[], pinned=[], fallback_name="")
+    assert turn == chat_turn.TurnSkills(dirs=[], pinned=[], fallback_name="")
 
 
 # ── open_turn_session ────────────────────────────────────────────────
@@ -76,7 +88,7 @@ def test_request_without_skills(monkeypatch):
 def test_new_session_when_id_missing_or_unknown(db, repo_cls):
     repo = repo_cls(db)
     for requested in (None, "no-such-session"):
-        session_id, workspace_name = chat_api.open_turn_session(
+        session_id, workspace_name = chat_turn.open_turn_session(
             repo, requested, "alice", "帮我写周报", None
         )
         assert session_id != requested
@@ -90,17 +102,16 @@ def test_session_of_another_user_is_404(db):
     repo = ChatRepository(db)
     session_id = _session(repo, "alice")
 
-    with pytest.raises(HTTPException) as exc:
-        chat_api.open_turn_session(repo, session_id, "bob", "看看", None)
-    assert exc.value.status_code == 404
-    assert exc.value.detail == "会话不存在"
+    with pytest.raises(NotFoundError) as exc_info:
+        chat_turn.open_turn_session(repo, session_id, "bob", "看看", None)
+    assert exc_info.value.message == "会话不存在"
 
 
 def test_empty_session_takes_the_first_message_as_title(db):
     repo = ChatRepository(db)
     session_id = _session(repo, "alice", message="旧标题")
 
-    opened, workspace_name = chat_api.open_turn_session(
+    opened, workspace_name = chat_turn.open_turn_session(
         repo, session_id, "alice", "", None, fallback_name="Word 文档"
     )
 
@@ -114,7 +125,7 @@ def test_title_is_kept_once_the_session_has_messages(db):
     session_id = _session(repo, "alice", message="旧标题")
     repo.add_message(session_id, {"role": "user", "content": "旧标题", "timestamp": "t0"})
 
-    chat_api.open_turn_session(repo, session_id, "alice", "新问题", None)
+    chat_turn.open_turn_session(repo, session_id, "alice", "新问题", None)
 
     assert repo.get_session(session_id).title == "旧标题"
 
@@ -124,7 +135,7 @@ def test_knowledge_panel_title_is_never_regenerated(db):
     session_id = _session(repo, "alice")
     repo.update_session_meta(session_id, "[知识库问答] 制度库", "t1", "alice")
 
-    chat_api.open_turn_session(repo, session_id, "alice", "报销流程是什么", None)
+    chat_turn.open_turn_session(repo, session_id, "alice", "报销流程是什么", None)
 
     assert repo.get_session(session_id).title == "[知识库问答] 制度库"
 
@@ -139,38 +150,38 @@ FILES = [
 
 
 def _fallback_mode(monkeypatch):
-    monkeypatch.setattr(chat_api.file_context, "is_enabled", lambda: False)
+    monkeypatch.setattr(chat_turn.file_context, "is_enabled", lambda: False)
     contents = {"/uploads/a.txt": "AAA", "/uploads/empty.txt": ""}
-    monkeypatch.setattr(chat_api, "parse_file_content", lambda path: contents[path])
+    monkeypatch.setattr(chat_turn, "parse_file_content", lambda path: contents[path])
 
 
 def test_no_files_keeps_the_message(db):
-    uploads = chat_api.build_turn_uploads(ChatRepository(db), "sess-x", "alice", None, "你好")
-    assert uploads == chat_api.TurnUploads("你好", [], 0)
+    uploads = chat_turn.build_turn_uploads(ChatRepository(db), "sess-x", "alice", None, "你好")
+    assert uploads == chat_turn.TurnUploads("你好", [], 0)
 
 
 def test_default_mode_prepends_the_turn_preview(db, monkeypatch):
-    monkeypatch.setattr(chat_api.file_context, "is_enabled", lambda: True)
+    monkeypatch.setattr(chat_turn.file_context, "is_enabled", lambda: True)
     monkeypatch.setattr(
-        chat_api.file_context,
+        chat_turn.file_context,
         "build_turn_preview",
         lambda session_id, username, files, repo: "【预览】a.txt 开头",
     )
 
-    uploads = chat_api.build_turn_uploads(ChatRepository(db), "sess-x", "alice", FILES, "总结一下")
+    uploads = chat_turn.build_turn_uploads(ChatRepository(db), "sess-x", "alice", FILES, "总结一下")
 
-    assert uploads == chat_api.TurnUploads("【预览】a.txt 开头\n\n总结一下", [], 0)
+    assert uploads == chat_turn.TurnUploads("【预览】a.txt 开头\n\n总结一下", [], 0)
 
 
 def test_default_mode_without_preview_keeps_the_message(db, monkeypatch):
-    monkeypatch.setattr(chat_api.file_context, "is_enabled", lambda: True)
+    monkeypatch.setattr(chat_turn.file_context, "is_enabled", lambda: True)
     monkeypatch.setattr(
-        chat_api.file_context, "build_turn_preview", lambda session_id, username, files, repo: ""
+        chat_turn.file_context, "build_turn_preview", lambda session_id, username, files, repo: ""
     )
 
-    uploads = chat_api.build_turn_uploads(ChatRepository(db), "sess-x", "alice", FILES, "总结一下")
+    uploads = chat_turn.build_turn_uploads(ChatRepository(db), "sess-x", "alice", FILES, "总结一下")
 
-    assert uploads == chat_api.TurnUploads("总结一下", [], 0)
+    assert uploads == chat_turn.TurnUploads("总结一下", [], 0)
 
 
 def test_fallback_first_turn_puts_files_into_the_system_prompt(db, monkeypatch):
@@ -178,7 +189,7 @@ def test_fallback_first_turn_puts_files_into_the_system_prompt(db, monkeypatch):
     repo = ChatRepository(db)
     session_id = _session(repo)
 
-    uploads = chat_api.build_turn_uploads(repo, session_id, "alice", FILES, "总结一下")
+    uploads = chat_turn.build_turn_uploads(repo, session_id, "alice", FILES, "总结一下")
 
     assert uploads.model_input == "总结一下"
     assert uploads.parsed_files == 1
@@ -193,15 +204,568 @@ def test_fallback_later_turn_prepends_files_to_the_message(db, monkeypatch):
     session_id = _session(repo)
     repo.add_message(session_id, {"role": "user", "content": "第一条消息", "timestamp": "t0"})
 
-    uploads = chat_api.build_turn_uploads(repo, session_id, "alice", FILES, "总结一下")
+    uploads = chat_turn.build_turn_uploads(repo, session_id, "alice", FILES, "总结一下")
 
-    assert uploads == chat_api.TurnUploads("[文件: a.txt]\nAAA\n\n总结一下", [], 1)
+    assert uploads == chat_turn.TurnUploads("[文件: a.txt]\nAAA\n\n总结一下", [], 1)
 
 
 def test_fallback_with_nothing_parsed_keeps_the_message(db, monkeypatch):
     _fallback_mode(monkeypatch)
     repo = ChatRepository(db)
 
-    uploads = chat_api.build_turn_uploads(repo, _session(repo), "alice", FILES[1:], "总结一下")
+    uploads = chat_turn.build_turn_uploads(
+        repo, _session(repo), "alice", FILES[1:], "总结一下"
+    )
 
-    assert uploads == chat_api.TurnUploads("总结一下", [], 0)
+    assert uploads == chat_turn.TurnUploads("总结一下", [], 0)
+
+
+# ── prepare_turn（不经 HTTP）──────────────────────────────────────────
+
+
+def _turn_request(**kwargs) -> ChatRequest:
+    return ChatRequest(message=kwargs.pop("message", "你好"), **kwargs)
+
+
+def _http_request() -> SimpleNamespace:
+    return SimpleNamespace(state=SimpleNamespace())
+
+
+def _patch_collaborators(monkeypatch, captured):
+    """替换真实 Agent / 知识检索 / 生成器，只验证准备阶段的编排。
+
+    ``chat_stream_generator`` 用「普通函数返回 async generator」的假实现：调用时就把
+    参数记下来（async generator 函数体要到首次迭代才执行），便于断言传给生成器的字段。
+    """
+
+    def fake_stream(**kwargs):
+        captured["stream_kwargs"] = kwargs
+
+        async def _gen():
+            yield 'data: {"type": "done"}\n\n'
+
+        return _gen()
+
+    async def fake_knowledge(**kwargs):
+        captured["knowledge_kwargs"] = kwargs
+        return KnowledgeChatContext(None, [], [])
+
+    def fake_provision(username, expert_id, **kwargs):
+        captured["provision_kwargs"] = kwargs
+        return {"required": [], "installed": [], "existing": [], "skipped": []}
+
+    async def fake_agent(session_id, username, workspace_name, **kwargs):
+        captured["agent_kwargs"] = kwargs
+        return SimpleNamespace(workspace_dir=None, workspace_virtual_path="/workspace")
+
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_agent)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "prepare_knowledge_chat", fake_knowledge)
+    monkeypatch.setattr(skill_provision, "provision_expert_skills", fake_provision)
+    return captured
+
+
+async def test_prepare_turn_returns_plan_and_persists_user_message(db, monkeypatch):
+    repo = ChatRepository(db)
+    captured = {}
+    _patch_collaborators(monkeypatch, captured)
+
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="帮我排个版"),
+        http_request=_http_request(),
+        repo=repo,
+        username="alice",
+    )
+
+    assert isinstance(plan, chat_turn.TurnPlan)
+    assert plan.session_id == captured["stream_kwargs"]["session_id"]
+    assert plan.message_id == captured["stream_kwargs"]["message_id"]
+    assert plan.parsed_content == "帮我排个版"
+    session = repo.get_session(plan.session_id)
+    assert session.messages[0]["content"] == "帮我排个版"
+    assert session.messages[0]["turn_id"] == plan.message_id
+
+
+@pytest.mark.parametrize("message", ["", "查看这些资料"])
+async def test_references_persist_without_reading_and_only_enter_the_current_turn(
+    db, tmp_path, monkeypatch, message,
+):
+    from easy_agent.services.streaming.messages import build_context_messages, turn_message_text
+
+    repo = ChatRepository(db)
+    captured = _patch_collaborators(monkeypatch, {})
+    session_id = _session(repo)
+    workspace = repo.get_owned_session_meta(session_id, "alice")["workspace_name"]
+    monkeypatch.setattr(chat_turn.Config, "get_user_workspace_dir", lambda _: tmp_path)
+    root = tmp_path / "session" / workspace
+    (root / "output").mkdir(parents=True)
+    (root / "output" / "报告.txt").write_text("SECRET_FILE_MARKER", encoding="utf-8")
+    refs = [{"path": "output/./报告.txt", "type": "file"}, {"path": "output/", "type": "directory"}]
+    normalized = [{"path": "output/报告.txt", "type": "file"}, {"path": "output", "type": "directory"}]
+    request = _turn_request(message=message, session_id=session_id, file_references=refs)
+    plan = await chat_turn.prepare_turn(
+        request=request, http_request=_http_request(), repo=repo, username="alice",
+    )
+    stored = repo.get_session(session_id).messages[0]
+    assert stored["file_references"] == normalized
+    assert stored["content"] == (message or "查看引用对象：output/报告.txt、output/")
+    assert turn_message_text(request.message) == stored["content"]
+    assert [ref.model_dump() for ref in request.file_references] == normalized
+    assert '"path": "/workspace/output/报告.txt"' in plan.parsed_content
+    assert '"type": "directory"' in plan.parsed_content
+    assert "SECRET_FILE_MARKER" not in plan.parsed_content
+    rebuilt = build_context_messages([stored], "下一轮")
+    assert rebuilt[0].content == stored["content"]
+    next_plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="下一轮", session_id=session_id),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert next_plan.parsed_content == "下一轮"
+    assert "file_references" not in repo.get_session(session_id).messages[-1]
+    assert captured["stream_kwargs"]["parsed_content"] == "下一轮"
+
+
+async def test_reference_validation_failure_never_creates_agent_or_user_message(db, monkeypatch):
+    repo = ChatRepository(db)
+    captured = _patch_collaborators(monkeypatch, {})
+    session_id = _session(repo)
+    with pytest.raises(NotFoundError):
+        await chat_turn.prepare_turn(
+            request=_turn_request(session_id=session_id, file_references=[{"path": "missing", "type": "file"}]),
+            http_request=_http_request(), repo=repo, username="alice",
+        )
+    assert not repo.get_session(session_id).messages
+    assert "agent_kwargs" not in captured
+
+
+async def test_prepare_turn_persists_interaction_mode_for_retry(db, monkeypatch):
+    repo = ChatRepository(db)
+    captured = {}
+    _patch_collaborators(monkeypatch, captured)
+
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="请先规划方案", interaction_mode="plan"),
+        http_request=_http_request(),
+        repo=repo,
+        username="alice",
+    )
+
+    session = repo.get_session(plan.session_id)
+    assert session.messages[0]["interaction_mode"] == "plan"
+
+
+async def test_prepare_turn_preserves_plan_mode_and_file_references(db, tmp_path, monkeypatch):
+    repo = ChatRepository(db)
+    _patch_collaborators(monkeypatch, {})
+    session_id = _session(repo)
+    workspace = repo.get_owned_session_meta(session_id, "alice")["workspace_name"]
+    monkeypatch.setattr(chat_turn.Config, "get_user_workspace_dir", lambda _: tmp_path)
+    root = tmp_path / "session" / workspace
+    (root / "output").mkdir(parents=True)
+    (root / "output" / "report.txt").write_text("UNREAD_MARKER", encoding="utf-8")
+    references = [{"path": "output/report.txt", "type": "file"}]
+
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(
+            message="先规划方案", session_id=session_id, interaction_mode="plan",
+            file_references=references,
+        ),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+
+    stored = repo.get_session(session_id).messages[0]
+    assert stored["interaction_mode"] == "plan"
+    assert stored["file_references"] == references
+    assert stored["content"] == "先规划方案"
+    assert chat_turn.interaction_mode_context("plan") in plan.parsed_content
+    assert "/workspace/output/report.txt" in plan.parsed_content
+    assert "UNREAD_MARKER" not in plan.parsed_content
+    await plan.event_stream.aclose()
+
+
+@pytest.mark.parametrize(
+    "approval_mode, enable_user_interaction, reuse",
+    [("auto", True, False), (None, True, True), ("manual", False, False)],
+    ids=["new-approval-mode-rebuilds", "resume-preserves-mode", "interaction-change-rebuilds"],
+)
+def test_agent_cache_respects_approval_and_interaction_mode(
+    monkeypatch, approval_mode, enable_user_interaction, reuse,
+):
+    cached = SimpleNamespace(
+        model_name="model-x", enable_web_search=False, approval_mode="manual",
+        skill_whitelist=None, enable_user_interaction=True, system_prompt="base",
+    )
+    state = SimpleNamespace(agent=cached, expert_key="")
+    monkeypatch.setattr(agent_manager, "_touch_agent_cache", lambda _: None)
+
+    result = agent_manager._try_reuse_cached_agent(
+        state, "sess-cache", cached=cached, effective_model="model-x",
+        enable_user_interaction=enable_user_interaction, web_search_enabled=False,
+        enable_web_search=None, expert_key="", current_scope=None,
+        only_connectors=None, system_prompt_extra="", approval_mode=approval_mode,
+    )
+
+    assert (result is cached) is reuse
+    assert (state.agent is cached) is reuse
+
+
+async def test_prepare_turn_expert_refusal_returns_refusal_plan(db, tmp_path, monkeypatch):
+    """专家相关性预检拒答：返回 RefusalPlan，不建 Agent、不登记 run。"""
+    repo = ChatRepository(db)
+    captured = {}
+    _patch_collaborators(monkeypatch, captured)
+    session_id = _session(repo)
+    workspace = repo.get_owned_session_meta(session_id, "alice")["workspace_name"]
+    monkeypatch.setattr(chat_turn.Config, "get_user_workspace_dir", lambda _: tmp_path)
+    (tmp_path / "session" / workspace / "output").mkdir(parents=True)
+    references = [{"path": "output", "type": "directory"}]
+    monkeypatch.setattr(
+        expert_runtime,
+        "load_expert_prompt",
+        lambda *args, **kwargs: ("preset_x", "专家提示词", "preset"),
+    )
+
+    async def refuse(*args, **kwargs):
+        return "irrelevant", "这个问题不在本专家的职责范围内。"
+
+    monkeypatch.setattr(expert_runtime, "relevance_gate", refuse)
+
+    async def must_not_build(*args, **kwargs):
+        raise AssertionError("拒答时不应创建 Agent")
+
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", must_not_build)
+
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(
+            message="今天天气如何", expert_agent_id="preset_x", session_id=session_id,
+            file_references=references,
+        ),
+        http_request=_http_request(),
+        repo=repo,
+        username="alice",
+    )
+
+    assert isinstance(plan, chat_turn.RefusalPlan)
+    assert plan.classification == "irrelevant"
+    assert plan.refusal == "这个问题不在本专家的职责范围内。"
+    assert plan.event_stream is not None
+    # 没有进入 Agent 生成器；依赖技能补装在事件循环外执行（缓存驱逐才回到事件循环）
+    assert "stream_kwargs" not in captured
+    assert captured["provision_kwargs"]["invalidate_cache"] is False
+    assert repo.get_session(session_id).messages[0]["file_references"] == references
+
+
+async def test_expert_precheck_uses_verified_real_user_id(db, monkeypatch):
+    from easy_agent.utils.usage_context import UsageIdentity, get_usage_identity, usage_scope
+
+    user = db.register_user("scope-alice", "password")
+    captured = {}
+    _patch_collaborators(monkeypatch, captured)
+    observed = []
+
+    async def refuse(*args, **kwargs):
+        observed.append(get_usage_identity())
+        return ("irrelevant", "refused")
+
+    monkeypatch.setattr(expert_runtime, "load_expert_prompt", lambda *args: ("preset_x", "prompt", "preset"))
+    monkeypatch.setattr(expert_runtime, "relevance_gate", refuse)
+    with usage_scope("unrelated-parent"):
+        plan = await chat_turn.prepare_turn(
+            request=_turn_request(message="unrelated", expert_agent_id="preset_x"),
+            http_request=_http_request(), repo=ChatRepository(db), username=user.username,
+        )
+        assert get_usage_identity() == UsageIdentity("unrelated-parent")
+    assert isinstance(plan, chat_turn.RefusalPlan)
+    assert observed == [UsageIdentity(user.user_id, plan.session_id)]
+
+
+@pytest.mark.parametrize("lookup_failure", [False, True])
+async def test_chat_reuses_precheck_identity_through_knowledge_stream(db, monkeypatch, lookup_failure):
+    from easy_agent.knowledges.chat import streaming as knowledge_streaming
+    from easy_agent.services import usage
+    from easy_agent.services.streaming import orchestrator
+    from easy_agent.utils.usage_context import UsageIdentity, get_usage_identity, usage_scope
+    from tests.services.test_stream_split_golden import FakeGraph, _agent
+
+    user = db.register_user("usage-alice", "password")
+    captured, lookups, observed = {}, [], []
+    _patch_collaborators(monkeypatch, captured)
+
+    def lookup(username):
+        lookups.append(username)
+        if lookup_failure:
+            raise RuntimeError("lookup failed")
+        return user
+
+    async def gate(*args, **kwargs):
+        observed.append(get_usage_identity())
+        return None
+
+    async def stop_before_model(func, *args, **kwargs):
+        observed.append(get_usage_identity())
+        raise RuntimeError("stop preparation before model")
+
+    async def create(*args, **kwargs):
+        return _agent(FakeGraph([]))
+
+    monkeypatch.setattr(usage, "get_user_repository", lambda: SimpleNamespace(get_user_by_username=lookup))
+    monkeypatch.setattr(expert_runtime, "relevance_gate", gate)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", create)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", knowledge_streaming.chat_stream_generator)
+    monkeypatch.setattr(knowledge_streaming, "get_host_capabilities", lambda: SimpleNamespace(
+        host_chat_stream_generator=orchestrator.chat_stream_generator,
+    ))
+
+    with usage_scope("unrelated-parent"):
+        plan = await chat_turn.prepare_turn(
+            request=_turn_request(), http_request=_http_request(),
+            repo=ChatRepository(db), username=user.username,
+        )
+        # 真正迭代时执行另外一次数据库边界；准备阶段仍使用真实 DB。
+        monkeypatch.setattr(orchestrator, "run_blocking", stop_before_model)
+        monkeypatch.setattr(orchestrator, "resolve_chat_context", lambda agent: (None, None, 200))
+        frames = [frame async for frame in plan.event_stream]
+        assert get_usage_identity() == UsageIdentity("unrelated-parent")
+    expected = None if lookup_failure else UsageIdentity(user.user_id, plan.session_id)
+    assert observed == [expected, expected]
+    assert lookups == [user.username]
+    assert [json.loads(frame.removeprefix("data: "))["type"] for frame in frames] == [
+        "start", "error",
+    ]
+
+
+async def test_prepare_turn_rejects_concurrent_stream_before_persisting(db, monkeypatch):
+    """并发 409：在用户消息落库之前返回，会话里不会多出无回复的消息。"""
+    repo = ChatRepository(db)
+    session_id = _session(repo, "alice", "旧会话")
+    monkeypatch.setattr(
+        agent_manager, "is_session_streaming", lambda sid: sid == session_id
+    )
+
+    async def must_not_build(*args, **kwargs):
+        raise AssertionError("会话正忙时不应创建 Agent")
+
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", must_not_build)
+
+    with pytest.raises(ConflictError) as exc_info:
+        await chat_turn.prepare_turn(
+            request=_turn_request(message="你好", session_id=session_id),
+            http_request=_http_request(),
+            repo=repo,
+            username="alice",
+        )
+
+    assert exc_info.value.message == "本会话正在生成回复，请等待完成或先取消当前生成"
+    assert repo.get_session(session_id).messages == []
+
+
+async def test_prepare_turn_ignores_unauthorized_pending_expert(db, monkeypatch):
+    """待修改专家越权 / 不存在：忽略绑定，本轮照常进行（不写入 edit_target）。"""
+    from easy_agent.tools import expert_writer
+
+    repo = ChatRepository(db)
+    captured = {}
+    _patch_collaborators(monkeypatch, captured)
+    bound: list[tuple[str, str]] = []
+
+    async def fake_edit_target(session_id, expert_agent_id):
+        bound.append((session_id, expert_agent_id))
+
+    monkeypatch.setattr(agent_manager, "aset_session_edit_target", fake_edit_target)
+    monkeypatch.setattr(expert_writer, "resolve_owned_expert", lambda *args, **kwargs: None)
+
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="你好", pending_expert_id="preset_other"),
+        http_request=_http_request(),
+        repo=repo,
+        username="alice",
+    )
+
+    assert isinstance(plan, chat_turn.TurnPlan)
+    assert bound == []
+
+async def test_prepare_turn_provisions_expert_skills_off_the_event_loop(db, monkeypatch):
+    """T14.2：依赖技能补装（读库 + 清单读改写）进线程；缓存驱逐（进程内状态）回事件循环。"""
+    import threading
+
+    repo = ChatRepository(db)
+    captured = {}
+    _patch_collaborators(monkeypatch, captured)
+    loop_thread = threading.get_ident()
+    provision_threads: list[int] = []
+    provision_kwargs: list[dict] = []
+    invalidate_threads: list[int] = []
+
+    def fake_provision(username, expert_id, **kwargs):
+        provision_threads.append(threading.get_ident())
+        provision_kwargs.append(kwargs)
+        return {"required": ["docx"], "installed": ["docx"], "existing": [], "skipped": []}
+
+    def fake_invalidate(username):
+        invalidate_threads.append(threading.get_ident())
+        return 1
+
+    async def pass_gate(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(skill_provision, "provision_expert_skills", fake_provision)
+    monkeypatch.setattr(agent_manager, "invalidate_user_agents", fake_invalidate)
+    monkeypatch.setattr(expert_runtime, "relevance_gate", pass_gate)
+    monkeypatch.setattr(
+        expert_runtime,
+        "load_expert_prompt",
+        lambda *args, **kwargs: ("preset_x", "专家提示词", "preset"),
+    )
+
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="帮我看看这组因子", expert_agent_id="preset_x"),
+        http_request=_http_request(),
+        repo=repo,
+        username="alice",
+    )
+
+    assert isinstance(plan, chat_turn.TurnPlan)
+    # 补装在线程里执行，且不再由 skill_provision 内部驱逐缓存……
+    assert provision_threads and provision_threads[0] != loop_thread
+    assert provision_kwargs[0]["invalidate_cache"] is False
+    # ……缓存驱逐（改进程内状态）回到事件循环上执行
+    assert invalidate_threads == [loop_thread]
+
+
+@pytest.mark.parametrize("question", [
+    "帮我写一首诗", "推荐旅游路线", "解释 Python 装饰器",
+    "分析国债收益率", "生成一份项目进度汇报PPT",
+])
+async def test_general_chat_enters_original_flow_for_any_topic(db, monkeypatch, question):
+    repo = ChatRepository(db)
+    session_id = _session(repo)
+    captured = _patch_collaborators(monkeypatch, {})
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("普通聊天准备阶段不应创建意图分类模型")
+
+    monkeypatch.setattr("easy_agent.agent.model.create_model", forbidden)
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message=question, session_id=session_id),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert isinstance(plan, chat_turn.TurnPlan)
+    assert captured["stream_kwargs"]["request"].message == question
+    assert repo.get_session(session_id).messages[-1]["content"] == question
+    await plan.event_stream.aclose()
+
+
+@pytest.mark.parametrize("skills, message", [
+    (["pptx"], "用它生成ppt"), (None, "/pptx 用它生成ppt"), (["pptx"], ""),
+])
+async def test_skill_selection_still_reaches_the_agent(db, monkeypatch, skills, message):
+    repo = ChatRepository(db)
+    captured = _patch_collaborators(monkeypatch, {})
+    monkeypatch.setattr(chat_turn.skill_library, "list_user_skill_dirs", lambda username: [
+        {"dir_name": "pptx", "name": "pptx", "path": "/tmp/skills/pptx", "enabled": True},
+        {"dir_name": "pdf", "name": "pdf", "path": "/tmp/skills/pdf", "enabled": False},
+    ])
+    monkeypatch.setattr(chat_turn.skill_library, "skill_metadata", lambda path: {
+        "name": str(path).split("/")[-1], "description": "文档生成与转换",
+    })
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message=message, skills=skills),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert isinstance(plan, chat_turn.TurnPlan)
+    assert captured["stream_kwargs"]["pinned_skills"] == ["pptx"]
+    if not message:
+        assert repo.get_session(plan.session_id).title == "pptx"
+    await plan.event_stream.aclose()
+
+
+async def test_disabled_and_unknown_skills_are_not_pinned(db, monkeypatch):
+    repo = ChatRepository(db)
+    captured = _patch_collaborators(monkeypatch, {})
+    monkeypatch.setattr(chat_turn.skill_library, "list_user_skill_dirs", lambda username: [
+        {"dir_name": "pptx", "path": "/tmp/skills/pptx", "enabled": False},
+    ])
+    monkeypatch.setattr(chat_turn.skill_library, "skill_metadata", lambda path: {"name": "pptx"})
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="帮我写一首诗", skills=["pptx", "fake-skill"]),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert isinstance(plan, chat_turn.TurnPlan)
+    assert captured["stream_kwargs"]["pinned_skills"] == []
+    await plan.event_stream.aclose()
+
+
+async def test_attachment_without_question_enters_original_flow(db, monkeypatch, caplog):
+    caplog.set_level("INFO")
+    repo = ChatRepository(db)
+    captured = _patch_collaborators(monkeypatch, {})
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="", files=FILES),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert isinstance(plan, chat_turn.TurnPlan)
+    assert captured["stream_kwargs"]["request"].files == FILES
+    # 空正文 + 有文件：本轮模型输入末尾追加引导提示，让 AI 引导用户对文件提问，
+    # 而不是顺着历史话题回答上一轮的问题。
+    assert chat_turn.file_context.FILES_ONLY_TURN_HINT in captured["stream_kwargs"]["parsed_content"]
+    assert plan.parsed_content == captured["stream_kwargs"]["parsed_content"]
+    # 可观测性：日志里能一眼分辨「本轮是否注入引导提示」
+    assert "🧭 引导提示 | 已注入（只有文件、无正文）" in caplog.text
+    # 引导提示只进模型输入：落库的用户消息正文保持为空（气泡仍渲染文件卡片）
+    assert repo.get_session(plan.session_id).messages[-1]["content"] == ""
+    await plan.event_stream.aclose()
+
+
+async def test_attachment_with_question_does_not_get_the_hint(db, monkeypatch, caplog):
+    """有正文时（无论是否带文件）不注入引导提示。"""
+    caplog.set_level("INFO")
+    repo = ChatRepository(db)
+    captured = _patch_collaborators(monkeypatch, {})
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="总结这份报告", files=FILES),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert isinstance(plan, chat_turn.TurnPlan)
+    assert chat_turn.file_context.FILES_ONLY_TURN_HINT not in captured["stream_kwargs"]["parsed_content"]
+    assert "🧭 引导提示 | 未注入（有正文或无文件）" in caplog.text
+    await plan.event_stream.aclose()
+
+
+async def test_skills_only_turn_does_not_get_the_hint(db, monkeypatch):
+    """只挂技能、没有文件的正空轮次维持原行为，不加引导提示。"""
+    repo = ChatRepository(db)
+    captured = _patch_collaborators(monkeypatch, {})
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="", skills=["pptx"]),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert isinstance(plan, chat_turn.TurnPlan)
+    assert chat_turn.file_context.FILES_ONLY_TURN_HINT not in captured["stream_kwargs"]["parsed_content"]
+    await plan.event_stream.aclose()
+
+
+async def test_fallback_mode_attachment_without_question_still_gets_the_hint(db, monkeypatch):
+    """回退模式（file_context 关闭）下同样注入引导提示（首轮文件全文仍走系统提示词）。"""
+    _fallback_mode(monkeypatch)
+    repo = ChatRepository(db)
+    _patch_collaborators(monkeypatch, {})
+    plan = await chat_turn.prepare_turn(
+        request=_turn_request(message="", files=FILES[:1]),
+        http_request=_http_request(), repo=repo, username="alice",
+    )
+    assert isinstance(plan, chat_turn.TurnPlan)
+    assert plan.parsed_content == chat_turn.file_context.FILES_ONLY_TURN_HINT
+    await plan.event_stream.aclose()
+
+
+async def test_session_authorization_still_precedes_agent_creation(db, monkeypatch):
+    repo = ChatRepository(db)
+    session_id = _session(repo, username="bob")
+    captured = _patch_collaborators(monkeypatch, {})
+    with pytest.raises(NotFoundError):
+        await chat_turn.prepare_turn(
+            request=_turn_request(message="帮我写一首诗", session_id=session_id),
+            http_request=_http_request(), repo=repo, username="alice",
+        )
+    assert "agent_kwargs" not in captured
+    assert "stream_kwargs" not in captured

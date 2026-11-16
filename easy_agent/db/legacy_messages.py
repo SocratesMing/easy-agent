@@ -18,6 +18,8 @@ import json
 import logging
 from datetime import datetime
 
+from easy_agent.db.message_serialization import _sanitize_extra_data
+
 logger = logging.getLogger(__name__)
 
 
@@ -104,7 +106,7 @@ def repair_missing_message_rows(db, cursor, *, warn: bool = True) -> int:
                     sid,
                     msg.get("role", "user"),
                     msg.get("content", ""),
-                    db._sanitize_extra_data(msg),
+                    _sanitize_extra_data(db, msg),
                     msg.get("timestamp", datetime.now().isoformat()),
                 ),
             )

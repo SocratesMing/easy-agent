@@ -97,6 +97,7 @@
         @update:selectedModel="selectedModel = $event"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @sendMessage="handleSendMessage"
+        @webSearchChange="webSearchEnabled = $event"
         @createSession="ensureCurrentSession"
         @removeFile="handleRemoveFile"
         @stop="handleStop"
@@ -104,6 +105,7 @@
         @approve="handleToolApproval('approve', $event)"
         @reject="handleToolApproval('reject', $event)"
         @edit="handleToolApproval('edit', $event)"
+        @respond="handleToolApproval('respond', $event)"
         @clearExpert="selectedExpert = null"
         @selectExpert="handleSummonExpertInPlace"
         @openPanel="openSkillCenterPanel"
@@ -120,8 +122,9 @@
         />
       </div>
 
-      <!-- AI 侧边栏：任意页面可唤起，与主页面共用会话列表 -->
+      <!-- 本站页面不挂载悬浮 AI 侧边栏，侧边栏只通过 SDK 给第三方页面使用
       <AiSidebar v-if="userProfile.username" :pageContext="aiPageContext" @open-in-main="handleOpenSessionInMain" @open-panel="openSkillCenterPanel" />
+      -->
       <div v-if="error" class="error-toast">
         {{ error }}
         <button @click="error = null">×</button>
@@ -131,7 +134,10 @@
 </template>
 
 <script setup>
+import { referenceMessage } from './shared/fileReferences.js'
 import { API_BASE_URL, APP_WELCOME_TITLE, appRuntime } from './config.js'
+import { readStandaloneSessionLink } from './features/chat/services/sessionNavigation.js'
+import { loadDailySessions, sessionGuard, isSessionDeleted, isStaleSessionError, initialSessionId as resolveInitialSessionId } from './shared/sessionManagement/state.js'
 import { ref, computed, onMounted, watch, toRef, defineAsyncComponent } from 'vue'
 import SessionList from './features/chat/components/SessionList.vue'
 import Chat from './features/chat/components/Chat.vue'
@@ -146,8 +152,10 @@ import { useAiSidebarBridge } from './features/chat/composables/useAiSidebarBrid
 import WorkspacePanel from './features/workspace/components/WorkspacePanel.vue'
 const SettingsPanel = defineAsyncComponent(() => import('./features/settings/components/SettingsPanel.vue'))
 import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
-import { applyApprovalRequests, buildResumeDecisions, markApprovalDecision, unmatchedApprovalRequests } from './utils/hitlApproval.js'
-import { createStreamChunkHandler } from './features/chat/composables/useStreamChunks.js'
+import { applyApprovalRequests, buildApprovalResumePlan, derivePendingApproval, isNewApprovalEvent, markApprovalDecision } from './utils/hitlApproval.js'
+import { buildPlanContinuationTurn } from './shared/chat/planConfirmationTurn.js'
+import { createStreamChunkHandler, resumeUsageBase } from './features/chat/composables/useStreamChunks.js'
+import { clearStreamFlight, hasAssistantReply, markStreamFlight, probeStreamState, readStreamFlight, resolveResumeTargets } from './features/chat/services/streamResume.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
 import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin } from './api/auth.js'
 import { getKnowledgeStatus, getModels as fetchModels } from './api/settings.js'
@@ -260,7 +268,7 @@ async function refreshSessionFiles(sessionId = null, delayMs = 0) {
 
 async function expandWorkspaceAfterSessionCompletion(sessionId, delayMs = 500) {
   if (!sessionId) return
-  if (pendingApproval.value) return
+  if (pendingApprovalOf(sessionId)) return
   const hasFiles = await refreshSessionFiles(sessionId, delayMs)
   if (hasFiles && currentSessionId.value === sessionId && !pendingApproval.value) {
     isWorkspaceCollapsed.value = false
@@ -279,6 +287,9 @@ const isStreaming = computed(() => isSessionStreaming(currentSessionId.value))
 const streamingAssistantId = ref(null)
 const error = ref(null)
 const currentAbortController = ref(null)
+// 联网开关的镜像（真身在 ChatInput）：发送只有「输入框」一条路走 emit('send')，
+// 重试不经过输入框，必须从这里取当前状态，否则会落回默认值 false。
+const webSearchEnabled = ref(false)
 // HITL: 审批待处理状态，存储 { threadId, assistantMsgId }
 const pendingApproval = ref(null)
 const sessionUsage = ref({ input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: null, auto_compress_tokens: null, context_tokens: 0 })
@@ -337,7 +348,7 @@ const attachedStreamingSessions = ref({})
 // displayed=true：重建界面消息并持续更新（当前查看的会话）；
 // displayed=false：仅后台同步 token 用量、流结束时移除"进行中"标记，不触碰界面。
 async function attachToStreamingSession(sessionId, opts = {}) {
-  const { switchTo = false, displayed = true } = opts
+  const { switchTo = false, displayed = true, markActive = true } = opts
   if (!sessionId) return
   const mode = displayed ? 'displayed' : 'background'
   // 已展示挂载的会话无需重复挂载；后台挂载可被升级为展示挂载
@@ -352,7 +363,8 @@ async function attachToStreamingSession(sessionId, opts = {}) {
   if (displayed) {
     loadedSessionId.value = sessionId
   }
-  markStreaming(sessionId)
+  // markActive=false：只是回放已产生的过程（待审批/异常中断），不算「生成中」
+  if (markActive) markStreaming(sessionId)
 
   if (displayed) {
     sessionLoading.value = true
@@ -365,7 +377,16 @@ async function attachToStreamingSession(sessionId, opts = {}) {
         }
         return
       }
-      messages.value = history.messages || []
+      // 服务端历史可能还没落本轮提问（刷新落在准备期）：此时整表替换会把刚发的
+      // 提问抹掉，界面只剩回答。本地最后一条是本轮提问、服务端最后一条不是，则
+      // 以本地为准，随后占位照常由回放重建。
+      const serverMsgs = history.messages || []
+      const localMsgs = messages.value || []
+      const localLast = localMsgs[localMsgs.length - 1]
+      const serverLast = serverMsgs[serverMsgs.length - 1]
+      const keepLocalTail = localLast && localLast.role === 'user'
+        && (!serverLast || serverLast.role !== 'user')
+      messages.value = keepLocalTail ? localMsgs : serverMsgs
       currentTodos.value = history.todos || []
       syncExpertChipFromMessages()
       if (history.usage) {
@@ -476,14 +497,14 @@ async function attachToStreamingSession(sessionId, opts = {}) {
   } catch (e) {
     if (e.name !== 'AbortError') {
       console.error('挂载流式输出失败:', e)
-      if (displayed) error.value = e.message || '挂载流式输出失败'
+      if (displayed && currentSessionId.value === sessionId) error.value = e.message || '挂载流式输出失败'
     }
   } finally {
     if (attachedStreamingSessions.value[sessionId] === mode) {
       delete attachedStreamingSessions.value[sessionId]
     }
-    if (!displayed || !pendingApproval.value) {
-      if (displayed) currentAbortController.value = null
+    if (!displayed || !pendingApprovalOf(sessionId)) {
+      if (displayed && currentSessionId.value === sessionId) currentAbortController.value = null
       unmarkStreaming(sessionId)
       if (sessionStates.value[sessionId]) {
         sessionStates.value[sessionId].isStreaming = false
@@ -491,7 +512,8 @@ async function attachToStreamingSession(sessionId, opts = {}) {
       }
       // 列表"进行中"标记此时移除（显示已完成）：以服务端历史为准回填完整内容
       await syncSessionFromServer(sessionId)
-      if (displayed) {
+      recomputePendingApprovalFlag(sessionId)
+      if (displayed && currentSessionId.value === sessionId) {
         // 兜底：挂载流结束时确保占位消息不再标记 loading，避免页面残留"执行中"
         let idx = messages.value.findIndex(m => m.id === attachId)
         if (idx === -1) {
@@ -510,58 +532,158 @@ async function attachToStreamingSession(sessionId, opts = {}) {
   }
 }
 
-// 刷新后恢复全部进行中的流式任务：逐个查询后端状态，活跃的恢复"进行中"标记；
-// 最近活跃的会话直接重挂载，其余会话在切换到它时懒挂载。
+async function probeLiveStream(sessionId) {
+  if (!sessionId || isSessionDeleted(sessionId)) return
+  const status = await probeStreamState(sessionId, getStreamStatus)
+  // active：这一轮还在跑；replayable：没在跑但过程事件比落库消息新（待审批/异常中断）
+  const attach = Boolean(status && (status.active || status.replayable))
+  // 探测期间用户可能已经切走或删掉会话，两种都不该再挂
+  if (!attach || currentSessionId.value !== sessionId || isSessionDeleted(sessionId)) return
+  // 只有真在跑才点亮「生成中」：停在审批/异常中断的会话只做一次回放补过程，
+  // 标成生成中会与「待审批」标识打架，回放结束后它本来也不是 active
+  const running = Boolean(status.active)
+  if (running) markStreaming(sessionId)
+  if (attachedStreamingSessions.value[sessionId] === 'displayed') return
+  attachToStreamingSession(sessionId, { switchTo: false, displayed: true, markActive: running })
+}
+
+// 刷新后恢复活跃任务：当前会话展示挂载，其余后台挂载，保持用户选择。
 async function tryAttachLiveStream() {
+  const valid = sessionGuard()
   let saved = null
-  try {
-    const raw = sessionStorage.getItem(STREAM_STATE_KEY)
-    if (!raw) return
-    saved = JSON.parse(raw)
-  } catch (e) {
-    return
+  try { saved = JSON.parse(sessionStorage.getItem(STREAM_STATE_KEY) || 'null') } catch (e) { saved = null }
+  // 刷新前那一轮可能还没拿到 session_id（新会话首轮，start 事件后才有），只有发送时
+  // 落的「在飞」记录能找回它；后端准备期（建 Agent/MCP）还没占流锁，/stream/status
+  // 仍是 inactive，由模块内部短轮询等待——一次探测就放弃正是「刷新后不吐流」的成因。
+  const plan = await resolveResumeTargets({
+    saved,
+    flight: readStreamFlight(),
+    sessions: sessions.value,
+    // 界面正在看的会话是首要候选：在飞记录可能丢了（换标签页/发送后立刻刷新）
+    current: currentSessionId.value || loadedSessionId.value,
+    // 新会话首轮：刷新落在后端还没建会话的准备期，列表里也还没有它——给它一个把
+    // 会话找回来的机会，否则这一轮永远没人探测、内容也就永远补不回来
+    refreshSessions: async () => {
+      await loadSessions()
+      return sessions.value
+    },
+    getStatus: getStreamStatus,
+    getLastMessage: async (sid) => {
+      const history = await getChatHistory(sid)
+      const msgs = (history && history.messages) || []
+      return msgs[msgs.length - 1] || null
+    },
+  })
+  if (!valid() || !plan.ids.length) return
+  if (plan.waited && !plan.active.length) {
+    // 等不到活跃：这轮已结束（答复落库）或彻底丢了，清记录并按需回填，免得下次白等。
+    // 没有答复时不动界面（服务端可能还没落本轮提问）。
+    clearStreamFlight()
+    await syncIfServerAnswered(plan.wait)
   }
-  if (!saved || !saved.streaming) return
+  if (!valid()) return
+  plan.active = plan.active.filter(sid => !isSessionDeleted(sid))
+  for (const sid of plan.active) markStreaming(sid)
 
-  const candidates = Array.isArray(saved.streamingIds) && saved.streamingIds.length
-    ? saved.streamingIds
-    : (saved.sessionId ? [saved.sessionId] : [])
-  const active = []
-  for (const sid of candidates) {
-    try {
-      const status = await getStreamStatus(sid)
-      if (status && status.active && !active.includes(sid)) active.push(sid)
-    } catch (e) {
-      // 会话可能已被删除：忽略
-    }
-  }
-  for (const sid of active) markStreaming(sid)
-
-  const attachTarget = saved.lastActive && active.includes(saved.lastActive)
-    ? saved.lastActive
-    : active[0]
-  if (attachTarget) {
-    attachToStreamingSession(attachTarget, { switchTo: true, displayed: true })
-  }
+  const attachTarget = plan.active.includes(currentSessionId.value) ? currentSessionId.value : null
+  if (attachTarget) attachToStreamingSession(attachTarget, { switchTo: false, displayed: true })
   // 其余仍活跃的会话后台挂载：同步 token 用量、流结束时自动移除"进行中"标记
-  for (const sid of active) {
-    if (sid === attachTarget) continue
-    attachToStreamingSession(sid, { switchTo: false, displayed: false })
+  for (const sid of plan.active) {
+    if (sid !== attachTarget) attachToStreamingSession(sid, { switchTo: false, displayed: false })
   }
   // 清理一次性恢复标记；仍活跃的流会通过 watch 重新写入持久化
   saveStreamState()
+}
+
+// 刷新后兜底：这一轮若停在半途（末尾是用户提问、或只剩一个空 assistant 占位），
+// 就在后台一直盯着，直到界面上真的出现这一轮的答复为止。
+//
+// 2026-11-07 加强（第二次）：旧版按 1→2→4→8→15→25 秒退避 6 轮，并且「一挂上实时流
+// 就收手」。但挂上 ≠ 有内容：attach 成功而事件没渲染出来（或中间层把 SSE 掐了）时，
+// 页面就永久停在「只有提问、下面一片空白」，只能再刷新一次才看到答复——实测这一轮
+// 18:55:03 提问、18:55:16 答复就落库了，界面却一直空着。
+// 现在两条件并行、谁先到算谁的，且不会因为「已挂载」而停止：
+//   1) 每轮先问服务端要历史：答复一落库立刻回填，完全不依赖 SSE；
+//   2) 顺手探一次 /stream/status，还在跑就挂一次实时流接回增量；
+//   3) 直到 awaitingAnswer() 为假（界面里有答复了）为止，最长盯 5 分钟，单轮异常不影响下一轮。
+let unansweredWatchSid = null
+
+/** 界面是不是仍停在「只有提问、还没答复」的状态。 */
+function awaitingAnswer() {
+  const last = messages.value[messages.value.length - 1]
+  if (!last) return false
+  if (last.role === 'user') return true
+  return last.role === 'assistant'
+    && !last.content && !last.thinking
+    && !last.pending_approval && !last.fallback_note
+    && !(Array.isArray(last.blocks) && last.blocks.length)
+}
+
+async function resumeInterruptedTurn() {
+  const sid = loadedSessionId.value || currentSessionId.value
+  if (!sid || unansweredWatchSid === sid) return
+  if (!awaitingAnswer()) return
+  // 页面自己就在跑这一轮（不是刷新回来的）：交给正常的流式收尾
+  if (isSessionStreaming(sid) || pendingApprovalOf(sid)) return
+  // 只盯「刚发出没多久」的提问：历史里早就中断的旧提问不该触发轮询
+  const asked = messages.value[messages.value.length - 1]
+  const askedAt = Date.parse((asked && (asked.timestamp || asked.created_at)) || '')
+  if (!isNaN(askedAt) && Date.now() - askedAt > 10 * 60 * 1000) return
+  unansweredWatchSid = sid
+  const startedAt = Date.now()
+  console.info(`[刷新续接] 会话 ${String(sid).slice(-5)} 停在未答复状态，开始后台兜底（最长 5 分钟）`)
+  let attached = false
+  let round = 0
+  try {
+    while (Date.now() - startedAt < 5 * 60 * 1000) {
+      // 前 18 秒密一点（答复常在这段时间落库），之后放慢到 3s / 8s
+      const wait = round < 12 ? 1500 : (round < 30 ? 3000 : 8000)
+      await new Promise(resolve => setTimeout(resolve, wait))
+      round += 1
+      // 用户切走了会话 / 界面已经有答复了：收手
+      if (currentSessionId.value !== sid || loadedSessionId.value !== sid) return
+      if (!awaitingAnswer()) return
+      if (pendingApprovalOf(sid)) return
+      try {
+        if (await syncIfServerAnswered(sid)) {
+          // 回填不改变 loadedSessionId，审批面板与徽标平时靠 watcher 触发，这里自己补
+          console.info('[刷新续接] 已从历史补回这一轮的答复')
+          reconstructPendingApproval()
+          recomputePendingApprovalFlag(sid)
+          return
+        }
+      } catch (e) { /* 单轮失败不影响下一轮 */ }
+      if (attached || currentSessionId.value !== sid) continue
+      // 别的路径（tryAttachLiveStream）已经挂上了：不重复挂，避免同一会话两条 SSE
+      if (isSessionStreaming(sid)) { attached = true; continue }
+      let active = false
+      try {
+        const status = await getStreamStatus(sid)
+        active = !!(status && status.active)
+      } catch (e) { active = false }
+      if (!active) continue
+      // 这一轮还在跑：挂一次实时流接回增量（挂上不等于有内容，历史兜底继续跑）
+      markStreaming(sid)
+      attachToStreamingSession(sid, { switchTo: false, displayed: true })
+      attached = true
+    }
+  } finally {
+    if (unansweredWatchSid === sid) unansweredWatchSid = null
+  }
 }
 
 // 保存当前会话状态到缓存（以界面数据实际所属的会话为 key，避免异步加载期间保存错位）
 function saveCurrentSessionState() {
   if (!loadedSessionId.value) return
   sessionStates.value[loadedSessionId.value] = {
-    messages: JSON.parse(JSON.stringify(messages.value)),
+    messages: messages.value.slice(),
     isStreaming: isStreaming.value,
     sessionUsage: { ...sessionUsage.value },
     sessionDuration: sessionDuration.value,
     iterationCount: iterationCount.value,
     abortController: currentAbortController.value,
+    streamingAssistantId: isSessionStreaming(loadedSessionId.value) ? streamingAssistantId.value : null,
+    pendingApproval: pendingApproval.value,
     todos: [...currentTodos.value]
   }
 }
@@ -576,6 +698,8 @@ function restoreSessionState(sessionId) {
     sessionDuration.value = state.sessionDuration || 0
     iterationCount.value = state.iterationCount || 0
     currentAbortController.value = state.abortController
+    streamingAssistantId.value = isSessionStreaming(sessionId) ? (state.streamingAssistantId || null) : null
+    pendingApproval.value = state.pendingApproval || null
     currentTodos.value = state.todos || []
     loadedSessionId.value = sessionId
     syncExpertChipFromMessages()
@@ -627,7 +751,7 @@ function ensureSessionState(sid) {
       abortController: null,
       todos: [],
       streamingAssistantId: null,
-      assistantMsgId: null,
+      pendingApproval: null,
     }
   }
   // 历史缓存可能由部分更新（如只写 isStreaming/abortController）创建：缺字段时
@@ -640,7 +764,7 @@ function ensureSessionState(sid) {
   if (typeof st.iterationCount !== 'number') st.iterationCount = 0
   if (!Array.isArray(st.todos)) st.todos = []
   if (st.streamingAssistantId === undefined) st.streamingAssistantId = null
-  if (st.assistantMsgId === undefined) st.assistantMsgId = null
+  if (st.pendingApproval === undefined) st.pendingApproval = null
   sessionStates.value = { ...sessionStates.value, [sid]: st }
   return st
 }
@@ -656,7 +780,6 @@ function buildStreamState() {
     currentTodos,
     loadedSessionId,
     attachedStreamingSessions,
-    sessions,
     pendingApproval,
     error,
     markStreaming,
@@ -667,40 +790,17 @@ function buildStreamState() {
 }
 
 function runInSession(sid, ctx, fn) {
+  if (ctx?._sessionValid && !ctx._sessionValid()) return
   if (!sid || sid === loadedSessionId.value) return fn() // 展示中的会话：直接用全局 refs
   const st = ensureSessionState(sid)
-  const saved = {
-    messages: messages.value,
-    usage: sessionUsage.value,
-    duration: sessionDuration.value,
-    iterations: iterationCount.value,
-    todos: currentTodos.value,
-    streamingAssistantId: streamingAssistantId.value,
-    assistantMsgId: ctx ? ctx.assistantMsgId : undefined,
-  }
-  messages.value = st.messages || []
-  sessionUsage.value = st.sessionUsage
-  sessionDuration.value = st.sessionDuration
-  iterationCount.value = st.iterationCount
-  currentTodos.value = st.todos
-  streamingAssistantId.value = st.streamingAssistantId
-  if (ctx) ctx.assistantMsgId = st.assistantMsgId
+  // 会话级 refs ↔ 缓存字段；含 pendingApproval：多个会话同时停在审批时各自持有
+  const fields = [[messages, 'messages'], [sessionUsage, 'sessionUsage'], [sessionDuration, 'sessionDuration'], [iterationCount, 'iterationCount'], [currentTodos, 'todos'], [streamingAssistantId, 'streamingAssistantId'], [pendingApproval, 'pendingApproval'], [error, 'error']]
+  const saved = fields.map(([r, key]) => { const v = r.value; r.value = st[key]; return v })
+  if (ctx) ctx.stateSwapped = true // 保留 ctx.assistantMsgId：它属于这条流，不随界面切换
   const restore = () => {
-    st.messages = messages.value
-    st.sessionUsage = sessionUsage.value
-    st.sessionDuration = sessionDuration.value
-    st.iterationCount = iterationCount.value
-    st.todos = currentTodos.value
-    st.streamingAssistantId = streamingAssistantId.value
-    if (ctx) st.assistantMsgId = ctx.assistantMsgId
+    fields.forEach(([r, key], i) => { st[key] = r.value; r.value = saved[i] })
+    if (ctx) ctx.stateSwapped = false
     sessionStates.value = { ...sessionStates.value, [sid]: st }
-    messages.value = saved.messages
-    sessionUsage.value = saved.usage
-    sessionDuration.value = saved.duration
-    iterationCount.value = saved.iterations
-    currentTodos.value = saved.todos
-    streamingAssistantId.value = saved.streamingAssistantId
-    if (ctx) ctx.assistantMsgId = saved.assistantMsgId
   }
   let result
   try {
@@ -717,21 +817,47 @@ function runInSession(sid, ctx, fn) {
   return result
 }
 
+// 某会话的待审批（展示中读全局 ref，后台读缓存）；流收尾按「流所属会话」判断，不能看当前展示的
+function pendingApprovalOf(sid) {
+  if (!sid || sid === loadedSessionId.value) return pendingApproval.value
+  return (sessionStates.value[sid] && sessionStates.value[sid].pendingApproval) || null
+}
+function clearPendingApprovalOf(sid) {
+  if (!sid || sid === loadedSessionId.value) pendingApproval.value = null
+  else if (sessionStates.value[sid]) sessionStates.value[sid].pendingApproval = null
+}
+
+// 以本地消息缓存（当前界面或会话级缓存）为准重算某会话的"待审批"徽标。
+// 审批决策后、服务端历史回填后调用：审批已被处理/失效则熄灭，仍 pending 则恢复点亮。
+// 判据与 reconstructPendingApproval 同源（derivePendingApproval），不得退回扫块状态口径。
+function recomputePendingApprovalFlag(sessionId) {
+  if (!sessionId) return
+  const msgs = sessionId === loadedSessionId.value
+    ? messages.value
+    : (sessionStates.value[sessionId] || {}).messages
+  syncPendingApprovalFlag(sessionId, derivePendingApproval(msgs || []))
+}
+
 // 以服务端历史为准回填某会话：流式结束（列表"进行中"标记移除）后调用。
 // 本地增量流状态在后台收尾/事件未命中时可能不完整，history 接口返回的是后端
 // 完整落库消息，用它回填可保证"列表已完成"时页面渲染完整内容（无需刷新）。
-async function syncSessionFromServer(sessionId) {
-  if (!sessionId) return
-  if (!sessions.value.some(s => s.session_id === sessionId)) return // 会话已删除/切换用户，跳过
-  let history
-  try {
-    history = await getChatHistory(sessionId)
-  } catch (e) {
-    console.warn('回填会话历史失败:', e)
-    return
+const historyVersions = {}
+async function syncSessionFromServer(sessionId, preloaded, opts) {
+  if (!sessionId || isSessionDeleted(sessionId)) return
+  const valid = sessionGuard(sessionId)
+  const version = historyVersions[sessionId] = (historyVersions[sessionId] || 0) + 1
+  let history = preloaded
+  if (!history) {
+    try {
+      history = await getChatHistory(sessionId)
+    } catch (e) {
+      console.warn('回填会话历史失败:', e)
+      return
+    }
   }
-  // 拉取期间该会话若又开始了新一轮流式，别用旧历史覆盖
-  if (isSessionStreaming(sessionId)) return
+  if (!valid() || version !== historyVersions[sessionId]) return
+  // force 只用于已确认服务端有本轮答复、但挂载后的界面仍为空的情况。
+  if (!(opts && opts.force) && isSessionStreaming(sessionId)) return
 
   const usage = history.usage || null
   if (currentSessionId.value === sessionId && loadedSessionId.value === sessionId) {
@@ -769,24 +895,67 @@ async function syncSessionFromServer(sessionId) {
   }
 }
 
+// 只在「服务端确实产出了本轮答复」时才用历史覆盖界面。
+//
+// 刷新常常落在「提问已经发出、模型还没回」的窗口：此时服务端历史里要么还没有这一轮
+// 的提问，要么只有一个空 assistant。直接整表替换会把刚发的提问抹掉，界面看起来像
+// 「刷新后什么都没有」；覆盖后拿到的最后一条还是上一轮的答复，还会被误判成
+// 「这一轮已经答完」而放弃等待——刷新太早就不出流的另一半原因。
+async function syncIfServerAnswered(sessionId) {
+  if (!sessionId || isSessionDeleted(sessionId)) return false
+  const valid = sessionGuard(sessionId)
+  const version = historyVersions[sessionId] || 0
+  let history
+  try {
+    history = await getChatHistory(sessionId)
+  } catch (e) {
+    return false
+  }
+  if (!valid() || version !== (historyVersions[sessionId] || 0)) return false
+  // 本地这一轮还在流式、且界面已经渲染出内容：不覆盖（落库版本只在结束时才有，
+  // 这时候覆盖只会把正在滚动的正文换成静态版本）。反过来「已挂载但界面还空着」
+  // 必须放过——那正是刷新后 attach 成功却什么都没渲染的场景，只能靠历史回填。
+  if (isSessionStreaming(sessionId)
+    && !(sessionId === loadedSessionId.value && awaitingAnswer())) return false
+  const serverMsgs = (history && history.messages) || []
+  const last = serverMsgs[serverMsgs.length - 1]
+  if (!hasAssistantReply(last)) return false
+  // 服务端这条答复比本地最后一次提问还早：说明本轮提问尚未落库，别覆盖
+  const localMsgs = messages.value || []
+  let localAskedAt = NaN
+  for (let i = localMsgs.length - 1; i >= 0; i--) {
+    if (localMsgs[i] && localMsgs[i].role === 'user') {
+      localAskedAt = Date.parse(localMsgs[i].created_at || '')
+      break
+    }
+  }
+  const repliedAt = Date.parse(last.timestamp || last.created_at || '')
+  if (!isNaN(localAskedAt) && !isNaN(repliedAt) && repliedAt < localAskedAt) return false
+  // force：上面已确认「服务端有本轮答复、界面还没有」，此时必须落库到界面，
+  // 不能被 syncSessionFromServer 里的「正在流式不覆盖」拦下（那样会静默失败还返回成功）
+  await syncSessionFromServer(sessionId, history, { force: true })
+  // 只有界面真的不像「等答复」了才算成功，避免调用方误以为已经补上而提前收手
+  return !(sessionId === loadedSessionId.value && awaitingAnswer())
+}
+
 // HITL 历史恢复：从消息中重建待审批状态，使切换/重载会话后仍能显示审批按钮并继续执行。
 // 历史消息无前端 id，按 thread_id（= `${session_id}-${message_id}`）还原后端 message_id
 // 作为消息 id，保证恢复执行时记录使用一致的 message_id。监听 loadedSessionId 变化即可
 // 覆盖所有历史加载路径（初始加载、切换会话、欢迎流程后加载、删除会话回退等）。
 function reconstructPendingApproval() {
-  // 流式进行中由 onApprovalRequired 管理审批状态，不重建以免覆盖
-  if (isStreaming.value) return
+  // 流式中（含停在审批）不从历史重建，但换成该会话自己的审批，不能残留上一个展示会话的
+  if (isStreaming.value) return void (pendingApproval.value = (sessionStates.value[loadedSessionId.value] || {}).pendingApproval || null)
   pendingApproval.value = null
   const sid = currentSessionId.value || ''
-  let found = false
   if (!messages.value || messages.value.length === 0) {
-    if (sid) syncPendingApprovalFlag(sid, false)
+    // 空会话没有可判定的审批状态：不动徽标（清掉会把其他路径点亮的徽标误灭）
     return
   }
   for (let i = messages.value.length - 1; i >= 0; i--) {
     const msg = messages.value[i]
-    // 末尾出现用户消息说明已发起新一轮对话，旧的待审批不再阻塞，不重建
-    if (msg.role === 'user') break
+    // 末尾出现用户消息说明已发起新一轮对话，旧的待审批不再阻塞，不重建；
+    // 此时也不清徽标（审批应答路径已重算过，这里清会误灭后台会话刚点亮的徽标）
+    if (msg.role === 'user') return
     if (msg.role === 'assistant' && msg.pending_approval && msg.pending_approval.thread_id) {
       const threadId = msg.pending_approval.thread_id
       const backendMsgId = sid && threadId.startsWith(sid + '-')
@@ -798,20 +967,24 @@ function reconstructPendingApproval() {
         }
         return b
       })
-      // 子代理内部的审批没有对应工具卡片，靠消息级独立面板展示，也算待审批
-      const hasPending = blocks.some(b => b.type === 'tool_call' && b.approval_status === 'pending') ||
-        unmatchedApprovalRequests({ ...msg, blocks }).length > 0
+      // 判据与列表徽标同源：消息级载荷 + 还有可作答对象（卡片或消息级面板）
+      const hasPending = derivePendingApproval([{ ...msg, blocks }])
       messages.value[i] = { ...msg, id: backendMsgId, blocks }
       if (hasPending) {
         pendingApproval.value = { threadId, assistantMsgId: backendMsgId }
-        found = true
       }
       break
     }
   }
-  if (sid) syncPendingApprovalFlag(sid, found)
+  // 以重建结果为准刷新会话列表"待审批"标识（无待审批/已被新一轮对话打断时熄灭）
+  if (sid) recomputePendingApprovalFlag(sid)
 }
-watch(() => loadedSessionId.value, reconstructPendingApproval)
+// 切会话/刷新恢复都走这里：重建审批面板；若这一轮停在「只有提问、没有答复」，
+// 顺便把兜底盯梢也挂上（刷新落在半途时会话被重新加载，只有这条路径一定会执行）
+watch(() => loadedSessionId.value, () => {
+  reconstructPendingApproval()
+  resumeInterruptedTurn()
+})
 const isSidebarCollapsed = ref(false)
 const isWorkspaceCollapsed = ref(true)
 const knowledgeEnabled = ref(false)
@@ -960,14 +1133,7 @@ async function restoreInitialSession() {
     stored = localStorage.getItem(ACTIVE_SESSION_KEY)
   } catch (_) { /* ignore */ }
 
-  let initialSessionId = null
-  if (stored === NEW_SESSION_MARK) {
-    initialSessionId = null
-  } else if (stored && sessions.value.some(s => s.session_id === stored)) {
-    initialSessionId = stored
-  } else if (sessions.value.length > 0) {
-    initialSessionId = sessions.value[0].session_id
-  }
+  const initialSessionId = await resolveInitialSessionId({ linked: readStandaloneSessionLink(), stored, rows: sessions.value, read: getChatHistory })
 
   if (initialSessionId) {
     currentSessionId.value = initialSessionId
@@ -1009,6 +1175,8 @@ async function restoreInitialSession() {
   } catch (_) { /* ignore */ }
   isBootstrapping.value = false
 
+  // 先启动不阻塞首屏的历史兜底；即使实时流挂载成功，界面仍为空时也继续补回答复。
+  resumeInterruptedTurn()
   // 刷新前若正在流式，重新挂载并继续接收事件
   await tryAttachLiveStream()
 }
@@ -1054,6 +1222,7 @@ async function handleLogout() {
   streamingAssistantId.value = null
   currentAbortController.value = null
   sessionStorage.removeItem(STREAM_STATE_KEY)
+  clearStreamFlight()
   sessionStorage.removeItem('easy_agent_input_draft')
   userProfile.value = {
     username: '',
@@ -1148,11 +1317,23 @@ async function handlePasswordlessUrlLogin() {
 
 async function loadSessions() {
   try {
-    const data = await listSessions(userProfile.value.username || null)
-    sessions.value = Array.isArray(data) ? data : (data.sessions || [])
-  } catch (e) {
-    console.error('加载会话列表失败:', e)
-    error.value = '加载会话列表失败'
+    await loadDailySessions(
+      () => listSessions(userProfile.value.username || null, { archived: false }),
+      rows => { sessions.value = rows; hydratePendingApprovalFromServer() },
+    )
+  } catch (e) { if (!isStaleSessionError(e)) error.value = '加载会话列表失败' }
+}
+
+// 服务端列表已带 pending_approval（后端按「最后一条消息」判定）：刷新页面后
+// 一次列表请求就能点亮全部待审批会话的徽标，不必逐个会话拉历史重建。
+// 流式中的会话以本地实时事件为准（列表可能是旧快照），不覆盖；界面仍显示审批
+// 面板的会话也不熄灭，避免出现"有按钮、没徽标"的错位。
+function hydratePendingApprovalFromServer() {
+  for (const s of sessions.value) {
+    if (!s || !s.session_id) continue
+    if (isSessionStreaming(s.session_id)) continue
+    if (s.pending_approval) syncPendingApprovalFlag(s.session_id, true)
+    else if (!pendingApprovalOf(s.session_id)) syncPendingApprovalFlag(s.session_id, false)
   }
 }
 
@@ -1160,6 +1341,10 @@ async function ensureCurrentSession(initialTitle = '') {
   if (!currentSessionId.value) {
     const newSession = await createSession(initialTitle || '新会话', userProfile.value.username || null)
     currentSessionId.value = newSession.session_id
+    // 预创建的 DB 会话即当前展示会话：同步标记 loadedSessionId，
+    // 否则随后的流式事件会被 runInSession 视为「后台会话」只写入
+    // sessionStates 缓冲而不渲染，表现为一直"正在思考"、刷新后才出现。
+    loadedSessionId.value = newSession.session_id
     const existingIndex = sessions.value.findIndex(s => s.session_id === newSession.session_id)
     if (existingIndex === -1) {
       const session = {
@@ -1257,6 +1442,8 @@ async function handleSelectSession(sessionId) {
   if (restoreSessionState(sessionId)) {
     scrollTrigger.value++
     await refreshSessionFiles(sessionId)
+    // 本地有缓存 ≠ 这一轮已经结束：后台可能还在跑，探一次再决定要不要挂实时流
+    void probeLiveStream(sessionId)
     return
   }
 
@@ -1295,6 +1482,8 @@ async function handleSelectSession(sessionId) {
     scrollTrigger.value++
 
     await refreshSessionFiles(sessionId)
+    // 历史加载完再探活：挂载会往消息列表里插占位消息，必须等历史就位
+    void probeLiveStream(sessionId)
   } catch (e) {
     console.error('加载聊天历史失败:', e)
     if (currentSessionId.value !== sessionId) return
@@ -1334,7 +1523,12 @@ async function handleDeleteSession(sessionId) {
 const { aiPageContext, handleOpenSessionInMain, fallbackAfterSessionRemoved } = useAiSidebarBridge({
   panels: { showSkillCenter, showScheduledTasks, showSettingsPanel, showUserManagementPanel },
   userProfile, sessions, currentSessionId, loadedSessionId, messages, sessionUsage, availableModels, selectedModel,
-  sessionStates, attachedStreamingSessions, attachToStreamingSession, handleSelectSession, handleCreateSession,
+  sessionStates, attachedStreamingSessions, attachToStreamingSession, handleSelectSession, handleCreateSession, error,
+  leaveArchivedSession(sessionId) {
+    if (currentSessionId.value !== sessionId) return
+    handleCreateSession(); sessionLoading.value = false; error.value = null; pendingApproval.value = null; streamingAssistantId.value = null; currentAbortController.value = null
+    localStorage.setItem(ACTIVE_SESSION_KEY, NEW_SESSION_MARK)
+  },
 })
 
 async function handleRenameSession(sessionId, newTitle) {
@@ -1391,7 +1585,7 @@ function parseMCPResult(rawResult) {
   return rawResult
 }
 
-async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '') {
+async function handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = [], fileReferences = [], interactionMode = 'normal') {
   const userMsgId = `user-${Date.now()}`
   const preStreamUsage = { ...sessionUsage.value }
   // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
@@ -1401,12 +1595,13 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
   // 用于用户中途切换会话时，把用量更新写入所属会话的缓存而非当前显示
   let streamSessionId = currentSessionId.value
 
-  let contentWithFiles = message.trim().replace(/\s+/g, ' ')
+  let contentWithFiles = referenceMessage(message, fileReferences) // 保留用户换行；仅引用时与服务端占位正文一致
 
   const userMessage = {
     id: userMsgId,
     role: 'user',
     content: contentWithFiles,
+    file_references: fileReferences,
     files: files.map(f => ({
       filename: f.filename,
       size: f.size,
@@ -1415,6 +1610,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
     })),
     created_at: new Date().toISOString()
   }
+  if (interactionMode !== 'normal') userMessage.interaction_mode = interactionMode
   // 结构化技能目录名（与后端落库字段同形）：气泡按它渲染技能标签，不再依赖从消息
   // 文本里反扒 `/技能名`。没有选中技能时不写该字段——手打 `/技能名` 的正文仍按老规则
   // 从文本解析，行为和改造前一致。
@@ -1497,6 +1693,9 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
 
   try {
     markStreaming(currentSessionId.value)
+    // 新会话首轮发送时 currentSessionId 还是 null（要等后端 start 才有），markStreaming
+    // 是空操作。这里先落一条「在飞」记录，否则此时刷新页面什么都接不回来。
+    markStreamFlight(currentSessionId.value)
     const controller = new AbortController()
     currentAbortController.value = controller
     const abortSignal = signal || controller.signal
@@ -1528,7 +1727,9 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       expertEditId,
       selectedExpert.value && selectedExpert.value.export_agent_id
         ? selectedExpert.value.export_agent_id
-        : ''
+        : '',
+      // 新对话首条消息携带的知识库范围：后端建会话后先落 scope 再检索
+      { knowledgeBaseIds, fileReferences, interactionMode }
     )
 
     await expandWorkspaceAfterSessionCompletion(streamSessionId)
@@ -1575,8 +1776,10 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       error.value = e.message || '发送消息失败'
     }
   } finally {
+    // 本轮已经结束（正常/取消/失败），在飞记录作废：留着会让下次刷新白等一轮
+    clearStreamFlight()
     // HITL: 若有审批待处理，保持 isStreaming=true（用户需先审批）
-    if (!pendingApproval.value) {
+    if (!pendingApprovalOf(streamSessionId)) {
       syncPendingApprovalFlag(streamSessionId || currentSessionId.value, false)
       const sid = streamSessionId
       const isDisplayed = !sid || sid === loadedSessionId.value
@@ -1608,6 +1811,9 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
       unmarkStreaming(sid)
       // 列表"进行中"标记此时移除（显示已完成）：以服务端历史为准回填，保证完整渲染
       await syncSessionFromServer(sid)
+      // 回填后按服务端历史重算"待审批"徽标（仍 pending 则重新点亮，处理过则保持熄灭）：
+      // 上面的无条件熄灭只看本地面板状态，本地状态丢失时会误灭，以历史为准纠正。
+      recomputePendingApprovalFlag(sid)
 
       await loadSessions()
     }
@@ -1617,6 +1823,7 @@ async function handleSendMessage(message, files = [], signal, enableDeepThink = 
 // HITL: 用户审批后恢复执行。target.interruptId = 用户点的那个中断（DA-02）：
 // 只回答它，其余中断保持挂起，恢复流结束时后端会再次下发 approval_required。
 async function handleToolApproval(decision, target) {
+  if (!pendingApproval.value) reconstructPendingApproval() // 审批态被收尾清掉、按钮却由历史回填：点之前懒重建一次
   if (!pendingApproval.value) return
 
   const currentApproval = pendingApproval.value
@@ -1626,48 +1833,45 @@ async function handleToolApproval(decision, target) {
   const msgIdx = assistantMsgId ? messages.value.findIndex(m => m.id === assistantMsgId) : -1
   const pending = msgIdx !== -1 ? messages.value[msgIdx].pending_approval : null
   const actionRequests = (pending && pending.action_requests) || []
-  const { decisions, interruptId } = buildResumeDecisions(actionRequests, decision, {
-    interruptId: target && target.interruptId,
-    // 编辑参数：只改被点的那一条（action_index 由载荷带下来）
-    targetActionIndex: target && target.actionIndex,
-    editedAction: target && target.editedArgs
-      ? { name: target.actionName || '', args: target.editedArgs }
-      : null,
-  })
+  const { decisions, interruptId } = buildApprovalResumePlan(actionRequests, decision, target)
+  const confirmation = decision === 'respond' && target ? target.confirmation : null
+  let resumeAssistantId = assistantMsgId, resumeUsageMessage = msgIdx !== -1 ? messages.value[msgIdx] : undefined, initialBlockOrder = msgIdx !== -1 ? messages.value[msgIdx].blocks.length : 0
 
   // 清掉待审批按钮（恢复流期间不允许再点），只给本次作答的中断记上「已批准 / 已拒绝」
   if (msgIdx !== -1) {
     markApprovalDecision(messages.value[msgIdx].blocks, decision, actionRequests, interruptId)
-    messages.value[msgIdx] = {
-      ...messages.value[msgIdx],
-      pending_approval: null,
-      blocks: [...messages.value[msgIdx].blocks],
+    if (!confirmation) {
+      messages.value[msgIdx] = { ...messages.value[msgIdx], pending_approval: null, blocks: [...messages.value[msgIdx].blocks] }
     }
-    const stillPending = messages.value[msgIdx].blocks.some(
-      b => b.type === 'tool_call' && b.approval_status === 'pending'
-    )
-    syncPendingApprovalFlag(sessionId, stillPending)
   }
+  const split = confirmation ? buildPlanContinuationTurn(messages.value, msgIdx, confirmation) : null
+  if (split) {
+    messages.value.splice(msgIdx, 1, ...split.replacement); resumeAssistantId = split.resumeAssistantId; pendingApproval.value = { threadId, assistantMsgId: resumeAssistantId }; resumeUsageMessage = undefined; initialBlockOrder = split.initialBlockOrder
+  }
+  // 本次决策已落地，按本地消息重算徽标（口径 derivePendingApproval：只看消息级载荷，
+  // 不扫工具块 approval_status——那是展示态，会留下"有徽标、没按钮"的死状态）；
+  // 若恢复流中再遇嵌套审批会立即重新亮起
+  recomputePendingApprovalFlag(sessionId)
 
+  let approvalEvent = null // 恢复流里收到的 approval_required（判「是否有新审批」用中断身份，不看 thread_id）
   const { onChunk } = createStreamChunkHandler(messages, {
     isResume: true,
-    assistantMsgId,
+    assistantMsgId: resumeAssistantId,
     streamSessionId: sessionId,
+    ...resumeUsageBase(sessionDuration.value, iterationCount.value, resumeUsageMessage), // 扣掉本条中断前已计入的耗时/步数
     runInSession,
     state: buildStreamState(),
-    initialBlockOrder: (() => {
-      const i = messages.value.findIndex(m => m.id === assistantMsgId)
-      return i !== -1 ? messages.value[i].blocks.length : 0
-    })(),
+    initialBlockOrder,
     onApprovalRequired: (data) => {
       // 嵌套审批
+      approvalEvent = data || null
       syncPendingApprovalFlag(sessionId, true)
       pendingApproval.value = {
         threadId: data.thread_id,
-        assistantMsgId,
+        assistantMsgId: resumeAssistantId,
       }
-      if (assistantMsgId && data.action_requests) {
-        const idx = messages.value.findIndex(m => m.id === assistantMsgId)
+      if (resumeAssistantId && data.action_requests) {
+        const idx = messages.value.findIndex(m => m.id === resumeAssistantId)
         if (idx !== -1) {
           messages.value[idx].pending_approval = { thread_id: data.thread_id, action_requests: data.action_requests }
           // 用后端权威 blocks 刷新（含本轮已完成工具的结果）
@@ -1693,40 +1897,43 @@ async function handleToolApproval(decision, target) {
     const controller = new AbortController()
     currentAbortController.value = controller
     markStreaming(sessionId)
-    streamingAssistantId.value = assistantMsgId
+    streamingAssistantId.value = resumeAssistantId
 
     // 恢复期间保持 loading=true，使思考 spinner 与工具"执行中"状态与正常流一致
-    const _resumeIdx = messages.value.findIndex(m => m.id === assistantMsgId)
+    const _resumeIdx = messages.value.findIndex(m => m.id === resumeAssistantId)
     if (_resumeIdx !== -1) {
       messages.value[_resumeIdx] = { ...messages.value[_resumeIdx], loading: true }
     }
     // 注意：人工介入（批准/拒绝）不再作为用户侧消息展示，
     // 直接在模型侧的 execute 工具上进行了 HITL 标注。
-    await resumeStream(sessionId, threadId, decisions, onChunk, controller.signal, assistantMsgId)
+    await resumeStream(sessionId, threadId, decisions, onChunk, controller.signal, resumeAssistantId, confirmation)
     await expandWorkspaceAfterSessionCompletion(sessionId)
 
     await loadSessions()
   } catch (e) {
     if (e.name === 'AbortError') return
     console.error('恢复执行失败:', e)
-    const idx = messages.value.findIndex(m => m.id === assistantMsgId)
-    if (idx !== -1) {
+    // 恢复期间用户可能已切到别的会话：错误写回本会话（展示中或其缓存）
+    runInSession(sessionId, null, () => {
+      const idx = messages.value.findIndex(m => m.id === resumeAssistantId)
+      if (idx === -1) return
       messages.value[idx].loading = false
       messages.value[idx].error = e.message || '恢复执行失败'
-      if (e.status === 409) {
-        messages.value[idx].pending_approval = null
-      }
+      if (e.status === 409) messages.value[idx].pending_approval = null
       messages.value[idx] = { ...messages.value[idx] }
-    }
+    })
   } finally {
-    // 如果 resumeStream 期间收到了新的 approval_required（onChunk 重新设置了
-    // pendingApproval.value），则不清除，保持 isStreaming=true 等待用户审批
-    const hasNewApproval = pendingApproval.value && pendingApproval.value !== currentApproval
+    // 判「新」按中断身份：同一运行的 thread_id 始终相同，只比 thread_id 会把新审批当成重放
+    const answered = { threadId: currentApproval && currentApproval.threadId, interruptId }
+    const hasNewApproval = !!approvalEvent && isNewApprovalEvent(approvalEvent, answered)
     if (!hasNewApproval) {
-      pendingApproval.value = null
+      // 只清本会话的审批；当前展示的若是另一个会话，它的审批与停止按钮保持不动
+      clearPendingApprovalOf(sessionId)
       syncPendingApprovalFlag(sessionId, false)
-      currentAbortController.value = null
-      streamingAssistantId.value = null
+      if (sessionId === loadedSessionId.value) {
+        currentAbortController.value = null
+        streamingAssistantId.value = null
+      }
       const sid = sessionId
       if (sid && sessionStates.value[sid]) {
         sessionStates.value[sid].isStreaming = false
@@ -1736,16 +1943,17 @@ async function handleToolApproval(decision, target) {
       saveCurrentSessionState()
       // 审批恢复流结束：以服务端历史为准回填，保证完整渲染
       await syncSessionFromServer(sid)
+      if (sid && sid === loadedSessionId.value) reconstructPendingApproval() // 仍有挂起项：按历史重建，否则按钮点不动
       await loadSessions()
     }
   }
 }
 
 function handleRetry(content) {
-  // 直接重新发送消息内容，不经过输入框
-  console.log('[handleRetry] content type:', typeof content, 'value:', content)
-  
-  if (content && typeof content === 'string' && content.trim()) {
+  const interactionMode = typeof content === 'object' && content ? (content.interactionMode || 'normal') : 'normal'
+  const fileReferences = typeof content === 'object' && content ? (content.fileReferences || []) : []
+  content = typeof content === 'object' && content ? content.content : content
+  if (typeof content === 'string' && (content.trim() || fileReferences.length)) {
     // 检查是否正在流式输出
     if (isStreaming.value) {
       error.value = '请等待当前消息完成'
@@ -1758,8 +1966,10 @@ function handleRetry(content) {
       return
     }
     
-    // 直接调用发送
-    handleSendMessage(content.trim())
+    // 重试不经过输入框，联网开关必须从镜像取：漏传会落回 enableWebSearch 默认值 false，
+    // 表现为「小地球亮着、后端收到 web_search: False」，模型据关闭态纪律回答未联网。
+    // 第 4 位是 enableDeepThink，第 5 位才是 enableWebSearch，别错位。
+    handleSendMessage(content.trim(), [], null, true, webSearchEnabled.value, [], '', [], fileReferences, interactionMode)
   }
 }
 

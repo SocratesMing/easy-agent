@@ -36,13 +36,13 @@
             <p>{{ error }}</p>
           </div>
           <div v-else-if="isPdf" class="preview-pdf">
-            <iframe :src="previewUrl" class="pdf-iframe"></iframe>
+            <iframe :src="`${previewUrl}#navpanes=0&view=FitH`" class="pdf-iframe" title="PDF 预览"></iframe>
           </div>
-          <div v-else-if="isPptx" class="preview-pptx">
-            <iframe v-if="pptxPdfUrl" :src="pptxPdfUrl" class="pptx-iframe" title="PPTX 预览"></iframe>
+          <div v-else-if="isPdfConverted" class="preview-pptx">
+            <iframe v-if="pptxPdfUrl" :src="`${pptxPdfUrl}#navpanes=0&view=FitH`" class="pptx-iframe" title="PPTX 预览"></iframe>
           </div>
           <div v-else-if="isDocx" class="preview-docx">
-            <vue-office-docx :src="docxUrl" @error="handleDocxError" />
+            <DocxPreview v-if="docxUrl" :array-buffer="docxUrl" @error="handleDocxError" />
           </div>
           <div v-else-if="isExcel" class="preview-excel">
             <vue-office-excel
@@ -87,11 +87,28 @@
             <iframe :src="htmlUrl" class="html-iframe" sandbox="allow-same-origin"></iframe>
           </div>
           <div v-else-if="isText" class="preview-text">
-            <div class="code-block">
+            <!-- 文本类按行渲染：行号与内容在同一个 flex 行里，长行软换行只会让这一行变高。
+                 以前是「独立行号列 + pre-wrap 正文」，折行占掉视觉行却不产生行号，
+                 行号列从第一个折行处开始整体上移，末尾还会出现「行号用完了、正文还在继续」。 -->
+            <div v-if="plainTextMode" class="code-lines" :style="{ '--ln-width': gutterWidth }">
+              <div v-for="line in visibleLines" :key="line.n" class="code-line">
+                <span class="ln">{{ line.n }}</span>
+                <!-- 用 span 而不是 code：主题里的 code 规则带 !important 背景，每行一个 code 会变成一条条色带 -->
+                <span class="line-text">{{ line.text }}</span>
+              </div>
+            </div>
+            <!-- 代码类整段高亮：hljs 的 token 会跨行（多行注释/字符串），按行切会切断标签；
+                 pre 不折行，一个源码行恒等于一个视觉行，独立行号列才对得上 -->
+            <div v-else class="code-block">
               <div class="line-numbers">
-                <span v-for="n in lineCount" :key="n">{{ n }}</span>
+                <span v-for="n in shownLineCount" :key="n">{{ n }}</span>
               </div>
               <pre v-html="highlightedCode"></pre>
+            </div>
+            <!-- 提示条单独渲染、不参与行号：以前把「内容过长已截断」拼在正文里，会被当成正文最后两行 -->
+            <div v-if="textNotice" class="preview-notice">
+              <span>{{ textNotice }}</span>
+              <button v-if="hasMoreLines" class="preview-more-btn" @click="loadMoreLines">加载更多</button>
             </div>
           </div>
           <div v-else class="preview-unsupported">
@@ -119,21 +136,32 @@ import {
   createMarkdownRenderer,
   renderMarkdown,
   installCodeCopyHandler,
+  escapeHtml,
+  sanitizeHtml,
 } from '../../markdownSetup.js'
 import hljs from '../markdown/hljs.js'
 import 'highlight.js/styles/github.css'
+// 行号几何（按行切分 / 分页 / 列宽）：纯函数，两个前端的 FilePreview 共用
+import {
+  clampSourceText,
+  lineNumberGutterWidth,
+  splitSourceLines,
+  takeLines,
+  TEXT_CHAR_LIMIT,
+  TEXT_LINE_PAGE,
+} from './textLines.js'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
 setupMarkedExtensions()
 installCodeCopyHandler()
 // 预览库按需加载：只有打开对应类型文件时才拉取
-const VueOfficeDocx = defineAsyncComponent(() => import('@vue-office/docx/lib/v3/vue-office-docx.mjs'))
+const DocxPreview = defineAsyncComponent(() => import('./DocxPreview.vue'))
 const VueOfficeExcel = defineAsyncComponent(() => import('@vue-office/excel/lib/v3/vue-office-excel.mjs'))
 let xlsxPromise = null
 function loadXlsx() {
   if (!xlsxPromise) xlsxPromise = import('xlsx')
   return xlsxPromise
-}import '@vue-office/docx/lib/v3/index.css'
+}
 import '@vue-office/excel/lib/v3/index.css'
 import { getStoredToken } from '../../api/auth.js'
 import { getExpertMd } from '../../api/expert.js'
@@ -195,6 +223,10 @@ const emit = defineEmits(['close'])
 const loading = ref(false)
 const error = ref('')
 const textContent = ref('')
+// 文本预览一次渲染的行数上限：超过就分页（行号始终与文件实际行对应）
+const maxLines = ref(TEXT_LINE_PAGE)
+// 文件极大、超出字符兜底上限时为 true（只影响文本预览的提示条）
+const textTruncated = ref(false)
 const previewUrl = ref('')
 const docxUrl = ref(null)
 const excelUrl = ref(null)
@@ -210,7 +242,7 @@ const excelKey = ref(0)
 const htmlUrl = ref('')
 
 const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico']
-const textExts = ['.txt', '.json', '.xml', '.csv', '.js', '.ts', '.vue', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp', '.sh', '.bat', '.css', '.scss', '.less', '.sql', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.env', '.log', '.md', '.jsx', '.tsx', '.rb', '.php', '.swift', '.kt', '.scala', '.lua', '.pl', '.r', '.dart', '.ex', '.exs', '.erl', '.hs', '.ml', '.jl', '.tf', '.proto', '.graphql', '.makefile', '.cmake', '.dockerfile', '.gitignore', '.properties', '.gradle']
+const textExts = ['.txt', '.json', '.jsonl', '.xml', '.csv', '.js', '.ts', '.vue', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp', '.sh', '.bat', '.css', '.scss', '.less', '.sql', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.env', '.log', '.md', '.jsx', '.tsx', '.rb', '.php', '.swift', '.kt', '.scala', '.lua', '.pl', '.r', '.dart', '.ex', '.exs', '.erl', '.hs', '.ml', '.jl', '.tf', '.proto', '.graphql', '.makefile', '.cmake', '.dockerfile', '.gitignore', '.properties', '.gradle']
 
 // 安全获取文件扩展名（无扩展名时返回空字符串）
 function getExt(name) {
@@ -227,7 +259,8 @@ const isImage = computed(() => {
 
 const isPdf = computed(() => getExt(props.filename) === 'pdf')
 
-const isPptx = computed(() => getExt(props.filename) === 'pptx')
+// PPTX 与老版 PPT/DOC 都没有可用的前端渲染器：统一交后端 LibreOffice 转 PDF。
+const isPdfConverted = computed(() => ['pptx', 'ppt', 'doc'].includes(getExt(props.filename)))
 
 const isDocx = computed(() => getExt(props.filename) === 'docx')
 
@@ -259,38 +292,52 @@ const codeLangMap = {
   dart: 'dart', tf: 'hcl', proto: 'protobuf', graphql: 'graphql',
 }
 
+// ---- 文本预览的行号：按行切分、按行分页，行号与正文同源（见 ./textLines.js）----
+const sourceLines = computed(() => (isText.value ? splitSourceLines(textContent.value) : []))
+const totalLineCount = computed(() => sourceLines.value.length)
+const visibleLines = computed(() => takeLines(sourceLines.value, maxLines.value).lines)
+const shownLineCount = computed(() => visibleLines.value.length)
+const hasMoreLines = computed(() => shownLineCount.value < totalLineCount.value)
+/** 本页源文本：代码高亮以它为准，不含分页提示条 */
+const visibleText = computed(() => visibleLines.value.map((line) => line.text).join('\n'))
+/** 行号列宽：整列统一，位数不同的行号才不会左右错位 */
+const gutterWidth = computed(() => lineNumberGutterWidth(totalLineCount.value))
+/** 文本按行渲染；代码保留整段高亮（hljs 的 token 会跨行，不能按行切） */
+const plainTextMode = computed(() => !isCode.value)
+const textNotice = computed(() => {
+  const parts = []
+  if (textTruncated.value) parts.push(`文件过大，仅载入前 ${TEXT_CHAR_LIMIT / 10000} 万字符`)
+  if (hasMoreLines.value) parts.push(`已显示前 ${shownLineCount.value} 行 / 共 ${totalLineCount.value} 行`)
+  return parts.join('；')
+})
+
 const highlightedCode = computed(() => {
-  if (!textContent.value) return ''
+  // 只高亮当前这一页：超大文件整篇交给 hljs 会很慢，且行号只覆盖可见页
+  const code = visibleText.value
+  if (!code) return ''
   const ext = getExt(props.filename)
   const lang = codeLangMap[ext]
 
   // 如果是代码文件且有对应语言，使用语法高亮
   if (isCode.value && lang && hljs.getLanguage(lang)) {
     try {
-      return hljs.highlight(textContent.value, { language: lang }).value
+      return hljs.highlight(code, { language: lang }).value
     } catch (e) {
       console.warn('[FilePreview] 语法高亮失败:', ext, e)
     }
   }
 
-  // JSON 特殊处理
-  if (ext === 'json') {
-    try {
-      const parsed = JSON.parse(textContent.value)
-      return hljs.highlight(JSON.stringify(parsed, null, 2), { language: 'json' }).value
-    } catch (e) {
-      // JSON 解析失败，按普通文本处理
-    }
-  }
+  // 不再对 JSON 做 parse → stringify 重排版：行号必须对应文件里的实际行，
+  // 重排版（尤其是压缩成一行的 JSON）会让行号整篇错位；.json 走上面的 hljs 高亮即可
 
   // 普通文本，转义 HTML
-  return escapeHtml(textContent.value)
+  return escapeHtml(code)
 })
 
-const lineCount = computed(() => {
-  if (!textContent.value) return 0
-  return textContent.value.split('\n').length
-})
+/** 文本预览「加载更多」：每次多渲染一页行（数据已在内存，无需重新请求） */
+function loadMoreLines() {
+  maxLines.value += TEXT_LINE_PAGE
+}
 
 const csvData = computed(() => {
   if (!textContent.value) return { headers: [], rows: [] }
@@ -324,12 +371,6 @@ const csvData = computed(() => {
   return { headers, rows }
 })
 
-function escapeHtml(text) {
-  const div = document.createElement('div')
-  div.textContent = text
-  return div.innerHTML
-}
-
 // 预览/下载基础 URL：定时任务工作目录走独立端点，否则走会话文件端点
 const previewBaseUrl = computed(() => props.taskId
   ? `${API_BASE_URL}/agent/scheduled-tasks/${props.taskId}/workspace/file`
@@ -351,7 +392,7 @@ function handleDownload() {
   document.body.removeChild(link)
 }
 
-const renderedMarkdown = computed(() => renderMarkdown(textContent.value, markdownRenderer))
+const renderedMarkdown = computed(() => renderMarkdown(textContent.value, markdownRenderer, { sourceCards: false, remoteImages: 'inline', rawHtml: 'allow' }))
 
 const isText = computed(() => {
   const ext = getExt(props.filename)
@@ -382,6 +423,8 @@ async function loadPreview() {
   loading.value = true
   error.value = ''
   textContent.value = ''
+  maxLines.value = TEXT_LINE_PAGE
+  textTruncated.value = false
   docxUrl.value = null
   excelUrl.value = null
   if (pptxPdfUrl.value) {
@@ -451,9 +494,9 @@ async function loadPreview() {
   try {
     if (isPdf.value) {
       console.log('[FilePreview] PDF 预览')
-    } else if (isPptx.value) {
-      console.log('[FilePreview] PPTX 预览 (LibreOffice → PDF)')
-      // 后端用 LibreOffice 把 pptx 转成 PDF，返回 PDF 流，由浏览器内置查看器渲染
+    } else if (isPdfConverted.value) {
+      console.log('[FilePreview] Office → PDF 预览 (LibreOffice)')
+      // 后端用 LibreOffice 把 pptx/ppt/doc 转成 PDF，返回 PDF 流，由浏览器内置查看器渲染
       const pdfParams = new URLSearchParams(params)
       pdfParams.set('target', 'pdf')
       const pdfUrl = `${previewBaseUrl.value}?${pdfParams.toString()}`
@@ -490,16 +533,30 @@ async function loadPreview() {
       if (seq !== loadSeq) return
       const blob = new Blob([htmlText], { type: 'text/html; charset=utf-8' })
       htmlUrl.value = URL.createObjectURL(blob)
-    } else if (isMarkdown.value || isText.value || isCsv.value) {
+    } else if (isMarkdown.value || isCsv.value) {
       const response = await fetch(previewUrl.value, { headers })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       let text = await response.text()
       if (seq !== loadSeq) return
+      // Markdown / CSV 是整篇渲染（不涉及行号），继续按字符兜底
       if (text.length > 50000) {
         text = text.substring(0, 50000) + '\n\n... (内容过长已截断)'
       }
-      textContent.value = text
+      // 剥掉 UTF-8 BOM（Excel 导出的 CSV 常带），否则首列表头会混入不可见的 \uFEFF
+      textContent.value = text.replace(/^\uFEFF/, '')
       console.log('[FilePreview] 文本预览加载完成, 长度:', textContent.value.length)
+    } else if (isText.value) {
+      // 文本预览不按字符截断：行号必须与文件实际行一一对应，渲染量由 maxLines 分页控制。
+      // 只有超大文件才按行边界兜底裁一次（见 ./textLines.js），裁完的末尾仍是完整行。
+      const response = await fetch(previewUrl.value, { headers })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const raw = await response.text()
+      if (seq !== loadSeq) return
+      const clamped = clampSourceText(raw)
+      textTruncated.value = clamped.truncated
+      // 剥掉 UTF-8 BOM，否则首行行号会混入不可见的 \uFEFF
+      textContent.value = clamped.text.replace(/^\uFEFF/, '')
+      console.log('[FilePreview] 文本预览加载完成, 长度:', textContent.value.length, '行数:', totalLineCount.value)
     } else {
       console.log('[FilePreview] 不支持预览的文件类型:', ext || '未知')
     }
@@ -524,13 +581,14 @@ function onExcelRendered() {
 
 // @vue-office/excel 解析含批注/drawing 的 xlsx 时会抛 anchors 错误，
 // 这里用 SheetJS 将各 sheet 渲染为 HTML 表格作为兜底。
+// sheet_to_html 不转义 data-v 属性（单元格原值），内容能跳出属性注入标签：必须消毒后再 v-html。
 async function buildExcelTables(ab) {
   try {
     const XLSX = await loadXlsx()
     const wb = XLSX.read(ab, { type: 'array' })
     excelSheets.value = wb.SheetNames.map((name) => ({
       name,
-      html: XLSX.utils.sheet_to_html(wb.Sheets[name]),
+      html: sanitizeHtml(XLSX.utils.sheet_to_html(wb.Sheets[name])),
     }))
     excelFallback.value = true
   } catch (err) {
@@ -905,13 +963,79 @@ function handleClose() {
   min-height: 1.6em;
 }
 
+/* 文本类（txt / log / ini …）：一行一条记录，行号与内容同高 */
+.preview-text .code-lines {
+  padding: 16px 0;
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  /* 行号列宽由组件的 --ln-width 统一给出（见 shared/preview/textLines.js），各行右对齐 */
+}
+
+.preview-text .code-line {
+  display: flex;
+  align-items: flex-start;
+}
+
+.preview-text .code-line .ln {
+  flex: 0 0 auto;
+  width: var(--ln-width, 56px);
+  box-sizing: border-box;
+  padding-right: 8px;
+  text-align: right;
+  color: #94a3b8;
+  user-select: none;
+  /* 每行的右边框拼起来就是连续的竖线，不必给整列铺背景 */
+  border-right: 1px solid #e2e8f0;
+}
+
+.preview-text .code-line .line-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 16px;
+  color: #24292e;
+  font-family: inherit;
+  font-size: inherit;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 分页 / 超大文件提示：sticky 在底部，不占行号 */
+.preview-text .preview-notice {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: #64748b;
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+}
+
+.preview-text .preview-more-btn {
+  padding: 2px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: transparent;
+  color: #334155;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.preview-text .preview-more-btn:hover {
+  background: #e2e8f0;
+}
+
 .preview-text pre {
   margin: 0;
   padding: 16px;
   color: #24292e;
-  white-space: pre-wrap;
-  word-break: break-all;
+  /* 代码不折行：一个源码行恒等于一个视觉行，独立行号列才对得上；超宽横向滚动 */
+  white-space: pre;
   flex: 1;
+  min-width: 0;
   overflow-x: auto;
   background: #ffffff;
 }

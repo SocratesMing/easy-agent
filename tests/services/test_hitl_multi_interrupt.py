@@ -16,7 +16,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.outputs import ChatGenerationChunk
 
-from easy_agent.services.hitl_state import (
+from easy_agent.services.streaming.approvals import (
     HitlDecisionError,
     HitlInterrupt,
     pending_hitl_interrupts,
@@ -238,7 +238,7 @@ async def _drain(graph, payload, config):
 async def test_parallel_subagent_approvals_are_answered_one_interrupt_at_a_time():
     from langgraph.types import Command
 
-    from easy_agent.services.stream_processor import StreamProcessor
+    from easy_agent.services.streaming.processor import StreamProcessor
     from easy_agent.services.streaming.orchestrator import (
         detect_hitl_interruption,
         plan_resume_for_agent,

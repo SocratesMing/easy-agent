@@ -23,6 +23,7 @@ from deepagents import HarnessProfile, create_deep_agent, register_harness_profi
 from langchain_openai import ChatOpenAI
 
 from easy_agent.agent.hitl import (
+    DELETE_HITL_TOOL_DESCRIPTION,
     EXECUTE_HITL_TOOL_DESCRIPTION,
     install_execute_tool_description,
     register_execute_description_profiles,
@@ -64,15 +65,19 @@ def _fake_config(model_id: str, *, protocol: str = "openai") -> SimpleNamespace:
     )
 
 
-def _execute_tool(graph):
-    """从编译图取真实 ``ToolNode`` 里的 execute 工具（profile 的最终注入点）。"""
+def _fs_tool(graph, name: str):
+    """从编译图取真实 ``ToolNode`` 里的文件系统工具（profile 的最终注入点）。"""
     tools_node = graph.nodes.get("tools")
     assert tools_node is not None, "编译图缺少 tools 节点，HarnessProfile 契约已改变"
     tool_node = getattr(tools_node, "bound", None)
     tools_by_name = getattr(tool_node, "tools_by_name", None)
     assert tools_by_name, "tools 节点不再是带 tools_by_name 的 ToolNode"
-    assert "execute" in tools_by_name, "ToolNode 中缺少 execute 工具"
-    return tools_by_name["execute"]
+    assert name in tools_by_name, f"ToolNode 中缺少 {name} 工具"
+    return tools_by_name[name]
+
+
+def _execute_tool(graph):
+    return _fs_tool(graph, "execute")
 
 
 def test_deepagents_within_verified_window():
@@ -162,6 +167,8 @@ def test_register_execute_description_profiles_reaches_real_middleware():
     assert f"openai:{_CONFIG_MODEL_ID}" in keys
     graph = create_deep_agent(model=_dummy_model(_CONFIG_MODEL_ID))
     assert _execute_tool(graph).description == EXECUTE_HITL_TOOL_DESCRIPTION
+    # delete 的框架默认描述没提审批，也没说 execute 删不了目录
+    assert _fs_tool(graph, "delete").description == DELETE_HITL_TOOL_DESCRIPTION
 
 
 def test_install_execute_tool_description_no_longer_monkeypatches():

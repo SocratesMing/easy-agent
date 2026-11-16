@@ -10,6 +10,7 @@ from easy_agent.tools.expert_writer import create_save_expert_tool
 from easy_agent.tools.registry import (
     SOURCE_BUILTIN,
     SOURCE_EXPERT,
+    SOURCE_INTERACTION,
     SOURCE_MCP,
     TOOL_REGISTRY,
     ToolBuildContext,
@@ -34,6 +35,7 @@ def _factories():
         "create_scheduled_task": CreateScheduledTaskTool,
         "save_expert": create_save_expert_tool,
         "read_uploaded_file": ReadUploadedFileTool,
+        "ask_user": lambda: _FakeTool("ask_user"),
     }
 
 
@@ -76,7 +78,7 @@ def test_entries_have_required_fields_and_unique_names():
         assert isinstance(spec.description, str)
         if spec.is_hitl:
             assert spec.interrupt_decisions
-            assert set(spec.interrupt_decisions) <= {"approve", "edit", "reject"}
+            assert set(spec.interrupt_decisions) <= {"approve", "edit", "reject", "respond"}
         else:
             assert spec.interrupt_decisions == ()
 
@@ -193,6 +195,7 @@ def test_hitl_specs_order_is_interrupt_config_order():
         "execute",
         "delete",
         "save_expert",
+        "ask_user",
         "create_scheduled_task",
         "access_knowledge_original",
     ]
@@ -231,6 +234,7 @@ def test_name_heuristic_exemptions_match_registry():
 def test_inject_order_matches_legacy_sequence():
     specs = registry.ordered_injectable_specs()
     assert [spec.name for spec in specs] == [
+        "ask_user",
         "access_knowledge_original",
         "create_scheduled_task",
         "save_expert",
@@ -263,6 +267,10 @@ def test_injection_conditions_follow_legacy_if_statements():
     web_search = specs["web_search"].condition
     assert web_search(_ctx()) is False
     assert web_search(_ctx(web_search_tool=_FakeTool("web_search"))) is True
+
+    ask_user = specs["ask_user"].condition
+    assert ask_user(_ctx()) is True
+    assert ask_user(_ctx(enable_user_interaction=False)) is False
 
 
 # ── 装配行为 ─────────────────────────────────────────────────────────────
@@ -298,6 +306,7 @@ def test_real_builders_produce_expected_tool_names():
     )
     assert [tool.name for tool in tools] == [
         "mcp_a",
+        "ask_user",
         "access_knowledge_original",
         "create_scheduled_task",
         "save_expert",
@@ -317,7 +326,15 @@ def test_optional_tools_absent_when_conditions_are_off():
         },
     )
     tools = build_session_tools([_FakeTool("mcp")], ctx)
-    assert [tool.name for tool in tools] == ["mcp"]
+    assert [tool.name for tool in tools] == ["mcp", "ask_user"]
+
+
+def test_headless_session_does_not_inject_ask_user():
+    tools = build_session_tools(
+        [_FakeTool("mcp")],
+        _ctx(enable_user_interaction=False),
+    )
+    assert [tool.name for tool in tools if tool.name == "ask_user"] == []
 
 
 # ── 查询函数 ─────────────────────────────────────────────────────────────
@@ -326,6 +343,7 @@ def test_optional_tools_absent_when_conditions_are_off():
 def test_source_resolution_and_queries():
     assert registry.resolve_tool_source("ls") == SOURCE_BUILTIN
     assert registry.resolve_tool_source("save_expert") == "expert"
+    assert registry.resolve_tool_source("ask_user") == SOURCE_INTERACTION
     assert registry.resolve_tool_source("not_registered_mcp") == SOURCE_MCP
 
     assert registry.get_tool_spec("not_registered_mcp") is None

@@ -6,7 +6,7 @@
 ## 1. 运行时入口
 
 - `main.py` / `easy-web`（`easy_agent/bootstrap/web_runner.py`）→ `easy_agent.app:app`（FastAPI）。
-- `app.py` lifespan：初始化环境/日志/配置 → 启动知识库 → DB → 提示词/技能发现 → Agent 配置 → 移植专家目录扫描 → HITL checkpointer（官方 SQLite saver / 进程内回退）→ 调度器（多 worker 保护）。
+- `app.py` lifespan：初始化环境/日志/配置 → 启动知识库 → DB → 提示词/技能发现 → Agent 配置 → 移植专家目录扫描 → HITL checkpointer（SQLite / MySQL 共享快照 / 进程内回退）→ 调度器（多 worker 保护）。
 - 配置：`easy_agent/config/config.yaml`（gitignored，单文件）；模板 `config-example.yaml`；环境变量来自 `.env.{AGENT_ENV}`；`EASY_CONFIG` 可覆盖路径。`config.py` 只保留 `Config`（加载/解析/路径 helpers）；Pydantic 配置模型在 `config_models.py`，键校验与 `${VAR}` 展开在 `config_validation.py`，均由 `config.py` re-export（批次 1A）。
 - 运行期配置持有者：`easy_agent/bootstrap/runtime_config.py`（基础层只读，避免 config → services 循环）。
 
@@ -17,43 +17,56 @@
 | `agent/core.py` | `EasyAgent` 封装 `create_deep_agent`（skills/memory/permissions/interrupt_on/subagents/checkpointer/store）；backend 装配、HITL 中断配置、子代理 specs |
 | `backends/shell.py` | `LocalShellBackend` + 虚拟路径翻译 + bwrap/Landlock/fail-closed 策略 |
 | `sandboxing/sandbox.py` / `landlock.py` / `fs_safety.py` | 命令沙箱、Landlock 降级、外部目录挂载安全校验 |
-| `agent/hitl.py` | 破坏性命令识别、execute 工具描述、HITL 默认工具 |
-| `persistence/checkpoints.py` | 官方 `AsyncSqliteSaver` 与自研 `PersistentMemorySaver`（裁剪后写业务库） |
+| `agent/hitl.py` | 破坏性命令识别、execute 工具描述、按 config.yaml 的 `hitl` 段构造 `interrupt_on` |
+| `persistence/checkpoints.py` / `mysql_saver.py` | checkpointer 选型与生命周期；官方 `AsyncSqliteSaver` 与自研 `AsyncMySQLSaver`（4 张 `cp_*` 表，多副本共享） |
 | `persistence/stores.py` | 自研 LangGraph `BaseStore`（SQLite/MySQL） |
 | `agent/summarization.py` | 建图期替换官方摘要工厂 + 缺失降级护栏 |
 | `agent/subagents.py` / `agent/skills.py` | 子代理定义；技能发现（根 `skills/` 为 canonical，包内副本回退） |
 | `bootstrap/runtime_config.py` | 运行期配置 + Agent 失效回调注册（架构解耦用） |
 | `bootstrap/config.py` / `config_models.py` / `config_validation.py` | 配置加载（`Config.from_yaml` 把各段交给模型校验，只处理 YAML 写法与模型对不上的地方）与路径 helpers；Pydantic 配置模型（字段名与默认值的唯一来源）；未知/废弃键校验（已知键由模型字段生成）与 `${VAR}` 展开；`config.py` re-export 原有公开名字与兼容私有名 |
-| `api/` | chat / auth / sessions / files / expert / connectors / scheduled_tasks / settings / skill_center / completion / prompts / terminal（POSIX，HITL 无关） |
-| `services/` | streaming（SSE 编排）、agent_manager（会话 Agent 缓存/流锁）、scheduler、mcp（连接器工具）、session_uploads、skill_library、expert/public_expert、memory_manager、session_runtime、sse（事件注册表） |
-| `db/` | `database.py`（连接/迁移/核心表）、`session_messages.py`、`expert_store.py`、`schema_registry.py` |
-| `middleware/` | JWT 鉴权（`auth.py`）、进程内限流（`rate_limit.py`） |
-| `knowledges/` | 知识库 v2：service / api / ragflow client / runtime worker、catalog sync、observability；`personnel/` 子包负责知识库域的人员管理、Excel 导入、用户扩展字段 |
-| `bootstrap/initialization/` | 环境/日志/运行期初始化（config/log/environment/runtime） |
+| `api/` | chat / auth / sessions / files / expert / connectors / scheduled_tasks / settings / skill_center / completion / prompts / usage / viz（可视化沙箱框架页与 ECharts / Mermaid 托管，免登录）/ terminal（POSIX，HITL 无关） |
+| `services/` | 7 个领域子包：agents（会话 Agent 缓存/流锁/每轮准备）、streaming（SSE 编排/事件/处理器/审批）、sessions（运行期/线程/上传）、mcp（连接器工具/会话/策略/证据）、memory、experts、skills；根下留 scheduler、health、metrics、document_convert |
+| `db/` | `database.py`（连接/迁移/核心表）、`session_messages.py`、`expert_store.py`、`schema_registry.py`、`login_state.py`（登录态校验与活跃时间，主鉴权与知识库鉴权共用） |
+| `middleware/` | JWT 鉴权依赖（`auth.py`，判定在 `db/login_state.py`）、进程内限流（`rate_limit.py`） |
+| `knowledges/` | 知识库 v2：service / api / ragflow client / runtime worker、catalog sync、observability；`runtime/source_sync/` 负责研报 SQL 增量同步（可选 `staging_dir`：先批量拷贝、READY 后删暂存副本）；`personnel/` 子包负责知识库域的人员管理、Excel 导入、用户扩展字段 |
+| `bootstrap/initialization/` | 环境/日志/运行期初始化（config/log/environment/runtime）。日志级别默认 INFO，`EASY_LOG_LEVEL` / `easy-web --log-level` 覆盖；DEBUG 时 proc 日志记录大模型请求 / 返回报文（`easy_agent.llm_wire`），第三方噪声 logger 仍停在 INFO |
 | `tools/` | web_search、scheduled_task、expert_writer、session_file_reader |
 | `models/` | API / DB Pydantic 模型 |
 
 ## 3. 关键数据流
 
 ### 聊天流式（SSE）
-`POST /agent/chat/stream` → 会话归属校验/创建 → `db.add_message`（行表）→
-`agent_manager.get_or_create_agent_for_session`（按 user/session/model/expert/connectors 缓存，`OrderedDict` LRU）→
+`POST /agent/chat/stream` → 会话归属校验/创建 → `MessageRepository.add_message`（行表）→
+`services.agents.manager.get_or_create_agent_for_session`（按 user/session/model/expert/connectors 缓存，`OrderedDict` LRU）→
 `services/streaming/orchestrator.chat_stream_generator` → DeepAgents `astream(stream_mode=["messages","updates"])` →
-`StreamProcessor` 产生事件 → `format_sse`（`services/sse.py`）→ `_StreamHub` 广播/回放（单会话并发返回 409）→
+`StreamProcessor` 产生事件 → `format_sse`（`services/streaming/sse.py`）→ `_StreamHub` 广播/回放（单会话并发返回 409）→
 最终写入 `session_messages`；可选 HITL 中断 `approval_required`，`/chat/resume` 恢复。
 
 事件契约：`docs/sse-events.md`（15 个事件，契约测试 `tests/services/test_sse_contract.py`）。
 
-图输入（DA-03）：默认每条消息一个 thread（`{session_id}-{message_id}`），历史每轮从 DB 重建；`agent.session_thread: true` 时在官方 saver 上一个会话一个 thread（`thread_id = session_id`），每轮只输入本轮消息，thread 为空时从 DB 水合、DB 多出的轮次补进输入（`services/session_thread.py`），审批句柄仍是 `{session_id}-{message_id}`。本轮 `HumanMessage` 只存用户原话（`id` = message_id，DB 用户行同时记 `turn_id`），工作区前缀、知识库 / 页面上下文、上传预览等本轮注入随 `turn_context` 传入，由主代理摘要中间件在计 token 前渲染进本次请求，不写回历史（`agent/turn_context.py`）；记忆每次运行都重新加载（`agent/memory.py`）。会话级 thread 方案见 `docs/archive/design/2026-10-19-da03-session-thread.md`。
+前端事件状态机以 `frontend-shared/chat/streamChunkHandler.js` 为唯一维护源，
+经 `scripts/dev/sync-frontend-shared.mjs` 生成两侧 `shared/chat/` 副本。
+Vue2 / Vue3 主页面和侧栏的四个入口仅适配响应式写入、refs 和宿主副作用；
+正文、思考、工具 ID 合并、用量归属、错误分流与回放由共享状态机处理。
+修改共享源码后运行同步脚本，`--check` 校验生成副本。
+
+图输入（DA-03）：默认每条消息一个 thread（`{session_id}-{message_id}`），历史每轮从 DB 重建；`agent.session_thread: true` 时在官方 saver 上一个会话一个 thread（`thread_id = session_id`），每轮只输入本轮消息，thread 为空时从 DB 水合、DB 多出的轮次补进输入（`services/sessions/thread.py`），审批句柄仍是 `{session_id}-{message_id}`。本轮 `HumanMessage` 只存用户原话（`id` = message_id，DB 用户行同时记 `turn_id`），工作区前缀、知识库 / 页面上下文、上传预览等本轮注入随 `turn_context` 传入，由主代理摘要中间件在计 token 前渲染进本次请求，不写回历史（`agent/turn_context.py`）；记忆每次运行都重新加载（`agent/memory.py`）。会话级 thread 方案见 `docs/archive/design/2026-10-19-da03-session-thread.md`。
+
+模型协议：只支持 OpenAI 兼容协议（`protocol: openai`，`agent/model.py` 的 `ReasoningChatOpenAI`），Anthropic 协议已移除，配成其他协议时 `create_model` 直接报错。
+
+手动压缩：`POST /agent/sessions/{id}/context/compact` 经 `services/sessions/compaction.py` 使用与聊天/resume 共用的业务租约和提交围栏，摘要事件及幂等结果原子写入 checkpoint；原聊天记录不变。需要开启会话 thread 并启用共享持久化 checkpoint（SQLite / MySQL saver）；部署合法性由启动校验负责，压缩不再额外限制单 worker。业务库和 checkpoint 均为 SQLite 时必须使用独立文件。适配层及安装声明共同限定 DeepAgents 0.7.28 / LangGraph 1.2.16；状态查询与执行共用版本/接口探测，不兼容环境在摘要前拒绝。官方工具对照及升级契约见 [手动压缩设计 §7](design/指令菜单于手动压缩设计.md)。
+
+思考回传：每条 assistant 消息的思考都随请求回传给模型，本轮和历史轮次、带不带工具调用一视同仁（DeepSeek 文档要求请求带 tools 时回传历史各轮的 `reasoning_content`）。`ReasoningChatOpenAI` 把 `additional_kwargs` 里的思考写成请求里的 `reasoning_content` 字段（`agent/model.py` 的 `inject_reasoning_content`）；会话 thread 的历史原样发出，`agent/turn_context.py` 只渲染本轮用户消息。从 DB 重建历史时按 step 把思考块放回对应的 AIMessage（`services/streaming/messages.py`）。`/agent/completion/chat` 的 assistant 消息可带 `thinking` 回传。摘要的 token 计数包含 `additional_kwargs` 里的思考（`agent/summarization.py` 的 `count_tokens_with_reasoning`）。
 
 ### Agent 工具与沙箱
 - 文件工具走 CompositeBackend 路由（`/workspace/`、`/user-skills/`、`/skills/builtin/`（只读）、`/memories/`、外部目录）；没命中路由的路径与框架产物（`/.agent/...`：大工具结果、对话历史）落在工作区之外的会话隐藏目录 `workspace/{user}/.agent/{session_id}/`，删除会话时一并删除（DA-04）。共享编译图用两层真实 `CompositeBackend`（`backends/context.py`）按运行期 `SessionContext` 路由（DA-05）。
 - `execute` 默认经 bwrap；不可用降级 Landlock；都不可用 fail-closed（127）。
-- HITL：删除类命令/专家保存/定时任务/知识原文 materialize 等触发审批。
+- HITL：config.yaml 的 `hitl` 段配置，`enabled` 总开关（关掉后对话和定时任务一样不审批），`tools` 审批名单（默认 execute 删除类命令 / delete / save_expert / create_scheduled_task / access_knowledge_original 的 materialize）；名单外的 MCP 工具按服务端标注 / 名字兜底。
+- 规划确认：输入框通过 `/plan` 斜杠指令进入模式，不再占用常驻按钮；头脑风暴继续使用现有 `brainstorm` 技能，不设专用模式指令。`ask_user` 是只允许 `respond` 的产品级交互工具；多个问题按逐项卡片栈展示，全部选择完成后由服务端根据持久化问题与 `respond` 答案重新生成确认文本，作为普通用户消息落库，并把恢复后的续写拆成新的 assistant 行，保持“需求 → 规划 → 用户确认 → 执行”的时间顺序。客户端 `confirmation_message` 仅保留旧客户端兼容，不决定实际展示内容。定时任务等无人值守运行通过 `enable_user_interaction=False` 不注入该工具。`ChatRequest.interaction_mode` 只注入本轮模型上下文。
 - 子代理（office-writer / knowledge-researcher）显式声明与主代理相同的技能源（`/skills/builtin/`、`/user-skills/`）+ 异常兜底 middleware。
 
 ### 技能
-- canonical：仓库根 `skills/`（7 个运行时技能：docx/pptx/xlsx/pdf/mcp-builder/skill-creator/expert-creator）。
+- canonical：仓库根 `skills/`（7 个运行时技能：xlsx/pdf/microsoft-office/document-to-action-items/mcp-builder/skill-creator/expert-creator）。
 - 包内 `easy_agent/skills/` 为 pip 安装回退副本；`scripts/skills/sync_skills.py` 同步，`--check` 可在 CI 校验。
 - 用户技能：`workspace/{username}/skills/` → 虚拟路径 `/user-skills/`。
 - 公共技能只读共享（DA-13 S2）：技能中心「添加」只在 `workspace/{username}/builtin-skills.json` 里记一条（`agent/builtin_skills.py`），不再复制；agent 经 `/skills/builtin/` 直接读 canonical 目录，只看得到该用户已添加且启用的（视图 backend `backends/builtin_skills.py`），写入一律拒绝（backend 与 deny write 规则两层）；execute 沙箱 bwrap 只读挂载已启用的那几个，Landlock 把整个 canonical 目录设为只读。
@@ -64,12 +77,17 @@
 - SQLite（单机开发，启用 WAL/busy_timeout/synchronous=NORMAL）或 MySQL（多副本生产，代码禁止静默降级）。
 - 会话消息行表 `session_messages`；`sessions.messages` 为 legacy 大字段（仅历史会话回退读取）。
 - 领域 schema 通过 `db/schema_registry.py` 注册，`Database.init_tables()` 统一执行。
-- LangGraph checkpointer：`EASY_CHECKPOINT_BACKEND=auto` 时配了 `EASY_CHECKPOINT_SQLITE_PATH` 或业务库为 SQLite 就用官方 `AsyncSqliteSaver`（默认 `data/checkpoints.db`，相对路径按仓库根解析，`synchronous=NORMAL`），业务库为 MySQL 且没配 SQLite 路径时回退 `PersistentMemorySaver`（进程内，不写业务库，重启后审批状态不在；只按 thread 数裁剪，最多 3 个 thread；thread 内 checkpoint 全部保留，`messages` 是增量存储）；删除会话时一并删除它在官方 saver 里的 thread，定时任务每次运行结束后删除自己的 thread（DA-03 P0）。Postgres checkpointer / Store 已移除（2026-10-21，生产只有 MySQL），LangGraph Store 固定为业务库 `SqlStore`。多副本时每个 pod 用自己的 SQLite 文件：`EASY_CHECKPOINT_SQLITE_PATH` 里的 `{pod}` 启动时换成实例名，`EASY_STICKY_SESSIONS=1` 确认 Ingress 已配 cookie 粘性会话，每个 pod 一个 worker；其余多副本组合启动时 fail-fast，这种模式下 SQLite 打不开也不回退进程内 checkpointer。审批记下所在实例（`pending_approval.instance`），恢复请求落到别的 pod、或本 pod 找不到这条审批的 checkpoint 时返回 409；删除会话后，其余 pod 由后台对账（`EASY_CHECKPOINT_GC_INTERVAL`，默认 600 秒）补删「会话已不存在」的 thread（`docs/design/2026-10-21-per-pod-sqlite-checkpoints.md`）。
+- Token 账本（schema 17）是核心表 `token_usage`，由 `db/schema.py` 直接建表；按 `event_id` 幂等、独立于会话删除/归档。`agent/model.py` 提取完整原始 usage，`agent/token_usage.py` 按每次模型调用回调写入；SDK 提示词增强在校验结果前捕获、业务超时外写入。`utils/usage_context.py` 的不可变身份随实际执行 scope 传递，后台流、压缩和记忆线程各自建立 scope。编译图键包含有效模型配置键，用户身份不进入模型实例或缓存键。`GET /agent/usage?days=7|30` 在一个显式读快照中聚合上海自然日四卡与逐日模型趋势，详见 [接口与统计规则](token-usage-api.md)。
+- LangGraph checkpointer：默认（`EASY_CHECKPOINT_BACKEND=auto`）只看配置不看连通性——业务库是 MySQL 就用自研 `AsyncMySQLSaver`（`persistence/mysql_saver.py`，4 张 `cp_checkpoint_*` 表，`auto_setup` 时用 `GET_LOCK` 串行建表），否则用官方 `AsyncSqliteSaver`，文件路径取 config.yaml 的 `checkpoint.sqlite_path`（没配时用旧环境变量 `EASY_CHECKPOINT_SQLITE_PATH`，再没有是 `/qts/checkpoint/{pod}.db`；相对路径按仓库根解析，`synchronous=NORMAL`）。显式 `mysql_saver`（别名 `mysql`）跨副本共享，Pod 重建或请求落到其他副本时从共享库恢复待审批状态；显式 `sqlite` 每 Pod 一个文件；`legacy` 是进程内 `MemorySaver`，仅供排查。`mysql_saver` 打不开时启动直接失败、不降级（降级会让多副本的审批状态分裂）；`sqlite` 打不开才降级为进程内 checkpointer。checkpoint 不做全量快照裁剪：`messages` 是 `DeltaChannel` 增量，thread 内按父链重放。表按 `record_ttl_days`（默认 0=不启用）与「会话已删除」两种口径清理，清理走 `DistributedLock` 的 `checkpoint-ttl` 互斥。Postgres checkpointer / Store 已移除（2026-10-21），LangGraph Store 固定为业务库 `SqlStore`；旧的 `PersistentMemorySaver` + `agent_checkpoints` 全量快照链路 2026-11-11 删除。
 
 ## 4. 前端
 
-- `frontend-vue2/`：Vue 2.7 + Element UI（后端 `app.py` 与 Dockerfile 当前托管/构建的基线）。
+- `frontend-vue2/`：Vue 2.7 + Element UI（后端 `app.py` 与 Dockerfile 当前托管/构建的基线）。业务代码在受管模块
+  `frontend-vue2/src/packages/easyAgent/`：外网独立应用、内网 Vue 2 宿主的路由页面与 AI 侧边栏 SDK 共用，内网按迁移包整体
+  同步该目录（`npm run check:easy-agent` / `export:easy-agent`，见 `frontend-vue2/integration/README.md`）。
 - `frontend/`：Vue 3.5 + Vite（并行维护的第二基线）。
+- 两套设置页均提供“Token统计”：四卡、7/30日原生 SVG 趋势、可切换图例及键盘/触屏可访问的逐日精确明细。共享坐标和格式化源为 `frontend-shared/utils/tokenUsage.js`，由同步脚本分发；组件不引入图表运行时依赖。
+- 对话内可视化：` ```echarts ` / ` ```mermaid ` / ` ```widget ` 代码块与数据工具的 `chart` 信封，由 `frontend-shared/visual/` 挂成 `sandbox="allow-scripts"` 的 iframe 卡片，加载后端 `/agent/viz/frame.html`；图表库只在后端托管，不进前端包。ECharts、Mermaid 与 HTML 交互组件 `html_widgets` 默认开启；安全要求更高的部署可通过 config 的 `visual` 段关闭 HTML 组件（设计见 `docs/design/2026-11-12-chat-visuals.md`）。
 - 两者都**不是** `npm run dev` 自动代理到 8080 的旧 CLI 结构（已改为 Vite 脚本）；构建命令见各自 `package.json`。
 - 无路由/状态库（Vue2 侧）：视图由 `App.vue` 布尔开关切换；**SSE 解析已统一**为各基线的 `src/api/sse.js`（唯一 `readSSE`），chat/expert/knowledge 只注册回调（审计项 ARCH-05 第一步完成）。
 
@@ -79,7 +97,7 @@
 
 | 目录 | 内容 |
 | --- | --- |
-| `scripts/quality/` | import SCC、双写冻结、配置 schema/裸 env、多副本门禁 |
+| `scripts/quality/` | import SCC、双写冻结、配置 schema/裸 env、多副本门禁、async 阻塞调用 |
 | `scripts/db/` | `migrate_db`、SQLite→MySQL、checkpoint 清理 |
 | `scripts/deps/` | 离线后端/前端依赖下载、wheel 落盘 |
 | `scripts/release/` | 发布预检、变更导出 |
@@ -93,8 +111,8 @@
 
 ```bash
 uv sync                                  # 安装依赖（dependency-groups dev / extra docs）
-uv run pytest tests/ -q                  # 全量测试（当前基线：933+ passed）
-uvx ruff check .                         # 致命规则（E9/F63/F7/F82）+ 未使用的 import / 变量、重复定义（F401/F811/F841）
+uv run pytest tests/ -q                  # 全量测试（当前基线：2374 passed / 5 skipped，2026-11-02）
+uvx ruff check .                         # 致命规则（E9/F63/F7/F82）+ 未使用 import / 变量（F401/F811/F841）+ try/except/pass（S110）+ async 阻塞调用（ASYNC）
 python scripts/skills/sync_skills.py --check    # 技能副本一致性
 cd frontend-vue2 && npm ci && npm run build
 cd frontend && npm ci && npm run build
@@ -104,7 +122,8 @@ CI：`.github/workflows/ci.yml`（后端 ruff + pytest collect/test + 双前端 
 
 ## 6. 已知架构债（详见审计报告）
 
-- 剩余 1 个 16 模块强连通分量（`api.chat ↔ knowledges.* ↔ services`），按 `docs/archive/design/2026-10-17-module-refactor-plan.md` 分阶段处理。
-- `Database` 仍较大（待 Phase 2 拆 repository）。
+- 模块 import 图 0 个强连通分量（`scripts/quality/import_graph.py --check-scc`）；分层方向与包入口（`scripts/quality/import_layers.json`）都有 CI 门禁。
+- `Database` 已收敛为连接/事务/迁移 + 12 个跨域纯委托（T3：121 → 47 个方法，db/ 外 get_database() 28 → 4）；剩余 knowledges/personnel 直连与 .database 边界留待后续批次。
 - 多副本状态仍在进程内（agent 缓存/SSE hub/调度）；设计见 `docs/archive/design/2026-10-17-multi-instance-state.md`。
-- 安全：审计报告中的 4 个 P0 / 8 个 P1 尚未修复（Batch 0/1 未执行）。
+- 安全：SEC-01 / 02 / 04 / 05 已修复（`9a98040`）；SEC-06 / 07 / 08 / 09（prompts / completion 未鉴权、文件解析 / 预览越权）已修复；SEC-03 / 10 / 12（登录与凭据）待负责人确认策略后处理，见 `docs/design/2026-11-01-backend-improvement-backlog.md` 的 S2。
+- async 代码里的同步数据库调用基线已从 45 处降到 10 处 / 4 个文件（`scripts/quality/async_blocking_whitelist.json`，只减不增；剩余为 lifespan、脚本与进程内计数器等设计例外）。

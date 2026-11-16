@@ -1,0 +1,37 @@
+{
+  "name": "easy-agent-host-sample",
+  "private": true,
+  "version": "0.0.0",
+  "description": "接入验证用的代表性宿主（模拟内网 Vue 2.7.14 + Element UI 2.15.13 + webpack 5.96.1 + Node 14 / npm 6），不是生产代码",
+  "scripts": {
+    "build": "vue-cli-service build",
+    "serve": "vue-cli-service serve"
+  },
+  "dependencies": {
+    "axios": "1.7.9",
+    "core-js": "^3.8.3",
+    "docx-preview": "0.3.7",
+    "element-ui": "2.15.13",
+    "exceljs": "3.10.0",
+    "gemoji": "8.1.0",
+    "highlight.js": "11.12.0",
+    "katex": "0.16.47",
+    "marked": "17.0.6",
+    "marked-emoji": "2.0.3",
+    "marked-katex-extension": "5.1.13",
+    "monaco-editor": "0.53.0",
+    "vue": "2.7.14",
+    "vue-router": "3.6.5",
+    "xlsx": "0.18.5"
+  },
+  "devDependencies": {
+    "@vue/cli-plugin-babel": "5.0.8",
+    "@vue/cli-service": "5.0.8",
+    "webpack": "5.96.1"
+  },
+  "browserslist": [
+    "> 1%",
+    "last 2 versions",
+    "not dead"
+  ]
+}

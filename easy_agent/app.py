@@ -9,7 +9,6 @@ from easy_agent.bootstrap.env import env_bool
 import platform
 import sys
 import time
-import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -48,20 +47,27 @@ from easy_agent.knowledges.facade import knowledge_router
 from easy_agent.knowledges.personnel import router as personnel_router
 from easy_agent.agent.model import create_model
 from easy_agent.models.api import HealthResponse
+from easy_agent.models.exceptions import (
+    BadRequestError,
+    ConflictError,
+    DomainError,
+    NotFoundError,
+)
 from easy_agent.utils.paths import PROJECT_ROOT
-from easy_agent.services import (
+from easy_agent.utils.version_info import get_version_info
+from easy_agent.services.agents.manager import (
     drain_stream_tasks,
-    flush_all_stream_events,
     get_agent_config,
     init_agent_config,
 )
-from easy_agent.services import (
+from easy_agent.services.streaming.events import flush_all_stream_events
+from easy_agent.services.scheduler import (
     init_scheduler,
     reload_all_tasks,
     shutdown_scheduler,
     start_scheduled_task_reconcile,
 )
-from easy_agent.services.prompt_loader import (
+from easy_agent.services.agents.prompts import (
     configure_prompts_dir,
     get_prompts_dir,
     load_system_prompt,
@@ -74,12 +80,33 @@ from easy_agent.api import (
     auth_router,
     completion_router,
     prompts_router,
+    prompt_enhancement_router,
     settings_router,
     skill_center_router,
     connectors_router,
     scheduled_tasks_router,
     expert_router,
+    usage_router,
+    viz_router,
 )
+from easy_agent.services.metrics import snapshot_metrics
+from easy_agent.services.health import ping_database, workspace_writable
+from easy_agent.services.streaming.runs import start_run_recovery
+from easy_agent.services.sessions.upload_storage import preflight_upload_store
+from easy_agent.persistence.stores import reset_store
+from easy_agent.sandboxing.sandbox import log_sandbox_startup_report
+from easy_agent.bootstrap.runtime_features import check_multi_replica_startup
+from easy_agent.utils.auth import SECRET_FINGERPRINT, is_super_admin, validate_production_jwt_secret
+from easy_agent.persistence.checkpoints import shutdown_checkpointers
+from easy_agent.services.mcp.sessions import aclose_mcp_sessions
+from easy_agent.services.streaming.runs import stop_run_recovery
+from easy_agent.agent.hitl import register_execute_description_profiles
+from easy_agent.utils.deployment import (
+    deployment_errors,
+    deployment_warnings,
+    )
+from easy_agent.services.streaming.runs import recover_stale_runs
+from easy_agent.services.experts import public as public_expert_service
 
 # Web Terminal 依赖 pty（POSIX 专用），Windows 不支持，故不加载该模块
 terminal_router = None
@@ -201,6 +228,7 @@ def _log_startup_banner(agent_env: str, config_path) -> None:
     logger.info(f"项目目录: {PROJECT_ROOT}")
     logger.info(f"操作系统: {platform.system()} {platform.release()}")
     logger.info(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"版本: {get_version_info()['version']}")
     logger.info("=" * 60)
 
     # 打印环境信息和配置文件
@@ -251,7 +279,6 @@ async def _recover_stale_runs() -> None:
     不自动重新执行（执行器属于 Phase 2C）。任何异常只告警，不阻断启动。
     """
     try:
-        from easy_agent.services.run_registry import recover_stale_runs
 
         recovered = await asyncio.to_thread(recover_stale_runs, db_instance)
         if recovered:
@@ -267,10 +294,6 @@ async def _recover_stale_runs() -> None:
 def _check_deployment(agent_env: str) -> None:
     """部署形态 fail-fast：生产多 worker/副本 + SQLite = 运行期随机丢消息/锁表，
     这里在启动期直接拒绝（用户决策：生产强制 MySQL）。"""
-    from easy_agent.utils.deployment import (
-        deployment_errors,
-        deployment_warnings,
-    )
 
     db_type = getattr(db_instance, "db_type", "unknown")
     for msg in deployment_warnings(db_type=db_type, agent_env=agent_env, workers=None):
@@ -314,7 +337,6 @@ def _register_execute_profiles(config) -> None:
     """FW-04：execute 的 HITL 文案改由官方 HarnessProfile 注入（不再 monkeypatch
     FilesystemMiddleware）。启动期为配置中的每个模型注册一次；失败只报错，不阻断启动
     （首次建图前 agent.py 还会兜底重试）。"""
-    from easy_agent.agent.hitl import register_execute_description_profiles
 
     profile_keys = register_execute_description_profiles(config)
     if profile_keys:
@@ -330,7 +352,6 @@ def _log_public_experts() -> None:
     """公共（预置）专家目录：把「解析到哪个目录、来源是谁」打出来，
     出问题时能一眼看出是配置写错还是目录没挂上。"""
     try:
-        from easy_agent.services import public_expert_service
 
         public_experts = public_expert_service.discover_public_experts()
         if public_experts:
@@ -349,37 +370,57 @@ def _log_public_experts() -> None:
         logger.warning(f"⚠️ 公共专家目录扫描失败: {type(exc).__name__}: {exc}")
 
 
-async def _start_checkpointing(agent_env: str) -> None:
-    """FW-09：默认官方 checkpointer（auto：sqlite → legacy）。
+async def _start_checkpointing(agent_env: str, config) -> None:
+    """按 ``EASY_CHECKPOINT_BACKEND`` 打开 checkpointer（默认生产用自研 ``mysql_saver``）。
 
-    两种后端都不能跨副本共享，prod 多副本在启动期 fail-fast（可用
-    EASY_ALLOW_LEGACY_CHECKPOINTER=1 显式豁免），配置错误不再被静默吞掉。
+    三种后端的选择见 ``persistence/checkpoints.py::resolve_checkpoint_backend``：
+
+    - ``mysql_saver``：共享 MySQL 4 张表，所有 Pod 都能恢复同一 thread。**打开失败必须
+      fail-fast**——绝不回退到本地文件，否则会出现「Pod1 写库、Pod2 写本地」的数据
+      劈裂，比启动失败严重得多；
+    - ``sqlite``：官方 ``AsyncSqliteSaver``，dev/test/单机与生产回滚用；多副本时启动期
+      校验会 fail-fast（可用 ``EASY_ALLOW_LEGACY_CHECKPOINTER=1`` 显式豁免）；
+    - ``legacy``：进程内 ``MemorySaver``，仅供调试。
     """
-    from easy_agent.persistence.checkpoints import (
+    from easy_agent.persistence.checkpoints import (  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
+        BACKEND_MYSQL_SAVER,
         CheckpointDeploymentError,
+        resolve_checkpoint_backend,
         start_checkpoint_backend,
         start_checkpoint_gc,
     )
 
+    # 先解析（不建连）拿到后端种类：后面 catch 分支要靠它决定"能不能降级"。
+    # checkpoint.mysql 与 database.mysql 一起传：连接参数留空即复用业务库。
+    selection = resolve_checkpoint_backend(
+        sqlite_path=config.checkpoint.sqlite_path,
+        mysql_config=getattr(config.checkpoint, "mysql", None),
+        business_mysql=getattr(getattr(config, "database", None), "mysql", None),
+    )
     try:
-        checkpoint_backend = await start_checkpoint_backend(agent_env=agent_env)
+        checkpoint_backend = await start_checkpoint_backend(selection, agent_env=agent_env)
         logger.info(f"✅ HITL checkpointer 后端: {checkpoint_backend}")
     except CheckpointDeploymentError:
         raise
     except Exception as exc:  # noqa: BLE001
+        if selection.kind == BACKEND_MYSQL_SAVER:
+            # 共享后端不允许静默降级：降级后各 Pod 各写本地文件，会话跨 Pod 就断
+            raise CheckpointDeploymentError(
+                "HITL checkpointer（mysql_saver）启动失败，不回退本地 saver："
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
         logger.error(
-            "HITL checkpointer 启动失败，回退业务库 MemorySaver 快照: "
+            "HITL checkpointer 启动失败，回退进程内 MemorySaver: "
             f"{type(exc).__name__}: {exc}"
         )
-    # 删除会话时只有处理请求的进程能当场删 checkpoint；多副本下别的 pod 文件里的残留
-    # 由各自的后台对账补删（官方 SQLite saver 激活时才启动，shutdown_checkpointers 负责停）
+    # 删除会话时只有处理请求的进程能当场删 checkpoint；多副本下别的 pod 的残留由各自的
+    # 后台对账补删（共享后端激活时启动；shutdown_checkpointers 负责停）
     start_checkpoint_gc()
 
 
 async def _shutdown_services(app) -> None:
     """关闭顺序：停周期恢复 → 等流式任务结束 → 刷出事件 → 关 MCP、Store、checkpointer、知识库
     → 调度器与数据库。"""
-    from easy_agent.services.run_registry import stop_run_recovery
 
     await stop_run_recovery()
     await drain_stream_tasks()
@@ -390,16 +431,13 @@ async def _shutdown_services(app) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"flush SSE 事件写入器失败: {exc}")
     try:
-        from easy_agent.services.mcp_sessions import aclose_mcp_sessions
 
         await aclose_mcp_sessions()
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"关闭 MCP 持久 session 失败: {exc}")
-    from easy_agent.persistence.stores import reset_store
 
     reset_store()
     try:
-        from easy_agent.persistence.checkpoints import shutdown_checkpointers
 
         await shutdown_checkpointers()
     except Exception as exc:  # noqa: BLE001
@@ -422,13 +460,13 @@ async def lifespan(app: FastAPI):
 
     # B3：生产环境 JWT 密钥 fail-fast。必须在启动期（而非模块 import 期）校验，
     # 避免 pytest / 工具脚本仅 import 就失败；dev/test 保留 data/.jwt_secret 回退。
-    from easy_agent.utils.auth import validate_production_jwt_secret
 
     validate_production_jwt_secret(env=agent_env)
+    # 各副本 / worker 的指纹不一致时，别处签发的 token 在这里一律 401（拒绝日志会写明 kid 不符）
+    logger.info("[鉴权] JWT 签名密钥指纹: %s", SECRET_FINGERPRINT)
 
     # Phase 0：严格多副本门禁。默认关闭；Phase 2/3 完成前开启会明确失败，
     # 避免在 SSE/run/file/sandbox 尚未外置时误宣称多副本安全。
-    from easy_agent.bootstrap.runtime_features import check_multi_replica_startup
 
     check_multi_replica_startup(agent_env)
 
@@ -447,7 +485,6 @@ async def lifespan(app: FastAPI):
     # execute 才发现落进 fail-closed。探测结果有缓存，后续 shell 后端复用同一结论。
     # EASY_SANDBOX_STRICT=1 时沙箱不可用直接拒绝启动（放在 DB 初始化之前，避免
     # fail-fast 时留下未关闭的连接池）。
-    from easy_agent.sandboxing.sandbox import log_sandbox_startup_report
 
     log_sandbox_startup_report(
         sandbox_enabled=bool(
@@ -487,18 +524,16 @@ async def lifespan(app: FastAPI):
 
         _register_execute_profiles(config)
         _log_public_experts()
-        await _start_checkpointing(agent_env)
+        await _start_checkpointing(agent_env, config)
 
         # LangGraph Store 是业务库 SqlStore，首次使用时绑定业务库；先丢掉同一进程里
         # 之前缓存的实例（测试会在一个进程里换着业务库多次启动应用）
-        from easy_agent.persistence.stores import reset_store
 
         reset_store()
 
         # 对象存储 A：EASY_UPLOAD_BACKEND=store 时上传原始文件必须落 LangGraph
         # Store，这里做启动期 fail-closed 自检（local 模式为空操作）。宁可启动
         # 失败，也不要跑起来后每次上传都 503。
-        from easy_agent.services.upload_storage import preflight_upload_store
 
         preflight_upload_store()
 
@@ -508,7 +543,6 @@ async def lifespan(app: FastAPI):
 
     # 新 pod 往往在旧 pod 的 run 租约过期前就起来了，启动时那一轮扫不到，之后定期再扫。
     # 放在所有 fail-fast 检查之后：启动失败时不留下没人收尾的后台任务
-    from easy_agent.services.run_registry import start_run_recovery
 
     start_run_recovery()
 
@@ -535,7 +569,7 @@ app.add_middleware(MetricsMiddleware)
 
 
 def _get_client_ip(request: Request) -> str:
-    from easy_agent.utils.client_ip import get_client_ip as _ip
+    from easy_agent.utils.client_ip import get_client_ip as _ip  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
     return _ip(request)
 
@@ -548,6 +582,7 @@ _ACCESS_SKIP_PREFIXES = (
     "/openapi.json",
     "/static",
     "/assets",
+    "/agent/viz",
 )
 _ACCESS_SKIP_SUFFIXES = (
     ".js",
@@ -590,7 +625,7 @@ async def log_requests(request: Request, call_next):
         return response
     finally:
         duration = time.monotonic() - started
-        if path.startswith(("/api/knowledge/", "/api/personnel")):
+        if path.startswith(("/agent/knowledge/", "/agent/personnel")):
             metrics.observe(request.method, path, status_code, duration)
         if should_audit(path, request.method):
             db = getattr(request.app.state, "db", None)
@@ -610,64 +645,8 @@ async def log_requests(request: Request, call_next):
                     logger.exception("审计记录写入失败 | request_id=%s", request_id)
 
 
-# knowledge 可观测性中间件（additive）：只新增 request_id、X-Request-Id 响应头与
-# 日志；不修改响应体/状态码。仅当 knowledge 已启用且 audit.enabled 时，对
-# /agent/knowledge 请求写审计记录，写入失败只告警。
-@app.middleware("http")
-async def knowledge_observability(request: Request, call_next):
-    request_id = request.headers.get("X-Request-Id", "").strip()
-    if (
-        not request_id
-        or len(request_id) > 128
-        or "\r" in request_id
-        or "\n" in request_id
-    ):
-        request_id = str(uuid.uuid4())
-    request.state.request_id = request_id
-
-    started = time.perf_counter()
-    response = await call_next(request)
-    duration_ms = (time.perf_counter() - started) * 1000
-
-    response.headers["X-Request-Id"] = request_id
-    logger.info(
-        f"[响应] {request.method} {request.url.path} -> {response.status_code} "
-        f"| {duration_ms:.1f}ms | request_id={request_id}"
-    )
-
-    knowledge_config = getattr(request.app.state, "knowledge_config", None)
-    if (
-        knowledge_config is not None
-        and knowledge_config.enabled
-        and knowledge_config.audit.enabled
-        # 复用模块自身策略：只审计写入路径，跳过端点已单独审计的读路径
-        # （should_audit 排除 /capabilities、/status、/health、/metrics 等）。
-        and should_audit(request.url.path, request.method)
-    ):
-        try:
-            db = getattr(request.app.state, "db", None)
-            if db is not None:
-                await run_in_threadpool(
-                    KnowledgeOperationsRepository(db).record_audit,
-                    request_id=request_id,
-                    actor_user_id=str(
-                        getattr(request.state, "actor_user_id", "") or "anonymous"
-                    ),
-                    actor_username=str(
-                        getattr(request.state, "actor_username", "") or "anonymous"
-                    ),
-                    **audit_metadata(
-                        request.url.path,
-                        request.method,
-                        response.status_code,
-                        duration_ms / 1000,
-                    ),
-                    max_details_bytes=knowledge_config.audit.max_details_bytes,
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"知识库审计写入失败: {exc}")
-
-    return response
+# 请求 ID、X-Request-Id、访问日志与知识库审计统一由 log_requests 完成；
+# 不再叠加第二个同名中间件（旧实现会重复写审计并重复响应日志）。
 
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
@@ -685,6 +664,32 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     if request_id:
         headers.setdefault("X-Request-Id", str(request_id))
     return JSONResponse(status_code=exc.status_code, content=jsonable_encoder(payload), headers=headers)
+
+
+# ── 领域异常 → HTTP 映射（T11）────────────────────────────────────────
+# 数据库层 / 服务层只抛 easy_agent.models.exceptions 里的领域异常，不再 import
+# fastapi。这里有唯一一张映射表；响应体直接复用 http_exception_handler，
+# 因此 detail 文案、code（HTTP_<status>）、request_id 与迁移前逐字一致。
+_DOMAIN_ERROR_STATUS: dict[type[DomainError], int] = {
+    BadRequestError: 400,
+    NotFoundError: 404,
+    ConflictError: 409,
+}
+
+
+@app.exception_handler(DomainError)
+async def domain_exception_handler(request: Request, exc: DomainError):
+    """领域异常按 ``_DOMAIN_ERROR_STATUS`` 转成既有的 HTTP 错误体。"""
+    for cls in type(exc).__mro__:
+        status_code = _DOMAIN_ERROR_STATUS.get(cls)
+        if status_code is not None:
+            http_exc = StarletteHTTPException(
+                status_code=status_code, detail=exc.message
+            )
+            return await http_exception_handler(request, http_exc)
+    # 未登记的领域异常子类：交给全局 500 处理器（记录 traceback，
+    # 不把内部文案返回给客户端）
+    raise exc
 
 
 @app.exception_handler(RequestValidationError)
@@ -734,6 +739,7 @@ app.include_router(files_router)
 app.include_router(auth_router)
 app.include_router(completion_router)
 app.include_router(prompts_router)
+app.include_router(prompt_enhancement_router)
 app.include_router(settings_router)
 app.include_router(skill_center_router)
 app.include_router(connectors_router)
@@ -743,6 +749,9 @@ app.include_router(scheduled_tasks_router)
 app.include_router(knowledge_router)
 app.include_router(personnel_router)
 app.include_router(expert_router)
+app.include_router(usage_router)
+# 对话内可视化的沙箱框架页与图表库（不需要登录，见 api/viz.py）
+app.include_router(viz_router)
 
 
 @app.get("/agent/live", summary="存活检查（liveness）", response_model=HealthResponse)
@@ -751,23 +760,29 @@ async def liveness():
     return HealthResponse(status="live")
 
 
+@app.get("/agent/version", summary="部署版本")
+@app.get("/api/version", summary="部署版本")
+async def version_info():
+    return get_version_info()
+
+
 @app.get("/agent/health", summary="健康检查", response_model=HealthResponse)
 async def health_check():
     return await liveness()
 
 
 async def _readiness_payload() -> HealthResponse:
-    from easy_agent.services.health import ping_database, workspace_writable
 
-    db_ok, db_detail = ping_database(db_instance)
+    # 探针每隔几秒就来一次：查库和写盘检查都放进线程，库慢或盘慢时不拖住事件循环
+    db_ok, db_detail = await asyncio.to_thread(ping_database, db_instance)
     workspace_dir = "./workspace"
     try:
         cfg = get_agent_config()
         if cfg and cfg.get("config"):
             workspace_dir = cfg["config"].agent.workspace_dir
-    except Exception:
+    except Exception:  # noqa: S110 - 运行期配置缺失时按默认 workspace 目录探测可写性
         pass
-    ws_ok, ws_detail = workspace_writable(workspace_dir)
+    ws_ok, ws_detail = await asyncio.to_thread(workspace_writable, workspace_dir)
     ready = db_ok and ws_ok and agent_config is not None
     detail = ""
     if not db_ok:
@@ -799,13 +814,12 @@ async def readiness():
 async def runtime_metrics(
     username: str = Depends(get_current_username),
 ):
-    """进程内 RED 指标 JSON 快照；仅 admin 可读。
+    """进程内 RED 指标 JSON 快照；仅超级管理员可读。
 
     指标是进程内聚合的，多 worker/多副本需逐实例抓取后由外部汇总。
     """
-    if username != "admin":
+    if not is_super_admin(username):
         raise HTTPException(status_code=403, detail="仅管理员可以查看运行指标")
-    from easy_agent.services.metrics import snapshot_metrics
 
     return JSONResponse(content=snapshot_metrics())
 
@@ -836,7 +850,7 @@ async def api_get_config():
 @app.get("/", response_class=FileResponse)
 async def serve_frontend():
     index_html = os.path.join(frontend_dist, "index.html")
-    if os.path.exists(index_html):
+    if os.path.exists(index_html):  # noqa: ASYNC240 - 单次 stat，切线程开销更大
         # 入口 HTML 禁止缓存：打包产物文件名固定（/js/app.js），旧缓存会指向
         # 已下线的接口/入口，出现 405、旧界面等问题。
         return FileResponse(
@@ -901,11 +915,11 @@ async def serve_static(full_path: str, request: Request):
 
     # SEC-02：先解析再校验必须落在构建目录内。os.path.join 遇到绝对路径会丢掉
     # 前缀（``GET //etc/passwd``），``%2e%2e/`` 也能逃出目录。
-    dist_root = os.path.realpath(frontend_dist)
-    static_file = os.path.realpath(os.path.join(dist_root, full_path))
+    dist_root = os.path.realpath(frontend_dist)  # noqa: ASYNC240 - 单次路径解析，切线程开销更大
+    static_file = os.path.realpath(os.path.join(dist_root, full_path))  # noqa: ASYNC240 - 单次路径解析
     if not _is_within_dir(dist_root, static_file):
         return JSONResponse({"detail": "Not Found"}, status_code=404)
-    if os.path.isfile(static_file):
+    if os.path.isfile(static_file):  # noqa: ASYNC240 - 单次 stat，切线程开销更大
         # 静态产物文件名固定（/js/app.js）：no-cache 禁止启发式强缓存，
         # 强制走协商缓存（ETag/Last-Modified 变了即拉新），新版本部署后普通刷新即可生效。
         if (
@@ -934,7 +948,7 @@ async def serve_static(full_path: str, request: Request):
         return FileResponse(static_file, headers={"Cache-Control": "no-cache"})
 
     index_html = os.path.join(frontend_dist, "index.html")
-    if os.path.exists(index_html):
+    if os.path.exists(index_html):  # noqa: ASYNC240 - 单次 stat，切线程开销更大
         return FileResponse(
             index_html,
             headers={"Cache-Control": "no-cache, no-store, must-revalidate"},

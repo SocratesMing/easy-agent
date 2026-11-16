@@ -9,13 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from easy_agent.bootstrap.config import Config, DEFAULT_APP_WELCOME_TITLE
 from easy_agent.db.repositories.user_repository import UserRepository
-from easy_agent.knowledges.core.repository import KnowledgeRepository
-from easy_agent.middleware import get_current_username
-from easy_agent.middleware.auth import (
+from easy_agent.db.login_state import (
     clear_user_activity,
     get_user_activity_time,
-    get_user_repository,
     touch_user_activity,
+)
+from easy_agent.middleware import get_current_username
+from easy_agent.middleware.auth import (
+    get_user_repository,
 )
 from easy_agent.api.deps import as_user_repository as _as_user_repository
 from easy_agent.models.api import (
@@ -32,9 +33,10 @@ from easy_agent.models.api import (
     ResetPasswordRequest,
     AuthResponse,
 )
-from easy_agent.services import get_agent_config
-from easy_agent.utils import create_access_token, hash_password
+from easy_agent.services.agents.manager import get_agent_config
+from easy_agent.utils.auth import create_access_token, hash_password, is_super_admin
 from easy_agent.utils.auth import decode_access_token
+from easy_agent.utils.auth import ACCESS_TOKEN_EXPIRE_MINUTES
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +65,6 @@ def _get_token_lifetime() -> timedelta:
     配置为 0 时由 _token_never_expires() 签发无过期 token；
     其余情况保持默认 30 分钟有效期，接口调用会滑动续期后端登录缓存。
     """
-    from easy_agent.utils.auth import ACCESS_TOKEN_EXPIRE_MINUTES
 
     return timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 
@@ -87,7 +88,7 @@ def _get_context_length() -> int:
 
 
 def get_client_ip(request: Request) -> str:
-    from easy_agent.utils.client_ip import get_client_ip as _ip
+    from easy_agent.utils.client_ip import get_client_ip as _ip  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
     return _ip(request)
 
@@ -135,7 +136,7 @@ def register(
     # 注册即登录，同样缓存登录时间与活跃 IP
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = get_client_ip(http_request)
-    touch_user_activity(repo, user.username)
+    touch_user_activity(repo, user.username, force=True)
 
     try:
         user_workspace = Config.get_user_workspace_dir(user.username)
@@ -202,7 +203,7 @@ def login(
     # 缓存登录时间（供登出接口打印）与当前活跃 IP（供下次登录判断异地踢人）
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = client_ip
-    touch_user_activity(repo, user.username)
+    touch_user_activity(repo, user.username, force=True)
 
     context_length = _get_context_length()
 
@@ -237,19 +238,24 @@ def login_passwordless(
     新用户的 user_id 为 0/空时自动生成唯一 ID，否则使用传入值；
     传入的 user_id 已被其他用户占用时返回 400。供外部系统通过 URL
     携带用户名与用户ID 直登使用。
+
+    可选携带人员信息（姓名/工号/部门/处室/团队/邮箱/岗位/手机号）：
+    新用户直接写入，已存在用户只补空值，不覆盖人员管理里已有的数据。
     """
     repo = _as_user_repository(db)
     cfg = get_agent_config()
     policy = getattr(cfg.get("config"), "personnel", None) if cfg else None
     if not getattr(policy, "passwordless_login_enabled", False):
         raise HTTPException(status_code=403, detail="当前环境未开启门户免密登录，请使用账号密码登录")
-    # admin 拥有用户管理权限，禁止免密登录，防止仅凭用户名冒充管理员
+    # 内置 admin 拥有用户管理权限，禁止免密登录，防止仅凭用户名冒充管理员；
+    # liufengbao 作为免密门户部署的总管理员，允许免密登录。
     if request.username == "admin":
         raise HTTPException(status_code=403, detail="admin 用户不支持免密登录")
 
     user, created = repo.get_or_create_passwordless_user(
         username=request.username,
         user_id=request.user_id,
+        profile=request.model_dump(exclude={"username", "user_id"}),
     )
     if not user:
         raise HTTPException(status_code=400, detail="用户ID已被其他用户使用")
@@ -271,7 +277,7 @@ def login_passwordless(
 
     _login_time_cache[user.username] = datetime.now()
     _active_login_ip[user.username] = client_ip
-    touch_user_activity(repo, user.username)
+    touch_user_activity(repo, user.username, force=True)
 
     if created:
         # 与注册接口一致：为免密新用户创建 workspace 目录
@@ -424,11 +430,11 @@ def reset_password(
     db: Annotated[UserRepository, Depends(get_user_repository)],
 ):
     repo = _as_user_repository(db)
-    if username != "admin":
+    if not is_super_admin(username):
         raise HTTPException(status_code=403, detail="仅管理员可以重置密码")
 
-    if request.username == "admin":
-        raise HTTPException(status_code=400, detail="admin 用户不支持默认密码重置，请使用正常修改密码流程")
+    if is_super_admin(request.username):
+        raise HTTPException(status_code=400, detail="管理员账号不支持默认密码重置，请使用正常修改密码流程")
     user = repo.get_user_by_username(request.username)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -458,7 +464,7 @@ def list_users(
     username: Annotated[str, Depends(get_current_username)],
 ):
     repo = _as_user_repository(db)
-    if username != "admin":
+    if not is_super_admin(username):
         raise HTTPException(status_code=403, detail="仅管理员可以查看用户列表")
 
     total = repo.count_users()
@@ -487,15 +493,12 @@ def admin_reset_password(
     admin_username: Annotated[str, Depends(get_current_username)],
     db: Annotated[UserRepository, Depends(get_user_repository)],
 ):
-    repo = _as_user_repository(db)
-    operator = repo.get_user_by_username(admin_username)
-    if admin_username != "admin" and (
-        not operator or not KnowledgeRepository(repo.database).is_team_space_manager(operator.user_id)
-    ):
-        raise HTTPException(status_code=403, detail="仅 admin 或公共空间管理员可以重置密码")
-    if username == "admin":
+    if not is_super_admin(admin_username):
+        raise HTTPException(status_code=403, detail="仅管理员可以重置密码")
+    if is_super_admin(username):
         raise HTTPException(status_code=400, detail="管理员密码不能重置为默认密码")
 
+    repo = _as_user_repository(db)
     user = repo.get_user_by_username(username)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")

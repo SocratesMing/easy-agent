@@ -4,15 +4,16 @@
 
 - **本模块**：只服务专家 CRUD 接口（``api/expert.py``）——记录 →对外结构转换、
   配置与标签读取、重名校验、LLM 生成后落库；
-- **``services/expert_runtime.py``**：专家对话运行时（提示词加载、职责边界护栏、
+- **``services/experts/runtime.py``**：专家对话运行时（提示词加载、职责边界护栏、
   相关性预检、短路拒答、消息落库）。聊天主链路与专家接口都要用，故下沉到 services，
   避免 ``api/chat.py`` 与 ``api/expert.py`` 互相 import。
 
 依赖方向：本模块**不 import ``api.expert``**（避免循环），旧内部名字经
 ``__all__`` re-export 继续可用（``expert_api._to_public`` 等）；运行时函数从
-``services.expert_runtime`` 原样转发，历史调用点（``_load_expert_prompt`` 等）不破。
+``services.experts.runtime`` 原样转发，历史调用点（``_load_expert_prompt`` 等）不破。
 """
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -24,10 +25,10 @@ from easy_agent.db.expert_store import (
 )
 from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.agent.model import create_model
-from easy_agent.services import (
-    get_agent_config,
-)
-from easy_agent.services.expert_runtime import (  # noqa: F401 - re-export 历史名字
+from easy_agent.services.agents.manager import get_agent_config
+from easy_agent.services.usage import resolve_usage_identity
+from easy_agent.utils.usage_context import usage_scope
+from easy_agent.services.experts.runtime import (  # noqa: F401 - re-export 历史名字
     _as_str_list,
     _current_user_id,
     _expert_flags,
@@ -44,7 +45,7 @@ from easy_agent.services.expert_runtime import (  # noqa: F401 - re-export 历�
     _session_logger_for,
     _with_guardrail,
 )
-from easy_agent.services.expert_service import (
+from easy_agent.services.experts.service import (
     generate_expert_config,
     slugify,
     write_expert_version,
@@ -158,12 +159,14 @@ async def _generate_and_store(
     tag_options = _tag_options(config)
     try:
         llm = create_model(config, model_name, session_id)
-        generated = await generate_expert_config(
-            llm, name_cn, user_prompt, tag_options=tag_options
-        )
+        identity = await resolve_usage_identity(username, session_id)
+        with usage_scope(identity.user_id if identity else None, identity.session_id if identity else None):
+            generated = await generate_expert_config(
+                llm, name_cn, user_prompt, tag_options=tag_options
+            )
     except Exception as exc:  # noqa: BLE001
         logger.error("专家配置生成失败 | expert=%s | %s", expert_agent_id, exc)
-        store.update_fields(expert_agent_id, {"agent_status": STATUS_FAILED})
+        await asyncio.to_thread(store.update_fields, expert_agent_id, {"agent_status": STATUS_FAILED})
         raise HTTPException(status_code=500, detail=f"专家配置生成失败：{exc}") from exc
 
     # 英文标识名：优先用 LLM 生成的 name_en（如 stock-invest-advisor），
@@ -183,13 +186,13 @@ async def _generate_and_store(
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("专家版本目录写入失败 | expert=%s | %s", expert_agent_id, exc)
-        store.update_fields(expert_agent_id, {"agent_status": STATUS_FAILED})
+        await asyncio.to_thread(store.update_fields, expert_agent_id, {"agent_status": STATUS_FAILED})
         raise HTTPException(status_code=500, detail=f"专家配置落盘失败：{exc}") from exc
 
     # 大模型自动归类：生成的 tag_id 有效时覆盖创建时传入的值；
     # 无效/缺失（模型没选或选了候选之外的标签）时保留原值不动。
     generated_tag = generated.get("tag_id") or ""
-    current_tag = (store.get(expert_agent_id) or {}).get("tag_id", "")
+    current_tag = (await asyncio.to_thread(store.get, expert_agent_id) or {}).get("tag_id", "")
 
     fields = {
         "export_file_path": file_path,
@@ -204,6 +207,6 @@ async def _generate_and_store(
     if name_en:
         # LLM 生成了更贴切的英文标识名，回写覆盖创建时的占位 slug
         fields["export_name_en"] = name_en
-    store.update_fields(expert_agent_id, fields)
-    return store.get(expert_agent_id) or {}
+    await asyncio.to_thread(store.update_fields, expert_agent_id, fields)
+    return await asyncio.to_thread(store.get, expert_agent_id) or {}
 

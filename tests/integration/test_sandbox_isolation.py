@@ -14,9 +14,11 @@ from types import SimpleNamespace
 import easy_agent.agent.workspace as agent_workspace_mod
 import easy_agent.backends.shell as sandbox_shell_mod
 import easy_agent.agent.hitl as hitl_mod
+import easy_agent.sandboxing.command_policy as command_policy
 import easy_agent.sandboxing.landlock as landlock_mod
 from deepagents.backends import LocalShellBackend
 from easy_agent.agent import _PathTranslatingShell
+from easy_agent.backends.scoped_skills import ScopedSkillsBackend
 from deepagents.backends.protocol import ExecuteResponse
 
 
@@ -144,8 +146,8 @@ def test_windows_deletion_commands_are_recognized():
     )
 
     assert hitl_mod._is_destructive_command(file_deletion) is True
-    assert hitl_mod._is_directory_deletion("rd /s /q C:\\dir") is True
-    assert hitl_mod._is_directory_deletion(
+    assert command_policy.is_directory_deletion("rd /s /q C:\\dir") is True
+    assert command_policy.is_directory_deletion(
         "powershell Remove-Item -Recurse -Force C:\\dir"
     ) is True
 
@@ -300,10 +302,12 @@ def test_build_backend_uses_local_shell_for_each_directory(tmp_path):
 
     # DA-04：default 是框架产物目录 + 转发 execute 的会话 shell
     assert isinstance(backend.default.shell, LocalShellBackend)
+    # /user-skills/ 是按技能作用域过滤读操作的 ScopedSkillsBackend（LocalShellBackend 子类）
     assert all(
-        type(route_backend) is LocalShellBackend
+        isinstance(route_backend, LocalShellBackend)
         for route_backend in backend.routes.values()
     )
+    assert isinstance(backend.routes["/user-skills/"], ScopedSkillsBackend)
     assert backend.routes["/workspace/"].cwd == workspace.resolve()
     assert backend.routes["/user-skills/"].cwd == skills_dir.resolve()
     assert backend.routes["/external/"].cwd == external_dir.resolve()

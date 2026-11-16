@@ -10,6 +10,7 @@ import logging
 
 from easy_agent.db import migrations as mig
 from easy_agent.db.database import Database
+from easy_agent.db.repositories.message_repository import MessageRepository
 
 
 def _make_db(path) -> Database:
@@ -52,7 +53,7 @@ def _legacy_session(db, sid, blob, rows=None):
 
 
 def _contents(db, sid):
-    return [m["content"] for m in db.get_messages(sid)]
+    return [m["content"] for m in MessageRepository(db).get_messages(sid)]
 
 
 def _raw_blob(db, sid):
@@ -70,8 +71,8 @@ def test_restart_keeps_messages_added_after_a2(tmp_path, monkeypatch):
     path = tmp_path / "legacy.db"
     db = _old_db(path, monkeypatch)
     _legacy_session(db, "s1", OLD)
-    db.add_message("s1", _msg("user", "新问题"))
-    db.add_message("s1", _msg("assistant", "新回答"))
+    MessageRepository(db).add_message("s1", _msg("user", "新问题"))
+    MessageRepository(db).add_message("s1", _msg("assistant", "新回答"))
 
     restarted = _make_db(path)
     assert _contents(restarted, "s1") == ["旧问题", "旧回答", "新问题", "新回答"]

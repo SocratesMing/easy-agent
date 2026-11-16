@@ -1,4 +1,4 @@
-"""公共（预置）专家目录服务（services/public_expert_service.py）的测试。
+"""公共（预置）专家目录服务（services/experts/public.py）的测试。
 
 覆盖点：
 
@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-import easy_agent.services.agent_manager as agent_manager
-from easy_agent.services import public_expert_service as P
+import easy_agent.services.agents.manager as agent_manager
+from easy_agent.services.experts import public as P
 
 
 @pytest.fixture()

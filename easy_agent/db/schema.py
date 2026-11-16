@@ -22,6 +22,8 @@ from easy_agent.db.migrations import (
 )
 
 from easy_agent.db.migration_lock import schema_migration_lock
+from easy_agent.db.schema_registry import run_schema_initializers
+from easy_agent.db.user_fields_registry import ensure_user_fields
 
 logger = logging.getLogger("easy_agent.db.schema")
 
@@ -30,10 +32,16 @@ logger = logging.getLogger("easy_agent.db.schema")
 # 否则已经升级过的库会一直命中「结构已是最新」的快速启动路径，变更不会生效。
 # 见 init_tables()：版本一致时跳过整轮建表 + 补列 + 建索引探测（MySQL 上这一步
 # 过去要 40+ 次网络往返，多副本部署时每个 pod 启动都要跑一遍，是启动慢的主因）。
-# 10：knowledge_source_sync_items（b65aff4）；11：表精简（b7bfe69）；12：再退役 3 张空表；
+# 10：knowledge_source_sync_items（b65aff4）；11：知识库 batch_id 列（0f79e70）
+# 与表精简（b7bfe69）撞号；12：再退役 3 张空表（edcc851）；
 # 13：再退役 8 张代码不再读写的表（旧 market key、行情数据、旧版知识库模块）。
-# 撞号的库会走快速路径、跳过新的变更，改之前先看远端有没有用过这个号。
-SCHEMA_VERSION = 13
+# 14：合并 rag-1018 与 audit-improvements：两侧都用过 13，统一再 +1，
+# 否则任一侧的旧库会命中快速路径、跳过另一侧的变更。
+# 15：恢复 agent_checkpoints，用于共享 MySQL HITL 状态快照。
+# 17：逐模型调用 Token 账本（独立于会话生命周期）。
+# 18：删除 agent_checkpoints。HITL checkpoint 改由 persistence/mysql_saver.py 的
+#     4 张 cp_* 表承载（协议级 split-blob），旧的全量快照后端整体下线，表一并退役。
+SCHEMA_VERSION = 18
 # utf8mb4 复合主键必须 ≤ 3072 字节：(512 + 191) * 4 = 2812。
 LANGGRAPH_STORE_NS_LEN = 512
 LANGGRAPH_STORE_KEY_LEN = 191
@@ -62,11 +70,13 @@ EXPECTED_TABLES = (
     "knowledge_document_objects",
     "knowledge_operations",
     "knowledge_audit_events",
+    "knowledge_department_managers",
     "knowledge_source_sync_items",
     "expert_agents",
     "rate_limit_counters",
     "stream_events",
     "agent_runs",
+    "token_usage",
 )
 
 
@@ -101,6 +111,7 @@ def _create_sessions_table(db, cursor, messages_type):
         cursor, "sessions", "workspace_name", "VARCHAR(255) DEFAULT ''"
     )
     _ensure_column(db, cursor, "sessions", "pinned", "INTEGER DEFAULT 0")
+    _ensure_column(db, cursor, "sessions", "archived", "INTEGER NOT NULL DEFAULT 0")
 
     if db.db_type == "mysql":
         # 只在实际类型不满足时改列：MODIFY 会重建整表，sessions 表较大时
@@ -111,8 +122,11 @@ def _create_sessions_table(db, cursor, messages_type):
                 cursor.execute(
                     "ALTER TABLE sessions MODIFY COLUMN messages LONGTEXT NOT NULL"
                 )
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - 加宽失败只告警，不阻断启动
+                # 锁等待超时 / 权限不足时这里会失败，列没加宽要等到写长消息报 1406 才暴露。
+                logger.warning(
+                    "MySQL 列加宽失败 | sessions.messages -> LONGTEXT | %s", exc
+                )
 
     _ensure_column(db, cursor, "sessions", "todos", "TEXT DEFAULT NULL")
     # 列表不再对 session_messages 做逐行 COUNT；插入/删除消息时维护这一列。
@@ -155,8 +169,10 @@ def _create_session_messages_table(db, cursor, auto_inc):
                 cursor.execute(
                     "ALTER TABLE session_messages MODIFY COLUMN content MEDIUMTEXT"
                 )
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - 加宽失败只告警，不阻断启动
+                logger.warning(
+                    "MySQL 列加宽失败 | session_messages.content -> MEDIUMTEXT | %s", exc
+                )
         if "mediumtext" not in _column_type(db, 
             cursor, "session_messages", "extra_data"
         ):
@@ -164,8 +180,10 @@ def _create_session_messages_table(db, cursor, auto_inc):
                 cursor.execute(
                     "ALTER TABLE session_messages MODIFY COLUMN extra_data MEDIUMTEXT"
                 )
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - 加宽失败只告警，不阻断启动
+                logger.warning(
+                    "MySQL 列加宽失败 | session_messages.extra_data -> MEDIUMTEXT | %s", exc
+                )
 
 def _create_files_tables(db, cursor, auto_inc):
     cursor.execute(f"""
@@ -255,7 +273,6 @@ def _create_users_table(db, cursor):
     # 空闲超时：最近一次接口调用时间（Unix 时间戳）。持久化到共享数据库，
     # 保证 uvicorn 多 worker（--workers > 1）下各进程读到一致的登录活跃状态。
     _ensure_column(db, cursor, "users", "last_activity_at", "REAL")
-    from easy_agent.db.user_fields_registry import ensure_user_fields
 
     ensure_user_fields(db, cursor)
 
@@ -428,13 +445,15 @@ def _create_langgraph_store_table(db, cursor):
 # market_mcp_api_keys：旧的 market 业务 key 表，key 统一放在 mcp_api_keys 之后不再使用。
 # forex_rates / precious_metals：tests/helpers/download_market_data.py 灌的行情数据，后端不读不写。
 # session_llm 不在这里：本应用从没建过这张表，归属确认之前不删。
+# agent_checkpoints：2026-11-06 引入的"业务库全量快照"HITL 后端（SCHEMA_VERSION=15），
+# 已由 cp_* 4 张表取代，代码里不再有任何读写，升级时删表回收空间。
 _RETIRED_TABLES = (
+    "agent_checkpoints",
     "fmqt_lock",
     "fmqt_bloom",
     "fmqt_bloom_analysis",
     "tool_call_records",
     "thinking_records",
-    "agent_checkpoints",
     "uploaded_file",
     "user_ip",
     "tool_call_record",
@@ -470,8 +489,8 @@ def _drop_retired_indexes(db, cursor) -> None:
                 cursor.execute(f"DROP INDEX `{index}` ON `{table}`")
             else:
                 cursor.execute(f"DROP INDEX IF EXISTS `{index}`")
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001 - 索引本就不存在（新库）即目标状态
+            logger.debug("跳过删除废弃索引 | %s.%s | %s", table, index, exc)
 
 
 def _backfill_message_counts(db, cursor) -> None:
@@ -489,7 +508,7 @@ def _backfill_message_counts(db, cursor) -> None:
 
 def _create_distributed_lock_table(db, cursor):
     # 分布式锁表：多实例（多 pod）部署下防止同一任务被重复处理，
-    # 见 easy_agent/utils/distributed_lock.py。lock_key 为主键，抢锁即
+    # 见 easy_agent/persistence/distributed_lock.py。lock_key 为主键，抢锁即
     # 「插入行 / 已过期则改写 owner」，插入失败即表示锁被其它实例占用。
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS distributed_locks (
@@ -601,8 +620,30 @@ def _init_tables_full(db, cursor):
     _create_session_runtime_table(db, cursor)
     _create_stream_events_table(db, cursor)
     _create_agent_runs_table(db, cursor)
+    _create_token_usage_table(db, cursor)
     _create_langgraph_store_table(db, cursor)
     _create_expert_tables(db, cursor)
+
+
+def _create_token_usage_table(db, cursor):
+    """核心账本建表失败须中断升级，不经领域 schema 注册器吞掉异常。"""
+    binary = " CHARACTER SET utf8mb4 COLLATE utf8mb4_bin" if db.db_type == "mysql" else ""
+    engine = " ENGINE=InnoDB" if db.db_type == "mysql" else ""
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS token_usage (
+            event_id VARCHAR(64){binary} NOT NULL PRIMARY KEY,
+            user_id VARCHAR(255){binary} NOT NULL,
+            session_id VARCHAR(255) NULL,
+            model_key VARCHAR(128){binary} NOT NULL,
+            model_name VARCHAR(255){binary} NOT NULL,
+            completed_at_ms BIGINT NOT NULL,
+            usage_date VARCHAR(10) NOT NULL,
+            input_tokens BIGINT NOT NULL,
+            output_tokens BIGINT NOT NULL
+        ){engine}
+    """)
+    _create_index(db, cursor, "idx_token_usage_user_completed", "token_usage", "user_id, completed_at_ms")
+    _create_index(db, cursor, "idx_token_usage_user_date", "token_usage", "user_id, usage_date")
 
 def _create_expert_tables(db, cursor):
     """专家 Agent 表 expert_agents（见 docs/expert-agent-solution.md §3.1）。
@@ -614,7 +655,7 @@ def _create_expert_tables(db, cursor):
     - ``export_required_skills``：专家**绑定的技能包目录名**（JSON 字符串数组），
       创建 / 修改专家时由用户在输入框选定的技能包写入（``save_expert`` 落库）。
       与 ``export_skills_names``（展示标签）完全不同：这里是真实技能目录名，
-      对话时按它做技能作用域硬隔离，见 ``services/tool_scope.py``；
+      对话时按它做技能作用域硬隔离，见 ``services/agents/tool_scope.py``；
     - ``export_description``：专家主要功能描述（大模型生成，≤300 字），
       用于卡片与详情页展示；
     - ``tag_id``：分类标签，由大模型在配置的 ``expert_tags`` 候选中选一个，
@@ -648,9 +689,6 @@ def _create_expert_tables(db, cursor):
     _create_index(db,
         cursor, "idx_expert_agents_user", "expert_agents", "user_id"
     )
-    _create_index(db, 
-        cursor, "idx_expert_agents_status", "expert_agents", "agent_status"
-    )
     # 存量库补列：专家绑定的技能包目录名（JSON 数组），SCHEMA_VERSION=11 起
     _ensure_column(db, cursor, "expert_agents", "export_required_skills", "TEXT")
 
@@ -658,7 +696,6 @@ def _create_expert_tables(db, cursor):
     # 依赖方向 db -> schema_registry <- knowledges，避免 db 反向 import 领域模块。
     # 注意：knowledge 表结构变更仍需 bump SCHEMA_VERSION（见
     # tests/db/test_knowledge_schema_init.py）。
-    from easy_agent.db.schema_registry import run_schema_initializers
 
     run_schema_initializers(db, cursor)
 

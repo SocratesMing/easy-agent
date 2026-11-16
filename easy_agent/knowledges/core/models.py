@@ -60,6 +60,13 @@ class DocumentStatus(str, Enum):
     UNKNOWN = "unknown"
 
 
+# 仍需从上游刷新解析状态的文档状态：终态（ready/failed/cancelled 等）不再轮询。
+REFRESHABLE_DOCUMENT_STATUSES: tuple[str, ...] = (
+    DocumentStatus.PENDING.value,
+    DocumentStatus.PROCESSING.value,
+)
+
+
 class OperationType(str, Enum):
     DATASET_CREATE = "dataset_create"
     DOCUMENT_UPLOAD = "document_upload"
@@ -215,9 +222,13 @@ class TeamSpaceManagementCapability(ContractModel):
     departments: list[TeamSpaceDepartmentSummary] = Field(default_factory=list)
 
 
-class TeamSpaceManagerSummary(ContractModel):
+# ---------------------------------------------------------------------------
+# 知识库管理员
+# ---------------------------------------------------------------------------
+class DepartmentManagerSummary(ContractModel):
+    id: str
     user_id: str
-    username: str
+    username: str = ""
     display_name: str = ""
     department_id: str
     department_name: str = ""
@@ -227,18 +238,30 @@ class TeamSpaceManagerSummary(ContractModel):
     updated_at: datetime
 
 
-class TeamSpaceManagerListResponse(ContractModel):
-    items: list[TeamSpaceManagerSummary] = Field(default_factory=list)
+class DepartmentManagerListResponse(ContractModel):
+    items: list[DepartmentManagerSummary] = Field(default_factory=list)
 
 
-class TeamSpaceManagerUpdateRequest(ContractModel):
-    enabled: StrictBool
+class DepartmentManagerGrantRequest(ContractModel):
+    user_id: str = Field(min_length=1, max_length=255)
+
+    @field_validator("user_id")
+    @classmethod
+    def user_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("user_id 不能为空")
+        return stripped
 
 
-class TeamSpaceManagerUpdateResponse(ContractModel):
+class DepartmentManagerGrantResponse(ContractModel):
+    manager: DepartmentManagerSummary
+
+
+class DepartmentManagerRevokeResponse(ContractModel):
     user_id: str
-    enabled: StrictBool
-    manager: TeamSpaceManagerSummary | None = None
+    department_id: str
+    revoked: StrictBool
 
 
 class KnowledgeBaseListResponse(ContractModel):
@@ -328,6 +351,7 @@ class DocumentSummary(ContractModel):
     # 业务元数据（文档 SQL 同步写入）
     source: str | None = None
     source_record_id: str | None = None
+    batch_id: str | None = None
     report_title: str | None = None
     report_tag: str | None = None
     report_second_source: str | None = None
@@ -415,6 +439,7 @@ class PermissionDirectoryUser(ContractModel):
     department_name: str = ""
     division_name: str = ""
     team_name: str = ""
+    position: str = ""
 
 
 class PermissionDirectoryListResponse(ContractModel):
@@ -440,6 +465,7 @@ class DocumentMetadata(ContractModel):
 
     source: str = Field(default="source_sync", max_length=127)
     source_record_id: str = Field(min_length=1, max_length=255)
+    batch_id: str = Field(default="", max_length=255)
     report_title: str = Field(default="", max_length=255)
     report_tag: str = Field(default="", max_length=127)
     report_second_source: str = Field(default="", max_length=127)
@@ -575,6 +601,11 @@ __all__ = [
     "AskRequest",
     "AskResponse",
     "ConversationTurn",
+    "DepartmentManagerGrantRequest",
+    "DepartmentManagerGrantResponse",
+    "DepartmentManagerListResponse",
+    "DepartmentManagerRevokeResponse",
+    "DepartmentManagerSummary",
     "DocumentListResponse",
     "DocumentMoveRequest",
     "DocumentStatus",
@@ -606,16 +637,13 @@ __all__ = [
     "PermissionReplaceRequest",
     "PermissionDirectoryListResponse",
     "PermissionDirectoryUser",
+    "REFRESHABLE_DOCUMENT_STATUSES",
     "RetrieveRequest",
     "RetrieveResponse",
     "SessionKnowledgeScopeRequest",
     "SessionKnowledgeScopeResponse",
     "TeamSpaceDepartmentSummary",
     "TeamSpaceManagementCapability",
-    "TeamSpaceManagerListResponse",
-    "TeamSpaceManagerSummary",
-    "TeamSpaceManagerUpdateRequest",
-    "TeamSpaceManagerUpdateResponse",
 ]
 
 

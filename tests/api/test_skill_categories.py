@@ -11,7 +11,10 @@ from pathlib import Path
 import pytest
 
 from easy_agent.agent import builtin_skills
-from easy_agent.services import skill_categories, skill_library
+from easy_agent.services.skills import (
+    categories as skill_categories,
+    library as skill_library,
+)
 
 SKILLS_ROOT = Path(os.environ["TEST_SKILLS_DIR"])
 BASE = "/agent/skill-center"

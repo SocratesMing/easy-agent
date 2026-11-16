@@ -2,7 +2,7 @@
 
 - 事件名集合 = 注册表 = ``SSEEvent`` 常量；
 - ``docs/sse-events.md`` 与注册表一致；
-- 生产者不手写 frame：只有 ``services/sse.py`` 可以出现 ``data: {...}``；
+- 生产者不手写 frame：只有 ``services/streaming/sse.py`` 可以出现 ``data: {...}``；
 - 生产者引用的事件常量全部在注册表中，且注册表里的每个事件都有生产端引用；
 - ``error`` / ``approval_required`` / ``done`` 的字段契约（含字段顺序）一致；
 - 迁移后的生产者 frame 与迁移前逐字节等价。
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from easy_agent.services.sse import (
+from easy_agent.services.streaming.sse import (
     EVENT_SPECS,
     SSE_EVENT_TYPES,
     SSEEvent,
@@ -24,7 +24,7 @@ from easy_agent.services.sse import (
     parse_sse_frame,
     validate_event,
 )
-from easy_agent.services.sse_emitter import SSEEmitter, sse_stream
+from easy_agent.services.streaming.emitter import SSEEmitter, sse_stream
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -32,9 +32,9 @@ ROOT = Path(__file__).resolve().parents[2]
 # P1 编排器 / stream_processor 产事件 dict；sse_emitter 是统一出口；
 # chat_bridge 只产 knowledge_evidence 事件 dict。
 PRODUCERS = [
-    "easy_agent/services/stream_processor.py",
+    "easy_agent/services/streaming/processor.py",
     "easy_agent/services/streaming/orchestrator.py",
-    "easy_agent/services/sse_emitter.py",
+    "easy_agent/services/streaming/emitter.py",
     "easy_agent/api/chat.py",
     "easy_agent/api/expert.py",
     "easy_agent/knowledges/chat/streaming.py",

@@ -4,7 +4,7 @@
 > [`docs/architecture-current.md`](docs/architecture-current.md) 为准；本次后端目录
 > 已按职责重组为 `agent/`、`bootstrap/`、`persistence/`、`sandboxing/`、`security/`
 > 等子包（见 [`docs/archive/design/2026-10-18-backend-directory-reorg.md`](docs/archive/design/2026-10-18-backend-directory-reorg.md)）。
-> 当前后端托管 `frontend-vue2/`（Vue 2.7 + Element UI），同时维护 `frontend/`
+> 当前后端托管 `frontend-vue2/`（Vue 2.6.3 + Element UI），同时维护 `frontend/`
 > （Vue 3.5 + Vite）；运行时技能 7 个；DeepAgents 0.7 兼容；已有 Dockerfile /
 > docker-compose / k8s / CI。新增配置键请同步 `config-example.yaml` 并跑
 > `python scripts/quality/check_config_schema.py --check`。
@@ -28,7 +28,7 @@ Easy Agent 是一个开箱即用的 AI Agent 平台，让大模型能够：
 - 由模型自行识别用户意图并创建定时任务
 - 管理员可通过网页终端（Web Terminal，默认关闭）直接操作宿主机 shell
 
-前后端一体化部署：后端 FastAPI 提供 REST + SSE 流式接口。当前后端托管 `frontend-vue2/`（Vue 2.7 + Element UI + Vue CLI）构建产物，同时维护 `frontend/`（Vue 3.5 + Vite）第二基线。
+前后端一体化部署：后端 FastAPI 提供 REST + SSE 流式接口。当前后端托管 `frontend-vue2/`（Vue 2.6.3 + Element UI + Vue CLI）构建产物，同时维护 `frontend/`（Vue 3.5 + Vite）第二基线。
 
 后端已针对**多副本容器部署**做了基础外置：SSE 事件持久化/跨 Pod 回放、run 租约与中断恢复、数据库迁移串行锁、上传原始文件可落 LangGraph Store；HITL checkpoint 用官方 SQLite saver，多副本时每个 pod 一个文件、靠 Ingress 粘性会话；`agent/` 负责运行时装配，`bootstrap/` 负责启动/配置，`persistence/` 负责持久化适配，职责边界清晰。
 
@@ -38,7 +38,7 @@ Easy Agent 是一个开箱即用的 AI Agent 平台，让大模型能够：
 
 | 模块 | 能力 |
 |------|------|
-| 多模型支持 | DeepSeek、Anthropic、OpenAI、火山方舟等，可热切换 |
+| 多模型支持 | DeepSeek、通义千问、火山方舟、OpenAI 等 OpenAI 兼容接口，可热切换 |
 | 多会话管理 | 会话隔离、上下文压缩、会话耗时/迭代统计 |
 | 文件工具 | 上传/下载/预览/生成（docx、pdf、pptx、xlsx、图片、代码） |
 | 网页终端 | 基于 xterm.js 的宿主机 Shell：默认关闭，`EASY_WEB_TERMINAL_ENABLED=1` 开启，仅 admin 可用 |
@@ -83,7 +83,7 @@ easy-agent/
 │   ├── config/                   # config.yaml 模板 + prompts（资源目录）
 │   └── skills/                   # 包内技能回退副本
 │
-├── frontend-vue2/                # 当前托管前端（Vue 2.7）
+├── frontend-vue2/                # 当前托管前端（Vue 2.6.3）
 ├── frontend/                     # 第二前端基线（Vue 3.5 + Vite）
 ├── skills/                       # canonical 运行时技能（7 个）
 ├── experts/                      # 预置专家
@@ -185,10 +185,9 @@ python scripts/db/migrate_db.py
 EASY_AUTO_MIGRATE=0
 EASY_MIGRATION_LOCK_TIMEOUT=120
 
-# HITL checkpointer：官方 SQLite saver，文件在仓库根 data/ 下（不能放 NAS）
-# 多副本时每个 pod 一个文件（{pod} 换成实例名），并在 Ingress 配好 cookie 粘性会话后打开 EASY_STICKY_SESSIONS
+# 多副本 HITL checkpoint：共享 MySQL 快照，Pod 重建后审批仍可恢复
+EASY_CHECKPOINT_BACKEND=mysql
 # LangGraph Store 固定用业务库 SqlStore，无需配置
-EASY_CHECKPOINT_SQLITE_PATH=data/checkpoints/{pod}.db
 EASY_STICKY_SESSIONS=1
 
 # 上传原始文件落数据库 LangGraph Store（local 默认，不改变现有行为）
@@ -219,8 +218,8 @@ model: "deepseek"
 
 models:
   deepseek:
-    provider: "deepseek"     # deepseek | anthropic | openai | ark | minimax
-    protocol: "openai"       # openai | anthropic
+    provider: "deepseek"     # 网关名：deepseek | opencode | openai | minimax 等
+    protocol: "openai"       # 目前只支持 openai（OpenAI 兼容接口）
     model: "deepseek-v4-flash"
     api_key: "sk-xxx"
     api_base: "https://api.deepseek.com"
@@ -456,6 +455,22 @@ Agent 会自动解析调度意图并调用 `create_scheduled_task` 工具，参�
 uv run uvicorn easy_agent.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+### 调试日志（DEBUG）
+
+日志默认 INFO。排障时切到 DEBUG，proc 日志（`logs/proc-v01-easy-agent.log`）会多出大模型的请求和返回报文（logger `easy_agent.llm_wire`，DEBUG 级别，只写文件、不进控制台）：
+
+- `[LLM_REQUEST]`：每次发给模型的完整请求体，包括系统提示词、历史消息（含 `reasoning_content`）和 tools
+- `[LLM_RESPONSE]`：模型的原始返回，流式时是 SSE 原文
+
+建模型时的参数（模型、协议、接口地址、上下文窗口）在 INFO 日志「Creating LLM instance」里，任何级别都有。
+
+```bash
+uv run easy-web --log-level debug            # 命令行；python main.py --log-level debug 同理
+EASY_LOG_LEVEL=debug uv run easy-web         # 环境变量；直接跑 uvicorn easy_agent.app:app 时也生效
+```
+
+`EASY_LOG_LEVEL=debug` 也可以写进 `.env.dev`。报文含完整对话内容、体量大，只在排障时开启。aiosqlite、httpcore、openai SDK 等第三方库在 DEBUG 下仍停在 INFO（`bootstrap/initialization/log.py` 的 `LOG_QUIET_WHEN_DEBUG`），openai SDK 不会再把请求体打到控制台。旧开关 `EASY_LLM_REQUEST_LOG` 已不再生效。
+
 ### 前端开发模式（热更新）
 ```bash
 # Vue2 基线（后端当前托管）
@@ -466,24 +481,25 @@ npm run dev
 # Vue3 基线（Vite）
 cd frontend
 npm run dev
-# 后端地址通过 VITE_API_BASE_URL 配置（见 .env.dev）
+# 后端地址固定为同源相对路径 /agent/...
 ```
 
 ### 代码风格
 - Python：遵循 PEP 8，使用 `ruff` 检查
-- Vue：Vue 2.7 Options API（禁用 `<script setup>`，由 `src/utils/vue2Compat.test.js` 守卫），scoped 样式
+- Vue：Vue 2.6.3 Options API（禁用 Composition API 与 `<script setup>`，由 `src/utils/vue2Compat.test.js` 守卫），scoped 样式
 
 ### 测试与质量门禁
 
 ```bash
-uv run pytest                         # 全量：当前 1607 passed / 1 skipped
+uv run pytest                         # 全量：当前 2374 passed / 5 skipped
 uv run pytest tests/agent tests/api   # 指定目录
-uvx ruff check .                      # 静态检查
+uvx ruff check .                      # 静态检查（含 S110 / ASYNC 门禁）
 python scripts/quality/import_graph.py --check-scc       # 模块 SCC=0
 python scripts/quality/check_double_write.py             # 双写冻结
 python scripts/quality/check_config_schema.py --check    # 配置键集合
 python scripts/quality/check_env_usage.py --check        # 裸 env 检查
 python scripts/quality/check_multi_replica.py            # 多副本能力门禁
+python scripts/quality/check_async_blocking.py --check   # async 里的同步数据库调用
 python scripts/skills/sync_skills.py --check             # 技能单一源
 ```
 
@@ -502,7 +518,7 @@ python scripts/docs/generate_api_docs.py           # 生成 docs/API接口文档
 
 | 目录 | 用途 |
 | --- | --- |
-| `scripts/quality/` | import SCC、双写冻结、配置 schema/裸 env、多副本门禁 |
+| `scripts/quality/` | import SCC、双写冻结、配置 schema/裸 env、多副本门禁、async 阻塞调用 |
 | `scripts/db/` | `migrate_db`、SQLite→MySQL、checkpoint 清理 |
 | `scripts/deps/` | 离线依赖下载、wheel 落盘 |
 | `scripts/release/` | 发布预检、变更导出 |
@@ -512,7 +528,7 @@ python scripts/docs/generate_api_docs.py           # 生成 docs/API接口文档
 
 ### 添加新工具
 1. 在 `easy_agent/tools/` 下继承 `langchain_core.tools.BaseTool`
-2. 在 `easy_agent/services/mcp.py` 注册或注入到 `mcp_tools` 列表
+2. 在 `easy_agent/services/mcp/tools.py` 注册或注入到 `mcp_tools` 列表
 3. 在 `easy_agent/config/prompts/system.md` 中描述工具用途
 
 ### 添加新 API 路由
@@ -554,7 +570,7 @@ A: 在 `easy_agent/agent/model.py` 中扩展 `create_model()`，并在 `config.y
 | run 租约/中断恢复 | `agent_runs` 表 + `run_registry` | 流锁心跳续租；Pod 崩溃后，启动时和之后每隔 `EASY_RUN_RECOVERY_INTERVAL` 秒（默认 60）把租约过期的 running 标记 `interrupted`、补 error 事件并释放它留下的会话流锁；**不自动重跑** |
 | 会话流互斥 | `session_runtime` DB 流锁 | 跨 Pod 原子抢占/续约/取消 |
 | 迁移串行化 | MySQL `GET_LOCK` / SQLite `flock` | `scripts/db/migrate_db.py`；`EASY_AUTO_MIGRATE=0` 时启动只校验 |
-| LangGraph checkpointer/store | 官方 SQLite saver / 业务库 SqlStore | `EASY_CHECKPOINT_SQLITE_PATH`；多副本时路径带 `{pod}`、`EASY_STICKY_SESSIONS=1`，审批落错 pod 返回 409，删除会话后各 pod 后台补删 |
+| LangGraph checkpointer/store | SQLite（单机默认）/ MySQL session 快照 + 业务库 SqlStore | 多副本设置 `EASY_CHECKPOINT_BACKEND=mysql`；审批状态跨 Pod 共享，Pod 重建后仍可恢复 |
 | 上传原始文件 | LangGraph StoreBackend（可选） | `EASY_UPLOAD_BACKEND=store`；只覆盖 `/agent/files/upload` |
 | 定时任务重复执行 | 数据库分布式锁 | `distributed_lock.enabled=true`；同 cron 单实例执行 |
 
@@ -570,7 +586,7 @@ A: 在 `easy_agent/agent/model.py` 中扩展 `create_model()`，并在 `config.y
 
 每个实例都会注册同一批 cron，必须开启数据库分布式锁：在 `.env.{AGENT_ENV}` 设置
 `DISTRIBUTED_LOCK_ENABLED=true`（或 `config.yaml` 的 `distributed_lock.enabled`）。
-锁实现/表见 `easy_agent/utils/distributed_lock.py`、`distributed_locks`；被跳过的触发记录
+锁实现/表见 `easy_agent/persistence/distributed_lock.py`、`distributed_locks`；被跳过的触发记录
 `operation=skip_locked` 审计日志。更多细节见 [docs/distributed-lock.md](docs/distributed-lock.md)。
 
 ---

@@ -7,15 +7,16 @@
 
 import asyncio
 import logging
+import threading
 from types import SimpleNamespace
 
 import pytest
 
-import easy_agent.services.agent_manager as agent_manager
+import easy_agent.services.agents.manager as agent_manager
 import easy_agent.services.scheduler as sched
 from easy_agent.bootstrap.config import DistributedLockConfig
 from easy_agent.models.db import ScheduledTaskModel
-from easy_agent.utils.distributed_lock import DistributedLock
+from easy_agent.persistence.distributed_lock import DistributedLock
 
 TASK_ID = "t-1"
 
@@ -45,6 +46,19 @@ class _FakeAgent:
         self.agent = _FakeAgentCore()
 
 
+def _scheduled(db):
+    """T3c：定时任务/执行记录走领域 repository（Database 转发方法已删除）。"""
+    from easy_agent.db.repositories.scheduled_task_repository import (
+        ScheduledTaskRepository,
+    )
+
+    if isinstance(db, ScheduledTaskRepository):
+        return db
+    if hasattr(db, "create_scheduled_task") and not hasattr(db, "get_connection"):
+        return db
+    return ScheduledTaskRepository(db)
+
+
 def _create_task(db, task_id: str = TASK_ID) -> ScheduledTaskModel:
     task = ScheduledTaskModel(
         task_id=task_id,
@@ -56,7 +70,7 @@ def _create_task(db, task_id: str = TASK_ID) -> ScheduledTaskModel:
         created_at="2026-01-01T00:00:00",
         updated_at="2026-01-01T00:00:00",
     )
-    db.create_scheduled_task(task)
+    _scheduled(db).create_scheduled_task(task)
     return task
 
 
@@ -76,7 +90,22 @@ def patched(monkeypatch, db):
 
     monkeypatch.setattr(agent_manager, "get_or_create_agent_for_session", _fake_get_agent)
     monkeypatch.setattr(agent_manager, "remove_session_agent", lambda session_id: None)
-    monkeypatch.setattr(sched, "get_database", lambda: db)
+    from easy_agent.db.repositories.message_repository import MessageRepository
+    from easy_agent.db.repositories.scheduled_task_repository import (
+        ScheduledTaskRepository,
+    )
+    from easy_agent.db.repositories.session_repository import SessionRepository
+
+    scheduled_repo = ScheduledTaskRepository(db)
+    monkeypatch.setattr(
+        sched, "get_scheduled_task_repository", lambda: scheduled_repo
+    )
+    monkeypatch.setattr(
+        sched, "get_session_repository", lambda: SessionRepository(db)
+    )
+    monkeypatch.setattr(
+        sched, "get_message_repository", lambda: MessageRepository(db)
+    )
     monkeypatch.setattr(sched, "get_scheduler", lambda: _StubScheduler())
     monkeypatch.setattr(sched, "log_task_event", lambda **kwargs: events.append(kwargs))
     return fake_agent, events
@@ -96,7 +125,7 @@ async def test_execute_task_skipped_when_other_instance_holds_lock(
     await sched._execute_task(task.task_id)
 
     assert fake_agent.agent.calls == []                      # 未调用 agent
-    assert db.list_scheduled_task_runs(task.task_id) == []   # 未产生执行记录
+    assert _scheduled(db).list_scheduled_task_runs(task.task_id) == []   # 未产生执行记录
     assert [e["operation"] for e in events] == ["skip_locked"]
 
 
@@ -109,7 +138,7 @@ async def test_execute_task_takes_lock_and_releases_after_run(db, monkeypatch, p
     await sched._execute_task(task.task_id)
 
     assert len(fake_agent.agent.calls) == 1
-    assert [run.status for run in db.list_scheduled_task_runs(task.task_id)] == [
+    assert [run.status for run in _scheduled(db).list_scheduled_task_runs(task.task_id)] == [
         "succeeded"
     ]
     # 执行结束后锁已释放，其它实例可以立刻接管这个任务
@@ -222,6 +251,89 @@ async def test_execute_task_marked_cancelled_when_lock_lost(db, monkeypatch, pat
 
     await asyncio.create_task(sched._execute_task(task.task_id))
 
-    runs = db.list_scheduled_task_runs(task.task_id)
+    runs = _scheduled(db).list_scheduled_task_runs(task.task_id)
     assert [run.status for run in runs] == ["cancelled"]
     assert "分布式锁" in runs[0].error_message
+
+
+class _ThreadRecordingDB:
+    """转发到真实 db，并记下每次方法调用是否发生在事件循环线程上。"""
+
+    def __init__(self, db, loop_thread: int):
+        self._db = db
+        self._loop_thread = loop_thread
+        self.calls: list[tuple[str, bool]] = []
+
+    def __getattr__(self, name):
+        attr = getattr(self._db, name)
+        if not callable(attr):
+            return attr
+
+        def _call(*args, **kwargs):
+            self.calls.append((name, threading.get_ident() == self._loop_thread))
+            return attr(*args, **kwargs)
+
+        return _call
+
+
+@pytest.mark.asyncio
+async def test_execute_task_keeps_database_calls_off_the_event_loop(db, monkeypatch, patched):
+    """查库 / 写库（含分布式锁的抢锁、续约、释放）都在线程里执行，不占事件循环。"""
+    fake_agent, _ = patched
+    task = _create_task(db)
+    loop_thread = threading.get_ident()
+    recording = _ThreadRecordingDB(db, loop_thread)
+    calls: list[tuple[str, bool]] = []
+
+    class _RecordingRepo:
+        """记录 repository 端口调用发生在线程还是事件循环上。"""
+
+        def __init__(self, repo):
+            self._repo = repo
+
+        def __getattr__(self, name):
+            attr = getattr(self._repo, name)
+            if not callable(attr):
+                return attr
+
+            def _call(*args, **kwargs):
+                calls.append((name, threading.get_ident() != loop_thread))
+                return attr(*args, **kwargs)
+
+            return _call
+
+    from easy_agent.db.repositories.message_repository import MessageRepository
+    from easy_agent.db.repositories.scheduled_task_repository import (
+        ScheduledTaskRepository,
+    )
+    from easy_agent.db.repositories.session_repository import SessionRepository
+
+    monkeypatch.setattr(
+        sched,
+        "get_scheduled_task_repository",
+        lambda: _RecordingRepo(ScheduledTaskRepository(recording)),
+    )
+    monkeypatch.setattr(
+        sched,
+        "get_session_repository",
+        lambda: _RecordingRepo(SessionRepository(recording)),
+    )
+    monkeypatch.setattr(
+        sched,
+        "get_message_repository",
+        lambda: _RecordingRepo(MessageRepository(recording)),
+    )
+    monkeypatch.setattr(sched, "get_distributed_lock", lambda: _use_lock(recording, "pod-self"))
+
+    await sched._execute_task(task.task_id)
+
+    assert len(fake_agent.agent.calls) == 1
+    assert [
+        run.status for run in _scheduled(db).list_scheduled_task_runs(task.task_id)
+    ] == ["succeeded"]
+    names = {name for name, _on_loop in calls}
+    assert {"get_scheduled_task", "create_session", "add_message"} <= names
+    assert {"get_connection"} <= {name for name, _on_loop in recording.calls}
+    assert [name for name, on_loop in calls if not on_loop] == []
+    assert [name for name, on_loop in recording.calls if on_loop] == []
+    assert sched.running_tasks == {}

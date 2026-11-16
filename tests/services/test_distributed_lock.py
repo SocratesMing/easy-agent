@@ -1,4 +1,4 @@
-"""分布式锁（easy_agent/utils/distributed_lock.py）的多实例互斥测试。
+"""分布式锁（easy_agent/persistence/distributed_lock.py）的多实例互斥测试。
 
 用「两个 DistributedLock 实例共享同一个 SQLite 文件」模拟部署在多个 pod 上的
 两个进程：数据库是唯一共享状态，锁的互斥语义与 MySQL 部署一致。
@@ -10,7 +10,7 @@ import pytest
 
 from easy_agent.bootstrap.config import DistributedLockConfig
 from easy_agent.db import Database, init_database
-from easy_agent.utils.distributed_lock import DistributedLock, utc_now_iso
+from easy_agent.persistence.distributed_lock import DistributedLock, utc_now_iso
 
 LOCK_NAME = "scheduled_task:t-1"
 

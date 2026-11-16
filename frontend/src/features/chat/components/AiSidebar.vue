@@ -220,6 +220,7 @@
               @selectExpert="handleUseExpert"
               @clearExpert="selectedExpert = null"
               @sendMessage="handleSendMessage"
+              @webSearchChange="handleWebSearchChange"
               @createSession="ensureCurrentSession"
               @removeFile="handleRemoveFile"
               @stop="handleStop"
@@ -227,6 +228,7 @@
               @approve="handleToolApproval('approve', $event)"
               @reject="handleToolApproval('reject', $event)"
               @edit="handleToolApproval('edit', $event)"
+              @respond="handleToolApproval('respond', $event)"
               @openPanel="openManagePanel"
               @openKnowledge="openManagePanel('knowledge')"
             >
@@ -714,6 +716,7 @@ export default {
     // ── 当前页面会话：同一页面再次唤起时优先回到该页面最近的会话 ─────────
     preferPageSession() {
       if (this.isStreaming) return
+      if ((this.pageSessions[this.pageKey] || [])[0] === '__new__') return
       const exists = id => this.sessions.some(s => s.session_id === id)
       const ids = (this.pageSessions[this.pageKey] || []).filter(exists)
       const target = ids[0]

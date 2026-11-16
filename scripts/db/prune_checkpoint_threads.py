@@ -16,7 +16,8 @@
   才删，避免删到正在运行的 thread；
 - 每条消息一个的 thread 挂着待审批中断时保留（兼容期内还能恢复），``--include-pending`` 才删。
 
-legacy 快照（业务库为 MySQL 且没配 SQLite checkpoint）按 thread 数裁剪，不需要本脚本。
+legacy 快照（显式 ``EASY_CHECKPOINT_BACKEND=legacy``）按 thread 数裁剪，不需要本脚本。
+SQLite 文件路径与应用一致：config.yaml 的 ``checkpoint.sqlite_path``，默认 ``/qts/checkpoint/{pod}.db``。
 """
 
 from __future__ import annotations
@@ -175,7 +176,10 @@ def main(argv: list[str] | None = None) -> int:
     if runtime.config is None:
         print("ERROR: 配置未加载", file=sys.stderr)
         return 2
-    selection = resolve_checkpoint_backend(db_type=runtime.config.database.type)
+    selection = resolve_checkpoint_backend(
+        sqlite_path=runtime.config.checkpoint.sqlite_path,
+        db_type=runtime.config.database.type,
+    )
     if not selection.is_official:
         print(f"当前是 legacy checkpoint 快照（{selection.reason}），按 thread 数裁剪，不需要清理")
         return 0

@@ -1,4 +1,4 @@
-"""技能身份解析（services/skill_library.py 的目录名 ⇄ frontmatter name）测试。
+"""技能身份解析（services/skills/library.py 的目录名 ⇄ frontmatter name）测试。
 
 背景：规范要求技能目录名与 SKILL.md 的 ``name`` 一致，但存量技能包常见
 「目录英文 + name 中文」（``fpp-income-analysis`` / 金市营收情况）。专家
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from easy_agent.services import skill_library as L
+from easy_agent.services.skills import library as L
 
 
 def _make_skill(root: Path, dir_name: str, display_name: str | None = None) -> Path:

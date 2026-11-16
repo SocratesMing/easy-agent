@@ -1,14 +1,14 @@
 <template>
   <div v-if="enabled" ref="rootRef" class="scope-selector" :class="{ 'trigger-hidden': hideTrigger }">
-    <button class="scope-trigger" :class="{ active: selected.length }" :aria-expanded="open" :disabled="disabled || creatingSession" @click.stop="togglePopover">
+    <button class="scope-trigger" :class="{ active: selected.length }" :aria-expanded="open" :disabled="disabled" @click.stop="togglePopover">
       <IconLibrary />
-      <span>{{ creatingSession ? '正在准备会话…' : triggerLabel }}</span>
+      <span>{{ triggerLabel }}</span>
       <IconChevronDown class="chevron" :class="{ rotated: open }" />
     </button>
 
     <!-- 面板样式对齐「+」菜单技能子面板：标题+数量 / 条目列表（勾选即生效）/ 底部管理入口 -->
     <Transition name="scope-popover">
-      <div v-if="open" class="scope-panel" :style="panelStyle">
+      <div v-if="open" ref="panelRef" class="scope-panel" :class="'side-' + panelSide" :style="panelStyle">
         <div class="scope-head">
           <span class="scope-title">我的知识库</span>
           <span class="scope-count">{{ bases.length }}</span>
@@ -40,10 +40,11 @@
 </template>
 
 <script>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { IconBookOpen, IconChevronDown, IconLibrary } from './icons.js'
 import { getKnowledgeCapabilities, getSessionKnowledgeScope, listKnowledgeBases, replaceSessionKnowledgeScope } from './api.js'
 import { eventTarget } from '../../utils/domEvent.js'
+import { placeScopePanel } from './panelPlacement.js'
 
 export default {
   components: {
@@ -57,12 +58,14 @@ export default {
     // 隐藏常驻触发按钮（入口由宿主提供，如加号菜单）
     hideTrigger: { type: Boolean, default: false },
     // 面板定位锚点（CSS 选择器）：加号菜单场景传「知识库」菜单项，
-    // 面板贴着菜单项右侧弹出（与技能子面板同款定位）
+    // 面板贴着菜单项左右两侧之一弹出，竖直方向对齐菜单项（见 updatePanelPosition）
     anchorSelector: { type: String, default: '' },
     // 底部「在管理面板中打开」入口（SDK 未配置主站地址时无处可跳，隐藏）
     showManage: { type: Boolean, default: true },
+    // 新对话尚未创建会话时，由宿主暂存并回传的勾选结果（发送时随消息提交）
+    pendingBaseIds: { type: Array, default: () => [] },
   },
-  emits: ['create-session', 'change', 'manage'],
+  emits: ['change', 'manage'],
   setup(props, { emit }) {
 const rootRef = ref(null)
 const enabled = ref(false)
@@ -72,10 +75,11 @@ const bases = ref([])
 const selected = ref([])
 const draft = ref([])
 const saving = ref(false)
-const creatingSession = ref(false)
 const error = ref('')
-const pendingOpen = ref(false)
 const panelStyle = ref({})
+const panelRef = ref(null)
+// 面板在锚点的哪一侧（right / left），决定热桥画在哪边
+const panelSide = ref('right')
 const selectedBaseNames = computed(() => selected.value
   .map((id) => {
     const base = bases.value.find(item => item.id === id)
@@ -96,15 +100,23 @@ async function load() {
     const capability = await getKnowledgeCapabilities()
     enabled.value = Boolean(capability.enabled)
     if (!enabled.value) return
-    const [baseResponse, scope] = await Promise.all([
-      listKnowledgeBases({ pageSize: 100 }),
-      props.sessionId ? getSessionKnowledgeScope(props.sessionId) : Promise.resolve({ base_ids: [] })
-    ])
+    const baseResponse = await listKnowledgeBases({ pageSize: 100 })
     bases.value = baseResponse.items || []
-    // 面板打开期间用户已勾选（保存中）时，以保存结果为准，不用旧快照覆盖
-    if (!saving.value && !creatingSession.value) {
-      selected.value = scope.base_ids || []
-      draft.value = [...selected.value]
+    // 保存中时以保存结果为准，不用旧快照覆盖
+    if (!saving.value) {
+      // 新对话（或会话刚建、范围尚未落库）优先使用宿主暂存的勾选
+      const pending = Array.isArray(props.pendingBaseIds) ? props.pendingBaseIds : []
+      if (pending.length) {
+        selected.value = [...pending]
+        draft.value = [...pending]
+      } else if (props.sessionId) {
+        const scope = await getSessionKnowledgeScope(props.sessionId)
+        selected.value = scope.base_ids || []
+        draft.value = [...selected.value]
+      } else {
+        selected.value = []
+        draft.value = []
+      }
     }
   } catch (reason) { error.value = reason.message || '知识范围加载失败' }
   finally { loading.value = false }
@@ -112,26 +124,20 @@ async function load() {
 
 function togglePopover() {
   if (props.disabled) return
-  if (!props.sessionId) {
-    if (creatingSession.value) return
-    creatingSession.value = true
-    pendingOpen.value = true
-    emit('create-session')
-    return
-  }
   if (!open.value) {
     draft.value = [...selected.value]
     error.value = ''
     updatePanelPosition()
+    load()
   }
   open.value = !open.value
 }
 
-// 供加号菜单 hover/click 展开：幂等打开面板（不新建会话，勾选时才落库）。
+// 供加号菜单 hover/click 展开：幂等打开面板（不建会话，勾选先由宿主暂存，发送时落库）。
 // anchor 为触发的菜单项元素；每次展开都重新拉取列表，主页面新建的知识库无需刷新页面即可看到
 let anchorEl = null
 async function openPopover(anchor) {
-  if (props.disabled || open.value || creatingSession.value) return
+  if (props.disabled || open.value) return
   if (anchor) anchorEl = anchor
   draft.value = [...selected.value]
   error.value = ''
@@ -141,8 +147,8 @@ async function openPopover(anchor) {
 }
 function closePopover() { if (open.value) open.value = false }
 
-// 面板贴着锚点（如加号菜单「知识库」菜单项）右侧弹出，
-// 定位方式与 ChatInput 的技能/连接器子面板（openSubpanel）保持一致
+// 面板贴着锚点（如加号菜单「知识库」菜单项）左右两侧之一弹出，竖直方向对齐锚点，
+// 规则见 panelPlacement.js
 function updatePanelPosition() {
   // 页面上可能同时存在多个输入框（主对话区 + AI 侧边栏），且 SDK 运行在 Shadow DOM 中，
   // 不能用 document.querySelector 全局查找锚点
@@ -150,19 +156,19 @@ function updatePanelPosition() {
     || (props.anchorSelector && rootRef.value && rootRef.value.getRootNode().querySelector(props.anchorSelector))
     || rootRef.value
   if (!anchor) return
-  const rect = anchor.getBoundingClientRect()
-  const panelWidth = Math.min(380, window.innerWidth * 0.9)
-  const estimatedHeight = 420
-  const top = Math.max(8, Math.min(rect.top - 8, window.innerHeight - estimatedHeight - 8))
-  const left = rect.right + 10 + panelWidth > window.innerWidth
-    ? Math.max(8, rect.left - panelWidth - 10)
-    : rect.right + 10
+  const place = placeScopePanel({
+    anchor: anchor.getBoundingClientRect(),
+    // 面板还没渲染时高度按 0 算（先让顶边对齐锚点），渲染后由下面的 watch 按实测高度校正
+    panelHeight: panelRef.value ? panelRef.value.offsetHeight : 0,
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+  })
+  panelSide.value = place.side
   panelStyle.value = {
     position: 'fixed',
-    top: `${top}px`,
-    left: `${left}px`,
-    width: '380px',
-    maxWidth: '90vw',
+    top: `${place.top}px`,
+    left: `${place.left}px`,
+    width: `${place.width}px`,
   }
 }
 
@@ -172,8 +178,14 @@ function openManage() { emit('manage') }
 function handleViewportChange() {
   if (open.value) updatePanelPosition()
 }
+// 打开、列表加载完、条数或报错变化都会改变面板高度：等这一轮 DOM 更新全部完成后按实测高度
+// 重新定位。不能用 flush: 'post'：Vue 2.7 下面板在 <Transition> 子组件里渲染，子组件的更新在
+// 本轮刷新中途才排进队列，会排到 post 监听之后，量的时候面板还不存在（高度按 0 算，放不下也
+// 不上移）。nextTick 在 Vue 2 / 3 下都等到整轮更新结束。
+watch([open, loading, () => bases.value.length, error], () => {
+  if (open.value) nextTick(updatePanelPosition)
+})
 let saveSeq = 0
-let pendingSave = null  // 无会话时的勾选暂存：会话创建完成后恢复并保存
 function sameSet(a, b) {
   const ka = [...a].sort().join('|')
   const kb = [...b].sort().join('|')
@@ -200,11 +212,10 @@ watch(draft, () => {
   const snapshot = [...draft.value]
   if (sameSet(snapshot, selected.value)) return  // 打开面板时的同步赋值，无实际变化
   if (!props.sessionId) {
-    // 无会话时勾选（新对话 hover 展开场景）：暂存勾选并先创建会话，建好后再保存
-    if (creatingSession.value) { pendingSave = snapshot; return }
-    creatingSession.value = true
-    pendingSave = snapshot
-    emit('create-session')
+    // 新对话：只更新本地暂存，等首条消息发送时由宿主随请求提交；
+    // 不在这里创建会话，避免左侧栏出现没有对话的空记录。
+    selected.value = snapshot
+    emit('change', snapshot)
     return
   }
   persist(snapshot)
@@ -213,24 +224,21 @@ function handleOutside(event) { if (open.value && rootRef.value && !rootRef.valu
 function roleLabel(role) { return ({ viewer: '查看者', maintainer: '维护者', manager: '管理员' })[role] || role }
 function spaceLabel(space) { return ({ personal: '个人', team: '团队', shared: '共享' })[space] || space }
 
-watch(() => props.sessionId, async (sessionId) => {
+// 宿主暂存的勾选变化（切换会话/开始新对话/发送后清理）时同步面板
+watch(() => props.pendingBaseIds, (ids) => {
+  if (props.sessionId) return  // 已有会话以服务端范围为准
+  if (saving.value) return
+  const next = Array.isArray(ids) ? [...ids] : []
+  if (sameSet(next, selected.value)) return
+  selected.value = next
+  draft.value = [...next]
+}, { deep: true })
+
+watch(() => props.sessionId, async () => {
   await load()
-  if (sessionId && pendingSave) {
-    // 勾选触发的会话创建完成：恢复暂存勾选并保存
-    creatingSession.value = false
-    const snapshot = pendingSave
-    pendingSave = null
-    selected.value = snapshot
-    draft.value = [...snapshot]
-    persist(snapshot)
-    return
-  }
-  if (sessionId && pendingOpen.value) {
-    creatingSession.value = false
-    pendingOpen.value = false
+  if (open.value) {
     draft.value = [...selected.value]
     updatePanelPosition()
-    open.value = true
   }
 })
 onMounted(() => {
@@ -245,7 +253,6 @@ onUnmounted(() => {
 
     return {
       bases,
-      creatingSession,
       disabled: computed(() => props.disabled),
       draft,
       enabled,
@@ -254,6 +261,8 @@ onUnmounted(() => {
       loading,
       open,
       openManage,
+      panelRef,
+      panelSide,
       panelStyle,
       roleLabel,
       rootRef,
@@ -286,6 +295,11 @@ onUnmounted(() => {
 
 /* ========== 面板：与「+」菜单技能子面板（.plus-subpanel）同款样式 ========== */
 .scope-panel{position:fixed;width:380px;max-width:90vw;display:flex;flex-direction:column;background:var(--bg-secondary,#fff);border:1px solid var(--border-color,#e2e8f0);border-radius:12px;box-shadow:0 12px 36px rgba(0,0,0,.14);padding:12px;box-sizing:border-box;color:var(--text-primary,#1e293b);z-index:9999}
+/* 热桥：面板与锚点之间有 6px 水平间隙，横移时这段空白两边都不属于，会先触发菜单的
+   mouseleave 计时。在朝向锚点的一侧延出 8px（间隙 + 2px 重叠），把这段空白划给面板。 */
+.scope-panel::before{content:'';position:absolute;top:0;bottom:0;width:8px}
+.scope-panel.side-right::before{left:-8px}
+.scope-panel.side-left::before{right:-8px}
 .scope-head{display:flex;align-items:center;gap:8px;padding:2px 4px 8px}
 .scope-title{flex:1;font-size:14px;font-weight:600;color:var(--text-primary,#1e293b)}
 .scope-count{font-size:12px;color:var(--text-secondary,#64748b);font-variant-numeric:tabular-nums}

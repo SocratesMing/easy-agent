@@ -136,7 +136,7 @@ def _patch_limit(monkeypatch, limit_mb):
 
 def _patch_limits_config(monkeypatch, limits: UploadLimitsConfig):
     """改全局配置里的 upload_limits（模拟 config.yaml 被修改）。"""
-    import easy_agent.services.agent_manager as am
+    import easy_agent.services.agents.manager as am
 
     if not am._agent_config or not am._agent_config.get("config"):
         pytest.skip("全局 Agent 配置未初始化")

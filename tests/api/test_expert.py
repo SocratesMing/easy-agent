@@ -11,16 +11,17 @@ from types import SimpleNamespace
 
 import pytest
 
-import easy_agent.api.chat as chat_api
+import easy_agent.services.agents.chat_turn as chat_turn
+from easy_agent.services.skills import provision as skill_provision
 import easy_agent.api.expert as expert_api
 import easy_agent.api.expert_helpers as expert_helpers
-import easy_agent.services.expert_runtime as expert_runtime
-import easy_agent.services.agent_manager as am
-import easy_agent.services.skill_library as skill_library
+import easy_agent.services.experts.runtime as expert_runtime
+import easy_agent.services.agents.manager as am
+import easy_agent.services.skills.library as skill_library
 from easy_agent.db.expert_store import ExpertStore
 from easy_agent.models.db import SessionModel
-from easy_agent.services import expert_relevance
-from easy_agent.services.expert_service import load_active_prompt
+from easy_agent.services.experts import relevance as expert_relevance
+from easy_agent.services.experts.service import load_active_prompt
 
 WORKSPACE_USER_DIR = Path(os.environ["TEST_WORKSPACE_DIR"]) / "users" / "testuser"
 
@@ -208,7 +209,6 @@ def test_add_expert_persists_selected_skills(client, fake_llm, fake_skills, db):
         },
     )
     assert resp.status_code == 200, resp.text
-    agent_id = resp.json()["export_agent_id"]
     assert resp.json()["export_required_skills"] == ["factor-creator", "docx"]
 
     detail = client.get("/agent/list").json()
@@ -527,9 +527,13 @@ def test_delete_expert_soft(client, fake_llm):
     created = _add(client).json()
     agent_id = created["export_agent_id"]
 
-    resp = client.post("/agent/del", json={"export_agent_id": agent_id})
+    # hard 默认已是 True，测软删除需显式传 False
+    resp = client.post(
+        "/agent/del", json={"export_agent_id": agent_id, "hard": False}
+    )
     assert resp.status_code == 200
     assert resp.json()["status"] == "deleted"
+    assert resp.json()["hard"] is False
 
     # 默认列表不再返回
     assert client.get("/agent/list").json()["total"] == 0
@@ -577,8 +581,8 @@ def stub_stream(monkeypatch):
         captured["request"] = kwargs["request"]
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_get_agent)
-    monkeypatch.setattr(chat_api, "chat_stream_generator", fake_stream)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_get_agent)
+    monkeypatch.setattr(chat_turn, "chat_stream_generator", fake_stream)
     return captured
 
 
@@ -662,7 +666,7 @@ def test_chat_stream_with_expert_provisions_required_skills(
     agent_id = created["export_agent_id"]
     calls = {}
 
-    def _fake_provision(username, expert_id):
+    def _fake_provision(username, expert_id, **kwargs):
         calls["username"] = username
         calls["expert_id"] = expert_id
         return {
@@ -686,7 +690,7 @@ def test_chat_stream_with_expert_provisions_required_skills(
         }
 
     monkeypatch.setattr(
-        chat_api.skill_provision, "provision_expert_skills", _fake_provision
+        skill_provision, "provision_expert_skills", _fake_provision
     )
 
     resp = client.post(
@@ -709,7 +713,7 @@ def test_chat_stream_without_expert_skips_skill_provision(
     def _boom(*args, **kwargs):
         raise AssertionError("通用对话不应触发依赖技能补装")
 
-    monkeypatch.setattr(chat_api.skill_provision, "provision_expert_skills", _boom)
+    monkeypatch.setattr(skill_provision, "provision_expert_skills", _boom)
 
     resp = client.post("/agent/chat/stream", json={"message": "你好"})
     assert resp.status_code == 200
@@ -1103,7 +1107,8 @@ def test_stream_run_unknown_expert_404(client, fake_llm, stub_stream):
 def test_stream_run_disabled_expert_400(client, fake_llm, stub_stream):
     created = _add(client).json()
     agent_id = created["export_agent_id"]
-    client.post("/agent/del", json={"export_agent_id": agent_id})
+    # 软删除保留 disabled 记录；hard 默认 True 会物理删除而返回 404
+    client.post("/agent/del", json={"export_agent_id": agent_id, "hard": False})
 
     resp = client.post(
         "/agent/chat/stream",
@@ -1218,8 +1223,8 @@ def stub_resume(monkeypatch):
     async def fake_resume(**kwargs):
         yield 'data: {"type": "done"}\n\n'
 
-    monkeypatch.setattr(chat_api, "get_or_create_agent_for_session", fake_get_agent)
-    monkeypatch.setattr(chat_api, "resume_stream_generator", fake_resume)
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", fake_get_agent)
+    monkeypatch.setattr(chat_turn, "resume_stream_generator", fake_resume)
     return captured
 
 
@@ -1252,7 +1257,7 @@ def test_resume_keeps_session_expert(client, db, stub_resume, monkeypatch):
     """专家会话里触发 HITL 并恢复：仍以该专家身份复用/重建 Agent。"""
     sid = "sess-hitl-1"
     _make_session(db, sid)
-    monkeypatch.setitem(am._session_expert, sid, "expert_quant")
+    monkeypatch.setitem(am._sessions, sid, am.SessionState(expert_key="expert_quant"))
 
     resp = _resume(client, sid)
     assert resp.status_code == 200
@@ -1288,7 +1293,7 @@ def public_root(tmp_path, monkeypatch):
     应用启动时已加载 agent 配置（tools.experts_dir 指向仓库 experts/），故这里
     直接替换 ``public_expert_service.public_experts_root``，保证用例只看到自造数据。
     """
-    from easy_agent.services import public_expert_service
+    from easy_agent.services.experts import public as public_expert_service
 
     root = tmp_path / "experts"
     root.mkdir()
@@ -1346,7 +1351,7 @@ def test_public_list_returns_presets(client, public_root):
 
 
 def test_public_list_empty_when_dir_missing(client, tmp_path, monkeypatch):
-    from easy_agent.services import public_expert_service
+    from easy_agent.services.experts import public as public_expert_service
 
     monkeypatch.setattr(
         public_expert_service, "public_experts_root", lambda: tmp_path / "nope"

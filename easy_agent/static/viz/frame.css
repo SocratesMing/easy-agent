@@ -1,0 +1,112 @@
+/* 对话内可视化框架页的基础样式：主题变量与对话界面一致，模型写的交互组件直接用这些变量。 */
+:root {
+  color-scheme: light;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f8fafc;
+  --bg-tertiary: #f1f5f9;
+  --text-primary: #1e293b;
+  --text-secondary: #64748b;
+  --text-muted: #94a3b8;
+  --border-color: #e2e8f0;
+  --accent-color: #6366f1;
+  --danger-color: #dc2626;
+  --success-color: #16a34a;
+  --warning-color: #d97706;
+  --radius: 8px;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-primary: #000000;
+  --bg-secondary: #1a1a1a;
+  --bg-tertiary: #2a2a2a;
+  --text-primary: #ffffff;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --border-color: #3a3a3a;
+  --accent-color: #818cf8;
+  --danger-color: #f87171;
+  --success-color: #4ade80;
+  --warning-color: #fbbf24;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: 14px/1.6 var(--font-sans);
+  /* 高度由外层页面按内容设置，框架内不出现滚动条 */
+  overflow: hidden;
+}
+
+#root {
+  padding: 2px 0;
+}
+
+.ea-chart {
+  width: 100%;
+}
+
+.ea-mermaid {
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+}
+
+.ea-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.ea-error {
+  padding: 8px 0;
+  color: var(--danger-color);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 交互组件的常用控件：模型不写样式也和对话界面一个风格 */
+.ea-widget button {
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.ea-widget button:hover {
+  background: var(--bg-tertiary);
+}
+
+.ea-widget input,
+.ea-widget select,
+.ea-widget textarea {
+  font: inherit;
+  color: inherit;
+}
+
+.ea-widget input[type="text"],
+.ea-widget input[type="number"],
+.ea-widget select,
+.ea-widget textarea {
+  padding: 4px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-primary);
+}
+
+.ea-widget input[type="range"] {
+  accent-color: var(--accent-color);
+}
+
+.ea-widget svg {
+  max-width: 100%;
+}

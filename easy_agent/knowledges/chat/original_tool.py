@@ -6,11 +6,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
 import os
 import re
 import time
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -18,13 +21,23 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from easy_agent.db import get_database
-from easy_agent.knowledges.api import KnowledgePrincipal
+from easy_agent.knowledges.files.chunks import (
+    chunk_text,
+    collect_document_chunks,
+    ordered_chunks,
+)
 from easy_agent.knowledges.core.config import KnowledgeConfig
-from easy_agent.knowledges.core.models import AllowedAction
-from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
-from easy_agent.knowledges.core.original_store import LocalOriginalStore, OriginalStorageError
-from easy_agent.knowledges.core.permissions import allowed_actions, effective_role
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.core.models import AllowedAction, KnowledgePrincipal
+from easy_agent.knowledges.repository.operations import KnowledgeOperationsRepository
+from easy_agent.knowledges.files.original_store import LocalOriginalStore, OriginalStorageError
+from easy_agent.knowledges.core.permissions import allowed_actions, resolve_role
+from easy_agent.knowledges.repository import KnowledgeRepository
+from easy_agent.knowledges.ragflow import RagflowClient, RagflowError
+from easy_agent.knowledges.service import SHARED_DATASET_NAME
+from easy_agent.utils.auth import is_super_admin
+from easy_agent.utils.blocking import run_blocking
+
+logger = logging.getLogger(__name__)
 
 
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+")
@@ -33,21 +46,34 @@ _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+")
 MAX_AGENT_FILE_SIZE_MB = 100
 MAX_AGENT_TOTAL_SIZE_MB = 200
 MATERIALIZED_FILE_TTL_SECONDS = 3600
+# extract 返回给模型的文本上限，避免把整本 PDF 一次性塞进上下文/checkpoint
+MAX_AGENT_EXTRACT_CHARS = 120_000
 
 
 class KnowledgeOriginalArgs(BaseModel):
-    """工具入参 schema：action 三选一，按动作携带 base_id / document_id。"""
+    """工具入参 schema：action 四选一，按动作携带 base_id / document_id。"""
 
-    action: Literal["list", "metadata", "materialize"] = Field(
+    action: Literal["list", "metadata", "extract", "materialize"] = Field(
         ...,
         description=(
-            "list 列出某知识库的原文；metadata 查看一份原文信息；"
+            "list 列出知识库的原文；metadata 查看一份原文信息；"
+            "extract 返回一份文档的已解析文本（PDF/Office 优先用这个）；"
             "materialize 将完整原文安全复制到当前会话 /workspace/knowledge-originals 下"
         ),
     )
-    base_id: str = Field(default="", description="list 操作必填的知识库 ID")
+    base_id: str = Field(
+        default="",
+        description=(
+            "可选。list 操作推荐留空：默认列出当前会话已选择的知识库；"
+            "也可传真实知识库 ID 或名称，但不要猜测或臆造"
+        ),
+    )
     document_id: str = Field(
-        default="", description="metadata/materialize 操作必填的文档 ID"
+        default="",
+        description=(
+            "metadata/extract/materialize 操作必填的文档 ID；"
+            "必须先调用 list 获取真实 document_id，不要猜测"
+        ),
     )
 
 
@@ -60,7 +86,11 @@ class KnowledgeOriginalTool(BaseTool):
     description: str = (
         "访问知识库中的完整原文档，而不是 RAG 切片。"
         "当用户要求逐页、全表、全文或原始文件分析时使用。"
-        "先用 list 找到文档 ID，再用 materialize 将文件放入当前会话工作区。"
+        "先用 list 找到文档 ID；list 的 base_id 可省略，省略时自动使用当前会话"
+        "已选择的知识库，不要用知识库名称冒充 base_id。"
+        "PDF/Office 原文分析必须用 extract 获取已解析文本；"
+        "不要用 read_file 读取 materialize 后的二进制文件（会返回 base64 并撑爆上下文）。"
+        "materialize 仅用于需要原文件路径的场景；不要臆造 document_id。"
     )
     args_schema: type = KnowledgeOriginalArgs
 
@@ -69,18 +99,31 @@ class KnowledgeOriginalTool(BaseTool):
     workspace_dir: str
     knowledge_config: KnowledgeConfig
     original_store: Any
+    # 可注入的 RAGFlow 客户端（测试/宿主复用）；为空时 extract 按配置临时创建
+    ragflow_client: Any = None
     agent_id: str = "easy-agent"
 
     def _run(self, **kwargs) -> str:
+        if kwargs.get("action") == "extract":
+            try:
+                return asyncio.run(self._extract_text(**kwargs))
+            except RuntimeError as exc:
+                return f"错误：extract 需要在异步工具调用中执行（{exc}）"
         return self._execute(**kwargs)
 
     async def _arun(self, **kwargs) -> str:
+        if kwargs.get("action") == "extract":
+            return await self._extract_text(**kwargs)
         return self._execute(**kwargs)
 
-    def _principal(self) -> KnowledgePrincipal:
-        """按用户名实时重建 principal，用户已删除或失效时立即拒绝。"""
+    def _principal(self, db) -> KnowledgePrincipal:
+        """按用户名实时重建 principal，用户已删除或失效时立即拒绝。
 
-        user = get_database().get_user_by_username(self.username)
+        ``db`` 由调用方传入（与本次动作的仓储同一个连接门面）；这里是同步查库，
+        异步路径（``_extract_text``）要放进线程调用。
+        """
+
+        user = db.get_user_by_username(self.username)
         if user is None:
             raise PermissionError("当前用户不存在或已失效")
         return KnowledgePrincipal(
@@ -100,11 +143,228 @@ class KnowledgeOriginalTool(BaseTool):
         base = repository.get_base(base_id)
         if base is None:
             raise FileNotFoundError("知识资源不存在")
-        role = effective_role(base, principal, repository.list_permissions(base_id))
+        role = resolve_role(
+            base,
+            principal,
+            repository.list_permissions(base_id),
+            super_admin=is_super_admin(principal.username),
+        )
         if role is None or AllowedAction.DOWNLOAD not in allowed_actions(role):
             # 刻意不区分「无权」与「不存在」，避免资源存在性泄露
             raise FileNotFoundError("知识资源不存在")
         return base
+
+    def _scoped_bases(
+        self,
+        repository: KnowledgeRepository,
+        principal: KnowledgePrincipal,
+    ) -> list[dict[str, Any]]:
+        """当前会话已绑定、且当前用户仍可下载的知识库。"""
+
+        if not self.session_id:
+            return []
+        base_ids = repository.get_session_scope(
+            session_id=self.session_id, user_id=principal.user_id
+        )
+        bases: list[dict[str, Any]] = []
+        for base_id in base_ids:
+            try:
+                bases.append(self._authorized_base(repository, base_id, principal))
+            except FileNotFoundError:
+                # 范围里已失效/被回收的知识库跳过，不能因此阻断其它库
+                continue
+        return bases
+
+    @staticmethod
+    def _base_options(bases: list[dict[str, Any]]) -> str:
+        """把可选知识库格式化成模型可复制的候选清单。"""
+
+        return "；".join(
+            f"{base.get('name') or '未命名知识库'} (base_id={base['id']})"
+            for base in bases
+        )
+
+    def _resolve_list_bases(
+        self,
+        repository: KnowledgeRepository,
+        principal: KnowledgePrincipal,
+        requested: str,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """解析 list 的目标知识库。
+
+        优先精确 base_id；其次在当前会话范围内按名称精确匹配。两者都没有时，
+        返回可执行提示而不是笼统的「知识资源不存在」，避免模型反复臆造 ID。
+        """
+
+        scoped = self._scoped_bases(repository, principal)
+        selector = requested.strip()
+        if not selector:
+            if scoped:
+                return scoped, None
+            return [], (
+                "当前会话未绑定知识库。请先在聊天输入框的“知识库”选择器中选择"
+                "知识库，再调用 list；不要猜测 base_id。"
+            )
+        try:
+            return [self._authorized_base(repository, selector, principal)], None
+        except FileNotFoundError:
+            pass
+        matches = [
+            base
+            for base in scoped
+            if str(base.get("name") or "").strip() == selector
+        ]
+        if len(matches) == 1:
+            return matches, None
+        if len(matches) > 1:
+            return [], (
+                "当前会话有多个同名知识库，请改用真实 base_id："
+                f"{self._base_options(matches)}"
+            )
+        if scoped:
+            return [], (
+                f"未找到知识库 {selector!r}。当前会话可选："
+                f"{self._base_options(scoped)}。可省略 base_id 直接列出全部，"
+                "不要继续猜测。"
+            )
+        return [], (
+            f"未找到知识库 {selector!r}，且当前会话未绑定知识库。"
+            "请先在聊天输入框的“知识库”选择器中选择知识库，或提供真实 base_id。"
+        )
+
+    def _list_available_originals(
+        self,
+        repository: KnowledgeRepository,
+        bases: list[dict[str, Any]],
+    ) -> str:
+        """列出目标知识库中可用的完整原文，输出真实 base_id/document_id。"""
+
+        max_docs = max(
+            1, int(self.knowledge_config.limits.max_documents_per_query)
+        )
+        lines: list[str] = []
+        total = 0
+        for base in bases:
+            remaining = max_docs - total
+            if remaining <= 0:
+                break
+            documents = repository.list_documents(
+                str(base["id"]), limit=remaining, offset=0
+            )
+            available = [
+                row
+                for row in documents
+                if str(row.get("original_status")) == "available"
+            ]
+            if not available:
+                continue
+            lines.append(
+                f"知识库：{base.get('name') or '未命名知识库'} | "
+                f"base_id={base['id']}"
+            )
+            lines.extend(
+                f"- {row['name']} | document_id={row['id']} | "
+                f"size={int(row.get('size_bytes') or 0)} bytes"
+                for row in available
+            )
+            total += len(available)
+        if not total:
+            return "当前授权知识范围内暂无可用的完整原文。"
+        return "\n".join([
+            f"可用原文 {total} 份（list 可省略 base_id；"
+            "metadata/extract/materialize 直接使用 document_id；"
+            "PDF/Office 正文用 extract）：",
+            *lines,
+        ])
+
+    async def _extract_with_client(
+        self,
+        client: Any,
+        *,
+        base: Mapping[str, Any],
+        document: Mapping[str, Any],
+    ) -> str:
+        """通过 RAGFlow chunk 列表返回已解析文本，避免模型读取 PDF 二进制。"""
+
+        remote_id = str(document.get("remote_document_id") or "").strip()
+        if not remote_id:
+            return "错误：文档尚未同步到解析服务，暂无已解析文本。"
+        dataset_id = str(base.get("remote_dataset_id") or "").strip()
+        if not dataset_id:
+            dataset_id = str(self.knowledge_config.shared_dataset_id or "").strip()
+        if not dataset_id:
+            data = await client.list_datasets(
+                name=SHARED_DATASET_NAME, page=1, page_size=10
+            )
+            datasets = data.get("datasets") if isinstance(data, dict) else None
+            for item in datasets or []:
+                if isinstance(item, dict) and item.get("name") == SHARED_DATASET_NAME:
+                    dataset_id = str(item.get("id") or "")
+                    break
+        if not dataset_id:
+            return "错误：无法定位文档所在的数据集。"
+
+        chunks = await collect_document_chunks(
+            client, dataset_id, remote_id, max_pages=100
+        )
+        text = "\n".join(
+            value
+            for value in (chunk_text(item) for item in ordered_chunks(chunks))
+            if value
+        )
+        if not text:
+            return "错误：文档暂无已解析文本，请确认解析状态为已就绪。"
+        if len(text) > MAX_AGENT_EXTRACT_CHARS:
+            text = (
+                text[:MAX_AGENT_EXTRACT_CHARS]
+                + "\n\n[文本过长，已截断；如需后续内容请用检索或分段工具。]"
+            )
+        return f"文档：{document['name']}\n\n{text}"
+
+    async def _extract_text(
+        self, *, action: str, base_id: str = "", document_id: str = ""
+    ) -> str:
+        del action, base_id
+        db = get_database()
+        repository = KnowledgeRepository(db)
+        principal: KnowledgePrincipal | None = None
+        try:
+            # 数据库层是同步的：重建 principal、查文档、权限校验都放进线程，不占事件循环；
+            # 从 RAGFlow 取 chunk 是异步 HTTP，留在事件循环上。
+            principal = await asyncio.to_thread(self._principal, db)
+            if not document_id:
+                return "错误：extract 操作需要 document_id。请先调用 list 获取真实文档 ID。"
+            document = await asyncio.to_thread(repository.get_document, document_id)
+            if document is None:
+                raise FileNotFoundError(
+                    "文档不存在，请先调用 list 获取真实 document_id"
+                )
+            base = await asyncio.to_thread(
+                self._authorized_base, repository, str(document["base_id"]), principal
+            )
+            if self.ragflow_client is not None:
+                text = await self._extract_with_client(
+                    self.ragflow_client, base=base, document=document
+                )
+            else:
+                async with RagflowClient(
+                    self.knowledge_config.base_url,
+                    self.knowledge_config.api_key.get_secret_value(),
+                ) as client:
+                    text = await self._extract_with_client(
+                        client, base=base, document=document
+                    )
+            if not text.startswith("错误："):
+                # 审计是写库：run_blocking 在调用方被取消时也会等写入做完
+                await run_blocking(
+                    self._audit, db, principal, document_id, "extract", "success"
+                )
+            return text
+        except (FileNotFoundError, PermissionError, ValueError, RagflowError) as exc:
+            await run_blocking(
+                self._audit, db, principal, document_id, "extract", "denied_or_failed"
+            )
+            return f"错误：{exc}"
 
     def _audit(
         self,
@@ -114,7 +374,7 @@ class KnowledgeOriginalTool(BaseTool):
         action: str,
         result: str,
     ) -> None:
-        """把工具动作写入审计日志（受 audit 开关控制，失败静默）。"""
+        """把工具动作写入审计日志（受 audit 开关控制；失败只记 warning，不向模型暴露细节）。"""
 
         if principal is None or not document_id:
             return
@@ -135,9 +395,14 @@ class KnowledgeOriginalTool(BaseTool):
                 },
                 max_details_bytes=self.knowledge_config.audit.max_details_bytes,
             )
-        except Exception:
-            # 审计失败不得向模型泄露存储或授权内部细节
-            pass
+        except Exception as exc:  # noqa: BLE001 - 审计失败只留痕，不影响工具结果
+            # 细节只进服务端日志，不向模型泄露存储或授权内部细节。
+            logger.warning(
+                "知识库原文访问审计写入失败 | action=%s | document=%s | %s",
+                action,
+                document_id,
+                exc,
+            )
 
     def _execute(self, action: str, base_id: str = "", document_id: str = "") -> str:
         """执行 list / metadata / materialize 动作，错误转成模型可读文本。
@@ -150,32 +415,27 @@ class KnowledgeOriginalTool(BaseTool):
         repository = KnowledgeRepository(db)
         principal: KnowledgePrincipal | None = None
         try:
-            principal = self._principal()
+            principal = self._principal(db)
             if action == "list":
-                if not base_id:
-                    return "错误：list 操作需要 base_id。"
-                self._authorized_base(repository, base_id, principal)
-                documents = repository.list_documents(base_id, limit=1000, offset=0)
-                available = [
-                    row
-                    for row in documents
-                    if str(row.get("original_status")) == "available"
-                ]
-                if not available:
-                    return "该知识库暂无可用的完整原文。"
-                lines = [f"可用原文 {len(available)} 份："]
-                lines.extend(
-                    f"- {row['name']} | document_id={row['id']} | "
-                    f"size={int(row.get('size_bytes') or 0)} bytes"
-                    for row in available
+                bases, message = self._resolve_list_bases(
+                    repository, principal, base_id
                 )
-                return "\n".join(lines)
+                if message is not None:
+                    return message
+                return self._list_available_originals(repository, bases)
 
+            if action == "extract":
+                return "错误：extract 需要通过工具的异步调用执行。"
             if action not in {"metadata", "materialize"} or not document_id:
-                return "错误：metadata/materialize 操作需要 document_id。"
+                return (
+                    "错误：metadata/materialize 操作需要 document_id。"
+                    "请先调用 list 获取真实 document_id，不要猜测。"
+                )
             document = repository.get_document(document_id)
             if document is None:
-                raise FileNotFoundError("知识资源不存在")
+                raise FileNotFoundError(
+                    "文档不存在，请先调用 list 获取真实 document_id"
+                )
             self._authorized_base(repository, str(document["base_id"]), principal)
             original = repository.get_original_object(document_id)
             if original is None or str(original.get("status")) != "available":
@@ -259,7 +519,8 @@ class KnowledgeOriginalTool(BaseTool):
             self._audit(db, principal, document_id, action, "success")
             return (
                 f"完整原文已复制到 /workspace/knowledge-originals/"
-                f"{document_id}/{safe_name}，可用文件工具读取或分析。"
+                f"{document_id}/{safe_name}。PDF/Office 等二进制文件不要用 "
+                "read_file 读取；需要正文请改用 extract action。"
             )
         except (FileNotFoundError, PermissionError, ValueError, OriginalStorageError) as exc:
             self._audit(db, principal, document_id, action, "denied_or_failed")

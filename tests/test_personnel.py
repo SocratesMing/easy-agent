@@ -46,10 +46,17 @@ def _payload(**overrides):
 
 
 def test_only_admin_can_access_personnel(client):
+    response = client.get("/agent/personnel/users")
+    assert response.status_code == 403
+    response = client.post("/agent/personnel/users", json=_payload())
+    assert response.status_code == 403
+
+
+def test_legacy_api_prefix_is_rewritten_to_agent(client):
+    """缓存了旧版前端的浏览器仍可使用 /api/personnel（LegacyHostRoutes 兼容）。"""
+    _as_admin(client)
     response = client.get("/api/personnel/users")
-    assert response.status_code == 403
-    response = client.post("/api/personnel/users", json=_payload())
-    assert response.status_code == 403
+    assert response.status_code == 200
 
 
 def _as_user(username):
@@ -57,8 +64,8 @@ def _as_user(username):
     return username
 
 
-def _create_team_space_manager(db, username):
-    """建一个公共空间管理员（白名单）账号，返回其 user_id。"""
+def _create_department_manager(db, username):
+    """建一个知识库管理员账号（部门 dept-market），返回其 user_id。"""
     now = "2026-10-14T00:00:00"
     db.create_user(
         UserModel(
@@ -74,134 +81,37 @@ def _create_team_space_manager(db, username):
         )
     )
     with db.get_connection() as connection:
-        cursor = connection.cursor()
         db._execute(
-            cursor,
-            "INSERT INTO knowledge_team_space_managers (user_id, granted_by, granted_at, updated_at) "
-            "VALUES (?, 'admin', ?, ?)",
-            (f"uid-{username}", now, now),
+            connection.cursor(),
+            "INSERT INTO knowledge_department_managers "
+            "(id, user_id, department_id, granted_by, granted_at, updated_at) "
+            "VALUES (?, ?, 'dept-market', 'admin', ?, ?)",
+            (f"dm-{username}", f"uid-{username}", now, now),
         )
     return f"uid-{username}"
 
 
-def test_team_space_manager_has_full_personnel_access(client, db):
-    """白名单账号与 admin 同权：全量列表、增改删任意部门人员、可下模板。"""
-    client = _as_admin(client)
-    client.post("/api/personnel/users", json=_payload(username="alice_a"))
-    client.post(
-        "/api/personnel/users",
-        json=_payload(username="bob_b", department_id="dept-treasury", department_name="司库部", employee_id="E0002"),
-    )
-
-    _create_team_space_manager(db, "dept_mgr")
+def test_knowledge_manager_has_no_personnel_access(client, db):
+    """知识库管理员只影响知识库创建/管理，不获得人员管理权限。"""
+    _create_department_manager(db, "dept_mgr")
     _as_user("dept_mgr")
 
-    # 列表全量：可看到其他部门人员
-    listed = client.get("/api/personnel/users")
-    assert listed.status_code == 200
-    usernames = {item["username"] for item in listed.json()["items"]}
-    assert {"alice_a", "bob_b", "dept_mgr"} <= usernames
-
-    # 新增其他部门人员
-    created = client.post(
-        "/api/personnel/users",
-        json=_payload(username="new_t", department_id="dept-treasury", department_name="司库部", employee_id="E0003"),
-    )
-    assert created.status_code == 201, created.text
-
-    # 编辑/删除其他部门人员
-    bob_id = db.get_user_by_username("bob_b").user_id
-    update = _payload(
-        username=None,
-        department_id="dept-treasury",
-        department_name="司库部",
-        employee_id="E0002",
-        position="副总裁",
-        source="白名单维护",
-    )
-    update.pop("username")
-    assert client.put(f"/api/personnel/users/{bob_id}", json=update).status_code == 200
-    new_t = db.get_user_by_username("new_t")
-    assert client.delete(f"/api/personnel/users/{new_t.user_id}").status_code == 204
-
-    # 模板下载
-    assert client.get("/api/personnel/import-template").status_code == 200
+    assert client.get("/agent/personnel/users").status_code == 403
+    assert client.post("/agent/personnel/users", json=_payload(username="alice_a")).status_code == 403
+    assert client.get("/agent/personnel/import-template").status_code == 403
 
 
-def test_team_space_manager_import_allows_all_departments(client, db):
-    _create_team_space_manager(db, "dept_mgr")
-    _as_user("dept_mgr")
+def test_liufengbao_has_personnel_access(client, db):
+    """免密门户总管理员 liufengbao 与 admin 同权。"""
+    db.register_user("liufengbao", "secret123")
+    _as_user("liufengbao")
 
-    headers = ["账号", "姓名", "部门编号", "部门名称"]
-    content = _xlsx(
-        headers,
-        [
-            ["alice_m", "爱丽丝", "dept-market", "金融市场部"],
-            ["bob_t", "鲍勃", "dept-treasury", "司库部"],
-        ],
-    )
-    response = client.post(
-        "/api/personnel/import",
-        data={"source": "白名单导入"},
-        files={"file": ("人员.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-    )
-    assert response.status_code == 200, response.text
-    assert response.json()["created"] == 2
-    assert db.get_user_by_username("bob_t").department_id == "dept-treasury"
-
-
-def test_team_space_manager_can_manage_team_space_whitelist(client, db):
-    """白名单账号可查看并配置公共空间管理员白名单（权限管理）。"""
-    from datetime import timedelta
-
-    from easy_agent.utils.auth import create_access_token
-
-    _create_team_space_manager(db, "dept_mgr")
-    _as_user("dept_mgr")
-    client.post("/api/personnel/users", json=_payload(username="alice_a"))
-
-    # knowledge 路由走 Bearer token 鉴权（不吃 get_current_username 覆盖）
-    def _auth_headers(username):
-        version = db.increment_user_token_version(username)
-        token = create_access_token(
-            data={"sub": username, "v": version},
-            expires_delta=timedelta(minutes=30),
-        )
-        return {"Authorization": f"Bearer {token}"}
-
-    headers = _auth_headers("dept_mgr")
-    listed = client.get("/api/knowledge/v1/admin/team-space-managers", headers=headers)
-    assert listed.status_code == 200, listed.text
-    items = listed.json()["items"]
-    assert any(item["username"] == "dept_mgr" for item in items)
-
-    alice_id = db.get_user_by_username("alice_a").user_id
-    granted = client.put(
-        f"/api/knowledge/v1/admin/team-space-managers/{alice_id}",
-        json={"enabled": True},
-        headers=headers,
-    )
-    assert granted.status_code == 200, granted.text
-    revoked = client.put(
-        f"/api/knowledge/v1/admin/team-space-managers/{alice_id}",
-        json={"enabled": False},
-        headers=headers,
-    )
-    assert revoked.status_code == 200, revoked.text
-
-    # 非白名单普通账号仍 403
-    client.post("/api/personnel/users", json=_payload(username="plain_user", employee_id="E0009"))
-    plain_headers = _auth_headers("plain_user")
-    response = client.get(
-        "/api/knowledge/v1/admin/team-space-managers",
-        headers=plain_headers,
-    )
-    assert response.status_code == 403
+    assert client.get("/agent/personnel/users").status_code == 200
 
 
 def test_admin_can_create_filter_and_edit_personnel(client, db):
     client = _as_admin(client)
-    created = client.post("/api/personnel/users", json=_payload())
+    created = client.post("/agent/personnel/users", json=_payload())
     assert created.status_code == 201, created.text
     record = created.json()
     assert record["department_id"] == "dept-market"
@@ -209,9 +119,14 @@ def test_admin_can_create_filter_and_edit_personnel(client, db):
     assert db.verify_user_password("zhangsan", "123456") is not None
     assert db.get_user_by_username("zhangsan").organization_id == "dept-market"
 
-    listed = client.get("/api/personnel/users", params={"keyword": "张三"})
+    listed = client.get("/agent/personnel/users", params={"keyword": "张三"})
     assert listed.status_code == 200
     assert listed.json()["total"] == 1
+
+    # 部门筛选按部门名称模糊匹配（不是部门编号）
+    by_department = client.get("/agent/personnel/users", params={"department_name": "金融"})
+    assert by_department.status_code == 200
+    assert by_department.json()["total"] == 1
 
     update = _payload(
         username=None,
@@ -221,7 +136,7 @@ def test_admin_can_create_filter_and_edit_personnel(client, db):
         source="管理员手工调整",
     )
     update.pop("username")
-    edited = client.put(f"/api/personnel/users/{record['user_id']}", json=update)
+    edited = client.put(f"/agent/personnel/users/{record['user_id']}", json=update)
     assert edited.status_code == 200, edited.text
     assert edited.json()["account_status"] == "disabled"
     assert db.get_user_by_username("zhangsan").organization_id == "dept-risk"
@@ -230,7 +145,7 @@ def test_admin_can_create_filter_and_edit_personnel(client, db):
 def test_personnel_username_cannot_collide_in_workspace_path(client):
     client = _as_admin(client)
     response = client.post(
-        "/api/personnel/users",
+        "/agent/personnel/users",
         json=_payload(username="john.doe", employee_id="E-DOT"),
     )
     assert response.status_code == 422
@@ -254,11 +169,11 @@ def test_personnel_list_is_paginated(client, db):
         )
 
     first = client.get(
-        "/api/personnel/users",
+        "/agent/personnel/users",
         params={"keyword": "page_user", "page": 1, "page_size": 2},
     )
     second = client.get(
-        "/api/personnel/users",
+        "/agent/personnel/users",
         params={"keyword": "page_user", "page": 2, "page_size": 2},
     )
     assert first.status_code == 200
@@ -272,7 +187,7 @@ def test_personnel_list_is_paginated(client, db):
 def test_disabled_personnel_cannot_login(auth_client, db):
     client = _as_admin(auth_client)
     created = client.post(
-        "/api/personnel/users", json=_payload(username="disabled_user", account_status="disabled")
+        "/agent/personnel/users", json=_payload(username="disabled_user", account_status="disabled")
     )
     assert created.status_code == 201
     app.dependency_overrides.pop(get_current_username, None)
@@ -288,7 +203,7 @@ def test_disabled_personnel_cannot_login(auth_client, db):
 
 def test_admin_cannot_be_overwritten(client):
     client = _as_admin(client)
-    response = client.post("/api/personnel/users", json=_payload(username="admin"))
+    response = client.post("/agent/personnel/users", json=_payload(username="admin"))
     assert response.status_code == 409
 
 
@@ -303,7 +218,7 @@ def test_excel_import_creates_and_updates_with_frontend_source(client, db):
         ],
     )
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "月度花名册"},
         files={"file": ("人员.xlsx", first, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -322,7 +237,7 @@ def test_excel_import_creates_and_updates_with_frontend_source(client, db):
         [["alice_personnel", "Alice", "dept-c", "部门C", "E1001", "active"]],
     )
     updated = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "HR接口补录"},
         files={"file": ("人员.xlsx", second, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -351,7 +266,7 @@ def test_excel_import_hashes_the_shared_initial_password_once(client, monkeypatc
         ],
     )
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "批量性能测试"},
         files={"file": ("人员.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -369,7 +284,7 @@ def test_excel_validation_is_atomic(client, db):
         ],
     )
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "测试来源"},
         files={"file": ("人员.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -380,14 +295,14 @@ def test_excel_validation_is_atomic(client, db):
 def test_excel_rejects_wrong_format_and_missing_headers(client):
     client = _as_admin(client)
     wrong_type = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "测试"},
         files={"file": ("人员.xls", b"old excel", "application/vnd.ms-excel")},
     )
     assert wrong_type.status_code == 415
 
     corrupt = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "测试"},
         files={"file": ("人员.xlsx", b"not-a-workbook", "application/octet-stream")},
     )
@@ -396,7 +311,7 @@ def test_excel_rejects_wrong_format_and_missing_headers(client):
 
     missing = _xlsx(["账号", "姓名"], [["alice", "爱丽丝"]])
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "测试"},
         files={"file": ("人员.xlsx", missing, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -420,7 +335,7 @@ def test_excel_rejects_concealed_or_formula_accounts(client, unsafe_kind):
     workbook.close()
 
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "安全校验"},
         files={"file": ("人员.xlsx", output.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -430,14 +345,18 @@ def test_excel_rejects_concealed_or_formula_accounts(client, unsafe_kind):
 
 
 def test_template_is_admin_only_and_valid_xlsx(client):
-    assert client.get("/api/personnel/import-template").status_code == 403
+    assert client.get("/agent/personnel/import-template").status_code == 403
     client = _as_admin(client)
-    response = client.get("/api/personnel/import-template")
+    response = client.get("/agent/personnel/import-template")
     assert response.status_code == 200
     assert response.content.startswith(b"PK")
     assert "personnel_import_template.xlsx" in response.headers["content-disposition"]
     sheet = load_workbook(BytesIO(response.content)).active
-    assert [cell.value for cell in sheet[1]] == ["姓名", "sso账号", "部门", "处室", "团队"]
+    assert [cell.value for cell in sheet[1]] == [
+        "姓名*", "sso账号*", "员工编号", "账号状态*",
+        "部门编号*", "部门名称*", "处室*", "团队*",
+        "岗位", "手机号", "邮箱",
+    ]
 
 
 def test_structure_excel_import_builds_org_path(client, db):
@@ -452,7 +371,7 @@ def test_structure_excel_import_builds_org_path(client, db):
         ],
     )
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "部门结构导入"},
         files={"file": ("部门结构.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -477,9 +396,54 @@ def test_structure_excel_import_builds_org_path(client, db):
     assert zhaoliu.team_name == ""
 
 
+def test_structure_excel_imports_every_personnel_field(client, db):
+    """模板表头带 * 时仍可导入，且覆盖人员管理界面的全部字段。"""
+    client = _as_admin(client)
+    content = _xlsx(
+        [
+            "姓名*", "sso账号*", "员工编号", "账号状态*",
+            "部门编号*", "部门名称*", "处室*", "团队*",
+            "岗位", "手机号", "邮箱",
+        ],
+        [
+            [
+                "张三", "full_field_user", "E2001", "启用",
+                "dept-market", "金融市场部", "交易一处", "固收团队",
+                "分析师", "13800000000", "zhangsan@example.com",
+            ],
+            [
+                "李四", "disabled_field_user", "E2002", "停用",
+                "dept-risk", "风险管理部", "风控一处", "计量团队",
+                "经理", "13900000000", "lisi@example.com",
+            ],
+        ],
+    )
+    response = client.post(
+        "/agent/personnel/import",
+        data={"source": "全字段模板"},
+        files={"file": ("全字段.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["created"] == 2
+
+    user = db.get_user_by_username("full_field_user")
+    assert user.employee_id == "E2001"
+    assert user.department_id == "dept-market"
+    assert user.department_name == "金融市场部"
+    assert user.division_name == "交易一处"
+    assert user.team_name == "固收团队"
+    assert user.position == "分析师"
+    assert user.mobile == "13800000000"
+    assert user.email == "zhangsan@example.com"
+    assert user.account_status == "active"
+
+    disabled = db.get_user_by_username("disabled_field_user")
+    assert disabled.account_status == "disabled"
+
+
 def test_template_has_single_marked_example_row(client):
     client = _as_admin(client)
-    response = client.get("/api/personnel/import-template")
+    response = client.get("/agent/personnel/import-template")
     assert response.status_code == 200
     sheet = load_workbook(BytesIO(response.content)).active
     rows = [tuple(cell.value for cell in row) for row in sheet.iter_rows()]
@@ -497,7 +461,7 @@ def test_structure_excel_skips_template_example_rows(client):
         ],
     )
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "测试"},
         files={"file": ("部门结构.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml")},
     )
@@ -510,7 +474,7 @@ def test_structure_excel_rejects_missing_required_columns(client):
     client = _as_admin(client)
     missing = _xlsx(["姓名", "部门"], [["张三", "金融市场部"]])
     response = client.post(
-        "/api/personnel/import",
+        "/agent/personnel/import",
         data={"source": "测试"},
         files={"file": ("部门结构.xlsx", missing, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
@@ -519,15 +483,15 @@ def test_structure_excel_rejects_missing_required_columns(client):
 
 
 def test_delete_personnel_requires_admin(client):
-    assert client.delete("/api/personnel/users/whatever").status_code == 403
+    assert client.delete("/agent/personnel/users/whatever").status_code == 403
 
 
 def test_delete_personnel_guards(client, db):
     client = _as_admin(client)
     admin = db.get_user_by_username("admin")
     assert admin is not None
-    assert client.delete(f"/api/personnel/users/{admin.user_id}").status_code == 409
-    assert client.delete("/api/personnel/users/nonexistent-user").status_code == 404
+    assert client.delete(f"/agent/personnel/users/{admin.user_id}").status_code == 409
+    assert client.delete("/agent/personnel/users/nonexistent-user").status_code == 404
 
 
 def _count_rows(db, sql, params):
@@ -542,7 +506,7 @@ def test_delete_personnel_blocked_while_owning_bases_and_cleans_grants(client, d
     from datetime import datetime
 
     client = _as_admin(client)
-    created = client.post("/api/personnel/users", json=_payload(username="to_delete", employee_id="E9999"))
+    created = client.post("/agent/personnel/users", json=_payload(username="to_delete", employee_id="E9999"))
     assert created.status_code == 201, created.text
     user_id = created.json()["user_id"]
     now = datetime.now().isoformat()
@@ -565,13 +529,14 @@ def test_delete_personnel_blocked_while_owning_bases_and_cleans_grants(client, d
         )
         db._execute(
             cursor,
-            "INSERT INTO knowledge_team_space_managers (user_id, granted_by, granted_at, updated_at) "
-            "VALUES (?, 'admin', ?, ?)",
+            "INSERT INTO knowledge_department_managers "
+            "(id, user_id, department_id, granted_by, granted_at, updated_at) "
+            "VALUES ('dm-x', ?, 'dept-market', 'admin', ?, ?)",
             (user_id, now, now),
         )
 
     # 名下有未删除知识库 → 409，账号与授权保持原样
-    blocked = client.delete(f"/api/personnel/users/{user_id}")
+    blocked = client.delete(f"/agent/personnel/users/{user_id}")
     assert blocked.status_code == 409
     assert "知识库" in str(blocked.json()["detail"])
     assert db.get_user_by_id(user_id) is not None
@@ -580,9 +545,154 @@ def test_delete_personnel_blocked_while_owning_bases_and_cleans_grants(client, d
     with db.get_connection() as connection:
         cursor = connection.cursor()
         db._execute(cursor, "UPDATE knowledge_bases SET status='deleted' WHERE id='base-x'")
-    ok = client.delete(f"/api/personnel/users/{user_id}")
+    ok = client.delete(f"/agent/personnel/users/{user_id}")
     assert ok.status_code == 204
 
     assert db.get_user_by_id(user_id) is None
     assert _count_rows(db, "SELECT COUNT(*) AS n FROM knowledge_permissions WHERE subject_id=?", (user_id,)) == 0
-    assert _count_rows(db, "SELECT COUNT(*) AS n FROM knowledge_team_space_managers WHERE user_id=?", (user_id,)) == 0
+    assert _count_rows(db, "SELECT COUNT(*) AS n FROM knowledge_department_managers WHERE user_id=?", (user_id,)) == 0
+
+
+def _use_sync_config(monkeypatch, **overrides):
+    """把运行时配置替换为 personnel.sync（默认启用并指向本地假接口）。"""
+    from types import SimpleNamespace
+
+    from easy_agent.bootstrap.config_models import PersonnelConfig
+    from easy_agent.services.agents import manager as agent_manager
+
+    sync = {"enabled": True, "url": "http://hr.local/api/users", "source_name": "HR接口"}
+    sync.update(overrides)
+    config = SimpleNamespace(personnel=PersonnelConfig(sync=sync))
+    monkeypatch.setattr(agent_manager, "get_agent_config", lambda: {"config": config})
+    return config
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _FakeHttpClient:
+    def __init__(self, pages):
+        self.pages = pages
+        self.calls = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get(self, url, params=None, headers=None):
+        self.calls.append({"url": url, "params": params, "headers": headers})
+        return _FakeResponse(self.pages[len(self.calls) - 1])
+
+
+def test_sync_endpoint_requires_admin(client):
+    assert client.post("/agent/personnel/sync").status_code == 403
+
+
+def test_sync_rejects_when_disabled(client, monkeypatch):
+    _use_sync_config(monkeypatch, enabled=False)
+    client = _as_admin(client)
+    response = client.post("/agent/personnel/sync")
+    assert response.status_code == 422
+    assert "未启用" in str(response.json()["detail"])
+
+
+def test_source_sync_maps_fields_and_paginates(monkeypatch):
+    from easy_agent.bootstrap.config_models import PersonnelSyncConfig
+    from easy_agent.knowledges.personnel import source_sync
+
+    cfg = PersonnelSyncConfig(
+        enabled=True,
+        url="http://hr.local/api/users",
+        token="secret",
+        items_path="data.items",
+        field_mapping={"username": "account", "display_name": "name"},
+        page={"enabled": True, "param": "pageNo", "size_param": "pageSize", "size": 2},
+    )
+    client = _FakeHttpClient([
+        {"data": {"items": [
+            {"account": "alice", "name": "爱丽丝", "department_name": "部门A"},
+            {"account": "admin", "name": "管理员", "department_name": "部门A"},
+        ]}},
+        {"data": {"items": [{"account": "bob", "name": "鲍勃", "department_name": "部门B"}]}},
+    ])
+    monkeypatch.setattr(source_sync.httpx, "Client", lambda timeout=None: client)
+
+    records = source_sync.fetch_source_records(cfg)
+    assert len(records) == 3
+    assert client.calls[0]["params"] == {"pageNo": 1, "pageSize": 2}
+    assert client.calls[0]["headers"] == {"Authorization": "Bearer secret"}
+
+    items, skipped, errors = source_sync.build_personnel_items(records, cfg)
+    assert errors == []
+    assert skipped == 1  # admin 不计入同步
+    assert [item.username for item in items] == ["alice", "bob"]
+    assert items[0].display_name == "爱丽丝"
+    assert items[0].source == "接口同步"
+
+
+def test_source_sync_collects_validation_errors():
+    from easy_agent.bootstrap.config_models import PersonnelSyncConfig
+    from easy_agent.knowledges.personnel.source_sync import build_personnel_items
+
+    cfg = PersonnelSyncConfig(enabled=True, url="http://hr.local/api/users")
+    items, skipped, errors = build_personnel_items(
+        [
+            {"username": "valid_user", "display_name": "有效用户", "department_name": "部门A"},
+            {"username": "bad user", "display_name": "无效用户", "department_name": "部门A"},
+        ],
+        cfg,
+    )
+    assert len(items) == 1
+    assert skipped == 0
+    assert len(errors) == 1
+    assert "第 2 条" in errors[0]
+
+
+def test_sync_endpoint_creates_updates_and_skips_admin(client, db, monkeypatch):
+    from easy_agent.knowledges.personnel import api as personnel_api
+
+    _use_sync_config(monkeypatch)
+    records = [
+        {
+            "username": "sync_alice",
+            "display_name": "爱丽丝",
+            "department_id": "dept-a",
+            "department_name": "部门A",
+            "account_status": "启用",
+        },
+        {"username": "admin", "display_name": "管理员", "department_name": "部门A"},
+    ]
+    monkeypatch.setattr(personnel_api, "fetch_source_records", lambda cfg: records)
+    client = _as_admin(client)
+
+    response = client.post("/agent/personnel/sync")
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "total": 2,
+        "created": 1,
+        "updated": 0,
+        "source": "HR接口",
+        "default_password": "123456",
+        "skipped": 1,
+    }
+    assert db.get_user_by_username("sync_alice").personnel_source == "HR接口"
+
+    # 全量覆盖：同名账号的字段以接口数据为准
+    records[0].update({"display_name": "Alice", "department_id": "dept-b", "department_name": "部门B"})
+    updated = client.post("/agent/personnel/sync")
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["updated"] == 1
+    user = db.get_user_by_username("sync_alice")
+    assert user.display_name == "Alice"
+    assert user.department_id == "dept-b"
+    assert user.organization_id == "dept-b"

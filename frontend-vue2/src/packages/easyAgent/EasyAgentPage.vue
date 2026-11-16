@@ -1,0 +1,1602 @@
+<template>
+  <!-- 模块根节点：样式限域（.easy-agent-root）、主题变量与暗色标记都只落在这里，不写宿主 html/body -->
+  <div class="easy-agent-root app-container" :data-theme="themeMode" :style="themeStyle">
+    <!-- 同一页面只支持一个活动实例（会话、流式状态是模块级单例） -->
+    <div v-if="duplicateInstance" class="auth-blocked">
+      <div class="auth-blocked-box">
+        <h2>Easy Agent 已在本页其他位置打开</h2>
+        <p>同一页面同时只支持一个 Easy Agent 页面实例，请关闭另一个后再使用。</p>
+      </div>
+    </div>
+
+    <Welcome 
+      v-else-if="showWelcome" 
+      @completed="handleWelcomeCompleted" 
+    />
+
+    <!-- 登录页关闭时（嵌入宿主 / 生产）：无有效登录态时的兜底提示 -->
+    <div v-else-if="authBlocked" class="auth-blocked">
+      <div class="auth-blocked-box">
+        <h2>未授权访问</h2>
+        <p v-if="authBlockedReason === 'kicked'">
+          您的账号已在其他设备或页面登录，本页已退出。请刷新页面重新进入。
+        </p>
+        <p v-else-if="signInEnabled">
+          免密登录未成功（未获取到宿主登录信息或后端校验未通过）。请从门户系统重新进入本页面。
+        </p>
+        <p v-else>登录页已关闭，且未配置免密登录。请联系管理员分配账号后使用账号密码登录。</p>
+      </div>
+    </div>
+
+    <template v-else-if="!isBootstrapping">
+      <SessionList
+        v-show="!isSidebarCollapsed"
+        :style="{ width: sidebarWidth + 'px', flexShrink: 0 }"
+        :sessions="sessions"
+        :currentSessionId="currentSessionId"
+        :streamingSessionIds="streamingSessions"
+        :pendingApprovalSessionIds="pendingApprovalSessions"
+        :username="userProfile.username"
+        :organizationId="userProfile.organization_id"
+        :email="userProfile.email"
+        :knowledgeEnabled="knowledgeEnabled"
+        :showKnowledge="showKnowledge"
+        @show-knowledge="handleShowKnowledge"
+        @create-session="handleCreateSession"
+        @select-session="handleSelectSession"
+        @delete-session="handleDeleteSession"
+        @rename-session="handleRenameSession"
+        @toggle-pin="handleTogglePin"
+        @toggle-sidebar="toggleSidebar"
+        @show-skill-center="handleShowSkillCenter"
+        @show-scheduled-tasks="handleShowScheduledTasks"
+        @show-settings="showSettingsPanel = true"
+        @show-user-management="handleShowUserManagement"
+        @logout="handleLogout"
+      />
+      <SidebarResizeHandle v-if="!isSidebarCollapsed" v-model="sidebarWidth" />
+      
+      <button 
+        v-if="isSidebarCollapsed"
+        class="expand-sidebar-btn"
+        @click="toggleSidebar"
+        title="展开侧边栏"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+          <line x1="9" y1="3" x2="9" y2="21"></line>
+        </svg>
+      </button>
+      
+      <SkillCenter
+        v-if="showSkillCenter"
+        :session-id="currentSessionId || ''"
+        :initial-tab="skillCenterTab"
+        @close="showSkillCenter = false"
+        @create-skill="handleSkillCreate"
+        @create-expert="handleExpertCreate"
+        @edit-expert="handleExpertEdit"
+        @use="handleUseExpert"
+      />
+
+      <ScheduledTasksPanel v-if="showScheduledTasks" @close="showScheduledTasks = false" />
+      
+      <SettingsPanel
+        v-if="showSettingsPanel"
+        @close="showSettingsPanel = false"
+      />
+
+      <UserManagementPanel
+        v-if="showUserManagementPanel"
+        @close="showUserManagementPanel = false"
+      />
+      
+      <KnowledgeWorkbench
+        v-if="showKnowledge"
+        @close="showKnowledge = false"
+        @manage-personnel="handleShowUserManagement"
+        @chat-session-prepared="loadSessions"
+      />
+
+      <Chat
+        v-else-if="!showUserManagementPanel && !showSkillCenter && !showScheduledTasks"
+        :messages="messages"
+        :sessionLoading="sessionLoading"
+        :currentSessionId="currentSessionId"
+        :sessionCreatedAt="currentSessionCreatedAt"
+        :isStreaming="isStreaming"
+        :scrollTrigger="scrollTrigger"
+        :sessionUsage="sessionUsage"
+        :sessionDuration="sessionDuration"
+        :iterationCount="iterationCount"
+        :todos="currentTodos"
+        :presetQuestions="presetQuestions"
+        :welcomeTitle="welcomeTitle"
+        :workspaceExpanded="!isWorkspaceCollapsed"
+        :sidebarCollapsed="isSidebarCollapsed"
+        :models="availableModels"
+        :selectedModel="selectedModel"
+        :activeExpert="selectedExpert"
+        :expertPrompt="expertPrompt"
+        @clear-expert="selectedExpert = null"
+        @expert-prompt-applied="expertPrompt = ''"
+        @update:selectedModel="selectedModel = $event"
+        @toggle-workspace="isWorkspaceCollapsed = false"
+        @send-message="handleSendMessage"
+        @web-search-change="handleWebSearchChange"
+        @create-session="ensureCurrentSession"
+        @remove-file="handleRemoveFile"
+        @stop="handleStop"
+        @retry="handleRetry"
+        @approve="handleToolApproval('approve', $event)"
+        @reject="handleToolApproval('reject', $event)"
+        @edit="handleToolApproval('edit', $event)"
+        @respond="handleToolApproval('respond', $event)"
+        @open-panel="openSkillCenterPanel"
+        @open-knowledge="openKnowledgeWorkbench"
+        @select-expert="handleSummonExpertInPlace"
+      />
+
+      <div v-if="currentSessionId && !showKnowledge && !showUserManagementPanel && !showSkillCenter" class="workspace-area">
+        <WorkspacePanel
+          :username="userProfile.username"
+          :currentSessionId="currentSessionId"
+          :isStreaming="isStreaming"
+          :visible="!isWorkspaceCollapsed"
+          @toggle="isWorkspaceCollapsed = !isWorkspaceCollapsed"
+        />
+      </div>
+
+      <!-- 本站页面不挂载悬浮 AI 侧边栏，侧边栏只通过 SDK 给第三方页面使用
+      <AiSidebar
+        v-if="userProfile.username && aiSidebarEnabled"
+        :pageContext="aiPageContext"
+        :exposeGlobal="exposeGlobal"
+        @open-in-main="handleOpenSessionInMain"
+        @open-panel="openSkillCenterPanel"
+      />
+      -->
+
+      <div v-if="error" class="error-toast">
+        {{ error }}
+        <button @click="error = null">×</button>
+      </div>
+    </template>
+  </div>
+</template>
+
+<script>
+import { referenceMessage } from './shared/fileReferences.js'
+import Vue from 'vue'
+import { loadDailySessions, sessionGuard, isSessionDeleted, isStaleSessionError, initialSessionId as resolveInitialSessionId } from './shared/sessionManagement/state.js'
+import SessionList from './features/chat/components/SessionList.vue'
+import Chat from './features/chat/components/Chat.vue'
+// 面板级懒加载：首屏不解析这些重型面板，首次打开时再拉对应 chunk
+const SkillCenter = () => import('./features/skills/components/SkillCenter.vue')
+const ScheduledTasksPanel = () => import('./features/tasks/components/ScheduledTasksPanel.vue')
+const UserManagementPanel = () => import('./features/personnel/PersonnelManagement.vue')
+const KnowledgeWorkbench = () => import('./features/knowledge/KnowledgeWorkbench.vue')
+import SidebarResizeHandle from './features/knowledge/SidebarResizeHandle.vue'
+import Welcome from './features/chat/components/Welcome.vue'
+import WorkspacePanel from './features/workspace/components/WorkspacePanel.vue'
+const SettingsPanel = () => import('./features/settings/components/SettingsPanel.vue')
+import AiSidebar from './features/chat/components/AiSidebar.vue'
+import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, renameSession, togglePinSession, getStreamStatus } from './api/chat.js'
+import { getUserProfile, deleteFile } from './api/files.js'
+import chatSessionMixin from './features/chat/mixins/chatSession.js'
+import { createPageStreamChunkHandler } from './features/chat/services/pageChunkHandler.js'
+import { chatStore } from './features/chat/store/chatStore.js'
+import { buildPageContext } from './utils/pageContext.js'
+import { applyApprovalRequests } from './utils/hitlApproval.js'
+import { clearStreamFlight, markStreamFlight, readStreamFlight, resolveResumeTargets } from './features/chat/services/streamResume.js'
+import { logout as apiLogout, notifyLogout, getStoredToken, getStoredUsername, AUTH_EXPIRED_EVENT, authFetch, passwordlessLogin, runSignIn } from './api/auth.js'
+import { getKnowledgeStatus, getModels as fetchModels } from './api/settings.js'
+import { isRestorableUserProfile } from './utils/userProfile.js'
+import { getRuntime } from './runtime/config.js'
+import { onRuntimeEvent } from './runtime/events.js'
+import { readQuery, replaceQuery } from './runtime/navigation.js'
+import { currentThemeMode, currentThemeStyle } from './runtime/theme.js'
+import { hideTip } from './directives/tip.js'
+// 页面级深色覆盖：放在子组件之后引入，与原 App.vue 非 scoped 样式块的加载顺序一致
+import './styles/theme-dark.css'
+
+// ── 登录方式（由运行时配置决定，见 runtime/config.js 的 auth 段）────────────
+//   auth.urlLogin：地址栏 ?username=&user_id= 免密直登（外网独立应用开发 / 联调）
+//   auth.signIn：适配器用宿主身份换 Agent token（嵌入宿主 / 门户免密）；失败回落到已存登录态
+//   auth.loginPage：无有效登录态时显示 Welcome 登录 / 注册页；关闭则显示「未授权访问」提示
+// 应用名称、首页欢迎语取自 app 段；后端 /agent/auth/config 的 app_welcome_title 仍可在运行期覆盖。
+
+// 同一 JS 运行时同时只允许一个活动的 EasyAgentPage（chatStore、流式状态等是模块级单例）
+let activePage = null
+
+// ── 当前会话视图持久化 ────────────────────────────────────────────
+// 刷新后恢复到用户刷新前所在的会话，而不是永远跳到列表第一个。
+// 用 '__new__' 记录"新会话首页"（currentSessionId 为 null）这一状态。
+const ACTIVE_SESSION_KEY = 'easy_agent_active_session'
+const NEW_SESSION_MARK = '__new__'
+
+// ── 流式状态持久化（sessionStorage）─────────────────────────────────────
+const STREAM_STATE_KEY = 'easy_agent_stream_state'
+
+/*
+ * Vue 2 无法检测「数组索引赋值」（arr[i] = x）与「对象属性新增」（obj.k = x），
+ * 只有 push/splice 等变异方法和 Vue.set 才会触发更新。Vue 3 基于 Proxy 没有这个限制，
+ * 因此迁移后必须统一走这里写入，否则流式内容不会逐步渲染。
+ */
+function setReactive(target, key, value) {
+  if (!target) return
+  if (Array.isArray(target)) {
+    if (key >= 0 && key < target.length) target.splice(key, 1, value)
+  } else {
+    Vue.set(target, key, value)
+  }
+}
+
+export default {
+  components: {
+    AiSidebar,
+    SidebarResizeHandle,
+    KnowledgeWorkbench,
+    Chat,
+    ScheduledTasksPanel,
+    SessionList,
+    SettingsPanel,
+    SkillCenter,
+    UserManagementPanel,
+    Welcome,
+    WorkspacePanel,
+  },
+  mixins: [chatSessionMixin],
+  data() {
+    return {
+      // bootstrap（认证 + 会话列表 + 首个会话历史）完成前不写入，避免用初始 null 覆盖已存值
+      hasBootstrapped: false,
+      // 模型选择：从配置加载可选列表，默认选 active model
+      availableModels: [],
+      selectedModel: null,
+      // 联网开关的镜像（真身在 ChatInput）：发送只有「输入框」一条路走 $emit('send')，
+      // 重试/续发不经过输入框，必须从这里取当前状态，否则会落回默认值 false。
+      webSearchEnabled: false,
+      welcomeTitle: getRuntime().app.welcomeTitle,
+      // 「未授权」提示态（登录页关闭且免密登录未成功时显示）
+      authBlocked: false,
+      // 未授权原因：kicked = 被其他设备顶下线（不自动重新登录，避免两端互踢）
+      authBlockedReason: '',
+      duplicateInstance: false,
+      presetQuestions: [],
+      isSidebarCollapsed: false,
+      isWorkspaceCollapsed: true,
+      knowledgeEnabled: false,
+      showKnowledge: false,
+      sidebarWidth: 280,
+      showSkillCenter: false,
+      skillCenterTab: 'experts',
+      selectedExpert: null,
+      expertPrompt: '',
+      showScheduledTasks: false,
+      showSettingsPanel: false,
+      showUserManagementPanel: false,
+      showWelcome: false,
+      // 首屏引导中：认证 + 会话列表 + 首次历史加载完成前不渲染聊天区，
+      // 否则会先闪出空会话首页、会话时间下方那条分隔线也会闪一下。
+      isBootstrapping: true,
+      userProfile: {
+        username: '',
+        organization_id: '',
+        email: ''
+      },
+    }
+  },
+  computed: {
+    themeMode() {
+      return currentThemeMode()
+    },
+    themeStyle() {
+      return currentThemeStyle()
+    },
+    signInEnabled() {
+      return typeof getRuntime().auth.signIn === 'function'
+    },
+    aiSidebarEnabled() {
+      return getRuntime().features.aiSidebar !== false
+    },
+    exposeGlobal() {
+      return !!getRuntime().features.exposeGlobal
+    },
+    // AI 侧边栏的页面上下文：描述用户唤起侧边栏时所在的页面/功能
+    aiPageContext() {
+      return buildPageContext({
+        showSkillCenter: this.showSkillCenter,
+        showScheduledTasks: this.showScheduledTasks,
+        showSettingsPanel: this.showSettingsPanel,
+        showUserManagementPanel: this.showUserManagementPanel,
+        session: this.currentSessionId
+          ? this.sessions.find(s => s.session_id === this.currentSessionId) || { session_id: this.currentSessionId }
+          : null,
+        messages: this.messages,
+      })
+    },
+  },
+  watch: {
+    // 刷新后恢复到用户刷新前所在的会话；bootstrap 完成前不写入，避免用初始 null 覆盖已存值
+    currentSessionId(sid) {
+      if (!this.hasBootstrapped) return
+      try {
+        localStorage.setItem(ACTIVE_SESSION_KEY, sid || NEW_SESSION_MARK)
+      } catch (_) { /* localStorage 不可用时忽略 */ }
+    },
+    // 流式会话集合变化 -> 持久化到 sessionStorage（页面刷新后据此恢复）
+    streamingSessions() {
+      this.saveStreamState()
+    },
+    lastStreamingSession() {
+      this.saveStreamState()
+    },
+    // 同步到共享 store，供 AI 侧边栏使用同一用户、模型与上下文窗口配置
+    'userProfile.username': {
+      immediate: true,
+      handler(name) { chatStore.username = name || '' },
+    },
+    'sessionUsage.context_length'(len) {
+      if (len) chatStore.contextLength = len
+    },
+    availableModels(models) {
+      chatStore.models = models
+    },
+    selectedModel(name) {
+      chatStore.activeModel = name
+    },
+  },
+  beforeCreate() {
+    // 同一 JS 运行时只允许一个活动实例：第二个实例只渲染提示，不做任何初始化
+    if (activePage && !activePage._isDestroyed) {
+      this._duplicateOf = activePage
+      return
+    }
+    activePage = this
+    // 新实例 = 重新进入页面：清掉上一实例遗留的流式 / 待审批标记，由 tryAttachLiveStream
+    // 按 sessionStorage 与后端状态恢复（与刷新页面等价）。必须在 watcher 建立前清，
+    // 否则 streamingSessions 的 watcher 会把持久化的流式状态一并删掉。
+    chatStore.streamingSessions = []
+    chatStore.pendingApprovalSessions = []
+    chatStore.lastStreamingSession = null
+  },
+  mounted() {
+    if (this._duplicateOf) {
+      this.duplicateInstance = true
+      this.isBootstrapping = false
+      console.error('[EasyAgent] 同一页面只支持一个 EasyAgentPage 实例，本实例不初始化')
+      return
+    }
+    const { app, auth } = getRuntime()
+    // 页面标题：嵌入宿主时由宿主管理（app.setDocumentTitle=false），模块不改 document.title
+    if (app.setDocumentTitle) document.title = app.title
+    // 登录开关自检：既没有登录页也没有 signIn 时没有任何登录入口，属于配置错误
+    if (!auth.loginPage && typeof auth.signIn !== 'function') {
+      console.warn('[登录] auth.loginPage 关闭且未配置 auth.signIn，将无任何登录入口，请检查适配器配置')
+    }
+    console.info(
+      `[登录] 模式=${getRuntime().mode} | 登录页=${auth.loginPage ? '开启' : '关闭'} | 适配器登录=${typeof auth.signIn === 'function' ? '开启' : '关闭'}`
+    )
+    this._offAuthExpired = onRuntimeEvent(AUTH_EXPIRED_EVENT, this.handleAuthExpired)
+    this.initApp()
+  },
+  // keep-alive：缓存期间流式连接照常接收（界面隐藏），只收起挂在 body 上的悬浮提示
+  deactivated() {
+    hideTip()
+  },
+  beforeDestroy() {
+    if (this._duplicateOf) return
+    hideTip()
+    if (this._offAuthExpired) this._offAuthExpired()
+    // 先落盘流式状态：随后 mixin 断开前端连接，重新进入时据此重新挂载
+    if (this.hasBootstrapped) this.saveStreamState()
+  },
+  destroyed() {
+    if (activePage === this) activePage = null
+  },
+  methods: {
+    // 401 无法续期：被顶下线时记录原因（不自动重新登录），其余与主动登出一致
+    handleAuthExpired(info) {
+      this.authBlockedReason = info && info.reason === 'kicked' ? 'kicked' : ''
+      return this.handleLogout()
+    },
+    // 应用初始化：免密登录 -> 加载用户资料 -> 恢复会话与流式任务
+    async initApp() {
+      try {
+        // URL 免密直登（?username=xxx&user_id=yyy，仅 auth.urlLogin 开启时）：成功则直接进入主界面
+        if (getRuntime().auth.urlLogin && (await this.handlePasswordlessUrlLogin())) return
+        // 适配器登录（auth.signIn）：用宿主身份换 Agent token，
+        // 成功后 handleWelcomeCompleted 已完成首屏引导
+        if (await this.handleAdapterSignIn()) return
+        // 未配置或登录失败：走常规资料加载（无有效登录态时回落到登录页 / 未授权提示）
+        await this.loadUserProfile()
+        if (!this.showWelcome && !this.authBlocked) {
+          // 拉取可选模型列表（不阻塞会话加载）
+          this.loadModels()
+          this.loadKnowledgeStatus()
+          await this.loadSessions()
+          await this.restoreInitialSession()
+        }
+      } finally {
+        // 未登录时也解除首屏门控，让 Welcome 登录页正常显示
+        this.isBootstrapping = false
+      }
+    },
+    clearActiveSession() {
+      try {
+        localStorage.removeItem(ACTIVE_SESSION_KEY)
+      } catch (_) { /* ignore */ }
+    },
+    // 需要登录时的落点：登录页开启则显示 Welcome；关闭则显示未授权提示（生产常用）
+    requireLogin() {
+      if (getRuntime().auth.loginPage) {
+        this.showWelcome = true
+      } else {
+        this.authBlocked = true
+      }
+    },
+    async loadKnowledgeStatus() {
+      try {
+        const data = await getKnowledgeStatus()
+        this.knowledgeEnabled = Boolean(data && data.enabled)
+      } catch (e) {
+        this.knowledgeEnabled = false
+      }
+    },
+    async loadModels() {
+      try {
+        const data = await fetchModels()
+        this.availableModels = data.models || []
+        // 默认选 active model（仅当当前未选择时）
+        if (!this.selectedModel && data.active_model) {
+          this.selectedModel = data.active_model
+        }
+        console.log(
+          `[${new Date().toISOString()}] [模型列表] 加载成功 | 可选: ${this.availableModels.map(m => m.name).join(',')} | 当前: ${this.selectedModel}`
+        )
+      } catch (e) {
+        console.error('加载模型列表失败:', e)
+      }
+    },
+    // ── 流式状态持久化（sessionStorage）─────────────────────────────────────
+    // 页面刷新后据此恢复「输入框状态不变、页面持续流式返回」：
+    // - 恢复输入框草稿（ChatInput 自行持久化）
+    // - 若刷新前正在流式，则重新挂载到后端进行中的流式任务继续接收事件
+    saveStreamState() {
+      const ids = this.streamingSessions.filter(Boolean)
+      if (ids.length > 0) {
+        sessionStorage.setItem(STREAM_STATE_KEY, JSON.stringify({
+          streamingIds: ids,
+          lastActive: this.lastStreamingSession || ids[ids.length - 1],
+          streaming: true,
+          at: Date.now(),
+        }))
+      } else {
+        sessionStorage.removeItem(STREAM_STATE_KEY)
+      }
+    },
+    // 刷新后恢复活跃任务：当前会话展示挂载，其余后台挂载，保持用户选择。
+    async tryAttachLiveStream() {
+      const valid = sessionGuard()
+      let saved = null
+      try { saved = JSON.parse(sessionStorage.getItem(STREAM_STATE_KEY) || 'null') } catch (e) { saved = null }
+      // 刷新前那一轮可能还没拿到 session_id（新会话首轮，start 事件后才有），只有发送时
+      // 落的「在飞」记录能找回它；后端准备期（建 Agent/MCP）还没占流锁，/stream/status
+      // 仍是 inactive，由模块内部短轮询等待——一次探测就放弃正是「刷新后不吐流」的成因。
+      const plan = await resolveResumeTargets({
+        saved,
+        flight: readStreamFlight(),
+        sessions: this.sessions,
+        // 界面正在看的会话是首要候选：在飞记录可能丢了（换标签页/发送后立刻刷新）
+        current: this.currentSessionId || this.loadedSessionId,
+        // 新会话首轮：刷新落在后端还没建会话的准备期，列表里也还没有它——给它一个把
+        // 会话找回来的机会，否则这一轮永远没人探测、内容也就永远补不回来
+        refreshSessions: async () => {
+          await this.loadSessions()
+          return this.sessions
+        },
+        getStatus: getStreamStatus,
+        getLastMessage: async (sid) => {
+          const history = await getChatHistory(sid)
+          const msgs = (history && history.messages) || []
+          return msgs[msgs.length - 1] || null
+        },
+      })
+      if (!valid() || !plan.ids.length) return
+      if (plan.waited && !plan.active.length) {
+        // 等不到活跃：这轮已结束（答复落库）或彻底丢了，清记录并按需回填，免得下次白等。
+        // 没有答复时不动界面（服务端可能还没落本轮提问）。
+        clearStreamFlight()
+        await this.syncIfServerAnswered(plan.wait)
+      }
+      if (!valid()) return
+      plan.active = plan.active.filter(sid => !isSessionDeleted(sid))
+      for (const sid of plan.active) this.markStreaming(sid)
+      const attachTarget = plan.active.includes(this.currentSessionId) ? this.currentSessionId : null
+      if (attachTarget) this.attachToStreamingSession(attachTarget, { switchTo: false, displayed: true })
+      // 其余仍活跃的会话后台挂载：同步 token 用量、流结束时自动移除"进行中"标记
+      for (const sid of plan.active) {
+        if (sid !== attachTarget) this.attachToStreamingSession(sid, { switchTo: false, displayed: false })
+      }
+      // 清理一次性恢复标记；仍活跃的流会通过 watch 重新写入持久化
+      this.saveStreamState()
+    },
+    toggleSidebar() {
+      this.isSidebarCollapsed = !this.isSidebarCollapsed
+    },
+    openSkillCenterPanel(tab) {
+      if (tab === 'knowledge') return this.openKnowledgeWorkbench()
+      // 「+」菜单入口：打开面板并直接定位到专家/技能/连接器
+      this.skillCenterTab = tab
+      this.showSkillCenter = true
+    },
+    /**
+     * 「专家 Tab -> 召唤」（列表卡片 / 详情弹窗 / 示例问题）：**始终新开会话**。
+     *
+     * 2026-10-28 口径调整：从专家面板发起的召唤不再跳回该专家的历史会话，
+     * 一律给一个干净的新窗口（会话记忆、历史消息、工作区交付物都绑定在会话上，
+     * 沿用旧会话会让上次对话的上下文渗进本轮）。
+     * 例外：当前已是空白会话（没有任何消息）则就地复用，避免连点召唤堆出空会话。
+     *
+     * 「+」号面板的召唤走 handleSummonExpertInPlace，不再进入本函数。
+     * 与 frontend/src/App.vue 的同名函数同构，改动需同步两处。
+     */
+    async handleUseExpert(expert, prompt) {
+      if (!expert || !expert.export_agent_id) return
+      const picked = {
+        export_agent_id: expert.export_agent_id,
+        export_name_cn: expert.export_name_cn,
+        export_version: expert.export_version,
+      }
+      this.expertPrompt = typeof prompt === 'string' ? prompt : ''
+      this.showSkillCenter = false
+
+      if (this.messages.length > 0) {
+        await this.handleCreateSession()
+      }
+
+      // handleCreateSession 会清空专家选择（「切会话不沿用临时选择」的既有口径），
+      // 这里显式恢复成本轮用户刚选中的专家。
+      this.selectedExpert = picked
+    },
+    /**
+     * 「+」号面板 -> 专家行的召唤：**留在当前会话**，只挂专家胶囊。
+     *
+     * 2026-10-28 口径调整：+ 面板召唤不再跳转/新建会话；唯一例外是当前会话
+     * 已经召唤了**另一位**专家——换专家 = 换会话（避免两位专家共享同一份
+     * 会话记忆互相污染），此时新建一个干净窗口再挂载。
+     * 与 frontend/src/App.vue 的同名函数同构，改动需同步两处。
+     */
+    async handleSummonExpertInPlace(expert) {
+      if (!expert || !expert.export_agent_id) return
+      const picked = {
+        export_agent_id: expert.export_agent_id,
+        export_name_cn: expert.export_name_cn,
+        export_version: expert.export_version,
+      }
+      if (this.selectedExpert && this.selectedExpert.export_agent_id !== picked.export_agent_id) {
+        await this.handleCreateSession()
+      }
+      this.selectedExpert = picked
+    },
+    // AI 侧边栏「在主页面打开」：主对话区切到该会话
+    async handleOpenSessionInMain(sessionId) {
+      if (!sessionId) return
+      if (sessionId === this.currentSessionId && !this.showSkillCenter && !this.showScheduledTasks) return
+      await this.handleSelectSession(sessionId)
+    },
+    openKnowledgeWorkbench() {
+      if (!this.knowledgeEnabled) return
+      // 「+」菜单知识库子面板入口：打开知识库工作台
+      this.showKnowledge = true
+      this.showSkillCenter = false
+      this.showScheduledTasks = false
+      this.showSettingsPanel = false
+      this.showUserManagementPanel = false
+    },
+    handleShowSkillCenter() {
+      this.showKnowledge = false
+      this.showSkillCenter = !this.showSkillCenter
+      this.showScheduledTasks = false
+    },
+    handleShowScheduledTasks() {
+      this.showKnowledge = false
+      this.showScheduledTasks = !this.showScheduledTasks
+      this.showSkillCenter = false
+    },
+    handleShowKnowledge() {
+      this.showKnowledge = !this.showKnowledge
+      this.showSkillCenter = false
+      this.showScheduledTasks = false
+      this.showSettingsPanel = false
+      this.showUserManagementPanel = false
+    },
+    handleShowUserManagement() {
+      // 人员管理是全屏遮罩弹层（pm-overlay，z-index 1000）：
+      // 不清除底层页面状态（知识库等），关闭后停留在打开前所在页面，而非跳回主页
+      this.showUserManagementPanel = true
+    },
+    applyAgentConfig(configData) {
+      if (!configData) return
+      if (configData.context_length) {
+        this.sessionUsage.context_length = configData.context_length
+      }
+      if (configData.preset_questions) {
+        this.presetQuestions = configData.preset_questions
+      }
+      if (typeof configData.app_welcome_title === 'string' && configData.app_welcome_title.trim()) {
+        this.welcomeTitle = configData.app_welcome_title
+      }
+    },
+    // 依据持久化的选择恢复初始会话视图：
+    //   - 上次所在会话（仍存在）→ 恢复该会话；
+    //   - '__new__' → 保持新会话首页（currentSessionId 为 null）；
+    //   - 无记录 / 会话已被删除 → 回退到列表第一个；列表为空则新会话首页。
+    // 加载对应历史后解除首屏门控（isBootstrapping），避免闪出空首页与顶部分隔线。
+    async restoreInitialSession() {
+      let stored = null
+      try {
+        stored = localStorage.getItem(ACTIVE_SESSION_KEY)
+      } catch (_) { /* ignore */ }
+
+      // ?session=<id>：嵌入第三方页面的 AI 侧边栏「在主页面打开」时携带，优先打开该会话
+      // ?panel=experts|skills|connectors|knowledge：AI 侧边栏「在管理面板中打开」时携带，打开对应管理面板
+      // 经适配合同 navigation 读写：嵌入宿主走宿主路由，保留 path、hash 与其他 query
+      const query = readQuery(this)
+      const linked = query.session
+      const panel = query.panel
+      if (linked || panel) {
+        replaceQuery(this, { session: null, panel: null })
+      }
+      if (['experts', 'skills', 'connectors', 'knowledge'].includes(panel)) this.openSkillCenterPanel(panel)
+
+      const initialSessionId = await resolveInitialSessionId({ linked, stored, rows: this.sessions, read: getChatHistory })
+
+      if (initialSessionId) {
+        this.currentSessionId = initialSessionId
+        if (!this.restoreSessionState(initialSessionId)) {
+          try {
+            const history = await getChatHistory(initialSessionId)
+            // 加载期间用户可能已切换会话，丢弃过期响应（正常 bootstrap 期间 UI 门控，不会发生）
+            if (this.currentSessionId === initialSessionId) {
+              this.messages = history.messages || []
+              this.currentTodos = history.todos || []
+              if (history.usage) {
+                this.sessionUsage.input_tokens = history.usage.input_tokens || 0
+                this.sessionUsage.output_tokens = history.usage.output_tokens || 0
+                this.sessionUsage.reasoning_tokens = history.usage.reasoning_tokens || 0
+                this.sessionUsage.context_tokens = history.usage.context_tokens || 0
+                this.sessionDuration = history.usage.elapsed_time || 0
+                this.iterationCount = history.usage.step_count || 0
+              }
+              if (history.context_length) {
+                this.sessionUsage.context_length = history.context_length
+              }
+              this.loadedSessionId = initialSessionId
+            }
+          } catch (e) {
+            console.error('加载聊天历史失败:', e)
+          }
+        }
+      } else {
+        this.currentSessionId = null
+        this.messages = []
+        this.currentTodos = []
+        this.loadedSessionId = null
+      }
+
+      this.hasBootstrapped = true
+      try {
+        localStorage.setItem(ACTIVE_SESSION_KEY, this.currentSessionId || NEW_SESSION_MARK)
+      } catch (_) { /* ignore */ }
+      this.isBootstrapping = false
+
+      // 先启动不阻塞首屏的历史兜底；即使实时流挂载成功，界面仍为空时也继续补回答复。
+      this.resumeInterruptedTurn()
+      // 刷新前若正在流式，重新挂载并继续接收事件
+      await this.tryAttachLiveStream()
+    },
+    async handleWelcomeCompleted(profile) {
+      this.isBootstrapping = true
+      this.userProfile = profile
+      this.showWelcome = false
+      this.authBlocked = false
+      this.authBlockedReason = ''
+      if (profile.context_length) {
+        this.sessionUsage.context_length = profile.context_length
+      }
+      try {
+        const configResp = await authFetch('/agent/auth/config')
+        if (configResp.ok) {
+          const configData = await configResp.json()
+          this.applyAgentConfig(configData)
+        }
+      } catch (e) {
+        console.warn('获取模型配置失败:', e)
+      }
+      this.loadModels()
+      this.loadKnowledgeStatus()
+      await this.loadSessions()
+      await this.restoreInitialSession()
+    },
+    async handleLogout() {
+      this.showKnowledge = false
+      // 通知后端记录登出（用户名/上次登录缓存时间/在线时长），best-effort。
+      // 仅在仍持有 token 时通知：被动登出（401 被踢下线/过期）时 token 已被 clearAuth
+      // 清除，再调登出接口会再次 401 触发 AUTH_EXPIRED 事件造成循环。
+      if (getStoredToken()) {
+        await notifyLogout()
+      }
+      apiLogout()
+      this.sessions = []
+      this.currentSessionId = null
+      this.loadedSessionId = null
+      this.sessionStates = {}
+      this.messages = []
+      this.streamingSessions = []
+      this.lastStreamingSession = null
+      this.attachedStreamingSessions = {}
+      this.streamingAssistantId = null
+      this.currentAbortController = null
+      sessionStorage.removeItem(STREAM_STATE_KEY)
+      clearStreamFlight()
+      sessionStorage.removeItem('easy_agent_input_draft')
+      this.userProfile = {
+        username: '',
+        organization_id: '',
+        email: ''
+      }
+      this.showSkillCenter = false
+      this.selectedExpert = null
+      this.hasBootstrapped = false
+      this.clearActiveSession()
+      this.requireLogin()
+    },
+    async handleUnregister() {
+      this.sessions = []
+      this.currentSessionId = null
+      this.loadedSessionId = null
+      this.sessionStates = {}
+      this.messages = []
+      this.userProfile = {
+        username: '',
+        organization_id: '',
+        email: ''
+      }
+      this.hasBootstrapped = false
+      this.clearActiveSession()
+      this.requireLogin()
+    },
+    async loadUserProfile() {
+      const storedToken = getStoredToken()
+      const storedUsername = getStoredUsername()
+
+      if (!storedToken || !storedUsername) {
+        this.requireLogin()
+        return
+      }
+
+      try {
+        const profile = await getUserProfile()
+        if (!isRestorableUserProfile(profile)) {
+          this.requireLogin()
+          return
+        }
+        this.userProfile = {
+          username: profile.username || '',
+          organization_id: profile.organization_id || '',
+          email: profile.email || ''
+        }
+      } catch (e) {
+        console.error('加载用户资料失败:', e)
+        this.requireLogin()
+        return
+      }
+
+      try {
+        const configResp = await authFetch('/agent/auth/config')
+        if (configResp.ok) {
+          const configData = await configResp.json()
+          this.applyAgentConfig(configData)
+        }
+      } catch (e) {
+        console.warn('获取模型配置失败:', e)
+      }
+    },
+    // 适配器登录：执行 auth.signIn（宿主身份 → Agent token），成功即进入主界面。
+    //   · 身份来源（如门户共享存储 system:share:*）只在适配器里读取，模块不读宿主私有存储键；
+    //   · signIn 返回 { profile } 时直接用作展示资料（与原门户免密一致，不调 /auth/profile），
+    //     只返回 true 时按 /agent/auth/profile 加载；
+    //   · 未配置 signIn、返回 false 或抛错时返回 false，由 initApp 回落到已存登录态。
+    async handleAdapterSignIn() {
+      if (!this.signInEnabled) return false
+      try {
+        const result = await runSignIn()
+        if (!result) return false
+        let profile = result.profile
+        if (!profile) {
+          const loaded = await getUserProfile()
+          if (!isRestorableUserProfile(loaded)) return false
+          profile = { username: loaded.username || '', organization_id: loaded.organization_id || '', email: loaded.email || '' }
+        }
+        await this.handleWelcomeCompleted({
+          username: profile.username || getStoredUsername() || '',
+          organization_id: profile.organization_id || '',
+          email: profile.email || '',
+          context_length: result.contextLength || profile.context_length,
+        })
+        return true
+      } catch (e) {
+        console.error('免密登录失败:', e)
+        return false
+      }
+    },
+    // URL 免密直登：地址栏携带 ?username=xxx&user_id=yyy（user_id 可省略，默认 0）时
+    // 直接免密登录进入主界面，优先级高于已存储的登录态；登录后清除地址栏凭证参数。
+    async handlePasswordlessUrlLogin() {
+      const query = readQuery(this)
+      const username = query.username
+      if (!username) return false
+      const userId = query.user_id || '0'
+      try {
+        const data = await passwordlessLogin(username, userId)
+        // 清除地址栏中的凭证参数，避免留在浏览器历史/后端访问日志
+        replaceQuery(this, { username: null, user_id: null })
+        await this.handleWelcomeCompleted({
+          username: data.username,
+          context_length: data.context_length
+        })
+        return true
+      } catch (e) {
+        console.error('URL 免密登录失败:', e)
+        return false
+      }
+    },
+    async loadSessions() {
+      try {
+        await loadDailySessions(
+          () => listSessions(this.userProfile.username || null, { archived: false }),
+          rows => {
+            this.sessions = rows
+            this.hydratePendingApprovalFromServer()
+            if (this.error === '加载会话列表失败') this.error = null
+          },
+        )
+      } catch (e) { if (!isStaleSessionError(e)) this.error = '加载会话列表失败' }
+    },
+    async ensureCurrentSession(initialTitle = '') {
+      if (!this.currentSessionId) {
+        const newSession = await createSession(initialTitle || '新会话', this.userProfile.username || null)
+        this.currentSessionId = newSession.session_id
+        // 预创建的 DB 会话即当前展示会话：同步标记 loadedSessionId，
+        // 否则随后的流式事件会被 runInSession 视为「后台会话」只写入
+        // sessionStates 缓冲而不渲染，表现为一直"正在思考"、刷新后才出现。
+        this.loadedSessionId = newSession.session_id
+        const existingIndex = this.sessions.findIndex(s => s.session_id === newSession.session_id)
+        if (existingIndex === -1) {
+          const session = {
+            session_id: newSession.session_id,
+            title: newSession.title || initialTitle || '新会话',
+            created_at: newSession.created_at || new Date().toISOString()
+          }
+          this.sessions = [session, ...this.sessions]
+        }
+      }
+      return this.currentSessionId
+    },
+    /**
+     * 技能中心的「创建技能」：预填内容已写入 sessionStorage，
+     * 这里新建会话并关闭技能中心，ChatInput 随之重新挂载、自动恢复技能标签与提示词。
+     */
+    async handleSkillCreate() {
+      await this.handleCreateSession()
+    },
+
+    /**
+     * 专家面板「新建专家」：与「创建技能」完全一致 —— 预填草稿已由面板写入
+     * sessionStorage，这里新开一个对话窗口即可（ChatInput 挂载时自动恢复草稿 + 技能标签）。
+     */
+    async handleExpertCreate() {
+      await this.handleCreateSession()
+    },
+
+    /**
+     * 专家面板卡片「编辑」：预填草稿已由面板写入 sessionStorage。
+     *
+     * 窗口选择规则（按需求）：
+     * - 当前窗口就是**新会话**（无任何聊天记录）→ 直接把内容带入当前窗口，不新开；
+     * - 当前窗口**已有聊天记录** → 新开一个会话窗口，避免把修改指令混进既有上下文。
+     *
+     * 两种情况都只需「关闭面板」：Chat 重新挂载后，ChatInput 会恢复草稿与技能标签。
+     */
+    async handleExpertEdit() {
+      const isEmptySession = !this.currentSessionId || this.messages.length === 0
+      if (isEmptySession) {
+        // 关掉所有会顶替 Chat 的面板（Chat 是 v-else-if，面板一关即重新挂载，
+        // ChatInput 随之恢复草稿 + 技能标签）。知识库面板本就不会与专家面板同时开，
+        // 这里一并复位，保证与 handleCreateSession 的「关面板」集合一致。
+        this.showKnowledge = false
+        this.showSkillCenter = false
+        this.showScheduledTasks = false
+        this.showSettingsPanel = false
+        return
+      }
+      await this.handleCreateSession()
+    },
+
+    async handleCreateSession() {
+      this.showKnowledge = false
+      this.showUserManagementPanel = false
+      this.saveCurrentSessionState()
+
+      this.showSkillCenter = false
+      this.showScheduledTasks = false
+      this.showSettingsPanel = false
+      // 新建会话回到干净状态：专家需在新会话里重新选择，避免误把旧专家的设定带进来
+      this.selectedExpert = null
+      this.currentSessionId = null
+      this.loadedSessionId = null
+      this.messages = []
+      this.currentTodos = []
+      // 注意：保留 context_length（全局上下文窗口，对所有会话通用），不重置为 null，
+      // 否则 contextPercent 分母为 null 时会强制显示为 0%
+      this.sessionUsage = { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: this.sessionUsage.context_length, auto_compress_tokens: null, context_tokens: 0 }
+      this.sessionDuration = 0
+      this.iterationCount = 0
+      this.refreshSessionFiles(null)
+    },
+    async handleSelectSession(sessionId) {
+      this.showKnowledge = false
+      this.showUserManagementPanel = false
+      // 保存当前会话状态
+      this.saveCurrentSessionState()
+
+      this.showSkillCenter = false
+      this.showScheduledTasks = false
+      // 切换会话时不沿用上一个会话的专家选择（选择是当前工作台的临时状态，
+      // 与 handleCreateSession、vue3 版 handleSelectSession 的口径一致）。
+      // 注意：handleUseExpert / handleSummonExpertInPlace 会在调用会话切换之后
+      // 重新赋值 selectedExpert，因此「召唤专家 → 新开会话」的链路不受影响。
+      this.selectedExpert = null
+      this.currentSessionId = sessionId
+      // 切换后按当前会话是否正在流式输出决定输入框状态：
+      // 历史会话通常不是当前流式会话，应显示发送按钮而非停止按钮
+      // 输入框状态由 isStreaming（当前会话是否在流式会话集合中）自动决定
+
+      // 切换到进行中的会话：若本页尚未挂载其流式任务，懒挂载以继续接收事件
+      // （刷新后恢复出的多个进行中会话，除当前展示外都走这里）
+      if (this.needsLazyAttach(sessionId)) {
+        this.attachToStreamingSession(sessionId, { switchTo: false, displayed: true })
+        this.scrollTrigger++
+        await this.refreshSessionFiles(sessionId)
+        return
+      }
+
+      // 尝试从缓存恢复会话状态
+      if (this.restoreSessionState(sessionId)) {
+        this.scrollTrigger++
+        await this.refreshSessionFiles(sessionId)
+        return
+      }
+
+      // 缓存中没有，从服务器加载历史
+      // 保留 context_length（全局上下文窗口），仅清空用量计数；
+      // 若服务器返回了 context_length 则以其为准（见下方恢复逻辑）
+      // sessionLoading 门控：加载期间不渲染空欢迎页，避免"先闪空会话页再出历史"
+      this.sessionLoading = true
+      this.sessionUsage = { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: this.sessionUsage.context_length, auto_compress_tokens: null, context_tokens: 0 }
+      this.sessionDuration = 0
+      this.iterationCount = 0
+
+      try {
+        const history = await getChatHistory(sessionId)
+        // 加载期间用户可能又切换到了其他会话：丢弃过期响应，
+        // 避免覆盖当前显示的数据（token 用量、消息等）
+        if (this.currentSessionId !== sessionId) return
+        this.messages = history.messages || []
+        this.currentTodos = history.todos || []
+        // 按最后一轮对话恢复专家芯片（最后一轮用了专家则召唤态，否则清空）
+        this.syncExpertChipFromMessages()
+        // 从服务器返回的 usage 数据恢复 token 用量、会话耗时和迭代次数
+        if (history.usage) {
+          this.sessionUsage.input_tokens = history.usage.input_tokens || 0
+          this.sessionUsage.output_tokens = history.usage.output_tokens || 0
+          this.sessionUsage.reasoning_tokens = history.usage.reasoning_tokens || 0
+          this.sessionUsage.context_tokens = history.usage.context_tokens || 0
+          this.sessionDuration = history.usage.elapsed_time || 0
+          this.iterationCount = history.usage.step_count || 0
+        }
+        if (history.context_length) {
+          this.sessionUsage.context_length = history.context_length
+        }
+        // 数据加载完成，界面数据现在归属于该会话
+        this.loadedSessionId = sessionId
+        this.scrollTrigger++
+
+        await this.refreshSessionFiles(sessionId)
+      } catch (e) {
+        console.error('加载聊天历史失败:', e)
+        if (this.currentSessionId !== sessionId) return
+        this.error = '加载聊天历史失败'
+        // 加载失败时界面数据处于不一致状态（消息还是旧会话的、用量已清零），
+        // 置空 loadedSessionId 防止后续把错误数据写入缓存
+        this.loadedSessionId = null
+        this.refreshSessionFiles(sessionId)
+      } finally {
+        this.sessionLoading = false
+      }
+    },
+    async handleDeleteSession(sessionId) {
+      try {
+        await deleteSession(sessionId)
+        // 会话删除后其"待审批/进行中"标识同步移除
+        const pendIdx = chatStore.pendingApprovalSessions.indexOf(sessionId)
+        if (pendIdx !== -1) chatStore.pendingApprovalSessions.splice(pendIdx, 1)
+        const streamIdx = chatStore.streamingSessions.indexOf(sessionId)
+        if (streamIdx !== -1) chatStore.streamingSessions.splice(streamIdx, 1)
+        this.sessions = this.sessions.filter(s => s.session_id !== sessionId)
+
+        // 清除会话缓存
+        delete this.sessionStates[sessionId]
+
+        if (this.currentSessionId === sessionId) {
+          // 先清空归属（避免把已删除会话的界面数据再存回缓存），再决定回退到哪个会话
+          this.currentSessionId = null
+          this.loadedSessionId = null
+          this.messages = []
+          const nextId = this.sessions[0] ? this.sessions[0].session_id : null
+          if (nextId) {
+            // 复用切会话逻辑：加载其历史（含 sessionLoading 骨架屏），而不是留一个空欢迎页
+            await this.handleSelectSession(nextId)
+          } else {
+            // 没有剩余会话：回到新建会话首页
+            await this.handleCreateSession()
+          }
+        } else if (this.loadedSessionId === sessionId) {
+          this.loadedSessionId = null
+        }
+        // 删除进行中的会话：同步移除流式标记，避免列表残留"进行中"徽标
+        this.unmarkStreaming(sessionId)
+        delete this.attachedStreamingSessions[sessionId]
+      } catch (e) {
+        console.error('删除会话失败:', e)
+        this.error = '删除会话失败'
+      }
+    },
+    async handleRenameSession(sessionId, newTitle) {
+      try {
+        await renameSession(sessionId, newTitle)
+        const idx = this.sessions.findIndex(s => s.session_id === sessionId)
+        if (idx !== -1) {
+          setReactive(this.sessions, idx, { ...this.sessions[idx], title: newTitle })
+        }
+      } catch (e) {
+        console.error('重命名会话失败:', e)
+        this.error = '重命名会话失败'
+      }
+    },
+    async handleTogglePin(sessionId) {
+      try {
+        const result = await togglePinSession(sessionId)
+        const idx = this.sessions.findIndex(s => s.session_id === sessionId)
+        if (idx !== -1) {
+          setReactive(this.sessions, idx, { ...this.sessions[idx], pinned: result.pinned })
+        }
+        // 重新排序：置顶在前
+        this.sessions.sort((a, b) => (b.pinned || 0) - (a.pinned || 0) || new Date(b.updated_at) - new Date(a.updated_at))
+      } catch (e) {
+        console.error('置顶操作失败:', e)
+        this.error = '置顶操作失败'
+      }
+    },
+    createStreamChunkHandler(ctx) {
+      return createPageStreamChunkHandler(this, ctx)
+    },
+    async handleSendMessage(message, files = [], signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = [], fileReferences = [], interactionMode = 'normal') {
+      const userMsgId = `user-${Date.now()}`
+      const preStreamUsage = { ...this.sessionUsage }
+      // 记录本次请求开始前已累计的耗时和迭代次数，用于流式过程中实时累加
+      const preStreamDuration = this.sessionDuration
+      const preStreamIterationCount = this.iterationCount
+      // 本次流所属的会话 ID（新会话在 start 事件后才有值）。
+      // 用于用户中途切换会话时，把用量更新写入所属会话的缓存而非当前显示
+      let streamSessionId = this.currentSessionId
+
+      const contentWithFiles = referenceMessage(message, fileReferences) // 保留用户换行；仅引用时与服务端占位正文一致
+
+      const userMessage = {
+        id: userMsgId,
+        role: 'user',
+        content: contentWithFiles,
+        file_references: fileReferences,
+        files: files.map(f => ({
+          filename: f.filename,
+          size: f.size,
+          type: f.file.type,
+          file_path: f.file_path || null
+        })),
+        created_at: new Date().toISOString()
+      }
+      if (interactionMode !== 'normal') userMessage.interaction_mode = interactionMode
+      // 结构化技能目录名（与后端落库字段同形）：气泡按它渲染技能标签，不再依赖从
+      // 消息文本里反扒 `/技能名`。没有选中技能时不写该字段——手打 `/技能名` 的正文
+      // 仍按老规则从文本解析，行为和改造前一致。
+  if (skills.length > 0) userMessage.skills = [...skills]
+
+  // 专家模式：本轮专家同时写到用户消息上（与后端落库字段同形），
+  // 这样 Chat.vue 的 userExpertFor 与 ChatMessage 都能直接取到，不依赖后端回灌。
+  const usedExpert = (this.selectedExpert && this.selectedExpert.export_agent_id)
+    ? { id: this.selectedExpert.export_agent_id, name: this.selectedExpert.export_name_cn || '专家' }
+    : null
+  if (usedExpert) userMessage.expert = usedExpert
+
+  this.messages.push(userMessage)
+
+  // 立即创建 assistant 占位消息，显示等待动画
+  const assistantPlaceholderId = `assistant-${Date.now()}`
+  // 专家模式：随消息记住本次回答使用的专家，回答面板左上角展示「头像 + 名称」
+  // （发送瞬间即出现）。历史会话从后端加载的消息不含该字段，按无专家兜底。
+  const assistantPlaceholder = {
+        id: assistantPlaceholderId,
+        role: 'assistant',
+        content: '',
+        created_at: null,
+        thinking: '',
+        tool_calls: [],
+        blocks: [],
+        loading: true,
+        expert: usedExpert
+      }
+      this.messages.push(assistantPlaceholder)
+      this.streamingAssistantId = assistantPlaceholderId
+
+      let assistantMsgId = null
+      let assistantMessageCreated = false
+
+      const streamCtx = {
+        isResume: false,
+        // 本轮使用的专家 ID：start 事件里据此写「专家 -> 会话」映射（换专家 = 换会话）
+        expertId: (this.selectedExpert && this.selectedExpert.export_agent_id) || '',
+        get assistantMsgId() { return assistantMsgId },
+        set assistantMsgId(v) { assistantMsgId = v },
+        get streamSessionId() { return streamSessionId },
+        set streamSessionId(v) { streamSessionId = v },
+        preStreamUsage,
+        preStreamIterationCount,
+        preStreamDuration,
+        initialBlockOrder: 0,
+        ensureMessage: () => {
+          if (!assistantMessageCreated) {
+            if (assistantPlaceholderId && this.messages.find(m => m.id === assistantPlaceholderId)) {
+              assistantMsgId = assistantPlaceholderId
+            } else {
+              assistantMsgId = `assistant-${Date.now()}`
+              this.messages.push({
+                id: assistantMsgId, role: 'assistant', content: '',
+                created_at: null, thinking: '', tool_calls: [], blocks: [], loading: true,
+                expert: usedExpert,
+              })
+            }
+            this.streamingAssistantId = assistantMsgId
+            assistantMessageCreated = true
+          }
+        },
+        onApprovalRequired: (data) => {
+          this.pendingApproval = { threadId: data.thread_id, assistantMsgId }
+          // 会话列表立即亮起"待审批"标识（streamCtx 见下方，回调执行时已初始化完毕；
+          // 普通流可能属于后台会话，优先取其 streamSessionId）
+          this.syncPendingApprovalFlag(streamCtx.streamSessionId || this.currentSessionId, true)
+          if (assistantMsgId && data.action_requests) {
+            const idx = this.messages.findIndex(m => m.id === assistantMsgId)
+            if (idx !== -1) {
+              this.messages[idx].pending_approval = { thread_id: data.thread_id, action_requests: data.action_requests }
+              // 挂不上工具卡片的（子代理内部审批）由 ChatMessage 的独立审批面板展示
+              applyApprovalRequests(this.messages[idx].blocks, data.action_requests)
+              setReactive(this.messages, idx, { ...this.messages[idx], blocks: [...this.messages[idx].blocks] })
+            }
+          }
+        },
+      }
+      const { onChunk } = this.createStreamChunkHandler(streamCtx)
+      let streamController = null
+
+      try {
+        this.markStreaming(this.currentSessionId)
+        // 新会话首轮发送时 currentSessionId 还是 null（要等后端 start 才有），
+        // markStreaming 是空操作。这里先落一条「在飞」记录，否则此时刷新页面会
+        // 什么都接不回来：没有 sid、没有状态、页面永远空白。
+        markStreamFlight(this.currentSessionId)
+        const controller = this.trackStream(new AbortController())
+        streamController = controller
+        this.currentAbortController = controller
+        const abortSignal = signal || controller.signal
+
+        // 更新会话缓存状态
+        if (this.currentSessionId) {
+          this.sessionStates[this.currentSessionId] = {
+            ...this.sessionStates[this.currentSessionId],
+            isStreaming: true,
+            abortController: controller
+          }
+        }
+
+        // 专家对话与通用对话只有一个入口 /agent/chat/stream：选中专家时把
+        // expert_agent_id 一并上行，由后端加载该专家提示词、补装依赖技能、
+        // 做职责范围预检（命中即短路拒答，Agent 不创建）。
+        // 注意：本方法是 App.vue 内的同名实现（覆盖 chatSession mixin 的同名方法），
+        // 与 mixin 保持一致，改动时需同步两处。
+        // 待修改专家 ID（专家面板「编辑」带入，不进消息正文）：后端校验归属后
+        // 绑定为 save_expert 的修改目标
+        await sendMessage(
+          this.currentSessionId,
+          message,
+          onChunk,
+          abortSignal,
+          enableDeepThink,
+          files,
+          this.selectedModel,
+          enableWebSearch,
+          null,
+          skills,
+          expertEditId,
+          this.selectedExpert && this.selectedExpert.export_agent_id
+            ? this.selectedExpert.export_agent_id
+            : '',
+          // 新对话首条消息携带的知识库范围：后端建会话后先落 scope 再检索
+          { knowledgeBaseIds, fileReferences, interactionMode }
+        )
+
+        await this.refreshSessionFiles(null, 500)
+      } catch (e) {
+        if (e.name === 'AbortError') {
+          // Mark assistant message as complete (loading=false) so spinners stop
+          this.runInSession(streamSessionId, streamCtx, () => {
+            if (assistantMsgId) {
+              const idx = this.messages.findIndex(m => m.id === assistantMsgId)
+              if (idx !== -1) {
+                this.messages[idx].loading = false
+                // 兜底：content 为空时从已渲染的 content 块拼取（createStreamChunkHandler
+                // 内部的 currentContent 局部变量在此处不可见，不能直接引用）
+                if (!this.messages[idx].content && this.messages[idx].blocks && this.messages[idx].blocks.length) {
+                  this.messages[idx].content = this.messages[idx].blocks
+                    .filter(b => b.type === 'content')
+                    .map(b => b.content || '')
+                    .join('')
+                }
+                this.messages[idx].created_at = new Date().toISOString()
+                setReactive(this.messages, idx, { ...this.messages[idx] })
+              }
+            }
+          })
+          return
+        }
+        console.error('发送消息失败:', e)
+        this.runInSession(streamSessionId, streamCtx, () => {
+          if (assistantMsgId) {
+            const idx = this.messages.findIndex(m => m.id === assistantMsgId)
+            if (idx !== -1) {
+              this.messages[idx].loading = false
+              this.messages[idx].error = e.message || '发送消息失败，请检查网络连接'
+              setReactive(this.messages, idx, { ...this.messages[idx] })
+            } else {
+              // 消息不存在，添加一条错误消息
+              this.messages.push({
+                id: assistantMsgId,
+                role: 'assistant',
+                content: '',
+                error: e.message || '发送消息失败，请检查网络连接',
+                loading: false,
+                created_at: new Date().toISOString(),
+                blocks: [],
+                expert: usedExpert
+              })
+            }
+          }
+        })
+        // 仅当前展示会话的失败才提示到界面；后台会话失败不打扰当前会话
+        if (!streamSessionId || streamSessionId === this.loadedSessionId) {
+          this.error = e.message || '发送消息失败'
+        }
+      } finally {
+        this.untrackStream(streamController)
+        // 本轮已经结束（正常/取消/失败），在飞记录作废：留着会让下次刷新白等一轮
+        clearStreamFlight()
+        // HITL: 若有审批待处理，保持 isStreaming=true（用户需先审批）；卸载后不收尾（见 streamLifecycle）
+        if (!this._chatDisposed && !this.pendingApprovalOf(streamSessionId)) {
+          const sid = streamSessionId
+          const isDisplayed = !sid || sid === this.loadedSessionId
+          // 兜底：流已结束（列表"进行中"标记即将移除），若该会话的消息仍标记 loading
+          // 就强制收尾，避免"会话列表已显示完成、会话页仍显示执行中"。
+          this.runInSession(sid, streamCtx, () => {
+            let idx = assistantMsgId ? this.messages.findIndex(m => m.id === assistantMsgId) : -1
+            if (idx === -1) {
+              for (let i = this.messages.length - 1; i >= 0; i--) {
+                if (this.messages[i].role === 'assistant' && this.messages[i].loading) { idx = i; break }
+              }
+            }
+            if (idx !== -1 && this.messages[idx].loading) {
+              setReactive(this.messages, idx, { ...this.messages[idx], loading: false })
+            }
+          })
+          // 只有展示中的会话才清显示级状态；后台流结束不能动当前会话的停止按钮等
+          if (isDisplayed) {
+            this.currentAbortController = null
+            this.streamingAssistantId = null
+          }
+          if (sid && this.sessionStates[sid]) {
+            this.sessionStates[sid].isStreaming = false
+            this.sessionStates[sid].abortController = null
+            if (!isDisplayed) this.sessionStates[sid].streamingAssistantId = null
+          }
+          if (sid) delete this.attachedStreamingSessions[sid]
+          this.unmarkStreaming(sid)
+          // 列表"进行中"标记此时移除（显示已完成）：以服务端历史为准回填，保证完整渲染
+          await this.syncSessionFromServer(sid)
+          // 挂载流结束回填后重算"待审批"标识（审批已被处理/失效则熄灭，仍 pending 则保持）
+          this.recomputePendingApprovalFlag(sid)
+
+          await this.loadSessions()
+        }
+      }
+    },
+    // ChatInput 的联网开关变化上报：存一份镜像，供不经过输入框的发送路径（重试）复用
+    handleWebSearchChange(enabled) {
+      this.webSearchEnabled = Boolean(enabled)
+    },
+    handleRetry(content) {
+      const interactionMode = typeof content === 'object' && content ? (content.interactionMode || 'normal') : 'normal'
+      const fileReferences = typeof content === 'object' && content ? (content.fileReferences || []) : []
+      content = typeof content === 'object' && content ? content.content : content
+      // 直接重新发送消息内容，不经过输入框
+      console.log('[handleRetry] content type:', typeof content, 'value:', content)
+
+      if (typeof content === 'string' && (content.trim() || fileReferences.length)) {
+        // 检查是否正在流式输出
+        if (this.isStreaming) {
+          this.error = '请等待当前消息完成'
+          return
+        }
+
+        // 确保有当前会话
+        if (!this.currentSessionId) {
+          this.error = '请先创建会话'
+          return
+        }
+
+        // 重试不经过输入框，联网开关必须从镜像取：漏传会落回 enableWebSearch 默认值 false，
+        // 表现为「小地球亮着、后端收到 web_search: False」，模型据关闭态纪律回答未联网。
+        this.handleSendMessage(content.trim(), [], null, true, this.webSearchEnabled, [], '', [], fileReferences, interactionMode)
+      }
+    },
+    handleStop() {
+      // Mark current assistant message as no longer loading (stops tool spinning)
+      if (this.streamingAssistantId) {
+        const idx = this.messages.findIndex(m => m.id === this.streamingAssistantId)
+        if (idx !== -1) {
+          setReactive(this.messages, idx, { ...this.messages[idx], loading: false })
+        }
+      }
+      this.streamingAssistantId = null
+
+      // 停止按钮仅在当前会话正在流式时显示，取消的会话即当前会话
+      const sid = this.currentSessionId
+
+      // 中止正在进行的 fetch 请求（关闭 SSE 连接）
+      if (this.currentAbortController) {
+        this.currentAbortController.abort()
+        this.currentAbortController = null
+      }
+
+      // 更新会话缓存状态
+      if (sid && this.sessionStates[sid]) {
+        this.sessionStates[sid].isStreaming = false
+        this.sessionStates[sid].abortController = null
+      }
+      this.unmarkStreaming(sid)
+      delete this.attachedStreamingSessions[sid]
+
+      // 通知后端取消正在运行的流式任务（中断 astream 执行）并清除 Agent 缓存
+      if (sid) {
+        authFetch(`/agent/chat/cancel?session_id=${encodeURIComponent(sid)}`, {
+          method: 'POST',
+        }).catch(() => {})
+      }
+      this.error = '已停止生成'
+      setTimeout(() => {
+        this.error = null
+      }, 2000)
+    },
+    async handleRemoveFile(message, messageIndex, file) {
+      try {
+        // 调用后端的删除文件接口
+        await deleteFile(this.currentSessionId, file)
+
+        // 更新前端的消息列表，移除已删除的文件
+        if (this.messages[messageIndex]) {
+          const updatedMessage = {
+            ...this.messages[messageIndex],
+            files: this.messages[messageIndex].files.filter(f => f.filename !== file.filename)
+          }
+          this.messages.splice(messageIndex, 1, updatedMessage)
+        }
+
+        // 显示删除成功的提示
+        this.error = '文件删除成功'
+        setTimeout(() => {
+          this.error = null
+        }, 2000)
+      } catch (err) {
+        console.error('文件删除失败:', err)
+        this.error = '文件删除失败'
+        setTimeout(() => {
+          this.error = null
+        }, 2000)
+      }
+    }
+  }
+}
+</script>
+
+<style scoped>
+/* 页面根节点：宽高跟随宿主给的内容容器（父元素须有确定高度，见 integration/README.md），
+   不再用 100vw 抢占整个视口；字体 / 行高 / 字号沿用独立应用原来 body 上的设置 */
+.app-container {
+  display: flex;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  background: #f8fafc;
+  position: relative;
+  font-family: 'Microsoft YaHei', '微软雅黑', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+/* 登录页关闭且未授权时的提示页 */
+.auth-blocked {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.auth-blocked-box {
+  max-width: 480px;
+  padding: 32px;
+  text-align: center;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  color: var(--text-secondary, #64748b);
+}
+
+.auth-blocked-box h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+  color: var(--text-primary, #1e293b);
+}
+
+.auth-blocked-box p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.auth-blocked-box code {
+  padding: 2px 6px;
+  background: #f1f5f9;
+  border-radius: 4px;
+  color: #0ea5e9;
+}
+
+.expand-sidebar-btn {
+  position: absolute;
+  left: 16px;
+  top: 16px;
+  width: 40px;
+  height: 40px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 100;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.expand-sidebar-btn:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+/* 工作区参与 Flex 分栏：原先是 position:fixed 的浮层，会盖住聊天区右侧内容。
+   改为普通 flex 项后，展开时聊天区自动收窄、互不遮挡；宽度由 WorkspacePanel
+   自己控制（可拖拽），这里只保证它不被压缩。 */
+.workspace-area {
+  position: relative;
+  flex-shrink: 0;
+  height: 100%;
+  display: flex;
+  z-index: 1;
+}
+
+/* 工作区页面内全屏时抬高整列：.workspace-area 自身的 z-index:1 会形成
+   层叠上下文，把内部 fixed 全屏面板的层级一起限制住 —— 聊天区里的
+   .scroll-btn（z-index:10）会因此浮在全屏面板之上。用 :has() 精准提升。 */
+.workspace-area:has(.workspace-panel.is-fullscreen) {
+  z-index: 150;
+}
+
+.expand-sidebar-btn svg {
+  width: 20px;
+  height: 20px;
+  color: #64748b;
+}
+
+.error-toast {
+  position: fixed;
+  bottom: 100px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #fee2e2;
+  color: #dc2626;
+  padding: 12px 20px;
+  border-radius: 10px;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  animation: slideUp 0.3s ease-out;
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
+  z-index: 1000;
+  max-width: 600px;
+  word-break: break-word;
+}
+
+.error-toast button {
+  background: transparent;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  color: #dc2626;
+  padding: 0;
+  line-height: 1;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* 响应式：小屏幕优化 */
+@media (max-width: 768px) {
+  .expand-sidebar-btn {
+    width: 36px;
+    height: 36px;
+  }
+
+  .expand-sidebar-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .error-toast {
+    max-width: 90vw;
+    font-size: 13px;
+    padding: 10px 16px;
+  }
+}
+</style>

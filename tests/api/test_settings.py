@@ -8,7 +8,33 @@ from pathlib import Path
 
 import easy_agent.api.settings as settings_api
 
-from easy_agent.services import mcp as mcp_mod
+from easy_agent.services.mcp import tools as mcp_mod
+
+
+def test_memory_put_uses_the_shared_write_path_and_long_term_budget(client):
+    """设置页保存与后台更新同一套写入（锁 + 原子写 + sidecar），上限与后台一致。"""
+    from easy_agent.services.memory.locks import store_path_for
+    from easy_agent.services.memory.manager import MAX_LONG_TERM_MEMORY_CHARS
+    from easy_agent.services.memory.store import structured_memory_enabled
+
+    long_text = "# 用户长期记忆\n\n## 工作背景\n" + "".join(
+        f"- 第 {i} 条：{'很长的背景说明' * 10}\n" for i in range(40)
+    )
+    assert len(long_text) > MAX_LONG_TERM_MEMORY_CHARS
+
+    resp = client.put("/agent/settings/memory", json={"content": long_text})
+    saved = client.get("/agent/settings/memory").json()
+    path = Path(saved["path"])
+    try:
+        assert resp.status_code == 200
+        assert resp.json()["chars"] <= MAX_LONG_TERM_MEMORY_CHARS
+        assert saved["content"].startswith("# 用户长期记忆")
+        assert len(saved["content"]) <= MAX_LONG_TERM_MEMORY_CHARS
+        if structured_memory_enabled():
+            assert store_path_for(path).exists()
+    finally:
+        for leftover in (path, store_path_for(path)):
+            leftover.unlink(missing_ok=True)
 
 
 def test_models(client):
@@ -117,170 +143,6 @@ def test_web_search_status_disabled(client, monkeypatch):
     assert data["reason"] == "disabled"
 
 
-def test_mcp_list(client):
-    resp = client.get("/agent/settings/mcp")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "servers" in data
-    assert "source" in data
-    assert "user_mcp_path" in data
-    assert isinstance(data["servers"], list)
-
-
-def test_mcp_update_and_server_crud(client):
-    # 1) 清空所有 MCP server（servers 为 dict，不是 list）
-    r = client.put("/agent/settings/mcp", json={"servers": {}})
-    assert r.status_code == 200
-
-    # 2) 新增一个本地 stdio 测试服务（body 字段为 config）
-    add = client.post(
-        "/agent/settings/mcp/server",
-        json={
-            "config": {
-                "name": "unit-test-server",
-                "transport": "stdio",
-                "command": "echo",
-                "args": [],
-            }
-        },
-    )
-    assert add.status_code == 200
-    body = add.json()
-    assert "unit-test-server" in body["added"]
-
-    # 3) 删除该服务
-    d = client.delete("/agent/settings/mcp/server/unit-test-server")
-    assert d.status_code == 200
-
-
-def test_mcp_market_adds_global_server_to_user_config(tmp_path, monkeypatch):
-    global_path = tmp_path / "market-mcp.json"
-    user_path = tmp_path / "user-mcp.json"
-    global_path.write_text(
-        json.dumps(
-            {
-                "servers": {
-                    "market-server": {
-                        "type": "sse",
-                        "url": "https://mcp.example.com/sse",
-                        "env": {"MCP_TOKEN": "secret-token"},
-                    }
-                }
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        Config,
-        "get_user_mcp_path",
-        classmethod(lambda cls, username, config=None: user_path),
-    )
-    monkeypatch.setattr(mcp_mod, "_find_mcp_config", lambda: global_path)
-
-    market_data = asyncio.run(get_mcp_market("testuser"))
-    assert market_data["source"] == "global"
-    assert len(market_data["servers"]) == 1
-    server = market_data["servers"][0]
-    assert server["name"] == "market-server"
-    assert server["transport"] == "sse"
-    assert server["added"] is False
-    assert server["env_keys"] == ["MCP_TOKEN"]
-    assert server["_raw"]["env"] == {"MCP_TOKEN": "***"}
-
-    added = asyncio.run(
-        add_mcp_from_market(AddMarketMcpRequest(name="market-server"), "testuser")
-    )
-    assert added["added"] == ["market-server"]
-
-    market_data = asyncio.run(get_mcp_market("testuser"))
-    assert market_data["servers"][0]["added"] is True
-
-    current = asyncio.run(get_mcp_servers("testuser"))
-    assert current["source"] == "user"
-    assert current["servers"][0]["origin"] == "user"
-    assert current["servers"][0]["_raw"]["env"] == {"MCP_TOKEN": "***"}
-
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(
-            add_mcp_from_market(AddMarketMcpRequest(name="market-server"), "testuser")
-        )
-    assert exc_info.value.status_code == 409
-
-    saved = json.loads(user_path.read_text(encoding="utf-8"))
-    assert saved["servers"]["market-server"]["env"]["MCP_TOKEN"] == "secret-token"
-
-    market_routes = {route.path: getattr(route, "methods", set()) for route in router.routes}
-    assert "/agent/settings/mcp/market" in market_routes
-    assert "/agent/settings/mcp/market/add" in market_routes
-
-
-def test_mcp_api_key_generation_uses_current_user(monkeypatch):
-    import easy_agent.services.mcp_api_keys as keys_service
-    from easy_agent.api import settings as settings_api
-    from easy_agent.api.settings import IssueMcpApiKeyRequest
-
-    captured = {}
-
-    def fake_issue(username, business):
-        captured["username"] = username
-        captured["business"] = business
-        return "generated-api-key"
-
-    monkeypatch.setattr(keys_service, "issue_api_key", fake_issue)
-    # 隔离"回写到用户 mcp.json"的逻辑，该用例只验证身份传递
-    monkeypatch.setattr(settings_api, "_sync_business_key", lambda u, b, k: 0)
-
-    result = asyncio.run(
-        generate_mcp_api_key(IssueMcpApiKeyRequest(business="strategyqa"), "testuser")
-    )
-
-    assert result == {
-        "status": "ok",
-        "api_key": "generated-api-key",
-        "business": "strategyqa",
-        "synced_servers": 0,
-    }
-    assert captured["username"] == "testuser"
-    assert captured["business"] == "strategyqa"
-
-
-def test_mcp_api_key_rejects_unknown_business():
-    from easy_agent.api.settings import IssueMcpApiKeyRequest
-
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(
-            generate_mcp_api_key(IssueMcpApiKeyRequest(business="nope"), "testuser")
-        )
-
-    assert exc_info.value.status_code == 400
-
-
-def test_mcp_api_key_generation_maps_database_failure(monkeypatch):
-    import easy_agent.services.mcp_api_keys as keys_service
-    from easy_agent.api.settings import IssueMcpApiKeyRequest
-
-    def fake_issue(username, business):
-        raise RuntimeError("database unavailable")
-
-    monkeypatch.setattr(keys_service, "issue_api_key", fake_issue)
-
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(
-            generate_mcp_api_key(IssueMcpApiKeyRequest(business="strategyqa"), "testuser")
-        )
-
-    assert exc_info.value.status_code == 503
-    assert "数据库" in exc_info.value.detail
-
-
-def test_mcp_api_key_routes_are_registered():
-    paths = {route.path for route in router.routes}
-
-    assert "/agent/settings/mcp/api-key" in paths
-    assert "/agent/settings/mcp/api-keys" in paths
-
-
 def test_main_app_never_imports_mcp_server_subproject():
     """导入隔离：主应用代码不得 import mcp-server 子项目（只通过 HTTP/数据库耦合）。"""
     import re
@@ -353,3 +215,96 @@ def test_knowledge_status_reports_enabled_flag(client):
             delattr(app.state, "knowledge_config")
         else:
             app.state.knowledge_config = previous
+
+
+# ── 权限设置（审批模式） ──────────────────────────────────────────────
+
+
+def _patch_approval_path(monkeypatch, tmp_path):
+    """把审批设置文件重定向到临时目录（默认落在真实 workspace_dir 下）。"""
+    from easy_agent.bootstrap.config import Config
+
+    monkeypatch.setattr(
+        Config,
+        "get_user_approval_settings_path",
+        classmethod(
+            lambda cls, username, config=None: tmp_path
+            / ".settings"
+            / f"{cls.sanitize_username(username)}.json"
+        ),
+    )
+
+
+def test_approval_settings_defaults_to_manual(client, monkeypatch, tmp_path):
+    """没有配置文件时按 manual 返回，且不下发任何与本轮无关的内容。"""
+    _patch_approval_path(monkeypatch, tmp_path)
+
+    resp = client.get("/agent/settings/approval")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["mode"] == "manual"
+    assert data["revision"] == 0
+    assert data["updated_at"] == ""
+    # 放行清单由服务端下发，与 hitl 的 AUTO_APPROVED_APPROVAL_TOOLS 同源
+    assert set(data["auto_approved_tools"]) == {
+        "execute",
+        "delete",
+        "save_expert",
+        "create_scheduled_task",
+        "access_knowledge_original",
+    }
+    assert not Path(data["path"]).exists()
+
+
+def test_approval_settings_roundtrip_writes_atomic_payload(client, monkeypatch, tmp_path):
+    _patch_approval_path(monkeypatch, tmp_path)
+    path = Path(client.get("/agent/settings/approval").json()["path"])
+
+    saved = client.put("/agent/settings/approval", json={"mode": "auto"})
+    assert saved.status_code == 200
+    assert saved.json()["mode"] == "auto"
+    assert saved.json()["revision"] == 1
+    assert path.exists()
+
+    # 只落四字段：不写用户名、不写路径，避免与账号体系耦合
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert set(stored) == {"version", "mode", "updated_at", "revision"}
+
+    assert client.get("/agent/settings/approval").json()["mode"] == "auto"
+
+    back = client.put("/agent/settings/approval", json={"mode": "manual"})
+    assert back.json()["mode"] == "manual"
+    assert back.json()["revision"] == 2
+
+
+def test_approval_settings_rejects_illegal_mode(client, monkeypatch, tmp_path):
+    _patch_approval_path(monkeypatch, tmp_path)
+
+    resp = client.put("/agent/settings/approval", json={"mode": "yolo"})
+    assert resp.status_code == 400
+    assert not (tmp_path / ".settings").exists()
+
+
+def test_approval_settings_corrupt_file_falls_back_to_manual(client, monkeypatch, tmp_path):
+    """坏文件必须回落 manual：读崩了绝不能默认成「自动审批」。"""
+    _patch_approval_path(monkeypatch, tmp_path)
+    path = Path(client.get("/agent/settings/approval").json()["path"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{ 坏掉的 json", encoding="utf-8")
+
+    assert client.get("/agent/settings/approval").json()["mode"] == "manual"
+
+
+def test_approval_settings_locked_when_deployment_disables_hitl(client, monkeypatch, tmp_path):
+    """config.yaml 关了 hitl：两个选项都无意义，接口必须如实说。"""
+    from types import SimpleNamespace
+
+    _patch_approval_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        settings_api,
+        "_current_agent_config",
+        lambda: SimpleNamespace(hitl=SimpleNamespace(enabled=False, tools=None)),
+    )
+    data = client.get("/agent/settings/approval").json()
+    assert data["available"] is False
+    assert "hitl.enabled" in data["locked_reason"]

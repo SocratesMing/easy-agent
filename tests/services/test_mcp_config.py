@@ -1,9 +1,10 @@
 """MCP 配置解析测试：标准 mcpServers 格式支持与 type→transport 归一化。"""
 
 import json
+import sys
 
 from easy_agent.api.connectors import _extract_servers
-from easy_agent.services import mcp as mcp_mod
+from easy_agent.services.mcp import tools as mcp_mod
 
 
 def test_extract_servers_standard_mcpservers_format():
@@ -141,7 +142,7 @@ def test_normalize_servers_mapping_unwraps_polluted_mcpservers():
 def test_stdio_precheck_reports_missing_workdir():
     """stdio 服务的 --directory 路径不存在时应给出明确中文提示。"""
     cfg = {
-        "command": "uv",
+        "command": sys.executable,
         "args": ["--directory", "path/to/mysql_mcp_server", "run", "mysql_mcp_server"],
         "transport": "stdio",
     }

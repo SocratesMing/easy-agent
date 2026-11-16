@@ -250,7 +250,12 @@ async def test_result_count_limited_by_max_results(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json=_ok_response([_page_item(title=f"标题{i}") for i in range(5)]),
+            json=_ok_response(
+                [
+                    _page_item(title=f"标题{i}", link=f"https://news.example/{i}")
+                    for i in range(5)
+                ]
+            ),
         )
 
     _install_mock_transport(monkeypatch, handler)

@@ -3,6 +3,7 @@
 import json
 
 from easy_agent.db.database import Database
+from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.models.db import SessionModel
 
 
@@ -39,10 +40,10 @@ def test_get_session_owner_light_fields(tmp_path):
     db = _db(tmp_path)
     db.create_session(_session([]))
     db.update_session_workspace_name("sess-1", "ws")
-    owner = db.get_session_owner("sess-1")
+    owner = SessionRepository(db).get_session_owner("sess-1")
     assert owner["username"] == "alice"
     assert owner["workspace_name"] == "ws"
-    assert db.get_session_owner("missing") is None
+    assert SessionRepository(db).get_session_owner("missing") is None
 
 
 def test_legacy_messages_fallback_and_meta_update(tmp_path):
@@ -56,7 +57,7 @@ def test_legacy_messages_fallback_and_meta_update(tmp_path):
     assert [m["content"] for m in db.get_session("sess-1").messages] == ["legacy-only"]
 
     # 仅更新元信息不应清空/重写 legacy 消息
-    db.update_session_meta("sess-1", title="new-title", updated_at="2026-02-01T00:00:00")
+    SessionRepository(db).update_session_meta("sess-1", title="new-title", updated_at="2026-02-01T00:00:00")
     got = db.get_session("sess-1")
     assert got.title == "new-title"
     assert [m["content"] for m in got.messages] == ["legacy-only"]

@@ -50,36 +50,13 @@ fi
 
 export EASY_CONFIG="$CONFIG_FILE"
 
-# ---------- 运行期注入前端配置（后端地址 / AGENT_ENV 在容器启动时才知道）----------
-# 前端在构建镜像时无法预知后端地址，这里根据运行期环境变量写出
-# /app/frontend-vue2/dist/runtime-config.js（window.__RUNTIME_CONFIG__），
-# 由前端在运行时读取，覆盖构建期固化的 VITE_API_BASE_URL。
-RUNTIME_API_URL="${API_BASE_URL:-}"
-RUNTIME_APP_TITLE="${APP_TITLE:-Easy Agent}"
-if [ -z "$RUNTIME_API_URL" ]; then
-  # 未显式指定后端地址时，默认相对路径 "/"：前端自动跟随当前访问入口（origin），
-  # 适用于 uvicorn 同进程托管前端的部署；serve 分离部署请显式传 API_BASE_URL。
-  RUNTIME_API_URL="/"
-fi
-cat > /app/frontend-vue2/dist/runtime-config.js <<EOF
-// 本文件由启动脚本根据运行期环境变量自动生成，请勿手工编辑。
-window.__RUNTIME_CONFIG__ = {
-  API_BASE_URL: "${RUNTIME_API_URL}",
-  APP_TITLE: "${RUNTIME_APP_TITLE}",
-  AGENT_ENV: "${MODE}"
-};
-EOF
-echo "==> 前端运行期配置: API_BASE_URL=${RUNTIME_API_URL}  AGENT_ENV=${MODE}"
+# 前端固定使用同源相对路径 /agent/...，不再生成运行期 runtime-config.js。
 
 echo "==> 启动 Easy Agent (端口 8000)..."
 echo "============================================================"
 
-# --timeout-graceful-shutdown: `docker stop` 默认 10s 后 SIGKILL，
-# 而 uvicorn 默认无限等待现有连接（SSE 流式输出、终端 WebSocket），
-# 不设上限会导致容器每次都走到强杀、来不及优雅收尾。
 exec python -m uvicorn easy_agent.app:app \
     --host 0.0.0.0 \
     --port 8000 \
     --log-level info \
-    --no-access-log \
-    --timeout-graceful-shutdown "${EASY_GRACEFUL_SHUTDOWN_SECONDS:-5}"
+    --no-access-log

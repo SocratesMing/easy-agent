@@ -2,6 +2,7 @@
   <div class="settings-overlay" @click="$emit('close')">
     <div
       class="settings-modal"
+      :class="{ 'settings-modal--usage': activeTab === 'usage' }"
       role="dialog"
       aria-modal="true"
       aria-labelledby="settings-title"
@@ -11,7 +12,7 @@
     >
       <div class="settings-header">
         <h2 id="settings-title">设置</h2>
-        <button @click="$emit('close')" class="close-btn">
+        <button @click="$emit('close')" class="close-btn" aria-label="关闭设置">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -35,7 +36,7 @@
             @click="activeTab = item.key"
             @keydown="onNavKeydown($event, item.key)"
           >
-            <span class="nav-icon" v-html="item.icon"></span>
+            <span class="nav-icon" aria-hidden="true" v-html="item.icon"></span>
             <span class="nav-label">{{ item.label }}</span>
           </button>
         </div>
@@ -106,6 +107,22 @@
               ></div>
             </div>
           </div>
+
+          <div v-if="activeTab === 'archive'" class="content-panel" role="tabpanel" id="panel-archive" aria-labelledby="tab-archive">
+            <ArchiveManager ref="archiveManager" :open="true" @close="$emit('close')" />
+          </div>
+
+          <div v-if="activeTab === 'usage'" class="content-panel" role="tabpanel" id="panel-usage" aria-labelledby="tab-usage">
+            <TokenUsagePanel />
+          </div>
+
+          <div v-if="activeTab === 'approval'" class="content-panel" role="tabpanel" id="panel-approval" aria-labelledby="tab-approval">
+            <ApprovalPanel />
+          </div>
+
+          <div v-if="activeTab === 'version'" class="content-panel" role="tabpanel" id="panel-version" aria-labelledby="tab-version">
+            <VersionPanel />
+          </div>
         </div>
       </div>
     </div>
@@ -114,6 +131,10 @@
 
 <script setup>
 import { ref, watch, onMounted, onBeforeUnmount, nextTick, computed } from 'vue'
+import ArchiveManager from '../../chat/components/ArchiveManager.vue'
+import TokenUsagePanel from './TokenUsagePanel.vue'
+import ApprovalPanel from './ApprovalPanel.vue'
+import VersionPanel from './VersionPanel.vue'
 import {
   getMemory,
   updateMemory,
@@ -134,7 +155,7 @@ const renderer = createMarkdownRenderer({
 })
 
 function settingsRenderMarkdown(content) {
-  return renderMarkdown(content, renderer)
+  return renderMarkdown(content, renderer, { sourceCards: false })
 }
 
 const emit = defineEmits(['close'])
@@ -224,9 +245,14 @@ const navItems = [
     label: '提示词',
     icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
   },
+  { key: 'usage', label: 'Token统计', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 3v18h17M8 16v-5m5 5V7m5 9V4"/></svg>' },
+  { key: 'archive', label: '归档管理', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h18v4H3zM5 7v14h14V7M10 11h4"/></svg>' },
+  { key: 'approval', label: '权限设置', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>' },
+  { key: 'version', label: '版本', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 8v8M18 10a6 6 0 0 1-6 6H8"/></svg>' },
 ]
 
 async function loadTabData() {
+  if (!['memory', 'prompt'].includes(activeTab.value)) return
   loading.value = true
   try {
     if (activeTab.value === 'memory') {
@@ -446,12 +472,25 @@ onBeforeUnmount(() => {
 
 .settings-content {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
   overflow-y: auto;
   padding: 2rem;
 }
 
+/* Token 概览优先利用首屏空间，保留卡片和图表的正常比例。 */
+.settings-modal--usage .settings-header {
+  padding-top: 0.75rem;
+  padding-bottom: 0.75rem;
+}
+
+.settings-modal--usage .settings-content {
+  padding: 1.25rem 1.5rem;
+}
+
 .content-panel {
   height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -691,27 +730,6 @@ onBeforeUnmount(() => {
   color: #ef4444;
 }
 
-.save-btn {
-  padding: 8px 20px;
-  border: none;
-  background: #0ea5e9;
-  color: white;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.save-btn:hover:not(:disabled) {
-  background: #0284c7;
-}
-
-.save-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
 /* 提示词查看器 */
 .prompt-viewer {
   flex: 1;
@@ -876,7 +894,8 @@ onBeforeUnmount(() => {
     white-space: nowrap;
   }
 
-  .settings-content {
+  .settings-content,
+  .settings-modal--usage .settings-content {
     padding: 1rem;
   }
 }

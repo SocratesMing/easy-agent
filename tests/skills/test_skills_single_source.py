@@ -3,7 +3,7 @@
 canonical = 仓库根 ``skills/``；packaged = ``easy_agent/skills/``（单向生成副本）。
 本文件守护：
 
-* 运行时 7 个技能在两侧都存在，且全部受管文件逐字节一致（全量 sha256，不做抽样）；
+* 运行时 9 个技能在两侧都存在，且全部受管文件逐字节一致（全量 sha256，不做抽样）；
 * ``--check`` 确定性、漂移时 exit 1，``--write`` 只做 canonical → packaged；
 * ``--write`` 清理包内多余文件/技能，但 canonical 为空时拒绝破坏副本；
 * ``--manifest`` 哈希清单稳定、可复算，且忽略 ``__pycache__`` 等生成物。
@@ -26,17 +26,18 @@ CANONICAL = ROOT / "skills"
 PACKAGED = ROOT / "easy_agent" / "skills"
 SYNC_SCRIPT = ROOT / "scripts" / "skills" / "sync_skills.py"
 EXPECTED_SKILLS = (
-    "docx",
+    "document-to-action-items",
     "expert-creator",
+    "fpp-income-analysis",
     "mcp-builder",
+    "microsoft-office",
     "pdf",
-    "pptx",
+    "precious-metals-analysis",
     "skill-creator",
     "xlsx",
 )
-# 选 pdf/SKILL.md：格式独有文件，改动它不会触发 office 三格式一致性门禁。
+# 选 pdf/SKILL.md：格式独有文件，改动它只产生普通镜像漂移。
 DRIFT_TARGET = Path("pdf") / "SKILL.md"
-OFFICE_DRIFT_TARGET = Path("docx") / "scripts" / "office" / "validators" / "base.py"
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo")
 
 
@@ -146,18 +147,16 @@ def test_single_canonical_edit_breaks_check_and_write_repairs(trees):
     assert "a3 drift probe" in (packaged / DRIFT_TARGET).read_text(encoding="utf-8")
 
 
-def test_shared_office_script_drift_is_detected_and_not_hidden_by_write(trees):
+def test_missing_office_script_is_reported_and_not_repaired_by_write(trees):
     canonical, packaged = trees
-    target = canonical / OFFICE_DRIFT_TARGET
-    target.write_text(
-        target.read_text(encoding="utf-8") + "\n# a3 office drift probe\n", encoding="utf-8"
-    )
+    target = canonical / "xlsx" / "scripts" / "office" / "validators" / "base.py"
+    target.unlink()
 
     check = _run(canonical, packaged, "--check")
     assert check.returncode == 1, check.stdout
     assert "office" in check.stdout.lower()
 
-    # --write 只从 canonical 复制，不会修改 canonical，因此不能“修好”三格式漂移。
+    # --write 只按 canonical 复制，缺文件时不会从 packaged 把脚本补回去。
     write = _run(canonical, packaged, "--write")
     assert write.returncode == 1, write.stdout
     assert "office" in write.stdout.lower()
@@ -214,7 +213,7 @@ def test_manifest_ignores_generated_artifacts(trees):
 
 def test_write_purges_packaged_pycache(trees):
     canonical, packaged = trees
-    pycache = packaged / "docx" / "scripts" / "__pycache__"
+    pycache = packaged / "pdf" / "scripts" / "__pycache__"
     pycache.mkdir(parents=True, exist_ok=True)
     (pycache / "helper.cpython-312.pyc").write_bytes(b"stale")
 

@@ -4,9 +4,9 @@
  * 纯函数，实时流与历史回放共用。前端派生 dsh 的 presentCall/presentResult：
  *   execute → terminal   read_file → read   write_file/edit_file → diff
  *   ls/glob → search(paths)   grep → search(matches)
- *   数据类 MCP 信封（带 chart）→ chart   其它 → generic
+ *   带 chart 信封的数据类工具 → visual（图表卡片）   其它 → generic
  */
-import { extractChartArtifact, formatArtifactMeta } from '../shared/chart/artifact.js'
+import { parseChartEnvelope } from '../shared/visual/envelope.js'
 
 function oneLine(s) {
   return String(s == null ? '' : s).split('\n')[0]
@@ -106,19 +106,16 @@ export function toolCard(toolName, args, result, success = true) {
       }
     }
     default: {
-      // 数据类 MCP 工具：结果信封自带 chart（ECharts option）时走图表卡片。
-      // 只放在 default：内建工具（execute/read_file 等）的语义不被图表产物覆盖。
-      const artifact = extractChartArtifact(r)
-      if (artifact) {
+      // 数据类工具的图表信封（chart 是现成的 ECharts option）：画成图表卡片，原始结果仍放在 body
+      const envelope = parseChartEnvelope(result)
+      if (envelope) {
         return {
-          card: 'chart',
-          kind: 'chart',
-          title: artifact.title || toolName || '图表',
-          meta: formatArtifactMeta(artifact),
-          error: success === false,
-          artifact,
+          card: 'visual', kind: 'other', title: envelope.title || toolName || 'tool',
+          meta: [envelope.statDate, envelope.unit].filter(Boolean).join(' · '),
+          error: success === false, envelope, body: r,
         }
       }
+      // 其它工具一律走通用卡片，结果按原文展示
       return {
         card: 'generic', kind: 'other', title: toolName || 'tool',
         meta: short(JSON.stringify(a || {}), 56),

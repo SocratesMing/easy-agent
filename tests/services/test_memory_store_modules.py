@@ -22,9 +22,9 @@ from pathlib import Path
 
 import pytest
 
-import easy_agent.services.memory_entries as memory_entries
-import easy_agent.services.memory_locks as memory_locks
-import easy_agent.services.memory_store as memory_store
+import easy_agent.services.memory.entries as memory_entries
+import easy_agent.services.memory.locks as memory_locks
+import easy_agent.services.memory.store as memory_store
 
 # 拆分前 ``memory_store`` 的公开契约（__all__ 原样冻结，防止 re-export 漂移）。
 EXPECTED_ALL = {

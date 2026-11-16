@@ -171,6 +171,27 @@ def test_different_model_does_not_hit(config, shared_saver, compile_spy):
     assert first.agent_graph_key != second.agent_graph_key
 
 
+def test_identical_model_configs_with_distinct_keys_do_not_share_identity(
+    config, shared_saver, compile_spy
+):
+    config.models["same-settings"] = config.models[config.active_model].model_copy()
+    first = _make_agent(config, session_id="s1", workspace_name="w1")
+    second = _make_agent(
+        config, session_id="s2", workspace_name="w2", model_name="same-settings"
+    )
+    third = _make_agent(
+        config, session_id="s3", workspace_name="w3",
+        model_name="same-settings",
+    )
+    assert len(compile_spy) == 2
+    assert first.agent is not second.agent
+    assert second.agent is third.agent
+    from easy_agent.agent.token_usage import TokenUsageCallback
+    callbacks = [cb for cb in second.model.callbacks if isinstance(cb, TokenUsageCallback)]
+    assert len(callbacks) == 1
+    assert callbacks[0].model_key == "same-settings"
+
+
 def test_different_tools_do_not_hit(config, shared_saver, compile_spy):
     extra = _ProbeTool()
     first = _make_agent(config, session_id="s1", workspace_name="w1")

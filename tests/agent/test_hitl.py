@@ -4,11 +4,16 @@ from types import SimpleNamespace
 
 from easy_agent.agent import EasyAgent
 from easy_agent.agent.hitl import (
+    AUTO_APPROVED_APPROVAL_TOOLS,
+    DEFAULT_APPROVAL_TOOLS,
     EXECUTE_HITL_TOOL_DESCRIPTION,
+    HITL_SYSTEM_NOTE,
     HITL_WHEN_PREDICATES,
     _is_destructive_command,
     _is_knowledge_materialize,
     build_interrupt_config,
+    hitl_enabled,
+    resolve_approval_tools,
 )
 from easy_agent.tools import registry
 from easy_agent.tools.registry import SOURCE_EXPERT, ToolSpec
@@ -35,6 +40,37 @@ def test_execute_description_mentions_sandbox():
 def test_destructive_rm_detected():
     request = SimpleNamespace(tool_call={"args": {"command": "rm /workspace/a.txt"}})
     assert _is_destructive_command(request) is True
+
+
+def test_hitl_note_and_delete_description_match_the_approval_policy():
+    """目录删除只走 delete、由用户审批（审批说明要写到它）；execute 里的目录删除命令仍直接拒绝。"""
+    from easy_agent.agent.hitl import (
+        DELETE_HITL_TOOL_DESCRIPTION,
+        EXECUTE_HITL_TOOL_DESCRIPTION,
+        HITL_SYSTEM_NOTE,
+    )
+
+    assert HITL_SYSTEM_NOTE.startswith("## 人工审批")
+    assert "删除文件或目录的 delete" in HITL_SYSTEM_NOTE
+    assert "不要原样重试" in HITL_SYSTEM_NOTE
+    assert "bwrap" not in HITL_SYSTEM_NOTE  # 沙箱实现写在 execute 描述里
+    assert "删除文件或目录" in DELETE_HITL_TOOL_DESCRIPTION
+    assert "「批准 / 拒绝」" in DELETE_HITL_TOOL_DESCRIPTION
+    assert "需要删除目录时改用 delete 工具" in EXECUTE_HITL_TOOL_DESCRIPTION
+
+
+def test_execute_directory_deletion_is_rejected_and_points_to_delete(tmp_path):
+    """execute 删目录仍直接拒绝（不进审批），但要告诉模型改用 delete，而不是「目录受保护、删不了」。"""
+    from easy_agent.backends.shell import PathTranslatingShell
+
+    (tmp_path / "sub").mkdir()
+    shell = PathTranslatingShell({"/workspace": str(tmp_path)}, root_dir=tmp_path, sandbox_enabled=False)
+
+    result = shell.execute("rm -r /workspace/sub")
+
+    assert result.exit_code == 1
+    assert "delete 工具" in result.output
+    assert (tmp_path / "sub").is_dir()
 
 
 def test_register_execute_description_profiles_is_idempotent():
@@ -127,10 +163,11 @@ def test_build_interrupt_config_ignores_non_mutating_unknown_tools():
     assert set(cfg) == {"execute", "delete"}
 
 
-def test_build_interrupt_config_keeps_legacy_read_uploaded_file_heuristic():
-    """行为等价：read_uploaded_file 名字含 upload，改造前已被启发式纳入审批。"""
-    cfg = build_interrupt_config(["read_uploaded_file"])
-    assert cfg["read_uploaded_file"]["allowed_decisions"] == ["approve", "edit", "reject"]
+def test_read_uploaded_file_needs_approval_only_when_listed():
+    """应用工具只看审批名单：read_uploaded_file 名字含 upload，以前被名字启发式误拦。"""
+    assert "read_uploaded_file" not in build_interrupt_config(["read_uploaded_file"])
+    cfg = build_interrupt_config(["read_uploaded_file"], approval_tools=["read_uploaded_file"])
+    assert cfg == {"read_uploaded_file": {"allowed_decisions": ["approve", "edit", "reject"]}}
 
 
 def test_build_interrupt_config_disabled_returns_none():
@@ -178,6 +215,24 @@ def test_agent_interrupt_config_respects_enable_hitl():
     assert _agent(enable_hitl=False)._build_interrupt_config() is None
 
 
+def test_ask_user_survives_hitl_switch_and_custom_approval_list():
+    cfg = build_interrupt_config(
+        [_tool("ask_user")],
+        enable_hitl=False,
+        approval_tools=["save_expert"],
+    )
+    assert cfg == {"ask_user": {"allowed_decisions": ["respond"]}}
+
+
+def test_ask_user_survives_auto_approval_mode():
+    """自动审批只关闭安全审批，规划确认仍必须等待用户回答。"""
+    cfg = build_interrupt_config(
+        [_tool("ask_user")],
+        approval_mode="auto",
+    )
+    assert cfg == {"ask_user": {"allowed_decisions": ["respond"]}}
+
+
 def test_agent_interrupt_config_changes_with_tool_set():
     base = set(_agent()._build_interrupt_config())
     with_creator = set(
@@ -186,7 +241,64 @@ def test_agent_interrupt_config_changes_with_tool_set():
     )
 
     assert base == {"execute", "delete"}
-    assert with_creator == {"execute", "delete", "save_expert", "read_uploaded_file"}
+    assert with_creator == {"execute", "delete", "save_expert"}
+
+
+# ── config.yaml 的 hitl 段：总开关 + 审批名单 ───────────────────────────
+
+
+def test_default_approval_list_is_every_registry_hitl_tool():
+    assert DEFAULT_APPROVAL_TOOLS == (
+        "execute",
+        "delete",
+        "save_expert",
+        "create_scheduled_task",
+        "access_knowledge_original",
+    )
+
+
+def test_configured_list_replaces_the_default():
+    cfg = build_interrupt_config(
+        [_tool("save_expert"), _tool("create_scheduled_task")], approval_tools=["save_expert"]
+    )
+    assert list(cfg) == ["save_expert"]
+
+
+def test_listed_tools_keep_their_registry_conditions():
+    cfg = build_interrupt_config(
+        [_tool("access_knowledge_original")],
+        approval_tools=["access_knowledge_original", "execute"],
+    )
+    assert list(cfg) == ["access_knowledge_original", "execute"]
+    assert cfg["execute"]["when"] is _is_destructive_command
+    assert cfg["access_knowledge_original"]["when"] is _is_knowledge_materialize
+
+
+def test_listed_builtin_without_a_registry_rule_is_always_approved():
+    cfg = build_interrupt_config([], approval_tools=["write_file", "delete"])
+    assert cfg == {
+        "write_file": {"allowed_decisions": ["approve", "edit", "reject"]},
+        "delete": {"allowed_decisions": ["approve", "reject"]},
+    }
+
+
+def test_listed_names_that_are_not_injected_are_skipped():
+    assert build_interrupt_config([], approval_tools=["save_expert", "no_such_tool"]) == {}
+
+
+def test_agent_uses_the_configured_approval_list():
+    agent = _agent([_tool("save_expert"), _tool("create_scheduled_task")])
+    agent.config = SimpleNamespace(hitl=SimpleNamespace(tools=["create_scheduled_task"]))
+    assert list(agent._build_interrupt_config()) == ["create_scheduled_task"]
+
+
+def test_hitl_enabled_needs_both_the_caller_and_the_config():
+    on = SimpleNamespace(hitl=SimpleNamespace(enabled=True))
+    off = SimpleNamespace(hitl=SimpleNamespace(enabled=False))
+    assert hitl_enabled(on) is True
+    assert hitl_enabled(on, False) is False  # 定时任务
+    assert hitl_enabled(off) is False
+    assert hitl_enabled(SimpleNamespace()) is True  # 没有 hitl 段
 
 
 # ── DA-09：MCP annotations 决定是否审批，名字启发式只做兜底 ──────────────
@@ -258,7 +370,121 @@ def test_delete_decision_check_ignores_innocent_words():
 
 
 def test_annotations_survive_the_mcp_evidence_wrapper():
-    from easy_agent.services.mcp_evidence import wrap_mcp_tool
+    from easy_agent.services.mcp.evidence import wrap_mcp_tool
 
     wrapped = wrap_mcp_tool(_mcp_tool("delete_note", readOnlyHint=True), server="notes")
     assert "delete_note" not in build_interrupt_config([wrapped])
+
+
+def test_listed_mcp_tool_matches_its_name_without_the_server_prefix():
+    tool = _mcp_tool("crm__close_ticket", readOnlyHint=True)
+    tool.metadata["mcp_original_name"] = "close_ticket"
+    cfg = build_interrupt_config([tool], approval_tools=["close_ticket"])
+    # 名单优先于服务端的只读标注
+    assert cfg == {"crm__close_ticket": {"allowed_decisions": ["approve", "edit", "reject"]}}
+
+
+def test_unlisted_mcp_tools_still_use_annotations_and_names():
+    cfg = build_interrupt_config(
+        [_mcp_tool("delete_note"), _mcp_tool("list_notes"), _tool("read_uploaded_file")],
+        approval_tools=[],
+    )
+    assert list(cfg) == ["delete_note"]
+
+
+# ── 用户级审批模式（设置 → 权限设置） ───────────────────────────────────
+
+
+def test_auto_mode_approves_every_approval_item():
+    """auto 把 5 个审批项全部放行（含知识库原文落盘），MCP 写工具也不进审批。"""
+    agent = _agent(
+        [
+            _tool("save_expert"),
+            _tool("create_scheduled_task"),
+            _tool("access_knowledge_original"),
+            _mcp_tool("mysql_execute_sql"),
+        ]
+    )
+
+    agent.approval_mode = "manual"
+    assert set(agent._build_interrupt_config()) == {
+        "execute",
+        "delete",
+        "save_expert",
+        "create_scheduled_task",
+        "access_knowledge_original",
+        "mysql_execute_sql",
+    }
+
+    agent.approval_mode = "auto"
+    # 空字典 = 不安装 HumanInTheLoopMiddleware，本轮没有任何审批节点
+    assert agent._build_interrupt_config() == {}
+
+
+def test_auto_mode_skips_the_mcp_fallback_entirely(monkeypatch):
+    """auto 模式连 MCP 兜底都不走：名字含 execute_sql / destructiveHint 也不进审批。"""
+    agent = _agent(
+        [
+            _mcp_tool("mysql_execute_sql"),
+            _mcp_tool("drop_table", destructiveHint=True),
+            _mcp_tool("delete_row"),
+        ]
+    )
+    agent.approval_mode = "auto"
+    assert agent._build_interrupt_config() == {}
+
+    # 回滚开关：把 AUTO_APPROVES_MCP_TOOLS 改回 False 即恢复 MCP 审批
+    from easy_agent.agent import hitl
+
+    monkeypatch.setattr(hitl, "AUTO_APPROVES_MCP_TOOLS", False)
+    assert set(agent._build_interrupt_config()) == {
+        "mysql_execute_sql",
+        "drop_table",
+        "delete_row",
+    }
+
+
+def test_manual_mode_keeps_the_mcp_fallback():
+    """manual 是安全默认值：MCP 写工具照旧按 annotations / 名字进审批。"""
+    agent = _agent([_mcp_tool("mysql_execute_sql"), _mcp_tool("list_tables", readOnlyHint=True)])
+    agent.approval_mode = "manual"
+    assert set(agent._build_interrupt_config()) == {
+        "execute",
+        "delete",
+        "mysql_execute_sql",
+    }
+
+
+def test_resolve_approval_tools_falls_back_to_manual_on_illegal_value():
+    assert resolve_approval_tools(None, "manual") is None
+    assert resolve_approval_tools(None, "yolo") is None
+    assert resolve_approval_tools(["delete", "execute"], "manual") == ["delete", "execute"]
+
+
+def test_resolve_approval_tools_removes_exactly_the_auto_approved_names():
+    auto = resolve_approval_tools(None, "auto")
+    assert set(DEFAULT_APPROVAL_TOOLS) - set(auto) == AUTO_APPROVED_APPROVAL_TOOLS
+    # 默认名单已被全部覆盖：auto 不剩任何审批项
+    assert auto == []
+    assert set(DEFAULT_APPROVAL_TOOLS) <= AUTO_APPROVED_APPROVAL_TOOLS
+
+
+def test_auto_approved_names_are_all_real_approval_items():
+    """放行名单里写错名字会静默失效（摘不到就永远不减），这里把拼写钉死。"""
+    for name in AUTO_APPROVED_APPROVAL_TOOLS:
+        assert name in DEFAULT_APPROVAL_TOOLS, f"{name} 不在审批名单里，放行它是空操作"
+
+
+def test_auto_mode_swaps_the_hitl_system_note():
+    """工具描述是按模型全局注册的，auto 下只能靠提示词覆盖「会先暂停等批准」的说法。"""
+    agent = _agent()
+    agent.approval_mode = "manual"
+    assert agent._hitl_system_note() == HITL_SYSTEM_NOTE
+
+    agent.approval_mode = "auto"
+    note = agent._hitl_system_note()
+    assert note != HITL_SYSTEM_NOTE
+    assert "自动审批" in note and "直接执行" in note
+
+    agent.enable_hitl = False
+    assert agent._hitl_system_note() == ""

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import easy_agent.api.connectors as connectors_api
-import easy_agent.services.connectors as connectors_service
+import easy_agent.services.mcp.connectors as connectors_service
 from easy_agent.bootstrap.config import Config
 from easy_agent.api.connectors import router as connectors_router
 
@@ -144,7 +144,7 @@ def test_installed_ignores_global_mcp_fallback(client, demo_catalog, monkeypatch
     config/mcp.json 同时是 Agent 加载用的全局 mcp.json；若有人往里加了 servers，
     连接器页的 installed 判断必须仍只看用户自己的 workspace/{user}/mcp.json。
     """
-    import easy_agent.services.mcp as mcp_service
+    import easy_agent.services.mcp.tools as mcp_service
 
     global_file = tmp_path / "mcp.json"
     global_file.write_text(
@@ -404,7 +404,7 @@ def test_install_fills_values_and_defaults_enabled(client, auth_catalog):
 
 def test_toggle_persists_and_filters_agent_loading(client, auth_catalog):
     """开关状态持久化到用户 mcp.json；停用后 Agent 加载排除该 server。"""
-    import easy_agent.services.mcp as mcp_service
+    import easy_agent.services.mcp.tools as mcp_service
 
     client.post(
         "/agent/connectors/install",
@@ -595,7 +595,7 @@ def _install_auth_connector(client) -> None:
 
 def test_session_switches_default_to_null(client):
     """没动过开关的会话返回 null（= 全部启用），与「空数组 = 全部关闭」是两种状态。"""
-    from easy_agent.services import agent_manager as am
+    from easy_agent.services.agents import manager as am
 
     resp = client.get("/agent/connectors/session", params={"session_id": "sess-none"})
     assert resp.status_code == 200
@@ -605,7 +605,7 @@ def test_session_switches_default_to_null(client):
 
 def test_session_switches_write_and_read_back(client, auth_catalog):
     """写入会话开关：映射成 server 名落到 agent_manager，查询接口原样返回。"""
-    from easy_agent.services import agent_manager as am
+    from easy_agent.services.agents import manager as am
 
     _install_auth_connector(client)
     sid = "sess-switch"
@@ -639,7 +639,7 @@ def test_session_switches_write_and_read_back(client, auth_catalog):
 
 def test_session_switches_map_display_name_and_ignore_unknown(client, auth_catalog):
     """展示名映射为目录 id（server 名）；未安装的名字进 unknown，不影响其余项。"""
-    from easy_agent.services import agent_manager as am
+    from easy_agent.services.agents import manager as am
 
     _install_auth_connector(client)
     sid = "sess-unknown"

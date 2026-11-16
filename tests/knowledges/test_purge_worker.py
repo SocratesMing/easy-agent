@@ -11,7 +11,7 @@ import pytest
 
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.models import KnowledgePrincipal
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.ragflow import RagflowError, RagflowNotFoundError
 from easy_agent.knowledges.service import (
     SHARED_DATASET_NAME,

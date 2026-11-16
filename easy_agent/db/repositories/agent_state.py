@@ -1,7 +1,10 @@
-"""LangGraph store 的持久化 repository（ARCH-03 Phase 2）。
+"""LangGraph store 的持久化 repository（``langgraph_store`` 表）。
 
-业务库不再保存 HITL checkpoint：官方 AsyncSqliteSaver 写 SQLite 文件，legacy 回退只在进程内
-（``persistence/checkpoints.py``）。连接/事务仍由传入的 db 对象提供。
+连接/事务由传入的 db 对象提供。
+
+HITL checkpoint 不在这个文件里：旧的 ``agent_checkpoints`` 全量快照后端已删除，
+现在由 ``easy_agent/persistence/mysql_saver.py``（共享 4 张 cp_* 表）与官方
+``AsyncSqliteSaver`` 承载，两者的生命周期都在 ``persistence/checkpoints.py``。
 """
 
 from __future__ import annotations
@@ -96,3 +99,37 @@ def store_list_namespaces(db) -> list[str]:
         else:
             out.append(row[0])
     return out
+
+
+class AgentStateRepository:
+    """LangGraph ``store`` 键值表（``langgraph_store``）的领域入口。
+
+    ``persistence/stores.py`` 的 ``SqlStore`` 从 T3c 起只依赖本对象；SQL 与
+    upsert 语义仍在模块级函数里，本类不改行为。
+    """
+
+    def __init__(self, db):
+        self._db = db
+
+    def store_get(self, namespace: str, item_key: str) -> dict | None:
+        return store_get(self._db, namespace, item_key)
+
+
+    def store_put(self, namespace: str, item_key: str, value: str) -> None:
+        store_put(self._db, namespace, item_key, value)
+
+    def store_delete(self, namespace: str, item_key: str) -> None:
+        store_delete(self._db, namespace, item_key)
+
+    def store_search(
+        self, namespace_prefix: str, *, limit: int = 10, offset: int = 0
+    ) -> list[dict]:
+        return store_search(
+            self._db, namespace_prefix, limit=limit, offset=offset
+        )
+
+    def store_list_namespaces(self) -> list[str]:
+        return store_list_namespaces(self._db)
+
+
+__all__ = ["AgentStateRepository"]

@@ -4,7 +4,7 @@ import { readSSE } from '../../api/sse.js'
 
 // Vue 3 基线的 authFetch 已统一附加 Bearer token 并处理 401 登出，
 // 这里直接复用，保留原生 Response 语义（二进制预览 / Range / 错误体）。
-const root = () => `${API_BASE_URL}/api/knowledge/v1`
+const root = () => `${API_BASE_URL}/agent/knowledge/v1`
 
 export async function cancelMessage(sessionId) {
   const response = await authFetch(`${API_BASE_URL}/agent/chat/cancel?session_id=${encodeURIComponent(sessionId)}`, { method: 'POST' })
@@ -101,13 +101,18 @@ export function listDocuments(baseId, { page = 1, pageSize = 100, folderId = '',
   return request(`/bases/${encodeURIComponent(baseId)}/documents?${params}`)
 }
 
-export function uploadDocument(baseId, file, { folderId = '', relativePath = '' } = {}) {
+export function uploadDocument(baseId, file, { folderId = '', relativePath = '', onProgress } = {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', `${root()}/bases/${encodeURIComponent(baseId)}/documents`)
     const token = getStoredToken()
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
     xhr.responseType = 'json'
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && typeof onProgress === 'function') {
+        onProgress(Math.round((event.loaded / event.total) * 100))
+      }
+    }
     xhr.onload = () => {
       if (xhr.status === 401) {
         dispatchAuthExpired()

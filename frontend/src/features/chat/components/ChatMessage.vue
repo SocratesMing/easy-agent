@@ -1,6 +1,9 @@
 <template>
   <div ref="messageEl" class="message" :class="[message.role]">
     <div class="message-content" @click="handleContentClick">
+      <div v-if="message.role === 'user' && message.file_references && message.file_references.length" class="reference-history">
+        <FileReferenceTag v-for="ref in message.file_references" :key="ref.path" :item="ref" />
+      </div>
       <PageContextChip v-if="message.role === 'user' && message.page_context" :text="message.page_context" />
       <!-- 文件卡片 -->
       <div v-if="message.files && message.files.length > 0" class="files-container">
@@ -21,7 +24,6 @@
           </div>
         </div>
       </div>
-      
       <!-- 专家标识：选中专家回答时，在回答面板左上角展示「头像 + 名称」（发送瞬间即出现，
            常驻到消息结束）；未选专家时无此元素，沿用通用样式。
            仅 assistant 消息渲染：用户消息落库后也带 expert 字段（标识的数据来源），
@@ -42,103 +44,143 @@
 
       <!-- 按顺序渲染内容块 -->
       <template v-if="sortedBlocks.length > 0">
-        <div v-if="processBlocks.length > 0" class="process-wrapper" :class="{ 'process-active': isProcessActive, 'process-expanded': processExpanded }">
-          <div class="process-header" :class="{ 'is-stuck': isStuck }" ref="processHeaderRef" @click="toggleProcess">
-            <svg class="process-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z"></path>
-              <path d="M8 14s1.5 2 4 2 4-2 4-2"></path>
-              <line x1="9" y1="9" x2="9.01" y2="9"></line>
-              <line x1="15" y1="9" x2="15.01" y2="9"></line>
-            </svg>
-            <span class="process-title">执行过程</span>
-            <span class="process-step-count">{{ processStepCount }} 个步骤</span>
-            <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: processExpanded }">
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
-          </div>
-          <div v-if="processExpanded" class="process-body">
-            <template v-for="(block, idx) in processBlocks" :key="'p'+block.origIndex">
-              <!-- 思考内容块 -->
-              <div v-if="block.type === 'thinking'" class="thinking-block" :class="{ 'thinking-active': block.duration == null && message.loading }">
-                <div class="thinking-header" @click="toggleThinking(block.origIndex)">
-                  <div v-if="block.duration == null && message.loading" class="thinking-spinner">
-                    <span></span><span></span><span></span>
-                  </div>
-                  <svg v-else class="thinking-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <path d="M12 16v-4M12 8h.01"></path>
-                    <path d="M9.5 9.5c.5-.5 1.5-1 2.5-1s2 .5 2.5 1c.5.5.5 1.5 0 2.5-.5.5-1.5 1-2.5 1"></path>
-                  </svg>
-                  <span class="thinking-title">{{ block.duration == null && message.loading ? '正在思考...' : '思考过程' }}</span>
-                  <span v-if="block.duration != null" class="thinking-duration">用时 {{ block.duration }} 秒</span>
-                  <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpandedThinking(block.origIndex) }">
-                    <polyline points="6 9 12 15 18 9"></polyline>
-                  </svg>
-                </div>
-                <div v-if="isExpandedThinking(block.origIndex)" class="thinking-content">
-                  <MarkdownBody class="thinking-text" :content="block.content" :cite-map="citeNumberMap" />
-                </div>
-              </div>
-
-              <!-- 工具调用卡片（dsh 风格，默认收起；隐藏 write_todos）-->
-              <ToolCallCard
-                v-if="block.type === 'tool_call' && block.tool_name !== 'write_todos'"
-                :key="'p'+block.origIndex"
-                :tool-name="block.tool_name"
-                :args="block.arguments"
-                :result="block.result"
-                :success="block.success !== false"
-                :duration="block.duration"
-                :pending-approval="!!block.pending_approval"
-                :file-paths="block.file_paths || []"
-                :allowed-decisions="block.allowed_decisions || []"
-                :streaming="!!block.streaming"
-                @approve="$emit('approve', approvalTargetForBlock(message, block))"
-                @reject="$emit('reject', approvalTargetForBlock(message, block))"
-                @edit="$emit('edit', { ...approvalTargetForBlock(message, block), editedArgs: $event })"
-              />
-
-              <!-- 中间穿插的正文（其后仍有思考/工具）放进处理过程内部按原序展示 -->
-              <MarkdownBody v-if="block.type === 'content'" class="message-text process-inline-content" :content="block.content" :cite-map="citeNumberMap" />
-            </template>
-          </div>
-        </div>
-        <!-- 子代理内部触发的审批：主消息里没有对应工具卡片，单独列出（每项只回答自己的中断） -->
-        <div v-if="pendingPanelActions.length > 0" class="pending-approval-panel">
-          <ToolCallCard
-            v-for="(ar, i) in pendingPanelActions"
-            :key="'hitl-' + (ar.interrupt_id || 'legacy') + '-' + i"
-            :tool-name="ar.tool_name"
-            :args="ar.arguments"
-            :pending-approval="true"
-            :file-paths="ar.file_paths || []"
-            :allowed-decisions="ar.allowed_decisions || []"
-            @approve="$emit('approve', { interruptId: ar.interrupt_id || null })"
-            @reject="$emit('reject', { interruptId: ar.interrupt_id || null })"
-            @edit="$emit('edit', { interruptId: ar.interrupt_id || null, actionIndex: ar.action_index != null ? ar.action_index : 0, actionName: ar.name || ar.tool_name || '', editedArgs: $event })"
-          />
-        </div>
-        <template v-for="(block, idx) in finalContentBlocks" :key="'c'+block.origIndex">
-          <!-- 用户消息：技能标签与正文放在同一个气泡内横向排列（标签在左、正文在右），
-               避免标签独占一行；老数据正文里的 /技能名 指令由 displayContent 去掉 -->
-          <div
-            v-if="block.type === 'content' && message.role === 'user'"
-            class="message-text user-bubble"
-          >
-            <span v-if="userSkillTokens.length > 0" class="message-skill-chips">
-              <span
-                v-for="skill in userSkillTokens"
-                :key="skill.dir_name"
-                class="message-skill-chip"
-                :title="skill.description || skill.dir_name"
-              >
-                <SkillIcon :icon="skill.icon || ''" :category="iconCategoryFor(skill.category_id)" size="xs" />
-                <span class="message-skill-chip-name">{{ skill.name || skill.dir_name }}</span>
-              </span>
+        <!-- 用户消息：技能标签作行内前缀接正文首行（标签在左前方，不分栏）；老数据的 /技能名 由 displayContent 去掉；正文按纯文本展示 -->
+        <div v-if="message.role === 'user' && userContentBlock" class="message-text user-bubble">
+          <span v-if="userSkillTokens.length > 0" class="message-skill-chips">
+            <span
+              v-for="skill in userSkillTokens"
+              :key="skill.dir_name"
+              class="message-skill-chip"
+              :title="skill.description || skill.dir_name"
+            >
+              <SkillIcon :icon="skill.icon || ''" :category="iconCategoryFor(skill.category_id)" size="xs" />
+              <span class="message-skill-chip-name">{{ skill.name || skill.dir_name }}</span>
             </span>
-            <MarkdownBody v-if="block.content" class="user-bubble-body" :content="block.content" :cite-map="citeNumberMap" />
+          </span>
+          <UserMessageText v-if="userContentBlock.content" class="user-bubble-body" :content="userContentBlock.content" />
+        </div>
+        <!-- 助手消息：正文段原位常显，不挪位置、不降级样式；相邻的思考 / 工具调用（连同其间的短叙述）
+             折叠成过程组，执行中只显示当前这一步。分段规则见 shared/chat/messageSegments.js -->
+        <template v-else-if="message.role !== 'user'">
+          <template v-for="seg in segmentViews" :key="seg.key">
+            <div
+              v-if="seg.kind === 'process'"
+              class="process-group"
+              :class="['is-' + seg.view.status, { 'is-expanded': isGroupExpanded(seg.key) }]"
+            >
+              <button
+                type="button"
+                class="process-group-header"
+                :aria-expanded="isGroupExpanded(seg.key) ? 'true' : 'false'"
+                @click="toggleGroup(seg.key)"
+              >
+                <span v-if="seg.view.status === 'running'" class="thinking-spinner"><span></span><span></span><span></span></span>
+                <svg v-else-if="seg.view.status === 'approval'" class="process-group-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="10" y1="15" x2="10" y2="9"></line>
+                  <line x1="14" y1="15" x2="14" y2="9"></line>
+                </svg>
+                <svg v-else-if="seg.view.thinkingOnly" class="process-group-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <path d="M12 16v-4M12 8h.01"></path>
+                  <path d="M9.5 9.5c.5-.5 1.5-1 2.5-1s2 .5 2.5 1c.5.5.5 1.5 0 2.5-.5.5-1.5 1-2.5 1"></path>
+                </svg>
+                <svg v-else class="process-group-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <polyline points="8 12.5 11 15.5 16 9.5"></polyline>
+                </svg>
+                <span class="process-group-title">{{ seg.view.title }}</span>
+                <span v-if="seg.view.summary.failedCount > 0" class="process-group-failed">{{ seg.view.summary.failedCount }} 次失败</span>
+                <span v-if="seg.view.steps > 1" class="process-group-steps">{{ seg.view.steps }} 步</span>
+                <svg class="toggle-arrow" :class="{ rotated: isGroupExpanded(seg.key) }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </button>
+              <!-- 执行中且折叠：固定高度的实时预览，只露出当前这一步的末尾，高度不随步骤数增长 -->
+              <div v-if="seg.view.preview && !isGroupExpanded(seg.key)" class="process-group-preview">
+                <div class="process-group-preview-text">{{ seg.view.preview }}</div>
+              </div>
+              <div v-if="isGroupExpanded(seg.key)" class="process-group-body">
+                <!-- 只有思考的组：展开直接看思考内容，不再套一层折叠 -->
+                <template v-if="seg.view.thinkingOnly">
+                  <div v-for="row in seg.view.rows" :key="row.key" class="thinking-content">
+                    <MarkdownBody class="thinking-text" :content="row.item.content" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" />
+                  </div>
+                </template>
+                <template v-else>
+                  <template v-for="row in seg.view.rows" :key="row.key">
+                    <!-- 并入组的短叙述：作为下一步的说明 -->
+                    <MarkdownBody v-if="row.type === 'narration'" class="message-text process-narration" :content="row.item.content" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" />
+                    <div v-else-if="row.type === 'thinking'" class="thinking-block" :class="{ 'thinking-active': isThinkingActive(row.item) }">
+                      <div class="thinking-header" @click="toggleThinkingItem(row.item)">
+                        <div v-if="isThinkingActive(row.item)" class="thinking-spinner">
+                          <span></span><span></span><span></span>
+                        </div>
+                        <svg v-else class="thinking-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <circle cx="12" cy="12" r="10"></circle>
+                          <path d="M12 16v-4M12 8h.01"></path>
+                          <path d="M9.5 9.5c.5-.5 1.5-1 2.5-1s2 .5 2.5 1c.5.5.5 1.5 0 2.5-.5.5-1.5 1-2.5 1"></path>
+                        </svg>
+                        <span class="thinking-title">{{ isThinkingActive(row.item) ? '正在思考...' : '思考过程' }}</span>
+                        <span v-if="row.item.duration != null" class="thinking-duration">用时 {{ row.item.duration }} 秒</span>
+                        <svg class="toggle-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isThinkingOpen(row.item) }">
+                          <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                      </div>
+                      <div v-if="isThinkingOpen(row.item)" class="thinking-content">
+                        <MarkdownBody class="thinking-text" :content="row.item.content" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" />
+                      </div>
+                    </div>
+                    <!-- 连续的读取 / 搜索合并成一行，点开再看每一条 -->
+                    <div v-else-if="row.type === 'run'" class="process-run">
+                      <button type="button" class="process-run-header" :aria-expanded="isRunExpanded(row.key) ? 'true' : 'false'" @click="toggleRun(row.key)">
+                        <span class="process-run-label">{{ row.label }}</span>
+                        <svg class="toggle-arrow" :class="{ rotated: isRunExpanded(row.key) }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                      </button>
+                      <div v-if="isRunExpanded(row.key)" class="process-run-body">
+                        <ToolCallCard v-for="item in row.items" :key="'i' + item.origIndex" v-bind="toolCardProps(item)" v-on="toolCardListeners(item)" />
+                      </div>
+                    </div>
+                    <!-- 工具调用卡片（dsh 风格，默认收起）-->
+                    <ToolCallCard v-else v-bind="toolCardProps(row.item)" v-on="toolCardListeners(row.item)" />
+                  </template>
+                </template>
+              </div>
+              <!-- 组折叠时，待审批的卡片和数据工具画出的图也要露出来：审批按钮、图表都是给用户看的结果 -->
+              <div v-else-if="seg.view.pinned.length > 0 || seg.view.visuals.length > 0" class="process-group-pinned">
+                <ToolCallCard v-for="item in seg.view.pinned.concat(seg.view.visuals)" :key="'i' + item.origIndex" v-bind="toolCardProps(item)" v-on="toolCardListeners(item)" />
+              </div>
+            </div>
+            <MarkdownBody v-else class="message-text" :content="seg.block.content" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" />
+          </template>
+          <!-- 一个中断挂了多项操作（同一条 AIMessage 的多个工具调用被框架打包成一次中断）：
+               只给一个审批入口 + 操作清单，避免「点一次静默批了整批」（DA-28） -->
+          <div v-if="pendingBatchGroups.length > 0" class="pending-approval-panel">
+            <ApprovalBatchPanel
+              v-for="group in pendingBatchGroups"
+              :key="'hitl-batch-' + group.interruptId"
+              :actions="group.actions"
+              @approve="$emit('approve', { interruptId: group.interruptId })"
+              @reject="$emit('reject', { interruptId: group.interruptId })"
+            />
           </div>
-          <MarkdownBody v-else-if="block.type === 'content'" class="message-text" :content="block.content" :cite-map="citeNumberMap" />
+          <!-- 子代理内部触发的审批：主消息里没有对应工具卡片，单独列出（每项只回答自己的中断） -->
+          <div v-if="pendingPanelActions.length > 0" class="pending-approval-panel">
+            <ToolCallCard
+              v-for="(ar, i) in pendingPanelActions"
+              :key="'hitl-' + (ar.interrupt_id || 'legacy') + '-' + i"
+              :tool-name="ar.tool_name"
+              :args="ar.arguments"
+              :pending-approval="true"
+              :file-paths="ar.file_paths || []"
+              :allowed-decisions="ar.allowed_decisions || []"
+              @approve="$emit('approve', { interruptId: ar.interrupt_id || null })"
+              @reject="$emit('reject', { interruptId: ar.interrupt_id || null })"
+              @edit="$emit('edit', { interruptId: ar.interrupt_id || null, actionIndex: ar.action_index != null ? ar.action_index : 0, actionName: ar.name || ar.tool_name || '', editedArgs: $event })"
+            />
+          </div>
         </template>
       </template>
 
@@ -161,7 +203,7 @@
             </svg>
           </div>
           <div v-if="showThinking" class="thinking-content">
-            <MarkdownBody class="thinking-text" :content="message.thinking" :cite-map="citeNumberMap" />
+            <MarkdownBody class="thinking-text" :content="message.thinking" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" />
           </div>
         </div>
 
@@ -177,17 +219,7 @@
           />
         </div>
 
-        <MarkdownBody v-if="message.content" class="message-text" :content="message.content" :cite-map="citeNumberMap" />
-
-        <!-- 错误提示 -->
-        <div v-if="message.error" class="message-error">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="error-icon">
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="12" y1="8" x2="12" y2="12"></line>
-            <line x1="12" y1="16" x2="12.01" y2="16"></line>
-          </svg>
-          <span>{{ message.error }}</span>
-        </div>
+        <MarkdownBody v-if="message.content" class="message-text" :content="message.content" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" />
 
         <!-- 生成的文件按钮 -->
         <div v-if="message.role === 'assistant' && message.generated_files && message.generated_files.length > 0" class="generated-files-btn-container">
@@ -203,18 +235,19 @@
           </button>
         </div>
       </template>
-      
+      <MessageError :error="message.error" />
+      <MessageFallbackNote v-if="message.role === 'assistant'" :note="message.fallback_note" />
       <KnowledgeEvidence
-        v-if="message.role === 'assistant'"
+        v-if="message.role === 'assistant' && (citationPresentation !== 'popover' || (message.knowledge_warnings || []).length)"
         ref="knowledgeEvidence"
-        :evidence="message.knowledge_evidence || []"
+        :evidence="citationPresentation === 'popover' ? [] : (message.knowledge_evidence || [])"
         :warnings="message.knowledge_warnings || []"
         :content="citationSourceText"
       />
 
       <!-- 用户消息显示复制和重试按钮 -->
       <div v-if="message.role === 'user' && displayContent" class="message-actions">
-        <button class="action-btn retry-btn" @click="retryMessage" title="重新发送">
+        <button v-if="canRetryUserMessage(message)" class="action-btn retry-btn" @click="retryMessage" title="重新发送">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="23 4 23 10 17 10"></polyline>
             <polyline points="1 20 1 14 7 14"></polyline>
@@ -233,13 +266,21 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { ensureHighlighter } from '../composables/useMarkdownRenderer.js'
 import MarkdownBody from './MarkdownBody.vue'
+import UserMessageText from './UserMessageText.vue'
+import { relatedEvidence, inlineCitationMap } from '../../../shared/markdown/citations.js'
 import KnowledgeEvidence from '../../knowledge/KnowledgeEvidence.vue'
+import FileReferenceTag from './FileReferenceTag.vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
-import { approvalTargetForBlock, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
+import ApprovalBatchPanel from './ApprovalBatchPanel.vue'
+import MessageError from './MessageError.vue'
+import MessageFallbackNote from './MessageFallbackNote.vue'
+import { buildMessageSegments, describeProcessGroup } from '../../../shared/chat/messageSegments.js'
+import { buildUserRetryRequest, canRetryUserMessage } from '../../../shared/chat/messageRetry.js'
+import { approvalTargetForBlock, batchedApprovalGroups, isBatchedApprovalBlock, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
 import SkillIcon from '../../../shared/components/SkillIcon.vue'
 import { iconCategoryFor } from '../../../utils/skillCategories.js'
 // 专家头像取字 / 配色：与技能中心、+ 号下拉、输入框胶囊共用同一套规则（按 ID 稳定取档）
@@ -249,6 +290,7 @@ import { parseLeadingSkillTokens } from '../../../utils/skillTokens.js'
 import { ensureSkillDirectoryLoaded, skillDirectoryStore } from '../../skills/store/skillDirectoryStore.js'
 
 const props = defineProps({
+  citationPresentation: { type: String, default: 'inline' },
   message: {
     type: Object,
     required: true
@@ -267,6 +309,10 @@ const emit = defineEmits(['removeFile', 'viewGeneratedFiles', 'retry', 'approve'
 const showThinking = ref(false)
 const expandedThinking = ref({})
 const expandedTool = ref({})
+// 过程组 / 合并行的展开状态（key → true）：默认折叠，执行中也不自动展开——
+// 当前这一步由组内的实时预览展示，不会把用户的阅读位置顶走。
+const expandedGroups = ref({})
+const expandedRuns = ref({})
 
 onMounted(() => {
   // 技能标签 / 老数据前缀解析都要按目录名反查技能（名称、图标、分类）
@@ -278,6 +324,8 @@ onMounted(() => {
 watch(() => props.message.id, () => {
   expandedThinking.value = {}
   expandedTool.value = {}
+  expandedGroups.value = {}
+  expandedRuns.value = {}
 })
 
 // 本次回答使用的专家：优先用消息自身的 expert（发送时由 handleSendMessage 写在
@@ -347,20 +395,8 @@ const citationSourceText = computed(() => {
 // 引用编号重排映射：按正文出现顺序把原始依据编号映射为 1..N 连续编号，
 // 与 KnowledgeEvidence 的展示编号规则保持一致（仅重排有效引用编号）
 const citeNumberMap = computed(() => {
-  const evidenceCount = (props.message.knowledge_evidence || []).length
-  if (!evidenceCount) return {}
-  const pattern = /\[知识(?:库)?依据\s*(\d+)\]/g
-  const seen = []
-  let match
-  while ((match = pattern.exec(citationSourceText.value || '')) !== null) {
-    const value = Number(match[1])
-    if (value > 0 && value <= evidenceCount && seen.indexOf(value) === -1) {
-      seen.push(value)
-    }
-  }
-  const map = {}
-  seen.forEach((value, i) => { map[value] = i + 1 })
-  return map
+  if (props.citationPresentation === 'popover') return relatedEvidence(props.message).numberMap
+  return inlineCitationMap(citationSourceText.value, (props.message.knowledge_evidence || []).length)
 })
 
 // 正文里的 [知识依据N] 锚点：事件委托展开证据面板并定位到对应卡片
@@ -368,9 +404,12 @@ const knowledgeEvidence = ref(null)
 function handleContentClick(event) {
   const target = event.target
   if (!target || typeof target.closest !== 'function') return
-  const link = target.closest('a.ke-cite')
+  const link = target.closest('.ke-cite')
   if (!link) return
   event.preventDefault()
+  if (props.citationPresentation === 'popover') {
+    return
+  }
   const evidence = knowledgeEvidence.value
   if (evidence && typeof evidence.jumpTo === 'function') {
     evidence.jumpTo(Number(link.dataset.cite) || 0)
@@ -470,89 +509,27 @@ const sortedBlocks = computed(() => {
   return blocks
 })
 
-// 处理过程：思考 + 工具调用（排除已在侧边栏显示的 write_todos）。
-// 正文统一由 finalContentBlocks 完整渲染，不再作为「中间穿插」放进执行过程——
-// 后端按模型 turn 把正文拆成多个 content 块，若只取最后一块，被工具调用隔开的
-// 表格/代码片段会丢失；拼接所有块才能保证实时与历史渲染一致。
-// origIndex 保留在 sortedBlocks 中的原始下标，供折叠状态函数定位 block。
-const _isProcessType = (b) =>
-  b.type === 'thinking' || (b.type === 'tool_call' && b.tool_name !== 'write_todos')
-
-// 最终正文：仅当消息完成（非流式且无待审批 HITL）时，取 order 最大的一段 content
-// 展示在处理过程之后；思考/工具执行过程中到达的中间正文按返回顺序渲染在执行过程
-// 内部（process-inline-content），不混入最终正文区。
-const finalContentBlocks = computed(() => {
-  const contents = sortedBlocks.value
-    .map((b, i) => ({ ...b, origIndex: i }))
-    .filter((b) => b.type === 'content')
-  if (contents.length === 0) return []
-  contents.sort((a, b) => (a.order || 0) - (b.order || 0))
-  // 有思考/工具执行过程时：流式/HITL 期间中间正文留在执行过程内部按序展示，
-  // 完成后才把最后一段正文移到过程之后；
-  // 无执行过程（纯正文回复）时：流式中也要实时显示在过程外。
-  const hasProcess = sortedBlocks.value.some(_isProcessType)
-  if (!isMessageFinished.value && hasProcess) return []
-  return [contents[contents.length - 1]]
+// 助手消息的分段：正文段原位常显，相邻的思考 / 工具调用折叠成过程组（规则见
+// shared/chat/messageSegments.js）。消息仍在流式且最后一段是过程组时，该组处于执行中。
+const segmentViews = computed(() => {
+  if (props.message.role === 'user') return []
+  const segments = buildMessageSegments(sortedBlocks.value)
+  const loading = !!props.message.loading
+  return segments.map((seg, i) => (seg.kind === 'process'
+    ? { ...seg, view: describeProcessGroup(seg, { running: loading && i === segments.length - 1 }) }
+    : seg))
 })
 
-const processBlocks = computed(() => {
-  const finalOrigIndex = finalContentBlocks.value[0]?.origIndex
-  const result = []
-  sortedBlocks.value.forEach((b, i) => {
-    if (_isProcessType(b)) {
-      result.push({ ...b, origIndex: i })
-      return
-    }
-    // 非最终正文的 content -> 中间穿插，按返回顺序纳入执行过程内部展示
-    if (b.type === 'content' && i !== finalOrigIndex) {
-      result.push({ ...b, origIndex: i })
-    }
-  })
-  return result
+// 用户消息的气泡正文：最后一段正文块（用户消息只有正文，没有思考 / 工具）
+const userContentBlock = computed(() => {
+  if (props.message.role !== 'user') return null
+  const contents = sortedBlocks.value.filter(b => b.type === 'content')
+  return contents.length > 0 ? contents[contents.length - 1] : null
 })
 
-// 消息是否已真正完成：非流式中（loading=false）且无待审批（pending_approval）
-const isMessageFinished = computed(() =>
-  !props.message.loading && !props.message.pending_approval
-)
-
-// 「步骤数」仅统计思考与工具调用，不含穿插的正文。
-const processStepCount = computed(() =>
-  processBlocks.value.filter((b) => _isProcessType(b)).length
-)
-
-// 处理是否仍在进行：消息仍在流式（loading）即视为处理中，扫光动画保持；流式结束
-// （loading=false）动画消失。与正文位置解耦，避免正文一出现动画就关、后续工具仍在
-// 跑却无动画提示的问题。
-const isProcessActive = computed(() => !!props.message.loading)
-
-// 处理过程默认折叠（含实时会话），由用户手动展开/折叠；新过程到达不自动展开，
-// 避免打断用户已收起的查看状态。
-const processExpanded = ref(false)
-// 用户是否手动操作过执行过程的展开/折叠：一旦手动操作，本次消息内不再自动展开。
-// 必须加这道闸——流式期间 blocks 每次变化都会让下面的 watch 重新求值，否则用户
-// 点折叠会被「自动展开」立刻顶回去，表现为「流式返回时点击折叠按钮无效」。
-const processToggledByUser = ref(false)
-
-// 流式期间只要出现穿插正文（思考/工具之间的中间正文），自动展开执行过程，
-// 让中间正文按返回顺序可见；完成后保持用户手动展开/收起的状态。
-watch(
-  () => [
-    props.message.loading,
-    processBlocks.value.some((b) => b.type === 'content'),
-  ],
-  ([loading, hasInlineContent]) => {
-    if (processToggledByUser.value) return
-    if (loading && hasInlineContent && !processExpanded.value) {
-      processExpanded.value = true
-    }
-  },
-  { immediate: true }
-)
-
-// 出现待审批的工具调用（HITL）时自动展开，便于用户查看审批提示。
+// 有待用户作答的工具调用（HITL）：组折叠时卡片也会露出来，这里只用于滚动定位。
 const hasPendingApproval = computed(() =>
-  processBlocks.value.some(b => b.type === 'tool_call' && b.approval_status === 'pending')
+  segmentViews.value.some(seg => seg.kind === 'process' && seg.view.pinned.length > 0)
 )
 const messageEl = ref(null)
 function scrollPendingApprovalIntoView() {
@@ -562,91 +539,85 @@ function scrollPendingApprovalIntoView() {
   if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' })
 }
 
+// immediate：历史里已经是待审批的消息挂载时也要定位，不能等下一次变化。
 watch(() => hasPendingApproval.value, (pending) => {
   if (!pending) return
-  processExpanded.value = true
   nextTick(scrollPendingApprovalIntoView)
 }, { immediate: true })
 
+// 一个中断挂了多项操作（同一条 AIMessage 的多个工具调用被框架打包成一次中断）：整批展示（DA-28）
+const pendingBatchGroups = computed(() => props.message.role === 'assistant' ? batchedApprovalGroups(props.message) : [])
+const batchedInterruptIds = computed(() => new Set(pendingBatchGroups.value.map(group => group.interruptId)))
 // 没有对应工具卡片的待审批操作（子代理内部触发），在消息级面板里单独给出按钮（DA-02）。
-const pendingPanelActions = computed(() =>
-  props.message.role === 'assistant' ? unmatchedApprovalRequests(props.message) : []
-)
+// 已归入批次面板的操作不再重复出现：同一个中断只能整批作答，给两次入口只会造成误解。
+const pendingPanelActions = computed(() => {
+  if (props.message.role !== 'assistant') return []
+  return unmatchedApprovalRequests(props.message)
+    .filter(ar => !(ar.interrupt_id && batchedInterruptIds.value.has(ar.interrupt_id)))
+})
 watch(() => pendingPanelActions.value.length, (len, prev) => {
   if (len && !prev) nextTick(scrollPendingApprovalIntoView)
 })
 
-function toggleProcess() {
-  processToggledByUser.value = true
-  processExpanded.value = !processExpanded.value
+// 过程组 / 合并行：默认折叠，按 key（首块下标，流式追加不变）记住用户的展开
+function isGroupExpanded(key) {
+  return expandedGroups.value[key] === true
 }
 
-// 执行过程头部冻结（sticky 卡住）检测：卡住时补绘顶边框——wrapper 顶边框已随滚动
-// 移出可视区，用 is-stuck 类驱动 header 伪元素重绘一条与 wrapper 圆角一致的顶边框。
-const processHeaderRef = ref(null)
-const isStuck = ref(false)
-let _scrollEl = null
-let _onScroll = null
-
-function updateStuck() {
-  const header = processHeaderRef.value
-  if (!header || !processExpanded.value) { isStuck.value = false; return }
-  const wrapper = header.parentElement
-  if (!wrapper) { isStuck.value = false; return }
-  // 卡住时 header 钉在可视区顶部、wrapper 顶边随滚动上移，二者顶边差增大；
-  // 正常流中 header 紧贴 wrapper 顶边（差≈边框 1px）。比较二者不依赖具体吸附点。
-  isStuck.value = header.getBoundingClientRect().top - wrapper.getBoundingClientRect().top > 2
+function toggleGroup(key) {
+  expandedGroups.value[key] = !expandedGroups.value[key]
 }
 
-watch(processExpanded, (expanded) => {
-  isStuck.value = false
-  nextTick(() => {
-    if (expanded) {
-      if (processHeaderRef.value) _scrollEl = processHeaderRef.value.closest('.chat-messages')
-      if (_scrollEl) {
-        if (!_onScroll) {
-          _onScroll = () => updateStuck()
-          _scrollEl.addEventListener('scroll', _onScroll, { passive: true })
-        }
-        updateStuck()
-      }
-    } else {
-      if (_scrollEl && _onScroll) {
-        _scrollEl.removeEventListener('scroll', _onScroll)
-        _onScroll = null
-      }
-      _scrollEl = null
-    }
-  })
-})
+function isRunExpanded(key) {
+  return expandedRuns.value[key] === true
+}
 
-// 展开时内容增长（流式）会改变布局，重新判定冻结状态
-watch(() => processBlocks.value.length, () => {
-  if (processExpanded.value) nextTick(updateStuck)
-})
+function toggleRun(key) {
+  expandedRuns.value[key] = !expandedRuns.value[key]
+}
 
-onBeforeUnmount(() => {
-  if (_scrollEl && _onScroll) _scrollEl.removeEventListener('scroll', _onScroll)
-})
+function toolCardProps(block) {
+  return {
+    toolName: block.tool_name,
+    args: block.arguments,
+    result: block.result,
+    success: block.success !== false,
+    duration: block.duration,
+    pendingApproval: !!block.pending_approval,
+    // 属于「一个中断多项操作」的卡片不再单给按钮：按钮在批次面板里，一次批整批
+    hideApprovalActions: isBatchedApprovalBlock(props.message, block, pendingBatchGroups.value),
+    filePaths: block.file_paths || [],
+    allowedDecisions: block.allowed_decisions || [],
+    streaming: !!block.streaming,
+  }
+}
+
+// 工具卡片上的审批按钮回答它所属的中断（DA-02）
+function toolCardListeners(block) {
+  return {
+    approve: () => emit('approve', approvalTargetForBlock(props.message, block)),
+    reject: () => emit('reject', approvalTargetForBlock(props.message, block)),
+    edit: (editedArgs) => emit('edit', { ...approvalTargetForBlock(props.message, block), editedArgs }),
+  }
+}
 
 // 使用 block 的唯一标识来跟踪展开状态
 function getBlockKey(block, index) {
   return block.id || `${block.type}-${block.step || 0}-${block.tool_name || ''}-${index}`
 }
 
-function isExpandedThinking(index) {
-  const block = sortedBlocks.value[index]
-  if (!block) return false
-  // Default collapsed: only expand if explicitly toggled open
-  const key = getBlockKey(block, index)
-  return expandedThinking.value[key] === true
+function isThinkingActive(block) {
+  return block.duration == null && !!props.message.loading
 }
 
-function toggleThinking(index) {
-  const block = sortedBlocks.value[index]
-  if (!block) return
-  const key = getBlockKey(block, index)
-  expandedThinking.value[key] = !expandedThinking.value[key]
+// 展开的组里的思考块：思考中默认展开（用户点开组就是想看过程），结束后默认收起；点过就以用户为准
+function isThinkingOpen(block) {
+  const value = expandedThinking.value[getBlockKey(block, block.origIndex)]
+  return value === undefined ? isThinkingActive(block) : value
+}
+
+function toggleThinkingItem(block) {
+  expandedThinking.value[getBlockKey(block, block.origIndex)] = !isThinkingOpen(block)
 }
 
 function isToolRunning(block) {
@@ -789,9 +760,8 @@ async function copyMessage(ev) {
 }
 
 function retryMessage() {
-  // 触发重试事件，传递消息内容（确保是纯字符串）
-  const content = String(props.message.content || '')
-  emit('retry', content)
+  const request = buildUserRetryRequest(props.message)
+  if (request) emit('retry', { ...request, fileReferences: props.message.file_references || [] })
 }
 
 function removeFile(index) {
@@ -824,7 +794,7 @@ window.copyCode = async function(btn) {
 </script>
 
 <style scoped>
-/* 子代理内部触发的待审批操作：没有对应工具卡片，单独排在执行过程之后 */
+/* 子代理内部触发的待审批操作：没有对应工具卡片，单独排在消息末尾 */
 .pending-approval-panel {
   width: 100%;
   margin: 0 0 10px;
@@ -832,70 +802,61 @@ window.copyCode = async function(btn) {
   flex-direction: column;
   gap: 6px;
 }
-/* 处理过程折叠容器：包裹一轮会话中的所有思考 + 工具调用，正文展示在其后 */
-.process-wrapper {
-  /* message-content 为 align-items: flex-start（子项不拉伸），需显式撑满，
-     使折叠（仅 header）与展开（含 body）时宽度一致，且与输入框对齐。
-     不能使用 overflow: hidden：否则它会成为 .process-header position:sticky
-     的滚动祖先（粘性上下文），导致头部无法相对 .chat-messages 冻结。
-     圆角裁剪改由 header/body 各自的 border-radius 承担。 */
+/* 过程组：相邻的思考 / 工具调用（连同其间的短叙述）折叠成一行，正文段在组外原位常显。
+   message-content 为 align-items: flex-start（子项不拉伸），需显式撑满，与输入框对齐。 */
+.process-group {
   width: 100%;
-  margin: 6px 0 10px;
-  border: 1px solid var(--border-color, #e5e7eb);
-  border-radius: 10px;
-  background: var(--bg-secondary, #f9fafb);
+  margin: 2px 0 6px;
 }
-.process-wrapper.process-active {
-  border-color: #c7d2fe;
-}
-.process-header {
+.process-group-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 14px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+  color: var(--text-secondary, #64748b);
   cursor: pointer;
   user-select: none;
-  font-size: 13px;
-  color: var(--text-secondary, #64748b);
   transition: background 0.15s;
-  /* 显式不透明背景：sticky 冻结时遮挡其后滚动的流程内容；
-     折叠态圆角与外层 wrapper 一致。 */
-  background: var(--bg-secondary, #f9fafb);
-  border-radius: 10px;
 }
-/* 展开态：头部冻结在可视区顶部，折叠按钮始终可达；
-   仅顶部圆角与 body 的底部圆角拼合 wrapper 的圆角。 */
-.process-wrapper.process-expanded .process-header {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  border-radius: 10px 10px 0 0;
-}
-/* 冻结（sticky 卡住）时不再用与静态边框同深的实线，改为「更淡的顶边 + 向下柔和阴影」，
-   保留顶部分隔层次的同时避免滚动时突兀的硬线。 */
-.process-wrapper.process-expanded .process-header.is-stuck::before {
-  content: '';
-  position: absolute;
-  left: -1px;
-  right: -1px;
-  top: 0;
-  height: 0;
-  border-top: 1px solid rgba(15, 23, 42, 0.06);
-  border-top-left-radius: 10px;
-  border-top-right-radius: 10px;
-  pointer-events: none;
-}
-.process-wrapper.process-expanded .process-header.is-stuck {
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 2px 8px rgba(15, 23, 42, 0.05);
-}
-html[data-theme="dark"] .process-wrapper.process-expanded .process-header.is-stuck::before {
-  border-top-color: rgba(255, 255, 255, 0.08);
-}
-html[data-theme="dark"] .process-wrapper.process-expanded .process-header.is-stuck {
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
-}
-.process-header:hover {
+.process-group-header:hover {
   background: var(--bg-tertiary, #f1f5f9);
+}
+.process-group-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: #94a3b8;
+}
+.process-group.is-approval .process-group-icon {
+  color: #d97706;
+}
+.process-group-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.process-group-failed {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #dc2626;
+}
+.process-group-steps {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
 }
 /* 专家标识：回答面板左上角独立一行「头像 + 名称」（选中专家回答时出现）。
    头像取专家名称首字的圆形字标，底色由全局 .ea-0 ~ .ea-7 按 export_agent_id
@@ -931,20 +892,8 @@ html[data-theme="dark"] .process-wrapper.process-expanded .process-header.is-stu
 html[data-theme="dark"] .expert-badge-name {
   color: var(--text-primary, #e2e8f0);
 }
-.process-icon {
-  width: 16px;
-  height: 16px;
-  color: #94a3b8;
-  flex-shrink: 0;
-}
-.process-title {
-  font-weight: 500;
-  color: var(--text-secondary, #475569);
-}
-/* 处理进行中：标题「执行过程」文字扫光。
-   激活态文字用靛蓝色（与未激活的灰色拉开差异），其上一道更亮的高光从左到右循环
-   扫过，扫光更明细且文字始终清晰可读。 */
-.process-wrapper.process-active .process-title {
+/* 执行中：标题文字扫光（与「正在思考」同一靛蓝），文字始终清晰可读 */
+.process-group.is-running .process-group-title {
   background: linear-gradient(
     100deg,
     #6366f1 0%,
@@ -964,35 +913,78 @@ html[data-theme="dark"] .expert-badge-name {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
-.process-step-count {
-  font-size: 11px;
-  color: #94a3b8;
-}
-.process-header .toggle-arrow {
-  margin-left: auto;
-}
-.process-body {
-  padding: 4px 10px 10px;
-  border-top: 1px solid var(--border-color, #e5e7eb);
-  /* 补偿 wrapper 移除的 overflow:hidden：裁剪内部子项背景到圆角。
-     body 是 header 的兄弟而非祖先，其 overflow 不影响 header 的 sticky。 */
+/* 实时预览：固定三行高、内容贴底（只露出末尾）、顶部渐隐，高度不随步骤数增长 */
+.process-group-preview {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  height: 4.5em;
+  margin: 0 0 4px 18px;
+  padding: 0 10px;
+  border-left: 2px solid #c7d2fe;
   overflow: hidden;
-  border-radius: 0 0 10px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #94a3b8;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 45%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 45%);
 }
-.process-body .thinking-block,
-.process-body .tool-call-block {
-  margin: 6px 0;
+.process-group-preview-text {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
-.process-body .process-inline-content {
+/* 展开后的步骤列表：左侧细线串起各步 */
+.process-group-body {
+  margin: 2px 0 4px 17px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border-color, #e5e7eb);
+}
+.process-group-body > .thinking-content {
+  width: 100%;
+  margin: 4px 0;
+}
+.process-group-body .thinking-block {
+  margin: 4px 0;
+}
+.process-narration {
   margin: 6px 0;
-  padding: 8px 12px;
-  border-left: 3px solid var(--border-color, #e5e7eb);
-  background: var(--process-inline-bg, rgba(0, 0, 0, 0.02));
-  border-radius: 0 6px 6px 0;
   font-size: 14px;
 }
-html[data-theme="dark"] .process-body .process-inline-content {
-  background: var(--process-inline-bg, rgba(255, 255, 255, 0.04));
+.process-group-pinned {
+  margin: 0 0 4px;
+}
+/* 合并的读取 / 搜索：外观与收起的工具卡片一致 */
+.process-run-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 6px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 8px;
+  background: var(--bg-secondary, #fff);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text-secondary, #64748b);
+  cursor: pointer;
+}
+.process-run-header:hover {
+  background: var(--bg-tertiary, #f1f5f9);
+}
+.process-run-label {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+}
+.process-run-body {
+  padding-left: 12px;
+}
+html[data-theme="dark"] .process-group-preview {
+  border-left-color: #4338ca;
+  color: var(--text-secondary, #94a3b8);
 }
 .message {
   display: flex;
@@ -1044,12 +1036,10 @@ html[data-theme="dark"] .process-body .process-inline-content {
   max-width: 100%;
 }
 
-/* 用户气泡：技能标签与正文同行（标签在左、正文在右），标签自身换行不挤走正文 */
+/* 用户气泡：技能标签作行内前缀接正文首行，正文换行后回到气泡左边缘。
+   不用 flex 分栏：长正文会成为标签右侧的竖列、标签被居中，看着像「独占左边一列」。 */
 .message.user .message-text.user-bubble {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
+  display: block;
 }
 
 /* 用户气泡内的技能标签：与输入框「已选技能」同一套胶囊样式，但整体缩一档，
@@ -1062,8 +1052,11 @@ html[data-theme="dark"] .process-body .process-inline-content {
   max-width: 100%;
 }
 
+/* 气泡内的标签按行内元素排布，紧贴正文首行、不单独占宽；多个标签仍横排 */
 .user-bubble .message-skill-chips {
-  flex-shrink: 0;
+  display: inline-flex;
+  vertical-align: middle;
+  margin-right: 6px;
 }
 
 .message-skill-chip {
@@ -1104,10 +1097,9 @@ html[data-theme="dark"] .process-body .process-inline-content {
   font-size: 11px;
 }
 
-/* 气泡内正文：占满标签之后的剩余宽度，长文本正常换行 */
+/* 气泡内正文：行内流式排版——首行紧跟标签之后，换行回到气泡左边缘 */
 .user-bubble-body {
-  flex: 1 1 auto;
-  min-width: 0;
+  display: inline;
 }
 
 .message.assistant .message-content {
@@ -1919,7 +1911,7 @@ html[data-theme="dark"] .approval-badge.status-rejected {
 
 .message-text {
   background: transparent;
-  padding: 12px 16px;
+  padding: 12px var(--chat-message-content-inset, 16px);
   border-radius: 16px;
   font-size: 16px;
   line-height: 1.7;
@@ -1982,28 +1974,6 @@ html[data-theme="dark"] .approval-badge.status-rejected {
   .message-text :deep(.katex-display) {
     font-size: 0.66em;
   }
-}
-
-.message-error {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 10px 14px;
-  margin: 4px 16px;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  border-radius: 10px;
-  color: #dc2626;
-  font-size: 14px;
-  line-height: 1.5;
-  word-break: break-word;
-}
-
-.message-error .error-icon {
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-  margin-top: 1px;
 }
 
 .message-text :deep(pre) {
@@ -2547,4 +2517,7 @@ html[data-theme="dark"] .tool-status-text.executing {
   background: #94a3b8;
 }
 
+.reference-history { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 </style>
+
+<style scoped src="./citationNumbers.css"></style>

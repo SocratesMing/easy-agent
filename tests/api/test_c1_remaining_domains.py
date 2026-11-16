@@ -30,36 +30,40 @@ from easy_agent.middleware.auth import (
 API_DIR = Path(__file__).resolve().parents[2] / "easy_agent" / "api"
 
 DOMAINS = {
-    "files.py": ("get_file_repository", "FileRepository", 6),
+    # 资产页下线时 list_files 一并删除（e59c5a6d），6 → 5
+    "files.py": ("get_file_repository", "FileRepository", 5),
     "scheduled_tasks.py": (
         "get_scheduled_task_repository",
         "ScheduledTaskRepository",
         7,
     ),
-    "expert.py": ("get_expert_repository", "ExpertRepository", 4),
+    # 专家工作区新增 /agent/expert-md、/agent/session-experts（cc4b1e9d），4 → 6
+    "expert.py": ("get_expert_repository", "ExpertRepository", 6),
     "chat.py": ("get_chat_repository", "ChatRepository", 2),
     "chat_live.py": ("get_chat_repository", "ChatRepository", 2),
-    "sessions.py": ("get_session_repository", "SessionRepository", 10),
+    "sessions.py": ("get_session_repository", "SessionRepository", 13),
 }
 
 # C1b 之后每个 API 文件仍保留的 `repo.database` 调用点数；C1b 的每一条都在
 # docs/archive/audit-reports/2026-10-18-increment61-c1b-report.md「仍保留边界」有登记，
 # Phase 2B 新增的 run 登记 ×2 见 docs/archive/audit-reports/2026-10-18-increment63-phase2b-report.md。
 RETAINED_DATABASE_BOUNDARIES = {
-    "auth.py": 1,  # KnowledgeRepository（知识域独立 bounded context）
+    # 2026-11-10：公共空间管理员白名单废弃后，auth.py 不再持有 repo.database。
+    "auth.py": 0,
     "files.py": 0,
     "scheduled_tasks.py": 0,
     # 2026-10-22 专家对话并入 /agent/chat/stream 后，/agent/stream_export_run 连同
     # 其 run 登记（repo.database ×4）一起删除；专家对话的 run 登记走 chat.py 的
-    # start_run 边界（已计入 chat.py:9）。
+    # start_run 边界。
+    # T3a（2026-11-01）：chat_stream / chat_resume 的 start_run 改传 repo.runs，11 → 9。
     "expert.py": 0,
-    # 知识域鉴权/编排 ×2 + 专家绑定 ×1 + 流式引擎 ×2 + 事件回放/状态 ×4
-    # + Phase 2B run 登记 ×2（chat_stream / chat_resume 的 start_run）
-    # + 2026-10-22 专家对话并入 chat_stream：ExpertRepository 构造 ×1 +
-    #   短路拒答落库 ×1（原 /agent/stream_export_run 的边界随路由一起迁入）
-    "chat.py": 11,
-    "chat_live.py": 2,
-    "sessions.py": 2,  # 会话上传清单 / session_uploads 构造边界
+    # T4（2026-11-01）：本轮准备逻辑下沉 services/agents/chat_turn.py。
+    # T3c（2026-11-01）：stream hub / 事件回放改走领域 repository，
+    # api/chat.py 与 api/chat_live.py 都不再持有 ``repo.database``。
+    "chat.py": 0,
+    "chat_live.py": 0,
+    # T3a（2026-11-01）：session_uploads 端口直接吃 SessionRepository，2 → 0。
+    "sessions.py": 0,
 }
 
 

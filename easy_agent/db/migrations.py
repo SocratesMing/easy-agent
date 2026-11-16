@@ -16,8 +16,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Callable
 
 from easy_agent.db.legacy_messages import clear_complete_legacy_blobs
@@ -44,6 +45,65 @@ class Migration:
 #: 决定对不上的旧会话打 warning 还是 debug）。
 CLEAR_LEGACY_BLOBS_VERSION = 6
 
+#: 迁移 7：知识库研报日期目录的月/日补零（「2日」→「02日」）。目录名原先
+#: 不带前导零，列表按 `ORDER BY sort_order, name` 的字典序排列时，10 日/11 日
+#: 会排到 2 日之前；补零后字典序与自然顺序一致。
+NORMALIZE_DATE_FOLDER_NAMES_VERSION = 7
+
+# 只匹配「年 → 月 → 日」链路上的目录名，避免误改用户自建的其它同名目录。
+_YEAR_FOLDER_RE = re.compile(r"^\d{4}年$")
+_MONTH_FOLDER_RE = re.compile(r"^(\d{1,2})月$")
+_DAY_FOLDER_RE = re.compile(r"^(\d{1,2})日$")
+
+
+def normalize_date_folder_names(db, cursor) -> None:
+    """把「年 → 月 → 日」链路里的 ``2月`` / ``5日`` 补零为 ``02月`` / ``05日``。
+
+    已补零或同级已存在目标名的目录跳过（后者会撞唯一约束）。
+    """
+    if not table_exists(db, cursor, "knowledge_folders"):
+        return
+    db._execute(cursor, "SELECT id, parent_id, name FROM knowledge_folders")
+    folders = [dict(row) for row in cursor.fetchall()]
+    year_ids = {f["id"] for f in folders if _YEAR_FOLDER_RE.match(f["name"])}
+    month_ids = {
+        f["id"]
+        for f in folders
+        if f["parent_id"] in year_ids and _MONTH_FOLDER_RE.match(f["name"])
+    }
+    sibling_names = {(f["parent_id"], f["name"]) for f in folders}
+
+    renamed = 0
+    for folder in folders:
+        if folder["parent_id"] in year_ids:
+            regex = _MONTH_FOLDER_RE
+        elif folder["parent_id"] in month_ids:
+            regex = _DAY_FOLDER_RE
+        else:
+            continue
+        matched = regex.match(folder["name"])
+        if matched is None:
+            continue
+        padded = f"{int(matched.group(1)):02d}{matched.group(0)[-1]}"
+        if padded == folder["name"]:
+            continue
+        if (folder["parent_id"], padded) in sibling_names:
+            logger.warning(
+                "日期目录补零跳过（同级已存在 %s） | folder_id=%s",
+                padded,
+                folder["id"],
+            )
+            continue
+        db._execute(
+            cursor,
+            "UPDATE knowledge_folders SET name=?, updated_at=? WHERE id=?",
+            (padded, datetime.now(UTC).isoformat(), folder["id"]),
+        )
+        renamed += 1
+    if renamed:
+        logger.info("日期目录补零完成 | renamed=%d", renamed)
+
+
 # 版本号必须严格递增（接着 baseline 往后编，与 SCHEMA_VERSION 各自独立）；
 # 函数签名 (db, cursor) -> None。
 MIGRATIONS: list[Migration] = [
@@ -53,6 +113,11 @@ MIGRATIONS: list[Migration] = [
         version=CLEAR_LEGACY_BLOBS_VERSION,
         description="clear sessions.messages already covered by session_messages",
         fn=clear_complete_legacy_blobs,
+    ),
+    Migration(
+        version=NORMALIZE_DATE_FOLDER_NAMES_VERSION,
+        description="zero-pad knowledge date folder names (2日 -> 02日)",
+        fn=normalize_date_folder_names,
     ),
 ]
 

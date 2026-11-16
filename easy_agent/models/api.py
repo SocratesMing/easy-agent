@@ -1,8 +1,8 @@
 """Pydantic Models for API Request/Response"""
 
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool, field_validator, model_validator
 
 
 class AgentConfig(BaseModel):
@@ -27,15 +27,27 @@ class CreateSessionResponse(BaseModel):
 
 
 class SessionInfo(BaseModel):
+    archived: bool = False
     session_id: str = Field(..., description="会话唯一标识符")
     title: str = Field(..., description="会话标题")
     created_at: str = Field(..., description="创建时间")
     updated_at: str = Field(..., description="更新时间")
     message_count: int = Field(default=0, description="消息数量")
     pinned: int = Field(default=0, description="是否置顶 0/1")
+    pending_approval: bool = Field(
+        default=False,
+        description="该会话是否停在人工审批（HITL）待处理，供会话列表直接渲染「待审批」徽标",
+    )
+
+
+class CompactContextRequest(BaseModel):
+    model: str | None = None
+    request_id: str = Field(pattern=r"^[a-zA-Z0-9-]{8,80}$")
 
 
 class SessionDetail(BaseModel):
+    archived: bool = False
+    compactions: list[dict[str, Any]] = Field(default_factory=list)
     session_id: str = Field(..., description="会话唯一标识符")
     title: str = Field(..., description="会话标题")
     created_at: str = Field(..., description="创建时间")
@@ -64,6 +76,20 @@ class MessageModel(BaseModel):
     tool_calls: Optional[List[dict]] = Field(default=None, description="工具调用列表")
 
 
+class FileReference(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    path: str = Field(..., min_length=1)
+    type: Literal["file", "directory"]
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        if not value.strip() or "\x00" in value:
+            raise ValueError("路径不能为空")
+        return value
+
+
 class ChatRequest(BaseModel):
     message: str = Field(
         ...,
@@ -76,12 +102,28 @@ class ChatRequest(BaseModel):
     enable_web_search: bool = Field(
         default=False, description="是否开启联网搜索（输入框地球按钮）"
     )
+    interaction_mode: Literal["normal", "plan", "brainstorm"] = Field(
+        default="normal",
+        description=(
+            "本轮交互模式：normal=普通对话，plan=规划确认，brainstorm=发散收敛。"
+            "模式说明只注入本轮模型上下文，不写入用户原话"
+        ),
+    )
     files: Optional[List[dict]] = Field(default=None, description="上传的文件列表")
+    file_references: List[FileReference] = Field(default_factory=list)
     knowledge_metadata_filter: Optional[dict] = Field(
         default=None,
         description=(
             "会话已绑定知识库时的元数据硬过滤（publish_date_from/to、report_tags、"
             "report_second_sources、report_title_contains）；不传则全范围检索"
+        ),
+    )
+    knowledge_base_ids: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "本轮选定的知识库范围（新建会话首条消息由前端携带）：后端建会话后先写入"
+            " session_knowledge_scopes 再检索，避免「选知识库」时提前创建空会话。"
+            "已有会话改选知识库仍走 /sessions/{id}/knowledge-scope 接口；不传=不改变"
         ),
     )
     model: Optional[str] = Field(
@@ -127,7 +169,7 @@ class ResumeRequest(BaseModel):
     decisions: List[dict[str, Any]] = Field(
         ...,
         description=(
-            "审批决策列表，每个元素 {type: approve|reject, message?: str, "
+            "审批 / 交互决策列表，每个元素 {type: approve|edit|reject|respond, message?: str, "
             "interrupt_id?: str, action_index?: int}。带 interrupt_id 时只回答该中断"
             "（取自 approval_required.action_requests[].interrupt_id），其余中断保持挂起；"
             "不带时只回答第一个中断。与待审批中断对不上时返回 400"
@@ -136,6 +178,26 @@ class ResumeRequest(BaseModel):
     message_id: Optional[str] = Field(
         default=None,
         description="被恢复（继续）的 assistant 消息ID，用于将本轮工具调用/思考增量关联到该消息",
+    )
+    confirmation_message: Optional[str] = Field(
+        default=None,
+        max_length=20000,
+        description=(
+            "兼容字段，仅用于旧客户端；服务端不会信任该文本，"
+            "而是从 ask_user 参数和 respond 决策重新生成用户确认消息"
+        ),
+    )
+    confirmation_message_id: Optional[str] = Field(
+        default=None,
+        max_length=80,
+        description="确认用户消息的前端稳定 ID，用于乐观消息与服务端历史对齐",
+    )
+    split_assistant_message: bool = Field(
+        default=False,
+        description=(
+            "为 true 时把恢复后的 assistant 续写保存为新的消息行，"
+            "使中断前规划内容、用户确认、后续执行保持正确时间顺序"
+        ),
     )
 
 
@@ -148,16 +210,30 @@ class ChatResponse(BaseModel):
 
 
 class ChatCompletionMessage(BaseModel):
-    role: str = Field(..., description="消息角色: system / user / assistant")
-    content: str = Field(..., description="消息内容")
+    # SEC-09：限制单条消息长度（消息总长度由 /agent/completion/chat 再兜一层）。
+    role: str = Field(
+        ..., max_length=32, description="消息角色: system / user / assistant"
+    )
+    content: str = Field(..., max_length=100_000, description="消息内容")
+    thinking: Optional[str] = Field(
+        default=None,
+        max_length=100_000,
+        description="assistant 消息的思考内容：把上次返回的 thinking 原样带回，即回传给模型",
+    )
 
 
 class ChatCompletionRequest(BaseModel):
     messages: List[ChatCompletionMessage] = Field(
-        ..., description="对话消息数组，例如 [{role: system, content: ...}, {role: user, content: ...}]"
+        ...,
+        max_length=50,
+        description=(
+            "对话消息数组（最多 50 条），例如 "
+            "[{role: system, content: ...}, {role: user, content: ...}]"
+        ),
     )
     model: Optional[str] = Field(
         default=None,
+        max_length=128,
         description="模型名称（config.models 的 key，如 deepseek/glm）。为空时使用当前激活模型",
     )
 
@@ -210,6 +286,8 @@ class DeleteSessionResponse(BaseModel):
 
 
 class GetChatHistoryResponse(BaseModel):
+    archived: bool = False
+    compactions: list[dict[str, Any]] = Field(default_factory=list)
     session_id: str = Field(..., description="会话ID")
     title: str = Field(..., description="会话标题")
     messages: List[dict[str, Any]] = Field(default_factory=list, description="消息列表")
@@ -274,8 +352,48 @@ class RegisterRequest(BaseModel):
 
 
 class PasswordlessLoginRequest(BaseModel):
+    """免密登录项：用户名 + 用户ID，可选携带人员信息。
+
+    人员信息按「只填空」写入：账号对应字段已有值时不会被门户覆盖，
+    仅供人员管理补全展示与权限判断使用。
+    """
+
     username: str = Field(..., description="用户名", min_length=2, max_length=50)
     user_id: str = Field(default="0", max_length=100, description="用户ID：已存在用户忽略此字段；新用户为 0/空时自动生成")
+    display_name: str = Field(default="", max_length=127, description="姓名")
+    employee_id: str = Field(default="", max_length=64, description="工号")
+    department_id: str = Field(default="", max_length=255, description="部门编号；为空时回填为部门名称")
+    department_name: str = Field(default="", max_length=255, description="部门名称")
+    division_name: str = Field(default="", max_length=255, description="处室名称")
+    team_name: str = Field(default="", max_length=255, description="团队名称")
+    email: str = Field(default="", max_length=255, description="邮箱")
+    position: str = Field(default="", max_length=127, description="岗位")
+    mobile: str = Field(default="", max_length=64, description="手机号")
+
+    @field_validator(
+        "display_name",
+        "employee_id",
+        "department_id",
+        "department_name",
+        "division_name",
+        "team_name",
+        "email",
+        "position",
+        "mobile",
+        mode="before",
+    )
+    @classmethod
+    def strip_profile_fields(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @model_validator(mode="after")
+    def fill_department_id(self) -> "PasswordlessLoginRequest":
+        if not self.department_id:
+            self.department_id = self.department_name
+        # 与人员管理保持一致：admin 是系统管理员专用部门，不可分配给其他账号。
+        if self.department_id.casefold() == "admin":
+            raise ValueError("部门 admin 为系统管理员专用，不可用于免密登录")
+        return self
 
 
 class ResetPasswordRequest(BaseModel):
@@ -555,3 +673,13 @@ class McpDeleteResponse(BaseModel):
     servers: list[str]
     path: str
     agents_invalidated: int
+
+
+class ArchiveSessionRequest(BaseModel):
+    archived: StrictBool
+
+
+class SessionArchiveResponse(BaseModel):
+    status: str = "updated"
+    session_id: str
+    archived: bool

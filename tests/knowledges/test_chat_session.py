@@ -4,7 +4,7 @@
 即在会话列表生成空「[知识库问答]」记录，删除后重进又自动复活。
 """
 
-from easy_agent.knowledges.api import _knowledge_chat_session_id
+from easy_agent.knowledges.api.chat import _knowledge_chat_session_id
 
 from .test_folder_upload import (
     _FakeRagflow,
@@ -121,7 +121,7 @@ async def test_knowledge_chat_stream_injects_evidence_and_persists_metadata(
     from types import SimpleNamespace
 
     from easy_agent.knowledges.chat import streaming as knowledge_streaming
-    from easy_agent.services.sse import format_sse, parse_sse_frame
+    from easy_agent.services.streaming.sse import format_sse, parse_sse_frame
 
     host_frames = [
         format_sse({"type": "start", "session_id": "kb-1"}),

@@ -9,6 +9,19 @@ from easy_agent.models.db import ScheduledTaskModel
 from fastapi.testclient import TestClient
 
 
+def _scheduled(db):
+    """T3c：定时任务/执行记录走领域 repository（Database 转发方法已删除）。"""
+    from easy_agent.db.repositories.scheduled_task_repository import (
+        ScheduledTaskRepository,
+    )
+
+    if isinstance(db, ScheduledTaskRepository):
+        return db
+    if hasattr(db, "create_scheduled_task") and not hasattr(db, "get_connection"):
+        return db
+    return ScheduledTaskRepository(db)
+
+
 def _seed_task(client: TestClient, task_id: str = "unit-task-1"):
     db = get_database()
     task = ScheduledTaskModel(
@@ -19,7 +32,7 @@ def _seed_task(client: TestClient, task_id: str = "unit-task-1"):
         task_prompt="ping",
         enabled=1,
     )
-    db.create_scheduled_task(task)
+    _scheduled(db).create_scheduled_task(task)
     return task_id
 
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import httpx
+
 from easy_agent.services.streaming.orchestrator import (
     LIMIT_EXCEEDED_MESSAGE,
     friendly_error_message,
@@ -31,3 +33,8 @@ def test_limit_message_mentions_step_budget():
     # 文案要能指导用户下一步，不能只说「失败」
     assert "步数" in LIMIT_EXCEEDED_MESSAGE
     assert "缩小" in LIMIT_EXCEEDED_MESSAGE
+
+
+def test_empty_network_error_has_actionable_message():
+    assert friendly_error_message(httpx.ReadError("")) == "模型连接中断或超时，请稍后重试"
+    assert friendly_error_message(Exception()) == "Exception"

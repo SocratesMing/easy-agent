@@ -291,7 +291,8 @@ export function removeTokenSegments(text, segmentsToRemove) {
 
 /**
  * 发送前的正文：剥掉所有技能标签（技能以结构化 skills 字段单独提交）。
- * 相邻文字会直接接上（如 `a/docx b` → `a b`），由 buildMessageText 再统一压缩空白。
+ * 相邻文字会直接接上（如 `a/docx b` → `a b`）；标签自带尾随空格、插入时已避开双空格，剥离后
+ * 只由 buildMessageText 去首尾空白——中间的换行与缩进是用户原话，不再压缩。
  *
  * @param {string} text
  * @param {Map<string, object>} tokenMap

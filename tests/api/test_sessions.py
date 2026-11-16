@@ -3,6 +3,8 @@
 
 from fastapi.testclient import TestClient
 
+from easy_agent.db.repositories.message_repository import MessageRepository
+
 
 def _create_session(client: TestClient, title=None):
     body = {"title": title} if title else {}
@@ -75,11 +77,37 @@ def test_add_message_and_history(client):
     assert any(m["content"] == "你好" for m in msgs)
 
 
+def test_session_endpoints_use_all_recorded_calls_for_only_input_and_output(client, db):
+    from easy_agent.db.repositories.token_usage import TokenUsageRepository
+
+    user = db.register_user("testuser", "secret123")
+    sid = _create_session(client)
+    repo = TokenUsageRepository(db)
+    for index in (1, 2, 3):
+        repo.record_usage(
+            event_id=f"call-{index}", user_id=user.user_id, session_id=sid,
+            model_key="default", model_name="model", completed_at_ms=index,
+            input_tokens=index * 100, output_tokens=index * 10,
+        )
+    MessageRepository(db).add_message(sid, {"role": "assistant", "content": "answer", "usage": {
+        "input_tokens": 300, "output_tokens": 30, "reasoning_tokens": 4,
+        "context_tokens": 300, "context_length": 131072, "elapsed_time": 2.0, "step_count": 2,
+    }})
+    for path in (f"/agent/sessions/{sid}", f"/agent/sessions/{sid}/history"):
+        data = client.get(path).json()
+        assert data["usage"] == {
+            "input_tokens": 600, "output_tokens": 60, "reasoning_tokens": 4,
+            "context_tokens": 300, "elapsed_time": 2.0, "step_count": 2,
+        }
+        assert data["context_length"] == 131072
+        assert data["messages"][-1]["usage"]["input_tokens"] == 300
+
+
 def test_history_keeps_raw_thinking(client, db):
     """历史读取保留原文思考：前端「思考过程」要显示真实内容，不能退化成固定摘要。"""
     sid = _create_session(client)
     thinking = "先核对用户给的表格字段，再决定是否调用工具补数据"
-    db.add_message(
+    MessageRepository(db).add_message(
         sid,
         {
             "role": "assistant",
@@ -174,10 +202,9 @@ def test_upload_session_file(client):
 
 
 def test_compute_session_usage_reports_the_latest_call_not_a_sum():
-    """token 字段与流式 token_usage 同口径：最近一次模型调用，不跨轮相加。
+    """消息辅助函数提取最后一次调用；接口层另查逐调用账本替换输入/输出。
 
-    每轮的输入已包含之前各轮的历史，相加会重复计算（10 + 20 加成 30）；
-    耗时与步数可以相加，仍按会话累计。
+    消息快照遗漏每轮中间调用，不能相加推算消耗；耗时和步数仍按会话累计。
     """
     from easy_agent.api.sessions import compute_session_usage
 
@@ -232,10 +259,17 @@ def test_compute_session_usage_skips_replies_without_a_model_call():
 def test_session_endpoints_report_the_window_of_the_latest_turn_model(client, db, monkeypatch):
     """会话不记录所用模型：窗口取最近一轮落库的 context_length，不取当前默认模型。"""
     from easy_agent.api import sessions as sessions_api
+    from easy_agent.db.repositories.token_usage import TokenUsageRepository
 
     monkeypatch.setattr(sessions_api, "get_context_length", lambda: 1_000_000)
+    user = db.register_user("testuser", "secret123")
     sid = _create_session(client)
-    db.add_message(sid, {"role": "assistant", "content": "a", "usage": {
+    TokenUsageRepository(db).record_usage(
+        event_id="window-call", user_id=user.user_id, session_id=sid,
+        model_key="default", model_name="model", completed_at_ms=1,
+        input_tokens=900, output_tokens=10,
+    )
+    MessageRepository(db).add_message(sid, {"role": "assistant", "content": "a", "usage": {
         "input_tokens": 900, "output_tokens": 10, "context_tokens": 900,
         "context_length": 131072, "elapsed_time": 1.0, "step_count": 1}})
 
@@ -252,7 +286,7 @@ def test_session_endpoints_fall_back_to_the_default_window_for_old_messages(clie
 
     monkeypatch.setattr(sessions_api, "get_context_length", lambda: 4242)
     sid = _create_session(client)
-    db.add_message(sid, {"role": "assistant", "content": "a", "usage": {
+    MessageRepository(db).add_message(sid, {"role": "assistant", "content": "a", "usage": {
         "input_tokens": 5, "output_tokens": 1, "context_tokens": 5}})
 
     assert client.get(f"/agent/sessions/{sid}").json()["context_length"] == 4242
@@ -271,8 +305,8 @@ def test_api_sessions_module_has_no_database_facade_import():
     source = inspect.getsource(sessions_api)
     assert "from ..db import Database" not in source
     assert "Annotated[Database" not in source
-    # 路由依赖必须是 repository provider（10 个路由）。
-    assert source.count("Annotated[SessionRepository, Depends(get_session_repository)]") == 10
+    # 路由依赖必须是 repository provider（13 个路由）。
+    assert source.count("Annotated[SessionRepository, Depends(get_session_repository)]") == 13
     # 批次 4：provider 统一到 api.deps，本模块不再声明数据库依赖。
     assert "Depends(get_database)" not in source
     assert "def get_session_repository(" not in source
@@ -314,3 +348,70 @@ def test_api_routes_use_overridden_session_repository(client, db):
     assert "create_session" in spy.calls
     assert "get_owned_session" in spy.calls
     assert "list_sessions" in spy.calls
+
+
+# ── 会话列表「待审批」徽标（刷新页面后不依赖逐会话历史重建）────────────────
+
+
+def _add_pending_assistant(db, sid, *, pending_approval, blocks=None):
+    MessageRepository(db).add_message(
+        sid,
+        {
+            "role": "assistant",
+            "content": "",
+            "pending_approval": pending_approval,
+            "blocks": blocks if blocks is not None else [],
+        },
+    )
+
+
+def _pending_flag(client, sid):
+    sessions = client.get("/agent/sessions").json()
+    row = next(s for s in sessions if s["session_id"] == sid)
+    return row["pending_approval"]
+
+
+def test_list_marks_pending_approval_session(client, db):
+    """停在审批的会话：列表直接下发 pending_approval=True（刷新后徽标不再全灭）。"""
+    sid = _create_session(client)
+    _add_pending_assistant(
+        db,
+        sid,
+        pending_approval={
+            "thread_id": f"{sid}-m1",
+            "action_requests": [{"tool_call_id": "tc1", "action_name": "save_expert"}],
+        },
+        blocks=[{"type": "tool_call", "tool_call_id": "tc1", "approval_status": "pending"}],
+    )
+    assert _pending_flag(client, sid) is True
+
+
+def test_list_clears_flag_after_approval_answered(client, db):
+    """审批已作答：块状态 approved 且无待答操作 -> 不再显示待审批。"""
+    sid = _create_session(client)
+    _add_pending_assistant(
+        db,
+        sid,
+        pending_approval={
+            "thread_id": f"{sid}-m1",
+            "action_requests": [{"tool_call_id": "tc1", "action_name": "save_expert"}],
+        },
+        blocks=[{"type": "tool_call", "tool_call_id": "tc1", "approval_status": "approved"}],
+    )
+    assert _pending_flag(client, sid) is False
+
+
+def test_list_ignores_stale_pending_when_new_user_turn(client, db):
+    """末尾是新 user 消息：上一轮残留的待审批不再阻塞会话。"""
+    sid = _create_session(client)
+    _add_pending_assistant(
+        db,
+        sid,
+        pending_approval={
+            "thread_id": f"{sid}-m1",
+            "action_requests": [{"tool_call_id": "tc1", "action_name": "save_expert"}],
+        },
+        blocks=[{"type": "tool_call", "tool_call_id": "tc1", "approval_status": "pending"}],
+    )
+    MessageRepository(db).add_message(sid, {"role": "user", "content": "继续"})
+    assert _pending_flag(client, sid) is False

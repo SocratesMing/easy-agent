@@ -20,7 +20,7 @@
   python jmfx_mcp_server.py --transport streamable-http --port 8765
   python jmfx_mcp_server.py --selftest          # 不依赖 mcp 包，自检所有查询逻辑
 
-环境变量（均有默认值）
+环境变量（JM_A_PASSWORD 必须显式设置，其余有默认值）
   JM_A_HOST / JM_A_PORT / JM_A_USER / JM_A_PASSWORD / JM_A_DB
 """
 
@@ -41,7 +41,8 @@ CFG = {
     "host": os.environ.get("JM_A_HOST", "127.0.0.1"),
     "port": int(os.environ.get("JM_A_PORT", "3306")),
     "user": os.environ.get("JM_A_USER", "jmfx_ro"),
-    "password": os.environ.get("JM_A_PASSWORD", "Jmfx_RO@2026"),
+    # 口令不内置默认值：必须由部署环境通过 JM_A_PASSWORD 注入
+    "password": os.environ.get("JM_A_PASSWORD", ""),
     "db": os.environ.get("JM_A_DB", "jmfx_analysis"),
 }
 
@@ -90,6 +91,10 @@ METRIC_COL = {  # 逻辑指标 -> v_team_pl / v_portfolio_pl 中的万元列
 # 数据库
 # --------------------------------------------------------------------------
 def _connect():
+    if not CFG["password"]:
+        raise RuntimeError(
+            "缺少数据库口令：请通过环境变量 JM_A_PASSWORD 注入（仓库不再内置默认口令）"
+        )
     import pymysql
     return pymysql.connect(
         host=CFG["host"], port=CFG["port"], user=CFG["user"],

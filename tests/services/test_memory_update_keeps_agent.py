@@ -10,14 +10,17 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
-import easy_agent.services.memory_manager as memory_manager
-from easy_agent.services import agent_manager
+import easy_agent.services.memory.manager as memory_manager
+from easy_agent.services.agents import manager as agent_manager
+from easy_agent.services.memory.triggers import TurnBatcher
 from easy_agent.services.streaming import side_effects
 
 
 async def test_memory_update_keeps_the_session_agent_and_edit_binding(tmp_path, monkeypatch):
     executor = ThreadPoolExecutor(max_workers=1)
     monkeypatch.setattr(side_effects, "_MEMORY_UPDATE_EXECUTOR", executor)
+    # 会话记忆默认攒几轮才整理；这里要的是「整理了也不驱逐 Agent」，所以每轮都整理
+    monkeypatch.setattr(side_effects, "SESSION_BATCHER", TurnBatcher(every_n_turns=1))
     monkeypatch.setattr(memory_manager, "update_memory_after_session", lambda *args, **kwargs: True)
     removed = []
     monkeypatch.setattr(agent_manager, "remove_session_agent", removed.append)
@@ -31,4 +34,4 @@ async def test_memory_update_keeps_the_session_agent_and_edit_binding(tmp_path, 
         assert removed == []
         assert agent_manager.get_session_edit_target("sess-memory") == "expert-1"
     finally:
-        agent_manager._session_edit_targets.pop("sess-memory", None)
+        agent_manager._sessions.pop("sess-memory", None)

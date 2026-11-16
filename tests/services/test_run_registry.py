@@ -4,8 +4,8 @@ import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 
-from easy_agent.services import run_registry
-from easy_agent.services.run_registry import (
+from easy_agent.services.streaming import runs as run_registry
+from easy_agent.services.streaming.runs import (
     RECOVER_ERROR_MESSAGE,
     finish_run,
     new_run_id,
@@ -13,8 +13,8 @@ from easy_agent.services.run_registry import (
     renew_run,
     start_run,
 )
-from easy_agent.services import session_runtime
-from easy_agent.services.session_runtime import instance_owner, is_stream_active
+from easy_agent.services.sessions import runtime as session_runtime
+from easy_agent.services.sessions.runtime import instance_owner, is_stream_active
 from easy_agent.db.repositories.agent_runs import (
     STATUS_COMPLETED,
     STATUS_INTERRUPTED,
@@ -23,6 +23,15 @@ from easy_agent.db.repositories.agent_runs import (
     start_run as repo_start_run,
 )
 from easy_agent.db.repositories.stream_events import list_stream_events
+
+
+
+
+def _runtime(db):
+    """T3c：会话运行期状态走领域 repository（Database 转发方法已删除）。"""
+    from easy_agent.db.repositories.session_runtime import SessionRuntimeRepository
+
+    return SessionRuntimeRepository(db)
 
 
 def _iso(dt: datetime) -> str:
@@ -172,23 +181,22 @@ def test_recover_competition_writes_event_only_once(db, monkeypatch):
     )
     row = get_run(db, "run-race")
     calls = {"n": 0}
-    real_mark = run_registry.agent_runs_repo.mark_interrupted
+    run_repo_cls = run_registry.AgentRunRepository
+    real_mark = run_repo_cls.mark_interrupted
 
-    def _mark_once(db_arg, run_id, error):
+    def _mark_once(self, run_id, error):
         calls["n"] += 1
         if calls["n"] == 1:
-            return real_mark(db_arg, run_id, error)
+            return real_mark(self, run_id, error)
         return False  # 竞争失败（另一个 Pod 已恢复）
 
     # 模拟两个恢复者看到同一行：列表里重复一次
     monkeypatch.setattr(
-        run_registry.agent_runs_repo,
+        run_repo_cls,
         "list_stale_running",
-        lambda db_arg, now_iso, limit: [row, row],
+        lambda self, now_iso, limit: [row, row],
     )
-    monkeypatch.setattr(
-        run_registry.agent_runs_repo, "mark_interrupted", _mark_once
-    )
+    monkeypatch.setattr(run_repo_cls, "mark_interrupted", _mark_once)
     assert recover_stale_runs(db, now=datetime.now(UTC)) == 1
     assert calls["n"] == 2
     assert len(list_stream_events(db, "sess-race")) == 1
@@ -198,16 +206,17 @@ def test_service_failures_are_swallowed(db, monkeypatch):
     def _boom(*args, **kwargs):  # noqa: ANN002, ANN003
         raise RuntimeError("db down")
 
-    monkeypatch.setattr(run_registry.agent_runs_repo, "start_run", _boom)
+    run_repo_cls = run_registry.AgentRunRepository
+    monkeypatch.setattr(run_repo_cls, "start_run", _boom)
     assert start_run(db, "run-x", "sess-x") is False
 
-    monkeypatch.setattr(run_registry.agent_runs_repo, "renew_run", _boom)
+    monkeypatch.setattr(run_repo_cls, "renew_run", _boom)
     assert renew_run(db, "run-x") is False
 
-    monkeypatch.setattr(run_registry.agent_runs_repo, "finish_run", _boom)
+    monkeypatch.setattr(run_repo_cls, "finish_run", _boom)
     assert finish_run(db, "run-x", STATUS_COMPLETED) is False
 
-    monkeypatch.setattr(run_registry.agent_runs_repo, "list_stale_running", _boom)
+    monkeypatch.setattr(run_repo_cls, "list_stale_running", _boom)
     assert recover_stale_runs(db) == 0
 
 
@@ -218,15 +227,16 @@ def test_recover_truncates_and_keeps_other_runs_on_append_failure(db, monkeypatc
     _seed_run(db, "run-b", "sess-b", lease_until=past)
 
     calls = {"n": 0}
-    real_append = run_registry.append_stream_event
+    event_repo_cls = run_registry.StreamEventRepository
+    real_append = event_repo_cls.append_stream_event
 
-    def _append_once(db_arg, session_id, payload):
+    def _append_once(self, session_id, payload):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("write failed")
-        return real_append(db_arg, session_id, payload)
+        return real_append(self, session_id, payload)
 
-    monkeypatch.setattr(run_registry, "append_stream_event", _append_once)
+    monkeypatch.setattr(event_repo_cls, "append_stream_event", _append_once)
     assert recover_stale_runs(db, now=datetime.now(UTC)) == 2
     assert get_run(db, "run-a")["status"] == STATUS_INTERRUPTED
     assert get_run(db, "run-b")["status"] == STATUS_INTERRUPTED
@@ -236,7 +246,7 @@ def test_recover_truncates_and_keeps_other_runs_on_append_failure(db, monkeypatc
 
 
 def _hold_stream_lock(db, session_id: str, owner: str, until: str) -> None:
-    db.upsert_session_runtime(session_id, stream_owner=owner, stream_until=until)
+    _runtime(db).upsert_session_runtime(session_id, stream_owner=owner, stream_until=until)
 
 
 def test_recover_releases_the_stream_lock_the_crashed_run_left(db, monkeypatch):
@@ -253,10 +263,10 @@ def test_recover_releases_the_stream_lock_the_crashed_run_left(db, monkeypatch):
     assert [_error_event(f["payload"]) for f in frames] == [
         {"type": "error", "content": RECOVER_ERROR_MESSAGE}
     ]
-    assert is_stream_active(db, "sess-crashed") is False
+    assert is_stream_active(_runtime(db), "sess-crashed") is False
     # 用户照提示重发：别的实例能拿到这个会话的流锁
     monkeypatch.setattr(session_runtime, "instance_owner", lambda: "pod-b:2")
-    session_runtime.acquire_stream(db, "sess-crashed")
+    session_runtime.acquire_stream(_runtime(db), "sess-crashed")
 
 
 def test_recover_leaves_a_lock_another_instance_took_over(db):
@@ -269,7 +279,7 @@ def test_recover_leaves_a_lock_another_instance_took_over(db):
 
     assert get_run(db, "run-old")["status"] == STATUS_INTERRUPTED
     assert list_stream_events(db, "sess-taken") == []
-    assert db.get_session_runtime("sess-taken")["stream_owner"] == "pod-b:2"
+    assert _runtime(db).get_session_runtime("sess-taken")["stream_owner"] == "pod-b:2"
 
 
 def test_recover_leaves_a_newer_run_of_the_same_instance_alone(db):
@@ -285,7 +295,7 @@ def test_recover_leaves_a_newer_run_of_the_same_instance_alone(db):
     assert get_run(db, "run-old")["status"] == STATUS_INTERRUPTED
     assert get_run(db, "run-new")["status"] == STATUS_RUNNING
     assert list_stream_events(db, "sess-newer") == []
-    assert db.get_session_runtime("sess-newer")["stream_owner"] == "pod-a:1"
+    assert _runtime(db).get_session_runtime("sess-newer")["stream_owner"] == "pod-a:1"
 
 
 # ── 周期恢复 ────────────────────────────────────────────────────────────
