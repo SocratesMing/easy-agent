@@ -35,7 +35,17 @@ test('Vue2 compiles and mounts cards, SVG, keyboard details and legend without r
     Object.assign(options, Vue.compile(template))
     vm = new Vue(options).$mount('#mount')
     await Promise.resolve(); await Vue.nextTick()
-    assert.deepEqual([...vm.$el.querySelectorAll('.usage-card strong')].map(element => element.textContent), ['1,200', '7,000', '1.73万', '3.2万'])
+    assert.deepEqual([...vm.$el.querySelectorAll('.usage-card strong')].map(element => element.textContent), ['1,200', '7,000', '17,300', '32,000'])
+    for (const [value, expected] of [[0, '0'], [9999, '9,999'], [10000, '10,000'], [100000000, '100,000,000'], [123456789012, '123,456,789,012']]) {
+      vm.usage.summary = Object.fromEntries(vm.cards.map(card => [card.key, value]))
+      await Vue.nextTick()
+      const elements = [...vm.$el.querySelectorAll('.usage-card strong')]
+      assert.deepEqual(elements.map(element => element.textContent), Array(4).fill(expected))
+      elements.forEach((element, index) => {
+        assert.equal(element.title, `${expected} Token`)
+        assert.equal(element.getAttribute('aria-label'), `${vm.cards[index].label} ${expected} Token`)
+      })
+    }
     assert.equal(vm.$el.querySelectorAll('.date-hit').length, 7)
     assert.equal(vm.$el.querySelectorAll('tbody tr').length, 7)
     vm.$el.querySelector('.date-hit').dispatchEvent(new dom.window.FocusEvent('focus'))

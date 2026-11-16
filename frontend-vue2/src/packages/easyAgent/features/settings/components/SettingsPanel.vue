@@ -2,6 +2,7 @@
   <div class="settings-overlay" @click="$emit('close')">
     <div
       class="settings-modal"
+      :class="{ 'settings-modal--usage': activeTab === 'usage' }"
       role="dialog"
       aria-modal="true"
       aria-labelledby="settings-title"
@@ -185,8 +186,8 @@ export default {
         },
         { key: 'usage', label: 'Token统计', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 3v18h17M8 16v-5m5 5V7m5 9V4"/></svg>' },
         { key: 'archive', label: '归档管理', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h18v4H3zM5 7v14h14V7M10 11h4"/></svg>' },
-        { key: 'version', label: '版本', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 8v8M18 10a6 6 0 0 1-6 6H8"/></svg>' },
         { key: 'approval', label: '权限设置', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>' },
+        { key: 'version', label: '版本', icon: '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 8v8M18 10a6 6 0 0 1-6 6H8"/></svg>' },
       ],
       versionInfo: {},
       activeTab: 'memory',
@@ -472,6 +473,16 @@ export default {
   min-height: 0;
   overflow-y: auto;
   padding: 2rem;
+}
+
+/* Token 概览优先利用首屏空间，保留卡片和图表的正常比例。 */
+.settings-modal--usage .settings-header {
+  padding-top: 0.75rem;
+  padding-bottom: 0.75rem;
+}
+
+.settings-modal--usage .settings-content {
+  padding: 1.25rem 1.5rem;
 }
 
 .content-panel {
@@ -899,7 +910,8 @@ export default {
     white-space: nowrap;
   }
 
-  .settings-content {
+  .settings-content,
+  .settings-modal--usage .settings-content {
     padding: 1rem;
   }
 }

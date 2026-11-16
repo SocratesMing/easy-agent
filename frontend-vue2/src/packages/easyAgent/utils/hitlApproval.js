@@ -10,6 +10,8 @@ import Vue from 'vue'
  * 旧载荷（没有 interrupt_id，改造前落库的待审批记录）沿用「一次决策作用于整批」的旧行为。
  */
 
+import { buildInteractionResumeDecisions, isInteractionAction } from '../shared/chat/planInteraction.js'
+
 function isToolBlock (b) {
   return !!b && b.type === 'tool_call'
 }
@@ -127,6 +129,7 @@ export function unmatchedApprovalRequests (message) {
   const blocks = (message && message.blocks) || []
   const taken = new Set()
   return actions.filter(ar => {
+    if (isInteractionAction(ar)) return false
     const idx = findApprovalBlockIndex(blocks, ar, taken)
     if (idx === -1) return true
     const blk = blocks[idx]
@@ -194,11 +197,35 @@ export function buildResumeDecisions (actionRequests, decision, opts = {}) {
 }
 
 /**
+ * 统一构造审批 / 规划确认的 resume 载荷。
+ * ``respond`` 只回答 ask_user；同批其他工具转成 reject，避免误执行。
+ */
+export function buildApprovalResumePlan (actionRequests, decision, target = {}) {
+  if (decision === 'respond') {
+    return buildInteractionResumeDecisions(actionRequests, {
+      interruptId: target.interruptId,
+      answers: target.response ? target.response.answers : {},
+      note: target.response ? target.response.note : '',
+      responses: target.responses || null,
+    })
+  }
+  return buildResumeDecisions(actionRequests, decision, {
+    interruptId: target.interruptId,
+    targetActionIndex: target.actionIndex,
+    editedAction: target.editedArgs
+      ? { name: target.actionName || '', args: target.editedArgs }
+      : null,
+  })
+}
+
+/**
  * 用户作答后更新卡片：清掉所有「待审批」按钮（恢复流期间不允许再点），
  * 只给本次作答的中断记上「已批准 / 已拒绝」，其余仍为 pending，等后端再次下发审批。
  */
 export function markApprovalDecision (blocks, decision, actionRequests, interruptId) {
-  const status = decision === 'approve' ? 'approved' : (decision === 'edit' ? 'edited' : 'rejected')
+  const status = decision === 'approve' || decision === 'respond'
+    ? 'approved'
+    : (decision === 'edit' ? 'edited' : 'rejected')
   const targetIds = interruptId
     ? new Set((actionRequests || [])
       .filter(ar => ar && ar.interrupt_id === interruptId && ar.tool_call_id)

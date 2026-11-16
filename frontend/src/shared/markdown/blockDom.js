@@ -15,15 +15,17 @@
  * @param {Element|null} root 容器（组件根节点；其子节点完全由本函数管理）
  * @param {Array<{key: string, html: string, nodes: Node[]}>} prev 上一次的返回值（首次传 []）
  * @param {Array<{key: string, html: string}>} blocks renderMarkdownBlocks 的结果
+ * @param {(changedNodes: Node[]) => void} [onChange] 本次新建/替换块里的节点；内容完全没变时传空数组
  * @returns {Array<{key: string, html: string, nodes: Node[]}>} 本次结果，下次作为 prev 传入
  * @example
  * let rendered = []
  * rendered = patchMarkdownBlocks(el, rendered, renderMarkdownBlocks(md, renderer))
  */
-export function patchMarkdownBlocks(root, prev, blocks) {
+export function patchMarkdownBlocks(root, prev, blocks, onChange) {
   if (!root) return prev || []
   const doc = root.ownerDocument
   const reusable = new Map()
+  const changedNodes = []
   for (const item of prev || []) reusable.set(item.key + '\u0000' + item.html, item)
 
   const next = (blocks || []).map((block) => {
@@ -35,7 +37,9 @@ export function patchMarkdownBlocks(root, prev, blocks) {
     }
     const box = doc.createElement('div')
     box.innerHTML = block.html
-    return { key: block.key, html: block.html, nodes: Array.from(box.childNodes) }
+    const nodes = Array.from(box.childNodes)
+    changedNodes.push(...nodes.filter(node => node.nodeType === 1))
+    return { key: block.key, html: block.html, nodes }
   })
 
   // 不再出现的旧块先移除
@@ -58,5 +62,6 @@ export function patchMarkdownBlocks(root, prev, blocks) {
     root.removeChild(cursor)
     cursor = after
   }
+  if (typeof onChange === 'function') onChange(changedNodes)
   return next
 }

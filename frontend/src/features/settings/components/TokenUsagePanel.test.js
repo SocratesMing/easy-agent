@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
+import { createSSRApp } from 'vue'
+import { renderToString } from 'vue/server-renderer'
 import * as helpers from '../../../shared/utils/tokenUsage.js'
 
 const source = await readFile(new URL('./TokenUsagePanel.vue', import.meta.url), 'utf8')
@@ -41,16 +43,45 @@ function fixture(days = 7, total = 1200) {
 }
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() }
 
-test('range changes discard prior results and hide the old chart while loading', async () => {
+test('cards render full grouped integers and accessible labels at abbreviation boundaries', async () => {
+  const options = new Function('getTokenUsage', 'getStoredUsername', 'getStoredToken', ...helperNames, script)(
+    async () => fixture(), () => 'Alice', () => 'alice-token', ...helperNames.map(name => helpers[name]),
+  )
+  const initialData = options.data
+  options.template = source.slice(source.indexOf('<template>') + 10, source.indexOf('\n</template>'))
+  const cases = [
+    [[1200, 7000, 17300, 32000], ['1,200', '7,000', '17,300', '32,000']],
+    ...[[0, '0'], [9999, '9,999'], [10000, '10,000'], [100000000, '100,000,000'], [123456789012, '123,456,789,012']]
+      .map(([value, expected]) => [Array(4).fill(value), Array(4).fill(expected)]),
+  ]
+  for (const [values, expected] of cases) {
+    options.data = () => {
+      const data = initialData()
+      const usage = fixture()
+      usage.summary = Object.fromEntries(data.cards.map((card, index) => [card.key, values[index]]))
+      return { ...data, usage }
+    }
+    const html = await renderToString(createSSRApp(options))
+    const cards = [...html.matchAll(/<div class="usage-card">([\s\S]*?)<\/div>/g)].map(match => match[1])
+    assert.equal(cards.length, 4)
+    cards.forEach((card, index) => {
+      assert.ok(card.includes(`>${expected[index]}</strong>`))
+      assert.ok(card.includes(`title="${expected[index]} Token"`))
+      assert.ok(card.includes(`aria-label="${initialData().cards[index].label} ${expected[index]} Token"`))
+    })
+  }
+})
+
+test('range changes keep summary cards mounted while the trend refreshes', async () => {
   const h = harness()
   assert.equal(h.pending[0].days, 7)
+  h.pending[0].resolve(fixture(7))
+  await flush()
+  const displayedUsage = h.vm.usage
   h.vm.changeDays(30)
-  assert.equal(h.pending[0].signal.aborted, true)
-  assert.equal(h.vm.usage, null)
+  assert.equal(h.vm.usage, displayedUsage)
   assert.equal(h.vm.loading, true)
   h.pending[1].resolve(fixture(30))
-  await flush()
-  h.pending[0].resolve(fixture(7, 999999))
   await flush()
   assert.equal(h.vm.usage.days, 30)
   assert.equal(h.vm.usage.summary.today, 1200)

@@ -43,7 +43,8 @@
   `form-action 'none'`、`base-uri 'none'`。组件拿到的只有它自己的源码，也没有通道外传。
 - 组件里引用 CDN 上的 echarts / mermaid 会被换成本地托管的版本，其他外链脚本直接跳过。
 - 页面里的 markdown 仍按原规则转义模型写的原始 HTML（`renderer.html`），这次没有放宽。
-- 剩余风险：组件脚本可以让自己的 iframe 跳到外部地址（CSP 管不到导航），能带出的只有它自己的源码。
+- 剩余风险：组件脚本可以让自己的 iframe 跳到外部地址（CSP 管不到导航），而源码可能包含模型从对话中带入的数据。
+  因此 `html_widgets` 默认关闭；只有显式启用并配置出站网络限制的部署才允许交互组件。
 
 ## 配置
 
@@ -52,7 +53,7 @@
 ```yaml
 visual:
   enabled: true        # 总开关：false 时提示词不再提可视化，代码块按源码显示
-  html_widgets: true   # HTML 交互组件；false 只关这一类
+  html_widgets: false  # HTML 交互组件默认关闭；需要时显式开启并限制出站网络
 ```
 
 开关同时作用于三处：系统提示词（`agent/visual_prompt.py`，组装在联网说明之后、专家内容之前）、
@@ -79,3 +80,12 @@ visual:
 
 - 内网宿主页面的 CSP `frame-src` 需要允许 Agent 后端的地址，否则 iframe 加载不出来（会退回显示源码）。
 - 第三方库升级方法见 `easy_agent/static/viz/vendor/README.md`。
+
+## 2026-11-15 性能优化
+
+- 流式 Markdown 改为 80ms trailing 节流：持续 token 不会重置已排队的中间帧，停止输入 150ms 后做最终渲染。
+- `patchMarkdownBlocks` 报告本次新增/变化的元素节点，`mountVisuals` 只扫描这些节点，不再每帧扫描整条消息。
+- `echarts` / `mermaid` / `widget` 源码跳过 Shiki 逐 token 高亮，仍保留源码查看与复制。
+- iframe 预加载距离从 300px 扩到 600px；`frame.html?kind=...` 在 HTML 解析阶段直接 preload 对应库。
+- `/agent/viz` 静态资源支持 gzip、`Vary: Accept-Encoding` 和 ETag。ECharts 从约 1.1 MB 降至约 368 KB，Mermaid 从约 3.6 MB 降至约 976 KB；框架页缓存 60 秒并支持协商缓存。
+- 长会话中离屏 iframe 的销毁/复用仍作为后续优化项。

@@ -6,7 +6,7 @@
 
 import pytest
 
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.ragflow.errors import RagflowError
 from easy_agent.knowledges.service import KnowledgeServiceError
 

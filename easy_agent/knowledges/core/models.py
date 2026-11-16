@@ -439,6 +439,7 @@ class PermissionDirectoryUser(ContractModel):
     department_name: str = ""
     division_name: str = ""
     team_name: str = ""
+    position: str = ""
 
 
 class PermissionDirectoryListResponse(ContractModel):

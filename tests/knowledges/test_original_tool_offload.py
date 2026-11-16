@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 
 from easy_agent.knowledges.chat import original_tool as original_tool_module
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.repository import KnowledgeRepository
 
 from .test_original_tool import (
     _FakeRagflowChunks,

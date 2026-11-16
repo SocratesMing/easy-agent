@@ -12,10 +12,12 @@ iframe 加载的就是这里的 ``frame.html``。ECharts / Mermaid 只在这里�
 
 from __future__ import annotations
 
+import gzip
+import hashlib
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from easy_agent.bootstrap.config_models import VisualConfig
 from easy_agent.services.agents.manager import get_agent_config
@@ -31,6 +33,32 @@ ASSETS: dict[str, str] = {
     "vendor/echarts.min.js": "text/javascript; charset=utf-8",
     "vendor/mermaid.min.js": "text/javascript; charset=utf-8",
 }
+
+_GZIP_MIN_BYTES = 1024
+_GZIP_CACHE_MAX = 8
+_gzip_cache: dict[str, tuple[int, bytes]] = {}
+
+
+def _accepts_gzip(request: Request) -> bool:
+    encoding = (request.headers.get("accept-encoding") or "").lower()
+    return "gzip" in encoding or "*" in encoding
+
+
+def _gzip_asset(path: Path) -> bytes | None:
+    """按文件路径和 mtime 缓存可视化静态资源的 gzip 结果。"""
+    stat = path.stat()
+    cache_key = str(path)
+    cached = _gzip_cache.get(cache_key)
+    if cached and cached[0] == stat.st_mtime_ns:
+        return cached[1]
+    raw = path.read_bytes()
+    if len(raw) < _GZIP_MIN_BYTES:
+        return None
+    body = gzip.compress(raw, compresslevel=6)
+    if len(_gzip_cache) >= _GZIP_CACHE_MAX:
+        _gzip_cache.clear()
+    _gzip_cache[cache_key] = (stat.st_mtime_ns, body)
+    return body
 
 
 def current_visual_config() -> VisualConfig:
@@ -62,30 +90,66 @@ def frame_csp(html_widgets: bool) -> str:
 
 
 @router.get("/frame.html", include_in_schema=False)
-def frame_page() -> HTMLResponse:
+def frame_page(
+    request: Request,
+    kind: str | None = Query(default=None),
+) -> Response:
     visual = current_visual_config()
     widgets = visual.enabled and visual.html_widgets
     html = (STATIC_DIR / "frame.html").read_text(encoding="utf-8")
     html = html.replace('data-enabled="0"', f'data-enabled="{int(visual.enabled)}"', 1)
     html = html.replace('data-widgets="0"', f'data-widgets="{int(widgets)}"', 1)
+    preload = {
+        "echarts": "vendor/echarts.min.js",
+        "mermaid": "vendor/mermaid.min.js",
+    }.get(str(kind or "").lower())
+    if visual.enabled and preload:
+        html = html.replace(
+            "</head>",
+            f'<link rel="preload" as="script" href="{preload}" fetchpriority="high">\n</head>',
+            1,
+        )
+    etag = f'W/"{hashlib.sha256(html.encode("utf-8")).hexdigest()[:20]}"'
+    headers = {
+        "ETag": etag,
+        "Cache-Control": "public, max-age=60",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Content-Security-Policy": frame_csp(widgets),
+    }
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
     return HTMLResponse(
         html,
-        headers={
-            "Content-Security-Policy": frame_csp(widgets),
-            "Cache-Control": "no-cache",
-            "X-Content-Type-Options": "nosniff",
-            "Referrer-Policy": "no-referrer",
-        },
+        headers=headers,
     )
 
 
 @router.get("/{path:path}", include_in_schema=False)
-def frame_asset(path: str) -> FileResponse:
+def frame_asset(path: str, request: Request) -> Response:
     media_type = ASSETS.get(path)
     if media_type is None:
         raise HTTPException(status_code=404, detail="Not Found")
+    static_path = STATIC_DIR / path
+    cache_headers = {
+        "Cache-Control": "public, max-age=86400",
+        "X-Content-Type-Options": "nosniff",
+        "Vary": "Accept-Encoding",
+    }
+    if _accepts_gzip(request):
+        compressed = _gzip_asset(static_path)
+        if compressed is not None:
+            etag = f'W/"{static_path.stat().st_mtime_ns}-{len(compressed)}"'
+            headers = {
+                **cache_headers,
+                "Content-Encoding": "gzip",
+                "ETag": etag,
+            }
+            if request.headers.get("if-none-match") == etag:
+                return Response(status_code=304, headers=headers)
+            return Response(content=compressed, media_type=media_type, headers=headers)
     return FileResponse(
-        STATIC_DIR / path,
+        static_path,
         media_type=media_type,
-        headers={"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"},
+        headers=cache_headers,
     )

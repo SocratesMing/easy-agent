@@ -19,6 +19,7 @@ python scripts/skills/sync_skills.py --check
 | `release/` | 发布前检查 / 变更导出 / 版本信息 | `release_preflight.py`、`export_changes.py`、`publish_zip.py`、`write_version.py`（生成根目录 `version.json`：版本号末尾拼 commit id 前 6 位，git hook 与打包时调用） |
 | `docs/` | 文档生成 | `generate_api_docs.py` |
 | `skills/` | 技能单一源同步 / 公共技能迁移 | `sync_skills.py`、`migrate_builtin_skills.py`（把 S2 之前复制进用户目录、与公共版本一致的技能副本迁到公共技能清单，默认只预览） |
+| `knowledge/` | 知识库运维：存量元数据回填、共享数据集迁移、研报 SQL 增量同步；本地 RAGFlow / Keychain 启动与状态检查 | `backfill_base_meta.py`、`migrate_knowledge_to_shared.py`、`sync_source_docs.py`、`start.dev.ragflow.local.sh`、`start.dev.knowledge*.sh`、`status.dev.ragflow.local.sh` |
 | `dev/` | 本地开发辅助 | `set-agent-env.sh`、`start.dev.keychain.sh`、`memory_guard.sh`、`install_git_hooks.py`（启用 `.githooks/`，Linux / Windows 通用，每个 clone 执行一次） |
 
 > `quality/` 内的白名单 JSON 与检查脚本同目录，脚本用 `Path(__file__).with_name(...)`

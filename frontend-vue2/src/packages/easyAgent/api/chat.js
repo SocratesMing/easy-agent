@@ -122,6 +122,7 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
       enable_web_search: enableWebSearch,
       files: files,
   }
+  if (extra && extra.fileReferences && extra.fileReferences.length) payload.file_references = extra.fileReferences
   if (model) {
       payload.model = model
   }
@@ -138,6 +139,10 @@ export async function sendMessage(sessionId, message, onChunk, signal, enableDee
   // 知识库问答的元数据硬过滤（日期区间/标签/来源），后端只在命中范围内检索
   if (extra && extra.knowledgeMetadataFilter) {
       payload.knowledge_metadata_filter = extra.knowledgeMetadataFilter
+  }
+  // 本轮规划 / 头脑风暴模式：后端只把它作为本轮模型上下文，不写进用户原话。
+  if (extra && extra.interactionMode && extra.interactionMode !== 'normal') {
+      payload.interaction_mode = extra.interactionMode
   }
   // 新对话首条消息携带的知识库范围：后端建会话后先落 scope 再检索，
   // 避免“选知识库”阶段提前创建空会话（已有会话仍走 knowledge-scope 接口）
@@ -162,7 +167,8 @@ export async function resumeStream(
   decisions,
   onChunk,
   signal,
-  messageId
+  messageId,
+  confirmation = null
 ) {
   const controller = new AbortController()
   const abortSignal = signal || controller.signal
@@ -175,6 +181,9 @@ export async function resumeStream(
         thread_id: threadId,
         decisions,
         message_id: messageId || null,
+        confirmation_message: confirmation?.text || null,
+        confirmation_message_id: confirmation?.id || null,
+        split_assistant_message: !!confirmation,
       }),
       signal: abortSignal,
     })

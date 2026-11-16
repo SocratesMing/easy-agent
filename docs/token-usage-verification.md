@@ -2,6 +2,30 @@
 
 日期：2026-11-10。依据：[设计](design/2026-10-30-Token用量统计设计.md)。接口与运维规则：[Token 用量统计](token-usage-api.md)。
 
+## 2026-11-13：四卡完整整数与千分位
+
+依据[设计 §5.1](design/2026-10-30-Token用量统计设计.md#51-四卡完整数值展示2026-11-13)，Vue2、Vue3四卡主数值均已改为 `exact()`：固定示例显示 `1,200 / 7,000 / 17,300 / 32,000`。复用 canonical 源 `frontend-shared/utils/tokenUsage.js` 的 `formatExactTokens()`，共享源及两端生成副本均无改动；趋势图 Y 轴仍可显示万/亿。API、账本与统计窗口无改动。
+
+| 验证 | 本次实际结果 |
+| --- | --- |
+| Vue2真实DOM及Vue3真实模板渲染 | 四卡、title、aria-label验证通过；覆盖 `0`、`9,999`、`10,000`、`100,000,000`、`123,456,789,012` |
+| Vue2 `npm run test:unit` | 437 passed、1 failed；失败为既有SettingsPanel行数预算，见下文 |
+| Vue3显式收集测试后执行 `node --test` | 232 passed、0 failed；Node 20.19下npm原入口的通配符问题见下文 |
+| Vue2 `npm run build` | 通过，存在产物体积提示 |
+| Vue3 `npm run build` | 通过，存在产物体积提示 |
+| Vue2 `npm run lint:vue2` / `npm run check:easy-agent` | 均通过 |
+| `node scripts/dev/sync-frontend-shared.mjs --check` / `git diff --check` | 均通过 |
+| Playwright隔离组件页面 | Vue2/Vue3 × 常规/长数字 × 320/375/768/1024/1440px，共20组布局检查通过；含窄屏深色与桌面浅色，四卡完整可见、无横向溢出；7/30日切换后四卡保持固定窗口数值，无组件运行错误或警告 |
+
+本次未修改样式：沿用桌面四列、窄屏两列及现有长数字换行兜底。浏览器重新生成并加载实际组件脚本、模板、样式，以本地假凭据和固定API数据验收，不访问真实业务账号或消耗模型。测试脚本、完整日志与截图位于忽略目录 `output/playwright/token-usage/`，截图为 `vue{2,3}-full-integers-{375,1440}.png`。
+
+本次全量前端检查的既有问题：
+
+- Vue2 `tests/structure.test.js` 的“超大文件只能变短，不能变长”失败：`packages/easyAgent/features/settings/components/SettingsPanel.vue` 按测试口径为1173行，预算1128行。已核对当前HEAD中的文件与工作区一致，该文件及预算均未在本次修改；未放宽预算。
+- Vue3 `npm run test:unit` 在Node 20.19.0下报 `Could not find .../src/api/*.test.js`，带引号的glob未展开。使用 `readdirSync(..., { recursive: true })` 显式收集 `src/api`、`src/utils`、`src/features`、`src/shared` 中所有 `.test.js`，再执行 `node --test`，232项全部通过。本次未调整测试入口。
+
+以下为2026-11-10的原始交付记录，测试计数保留当时结果。
+
 ## 实现范围
 
 - Schema 17 核心账本，逐模型调用幂等写入，按上海观测完成日期入账；会话归档/删除和服务重启不删除累计。

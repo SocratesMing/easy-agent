@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from easy_agent.knowledges.chat import chat_bridge
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.models import RetrieveResponse
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.service import KnowledgeService
 from easy_agent.models.db import SessionModel
 

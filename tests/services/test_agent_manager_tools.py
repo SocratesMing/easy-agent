@@ -32,6 +32,7 @@ class _SpyAgent:
         self.system_prompt = kwargs.get("system_prompt", "")
         self.safe_username = Config.sanitize_username(kwargs.get("username", ""))
         self.enable_web_search = bool(kwargs.get("enable_web_search", False))
+        self.enable_user_interaction = bool(kwargs.get("enable_user_interaction", True))
 
 
 def _fake_extender(tools, *, config, username, session_id, workspace_name):
@@ -108,10 +109,12 @@ async def test_hitl_disabled_in_config_turns_approvals_off(monkeypatch, _isolate
         username="u",
         workspace_name="ws",
         enable_hitl=True,
+        enable_user_interaction=False,
         enable_web_search=False,
     )
 
     assert _SpyAgent.last_kwargs["enable_hitl"] is False
+    assert _SpyAgent.last_kwargs["enable_user_interaction"] is False
     assert "create_scheduled_task" not in _injected_names()
 
 

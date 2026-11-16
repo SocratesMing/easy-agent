@@ -79,7 +79,9 @@ async function main() {
   }
 
   for (const rel of files) {
-    const source = await readFile(path.join(sourceRoot, rel), 'utf8')
+    // 统一成 LF 再拼接 banner：Windows 检出时源文件是 CRLF，直接拼接会写出混合换行，
+    // 让 git 把纯换行差异误报成已修改。比较时也按 LF 归一化，避免无谓重写。
+    const source = (await readFile(path.join(sourceRoot, rel), 'utf8')).replace(/\r\n?/g, '\n')
     const expected = BANNER.replace('{rel}', rel) + source
 
     for (const targetRoot of targets) {
@@ -91,7 +93,7 @@ async function main() {
         current = null
       }
 
-      if (current === expected) continue
+      if (current !== null && current.replace(/\r\n?/g, '\n') === expected) continue
 
       if (checkOnly) {
         problems.push(path.relative(repoRoot, targetPath))

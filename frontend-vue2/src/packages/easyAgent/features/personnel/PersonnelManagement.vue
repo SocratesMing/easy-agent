@@ -42,6 +42,12 @@
           <input v-model="departmentName" placeholder="部门名称" aria-label="按部门名称筛选" />
         </label>
         <span class="pm-toolbar-spacer"></span>
+        <button class="pm-btn pm-quiet" type="button" :disabled="syncing" @click="syncFromSource">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" />
+          </svg>
+          {{ syncing ? '更新中…' : '更新人员信息' }}
+        </button>
         <button class="pm-btn pm-quiet" type="button" :disabled="downloadingTemplate" @click="downloadTemplate">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" />
@@ -107,7 +113,7 @@
                 <th>SSO账号</th>
                 <th>部门</th>
                 <th>处室</th>
-                <th>团队</th>
+                <th>团队</th><th>角色</th>
                 <th>信息来源</th>
                 <th class="pm-nowrap">知识库管理员</th>
                 <th>状态</th>
@@ -116,12 +122,12 @@
             </thead>
             <tbody>
               <tr v-if="loading">
-                <td colspan="9">
+                <td colspan="10">
                   <div class="pm-loading"><span></span>正在加载人员信息…</div>
                 </td>
               </tr>
               <tr v-else-if="users.length === 0">
-                <td colspan="9">
+                <td colspan="10">
                   <div class="pm-empty">
                     <span>
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
@@ -146,6 +152,7 @@
                   <td><span class="pm-cell-main">{{ user.department_name || '未填写部门名称' }}</span></td>
                   <td><span class="pm-cell-main">{{ user.division_name || '—' }}</span></td>
                   <td><span class="pm-cell-main">{{ user.team_name || '—' }}</span></td>
+                  <td><span class="pm-cell-main">{{ user.position || '—' }}</span></td>
                   <td><span class="pm-source" :title="user.personnel_source || '未记录'">{{ user.personnel_source || '未记录' }}</span></td>
                   <td>
                     <span v-if="isSuperAdmin(user.username)" class="pm-access-note global">系统管理员</span>
@@ -264,8 +271,8 @@
               <small v-if="formErrors.team_name" class="pm-field-error">{{ formErrors.team_name }}</small>
             </label>
             <label>
-              <span>岗位</span>
-              <input v-model="form.position" autocomplete="off" placeholder="选填" />
+              <span>角色（岗位）</span>
+              <input v-model="form.position" autocomplete="off" placeholder="例：研究员" />
             </label>
             <label>
               <span>手机号</span>
@@ -304,24 +311,26 @@
           <div class="pm-import-body">
             <section class="pm-format-card">
               <header>
-                <div><strong>Excel 格式说明</strong><small>首行必须使用下列中文列名</small></div>
+                <div><strong>Excel 格式说明</strong><small>首行必须与模板列名完全一致</small></div>
                 <button class="pm-text-btn" type="button" :disabled="downloadingTemplate" @click="downloadTemplate">{{ downloadingTemplate ? '下载中…' : '下载标准模板' }}</button>
               </header>
               <div class="pm-column-group">
                 <b>必填列</b>
-                <span>账号</span><span>姓名</span><span>部门编号</span><span>部门名称</span>
+                <span>姓名</span><span>sso账号</span><span>账号状态</span><span>部门编号</span><span>部门名称</span><span>处室</span><span>团队</span>
               </div>
               <div class="pm-column-group optional">
                 <b>选填列</b>
-                <span>员工编号</span><span>邮箱</span><span>岗位</span><span>手机号</span><span>状态</span>
+                <span>员工编号</span><span>岗位</span><span>手机号</span><span>邮箱</span>
               </div>
               <ul id="personnel-import-format-help">
-                <li>状态可填“启用 / 停用”或“active / disabled”，不填默认启用。</li>
+                <li>表头带 <code>*</code> 的列与人员管理界面必填项一致；部门编号留空时自动取部门名称。</li>
+                <li>账号状态可填“启用 / 停用”或“active / disabled”，不填默认启用。</li>
                 <li>Excel 不包含密码列；新增账号的默认密码为 <code>123456</code>。</li>
                 <li>单个文件不超过 5 MB，最多 5000 个数据行。</li>
                 <li>只允许上方列名；不能添加额外列，列名也不能重复。</li>
                 <li>同一文件内账号不能重复；<code>admin</code> 账号不可通过导入覆盖。</li>
                 <li>工作簿不能包含公式、隐藏行、隐藏列或隐藏工作表。</li>
+                <li>模板中的「（示例）」行会被自动跳过；旧版列式模板（账号、姓名、部门编号、部门名称等）仍可导入。</li>
               </ul>
             </section>
 
@@ -371,6 +380,7 @@ import {
   getPersonnelImportTemplate,
   importPersonnelUsers,
   listPersonnelUsers,
+  syncPersonnelUsers,
   updatePersonnelUser,
 } from './api.js'
 import {
@@ -379,6 +389,7 @@ import {
   formatPersonnelValidationDetail,
   normalizePersonnelPage,
   summarizeImportResult,
+  summarizeSyncResult,
   validatePersonnelForm,
 } from './model.js'
 import { grantDepartmentManager, listDepartmentManagers, revokeDepartmentManager } from '../knowledge/api.js'
@@ -406,6 +417,7 @@ export default {
     const deptManagerMap = ref(new Map())  // Map<userId, Set<departmentId>> 谁在哪些部门是知识库管理员
     const togglingDeptManagerUserId = ref('')  // 当前正在 toggle 的 user_id
     const downloadingTemplate = ref(false)
+    const syncing = ref(false)
     const showEditor = ref(false)
     const editingUserId = ref('')
     const form = reactive(emptyPersonnelForm())
@@ -718,6 +730,22 @@ export default {
       }
     }
 
+    async function syncFromSource() {
+      if (syncing.value) return
+      if (!window.confirm('将从配置的人员接口拉取数据并按账号覆盖更新现有人员信息，确认继续？')) return
+      syncing.value = true
+      try {
+        const result = await syncPersonnelUsers()
+        notify(summarizeSyncResult(result))
+        page.value = 1
+        await loadUsers()
+      } catch (error) {
+        notify(resolveError(error, '更新人员信息失败'), 'error')
+      } finally {
+        syncing.value = false
+      }
+    }
+
     async function downloadTemplate() {
       if (downloadingTemplate.value) return
       downloadingTemplate.value = true
@@ -816,6 +844,8 @@ export default {
       showImport,
       statusLabel,
       submitImport,
+      syncing,
+      syncFromSource,
       togglingDeptManagerUserId,
       toggleDeptManager,
       canToggleDeptManager,
@@ -1027,16 +1057,15 @@ export default {
 
 .pm-content { flex: 1 1 auto; min-height: 0; padding: 14px 24px 0; }
 .pm-table-wrap { height: 100%; overflow: auto; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 12px; }
-.pm-table { width: 100%; min-width: 1160px; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+.pm-table { width: 100%; min-width: 1280px; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
 .pm-table th { position: sticky; top: 0; z-index: 1; padding: 11px 13px; color: var(--text-secondary); background: var(--bg-tertiary); border-bottom: 1px solid var(--border-color); text-align: left; font-size: 11px; font-weight: 650; }
-.pm-table th:nth-child(1) { width: 170px; }
-.pm-table th:nth-child(2) { width: 110px; }
-.pm-table th:nth-child(3) { width: 150px; }
-.pm-table th:nth-child(4) { width: 100px; }
-.pm-table th:nth-child(5) { width: 100px; }
-.pm-table th:nth-child(6) { width: 95px; }
-.pm-table th:nth-child(7) { width: 165px; }
-.pm-table th:nth-child(8) { width: 75px; }
+/* 列宽按百分比分配，随容器均匀伸缩；操作列保留按钮所需空间 */
+.pm-table th:nth-child(1) { width: 11%; } .pm-table th:nth-child(2) { width: 8%; }
+.pm-table th:nth-child(3) { width: 11%; } .pm-table th:nth-child(4) { width: 9%; }
+.pm-table th:nth-child(5) { width: 9%; }
+.pm-table th:nth-child(6) { width: 8%; }
+.pm-table th:nth-child(7) { width: 10%; }
+.pm-table th:nth-child(8) { width: 13%; } .pm-table th:nth-child(9) { width: 7%; } .pm-table th:nth-child(10) { width: 14%; }
 .pm-table td { height: 64px; padding: 9px 13px; color: var(--text-primary); border-bottom: 1px solid var(--border-color); vertical-align: middle; font-size: 12px; }
 .pm-table tbody tr:last-child td { border-bottom: 0; }
 .pm-table tbody tr:hover td { background: color-mix(in srgb, var(--accent-color, #0ea5e9) 3%, transparent); }

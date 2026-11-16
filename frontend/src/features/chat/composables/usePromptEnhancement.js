@@ -4,8 +4,9 @@ import { getStoredUsername } from '../../../api/auth.js'
 import { chatStore, chatBus } from '../store/chatStore.js'
 import * as tokens from '../../../utils/skillPillTokens.js'
 import { createEnhancementController, enhancementSnapshot } from '../../../shared/promptEnhancement/controller.js'
+import { referenceDraft, restoreReferenceDraft } from '../../../shared/fileReferences.js'
 
-export function usePromptEnhancement({ props, message, tokenMap, knownSkills, preselectedSkillDirs,
+export function usePromptEnhancement({ props, message, fileReferences, tokenMap, knownSkills, preselectedSkillDirs,
   pendingExpertEditId, preparingFiles, textareaRef, autoResize, syncMirror }) {
   const enhancement = ref({ pending: false, notice: '' })
   const composing = ref(false)
@@ -16,7 +17,7 @@ export function usePromptEnhancement({ props, message, tokenMap, knownSkills, pr
     read: () => ({
       ...enhancementSnapshot(message.value, tokenMap.value, tokens), blocked: blocked.value,
       scope: [props.sessionId, props.draftKey, props.activeExpert, props.prefillText, pendingExpertEditId.value,
-        [...preselectedSkillDirs.value], knownSkills.value, chatStore.username, getStoredUsername()],
+        [...preselectedSkillDirs.value], knownSkills.value, fileReferences.value, chatStore.username, getStoredUsername()],
     }),
     write: text => {
       message.value = text
@@ -26,10 +27,15 @@ export function usePromptEnhancement({ props, message, tokenMap, knownSkills, pr
   })
   const invalidateEnhancement = controller.invalidate
   watch([message, () => props.sessionId, () => props.draftKey, () => props.activeExpert,
-    () => props.prefillText, pendingExpertEditId, preselectedSkillDirs, knownSkills, blocked,
+    () => props.prefillText, pendingExpertEditId, preselectedSkillDirs, knownSkills, fileReferences, blocked,
     () => chatStore.username], invalidateEnhancement, { deep: true, flush: 'sync' })
   watch(() => props.draftKey, (key, old) => {
-    try { sessionStorage.setItem(old, message.value); message.value = sessionStorage.getItem(key) || '' }
+    try {
+      sessionStorage.setItem(old, referenceDraft(message.value, fileReferences.value, props.sessionId, sessionStorage.getItem(props.draftKey)))
+      const restored = restoreReferenceDraft(sessionStorage.getItem(key), props.sessionId)
+      message.value = restored.message
+      fileReferences.value = restored.fileReferences
+    }
     catch (_) { message.value = '' }
     nextTick(() => { autoResize(); syncMirror() })
   }, { flush: 'sync' })

@@ -5,6 +5,7 @@ import {
   applyApprovalRequests,
   approvalTargetForBlock,
   buildResumeDecisions,
+  buildApprovalResumePlan,
   derivePendingApproval,
   markApprovalDecision,
   unmatchedApprovalRequests,
@@ -127,6 +128,46 @@ test('marking a decision clears all buttons but only stamps the answered interru
     [false, 'approved'],
     [false, 'pending'],
   ])
+})
+
+test('ask_user respond is treated as completed rather than rejected', () => {
+  const blocks = [
+    {
+      type: 'tool_call',
+      tool_call_id: 'ask-1',
+      pending_approval: true,
+      approval_status: 'pending',
+      hitl_interrupt_id: 'I',
+    },
+  ]
+  markApprovalDecision(
+    blocks,
+    'respond',
+    [{ tool_call_id: 'ask-1', interrupt_id: 'I', action_index: 0 }],
+    'I',
+  )
+  assert.equal(blocks[0].pending_approval, false)
+  assert.equal(blocks[0].approval_status, 'approved')
+})
+
+test('plan interaction answers become respond decisions without executing batched tools', () => {
+  const { decisions } = buildApprovalResumePlan(
+    [
+      { tool_name: 'ask_user', interrupt_id: 'I', action_index: 0 },
+      { tool_name: 'delete', interrupt_id: 'I', action_index: 1 },
+    ],
+    'respond',
+    {
+      interruptId: 'I',
+      response: { answers: { project: 'fast' }, note: '先做核心' },
+    },
+  )
+  assert.equal(decisions[0].type, 'respond')
+  assert.equal(decisions[1].type, 'reject')
+  assert.deepEqual(JSON.parse(decisions[0].message), {
+    answers: { project: 'fast' },
+    note: '先做核心',
+  })
 })
 
 test('buildResumeDecisions: edit 只改目标那条，其余按批准', () => {

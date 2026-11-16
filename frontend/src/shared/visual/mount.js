@@ -21,6 +21,8 @@ const FRAME = 'ea-visual-frame'
 const READY_TIMEOUT_MS = 10000
 const MIN_HEIGHT = 40
 const MAX_HEIGHT = 2000
+const VISUAL_SELECTOR = '.ea-visual:not(.is-pending):not([data-visual-state])'
+const VIEW_ROOT_MARGIN = '600px 0px'
 
 const controllers = new WeakMap()
 const live = new Set()
@@ -81,7 +83,7 @@ function whenVisible(el, start) {
         waiting.delete(entry.target)
         if (run) run()
       }
-    }, { rootMargin: '300px 0px' })
+    }, { rootMargin: VIEW_ROOT_MARGIN })
   }
   waiting.set(el, start)
   viewObserver.observe(el)
@@ -168,7 +170,7 @@ function createController(el, options) {
       // iframe 元素与框架页的 color-scheme 不一致时浏览器会给它垫一层不透明底色（深色下是白块）
       frame.style.colorScheme = ctl.theme
       stage.appendChild(frame)
-      frame.src = options.frameUrl
+      frame.src = visualFrameUrl(options.frameUrl, kind)
       controllers.set(frame.contentWindow, ctl)
       ctl.frame = frame
       el.setAttribute('data-visual-state', 'loading')
@@ -274,9 +276,23 @@ export function mountVisual(el, options = {}) {
   whenVisible(el, () => ctl.start())
 }
 
-/** 挂载容器里所有尚未挂载的占位元素（MarkdownBody 每次刷新后调用，幂等） */
+/** 可视化 iframe 地址带上 kind，框架页可在 HTML 解析阶段直接 preload 对应库。 */
+export function visualFrameUrl(frameUrl, kind) {
+  const base = String(frameUrl || '')
+  const separator = base.includes('?') ? '&' : '?'
+  return `${base}${separator}kind=${encodeURIComponent(String(kind || ''))}`
+}
+
+/** 挂载容器或指定变化节点里尚未挂载的占位元素（幂等）。 */
 export function mountVisuals(root, options = {}) {
-  if (!root || typeof root.querySelectorAll !== 'function') return
-  const nodes = root.querySelectorAll('.ea-visual:not(.is-pending):not([data-visual-state])')
-  for (let i = 0; i < nodes.length; i += 1) mountVisual(nodes[i], options)
+  const targets = Array.isArray(options.targets) ? options.targets : [root]
+  const found = new Set()
+  for (const target of targets) {
+    if (!target || target.nodeType !== 1) continue
+    if (typeof target.matches === 'function' && target.matches(VISUAL_SELECTOR)) found.add(target)
+    if (typeof target.querySelectorAll !== 'function') continue
+    const nodes = target.querySelectorAll(VISUAL_SELECTOR)
+    for (let i = 0; i < nodes.length; i += 1) found.add(nodes[i])
+  }
+  for (const node of found) mountVisual(node, options)
 }
