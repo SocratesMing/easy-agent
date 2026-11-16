@@ -67,7 +67,10 @@ from easy_agent.services.agents.manager import (
     get_agent_config as _get_agent_config,
     get_or_create_agent_for_session,
 )
-from easy_agent.services.streaming.approvals import HitlDecisionError
+from easy_agent.services.streaming.approvals import (
+    HitlDecisionError,
+    build_plan_confirmation,
+)
 from easy_agent.services.sessions.thread import StaleApprovalError
 from easy_agent.services.streaming.orchestrator import (
     resume_stream_generator,
@@ -1021,15 +1024,34 @@ async def prepare_resume(
         logger.warning(f"[{sid}] 拒绝无效的审批决策 | thread={thread_id} | {exc}")
         raise BadRequestError(f"审批决策无效：{exc}") from exc
 
-    confirmation_message = (request.confirmation_message or "").strip()
-    if confirmation_message:
-        if not request.split_assistant_message:
-            raise BadRequestError("规划确认消息必须使用独立的 assistant 续写消息")
-        # Keep the interrupted assistant as the pre-confirmation message, then append the
-        # user's visible choice and continue in a new assistant row after validation.
+    confirmation_message = ""
+    confirmation_source = None
+    has_respond = any(
+        isinstance(decision, dict) and decision.get("type") == "respond"
+        for decision in request.decisions
+    )
+    if has_respond:
         confirmation_source = await asyncio.to_thread(
             _session_last_message, repo, session_id
         )
+        try:
+            confirmation_message = (
+                build_plan_confirmation(confirmation_source, request.decisions) or ""
+            )
+        except ValueError as exc:
+            raise BadRequestError(f"规划确认无效：{exc}") from exc
+        if confirmation_message and not request.split_assistant_message:
+            raise BadRequestError("规划确认消息必须使用独立的 assistant 续写消息")
+    elif (
+        request.confirmation_message
+        or request.confirmation_message_id
+        or request.split_assistant_message
+    ):
+        raise BadRequestError("确认消息只能用于 ask_user 交互")
+
+    if confirmation_message:
+        # Keep the interrupted assistant as the pre-confirmation message, then append the
+        # user's visible choice and continue in a new assistant row after validation.
         completed = _mark_resumed_interaction(
             confirmation_source, request.decisions
         )

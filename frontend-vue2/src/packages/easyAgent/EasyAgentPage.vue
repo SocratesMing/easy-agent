@@ -41,6 +41,9 @@
         :email="userProfile.email"
         :knowledgeEnabled="knowledgeEnabled"
         :showKnowledge="showKnowledge"
+        :sessions-has-more="sessionsHasMore"
+        :sessions-loading="sessionsLoading"
+        @load-more-sessions="loadMoreSessions"
         @show-knowledge="handleShowKnowledge"
         @create-session="handleCreateSession"
         @select-session="handleSelectSession"
@@ -168,7 +171,8 @@
 <script>
 import { referenceMessage } from './shared/fileReferences.js'
 import Vue from 'vue'
-import { loadDailySessions, sessionGuard, isSessionDeleted, isStaleSessionError, initialSessionId as resolveInitialSessionId } from './shared/sessionManagement/state.js'
+import { sessionGuard, isSessionDeleted, isStaleSessionError, initialSessionId as resolveInitialSessionId } from './shared/sessionManagement/state.js'
+import { reloadSessionList } from './shared/sessionManagement/sessionPager.js'
 import SessionList from './features/chat/components/SessionList.vue'
 import Chat from './features/chat/components/Chat.vue'
 // 面板级懒加载：首屏不解析这些重型面板，首次打开时再拉对应 chunk
@@ -181,7 +185,7 @@ import Welcome from './features/chat/components/Welcome.vue'
 import WorkspacePanel from './features/workspace/components/WorkspacePanel.vue'
 const SettingsPanel = () => import('./features/settings/components/SettingsPanel.vue')
 import AiSidebar from './features/chat/components/AiSidebar.vue'
-import { createSession, listSessions, getChatHistory, deleteSession, sendMessage, renameSession, togglePinSession, getStreamStatus } from './api/chat.js'
+import { createSession, getChatHistory, deleteSession, sendMessage, renameSession, togglePinSession, getStreamStatus } from './api/chat.js'
 import { getUserProfile, deleteFile } from './api/files.js'
 import chatSessionMixin from './features/chat/mixins/chatSession.js'
 import { createPageStreamChunkHandler } from './features/chat/services/pageChunkHandler.js'
@@ -855,14 +859,10 @@ export default {
     },
     async loadSessions() {
       try {
-        await loadDailySessions(
-          () => listSessions(this.userProfile.username || null, { archived: false }),
-          rows => {
-            this.sessions = rows
-            this.hydratePendingApprovalFromServer()
-            if (this.error === '加载会话列表失败') this.error = null
-          },
-        )
+        await reloadSessionList(this.userProfile.username || null, () => {
+          this.hydratePendingApprovalFromServer()
+          if (this.error === '加载会话列表失败') this.error = null
+        })
       } catch (e) { if (!isStaleSessionError(e)) this.error = '加载会话列表失败' }
     },
     async ensureCurrentSession(initialTitle = '') {

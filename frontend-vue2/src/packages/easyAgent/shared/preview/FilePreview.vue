@@ -73,11 +73,29 @@
             <iframe :src="htmlUrl" class="html-iframe" sandbox="allow-same-origin"></iframe>
           </div>
           <div v-else-if="isText" class="preview-text">
-            <div class="code-block">
+            <!-- 文本类按行渲染：行号与内容在同一个 flex 行里，长行软换行只会让这一行变高。
+                 以前是「独立行号列 + pre-wrap 正文」，折行占掉视觉行却不产生行号，
+                 行号列从第一个折行处开始整体上移，末尾还会出现「行号用完了、正文还在继续」。 -->
+            <div v-if="plainTextMode" class="code-lines" :style="{ '--ln-width': gutterWidth }">
+              <div v-for="line in visibleLines" :key="line.n" class="code-line">
+                <span class="ln">{{ line.n }}</span>
+                <!-- 用 span 而不是 code：主题里的 `.easy-agent-root[data-theme="dark"] code` 带 !important 背景，
+                     每行一个 code 会变成一条条色带 -->
+                <span class="line-text">{{ line.text }}</span>
+              </div>
+            </div>
+            <!-- 代码类整段高亮：hljs 的 token 会跨行（多行注释/字符串），按行切会切断标签；
+                 pre 不折行，一个源码行恒等于一个视觉行，独立行号列才对得上 -->
+            <div v-else class="code-block">
               <div class="line-numbers">
-                <span v-for="n in lineCount" :key="n">{{ n }}</span>
+                <span v-for="n in shownLineCount" :key="n">{{ n }}</span>
               </div>
               <pre v-html="highlightedCode"></pre>
+            </div>
+            <!-- 提示条单独渲染、不参与行号：以前把「内容过长已截断」拼在正文里，会被当成正文最后两行 -->
+            <div v-if="textNotice" class="preview-notice">
+              <span>{{ textNotice }}</span>
+              <button v-if="hasMoreLines" class="preview-more-btn" @click="loadMoreLines">加载更多</button>
             </div>
           </div>
           <div v-else class="preview-unsupported">
@@ -116,6 +134,15 @@ function loadXlsx() {
 import { getStoredToken } from '../../api/auth.js'
 import { getExpertMd } from '../../api/expert.js'
 import { requestBlob, requestArrayBuffer, requestText, resolveUrl } from '../../utils/request.js'
+// 行号几何（按行切分 / 分页 / 列宽）：纯函数，两个前端的 FilePreview 共用
+import {
+  clampSourceText,
+  lineNumberGutterWidth,
+  splitSourceLines,
+  takeLines,
+  TEXT_CHAR_LIMIT,
+  TEXT_LINE_PAGE,
+} from './textLines.js'
 
 // 注册 KaTeX 数学公式 + emoji 短代码扩展（幂等，仅执行一次）
 setupMarkedExtensions()
@@ -215,6 +242,10 @@ export default {
       loading: false,
       error: '',
       textContent: '',
+      // 文本预览一次渲染的行数上限：超过就分页（行号始终与文件实际行对应）
+      maxLines: TEXT_LINE_PAGE,
+      // 文件极大、超出字符兜底上限时为 true（只影响文本预览的提示条）
+      textTruncated: false,
       previewUrl: '',
       docxUrl: '',
       excelUrl: '',
@@ -275,35 +306,60 @@ export default {
       return codeExts.includes(ext)
     },
     highlightedCode() {
-      if (!this.textContent) return ''
+      // 只高亮当前这一页：超大文件整篇交给 hljs 会很慢，且行号只覆盖可见页
+      const code = this.visibleText
+      if (!code) return ''
       const ext = getExt(this.filename)
       const lang = codeLangMap[ext]
 
       // 如果是代码文件且有对应语言，使用语法高亮
       if (this.isCode && lang && hljs.getLanguage(lang)) {
         try {
-          return hljs.highlight(this.textContent, { language: lang }).value
+          return hljs.highlight(code, { language: lang }).value
         } catch (e) {
           console.warn('[FilePreview] 语法高亮失败:', ext, e)
         }
       }
 
-      // JSON 特殊处理
-      if (ext === 'json') {
-        try {
-          const parsed = JSON.parse(this.textContent)
-          return hljs.highlight(JSON.stringify(parsed, null, 2), { language: 'json' }).value
-        } catch (e) {
-          // JSON 解析失败，按普通文本处理
-        }
-      }
+      // 不再对 JSON 做 parse → stringify 重排版：行号必须对应文件里的实际行，
+      // 重排版（尤其是压缩成一行的 JSON）会让行号整篇错位；.json 走上面的 hljs 高亮即可
 
       // 普通文本，转义 HTML
-      return escapeHtml(this.textContent)
+      return escapeHtml(code)
     },
-    lineCount() {
-      if (!this.textContent) return 0
-      return this.textContent.split('\n').length
+    // ---- 文本预览的行号：按行切分、按行分页，行号与正文同源（见 ./textLines.js）----
+    sourceLines() {
+      return this.isText ? splitSourceLines(this.textContent) : []
+    },
+    totalLineCount() {
+      return this.sourceLines.length
+    },
+    visibleLines() {
+      return takeLines(this.sourceLines, this.maxLines).lines
+    },
+    shownLineCount() {
+      return this.visibleLines.length
+    },
+    hasMoreLines() {
+      return this.shownLineCount < this.totalLineCount
+    },
+    /** 本页源文本：代码高亮以它为准，不含分页提示条 */
+    visibleText() {
+      return this.visibleLines.map((line) => line.text).join('\n')
+    },
+    /** 行号列宽：整列统一，位数不同的行号才不会左右错位 */
+    gutterWidth() {
+      return lineNumberGutterWidth(this.totalLineCount)
+    },
+    /** 文本按行渲染；代码保留整段高亮（hljs 的 token 会跨行，不能按行切） */
+    plainTextMode() {
+      return !this.isCode
+    },
+    textNotice() {
+      const parts = []
+      if (this.textTruncated) parts.push(`文件过大，仅载入前 ${TEXT_CHAR_LIMIT / 10000} 万字符`)
+      if (this.hasMoreLines) parts.push(`已显示前 ${this.shownLineCount} 行 / 共 ${this.totalLineCount} 行`)
+      return parts.join('；')
     },
     csvData() {
       if (!this.textContent) return { headers: [], rows: [] }
@@ -382,6 +438,10 @@ export default {
       link.click()
       document.body.removeChild(link)
     },
+    /** 文本预览「加载更多」：每次多渲染一页行（数据已在内存，无需重新请求） */
+    loadMoreLines() {
+      this.maxLines += TEXT_LINE_PAGE
+    },
     async loadPreview() {
       // 每次加载分配递增序号：异步返回后若已有更新的加载，丢弃旧结果，
       // 避免快速切换标签时旧请求覆盖新标签内容。
@@ -389,6 +449,8 @@ export default {
       this.loading = true
       this.error = ''
       this.textContent = ''
+      this.maxLines = TEXT_LINE_PAGE
+      this.textTruncated = false
       if (this.docxUrl) {
         URL.revokeObjectURL(this.docxUrl)
       }
@@ -492,15 +554,26 @@ export default {
           if (seq !== this._loadSeq) return
           const blob = new Blob([htmlText], { type: 'text/html; charset=utf-8' })
           this.htmlUrl = URL.createObjectURL(blob)
-        } else if (this.isMarkdown || this.isText || this.isCsv) {
+        } else if (this.isMarkdown || this.isCsv) {
           let text = await requestText({ url: this.previewUrl, headers })
           if (seq !== this._loadSeq) return
+          // Markdown / CSV 是整篇渲染（不涉及行号），继续按字符兜底
           if (text.length > 50000) {
             text = text.substring(0, 50000) + '\n\n... (内容过长已截断)'
           }
           // 剥掉 UTF-8 BOM（Excel 导出的 CSV 常带），否则首列表头会混入不可见的 \uFEFF
           this.textContent = text.replace(/^\uFEFF/, '')
           console.log('[FilePreview] 文本预览加载完成, 长度:', this.textContent.length)
+        } else if (this.isText) {
+          // 文本预览不按字符截断：行号必须与文件实际行一一对应，渲染量由 maxLines 分页控制。
+          // 只有超大文件才按行边界兜底裁一次（见 ./textLines.js），裁完的末尾仍是完整行。
+          const text = await requestText({ url: this.previewUrl, headers })
+          if (seq !== this._loadSeq) return
+          const clamped = clampSourceText(text)
+          this.textTruncated = clamped.truncated
+          // 剥掉 UTF-8 BOM，否则首行行号会混入不可见的 \uFEFF
+          this.textContent = clamped.text.replace(/^\uFEFF/, '')
+          console.log('[FilePreview] 文本预览加载完成, 长度:', this.textContent.length, '行数:', this.totalLineCount)
         } else {
           console.log('[FilePreview] 不支持预览的文件类型:', ext || '未知')
         }
@@ -880,13 +953,79 @@ export default {
   min-height: 1.6em;
 }
 
+/* 文本类（txt / log / ini …）：一行一条记录，行号与内容同高 */
+.preview-text .code-lines {
+  padding: 16px 0;
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  /* 行号列宽由组件的 --ln-width 统一给出（见 shared/preview/textLines.js），各行右对齐 */
+}
+
+.preview-text .code-line {
+  display: flex;
+  align-items: flex-start;
+}
+
+.preview-text .code-line .ln {
+  flex: 0 0 auto;
+  width: var(--ln-width, 56px);
+  box-sizing: border-box;
+  padding-right: 8px;
+  text-align: right;
+  color: #6e7681;
+  user-select: none;
+  /* 每行的右边框拼起来就是连续的竖线，不必给整列铺背景 */
+  border-right: 1px solid #21262d;
+}
+
+.preview-text .code-line .line-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 16px;
+  color: #c9d1d9;
+  font-family: inherit;
+  font-size: inherit;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 分页 / 超大文件提示：sticky 在底部，不占行号 */
+.preview-text .preview-notice {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: #8b949e;
+  background: #161b22;
+  border-top: 1px solid #21262d;
+}
+
+.preview-text .preview-more-btn {
+  padding: 2px 10px;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  background: transparent;
+  color: #c9d1d9;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.preview-text .preview-more-btn:hover {
+  background: #21262d;
+}
+
 .preview-text pre {
   margin: 0;
   padding: 16px;
   color: #c9d1d9;
-  white-space: pre-wrap;
-  word-break: break-all;
+  /* 代码不折行：一个源码行恒等于一个视觉行，独立行号列才对得上；超宽横向滚动 */
+  white-space: pre;
   flex: 1;
+  min-width: 0;
   overflow-x: auto;
   background: #0d1117;
 }

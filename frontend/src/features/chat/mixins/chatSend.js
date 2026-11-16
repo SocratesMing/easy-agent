@@ -6,7 +6,7 @@ import { deleteFile } from '../../../api/files.js'
 import { authFetch } from '../../../api/auth.js'
 import { createStreamChunkHandler as createChunkHandler } from '../services/chunkHandler.js'
 import { resumeUsageBase } from '../services/streamUsage.js'
-import { applyApprovalRequests, buildApprovalResumePlan, markApprovalDecision } from '../../../utils/hitlApproval.js'
+import { applyApprovalRequests, buildApprovalResumePlan, isNewApprovalEvent, markApprovalDecision } from '../../../utils/hitlApproval.js'
 import { buildPlanContinuationTurn } from '../../../shared/chat/planConfirmationTurn.js'
 
 /**
@@ -248,6 +248,9 @@ export default {
     // HITL: 用户审批后恢复执行。target.interruptId = 用户点的那个中断（DA-02）：
     // 只回答它，其余中断保持挂起，恢复流结束时后端会再次下发 approval_required。
     async handleToolApproval(decision, target) {
+      // 本地审批态可能与服务端短暂不一致（恢复流结束只清本地状态，按钮由历史回填）：
+      // 点按钮时按消息里的实际载荷懒重建一次，避免「有按钮、点了没反应」。
+      if (!this.pendingApproval) this.reconstructPendingApproval()
       if (!this.pendingApproval) return
 
       const currentApproval = this.pendingApproval
@@ -287,6 +290,8 @@ export default {
       // 本次决策已落地，重算标识（若恢复流中再遇嵌套审批会立即重新亮起）
       this.recomputePendingApprovalFlag(sessionId)
 
+      // 恢复流期间收到的 approval_required 事件（判「是否有新审批」用中断身份，不看 thread_id）
+      let approvalEvent = null
       const { onChunk } = this.createStreamChunkHandler({
         isResume: true,
         assistantMsgId: resumeAssistantId,
@@ -295,6 +300,7 @@ export default {
         initialBlockOrder,
         onApprovalRequired: (data) => {
           // 嵌套审批
+          approvalEvent = data || null
           this.pendingApproval = {
             threadId: data.thread_id,
             assistantMsgId: resumeAssistantId,
@@ -355,11 +361,13 @@ export default {
       } finally {
         // 如果 resumeStream 期间收到了新的 approval_required（onChunk 重新设置了
         // pendingApproval），则不清除，保持 isStreaming=true 等待用户审批。
-        // 判「新」只能比 thread_id：恢复流重放同一条中断时会新建对象，按对象引用比较
-        // 会误判成新审批，把下面的回填与徽标重算整段跳过（徽标要等整页刷新才消失）。
-        const latestApproval = this.pendingApproval
-        const latestThreadId = latestApproval && latestApproval.threadId
-        const hasNewApproval = !!latestThreadId && latestThreadId !== (currentApproval && currentApproval.threadId)
+        // 判「新」按中断身份：一次运行（含全部恢复流）的 thread_id 是同一个，嵌套审批与
+        // 并行子代理剩下的中断都带同一个 thread_id，只比 thread_id 会把新审批误判成重放，
+        // 清掉本地审批态后按钮仍由历史回填显示 → 「点了没反应，刷新才行」。
+        const hasNewApproval = !!approvalEvent && isNewApprovalEvent(approvalEvent, {
+          threadId: currentApproval && currentApproval.threadId,
+          interruptId,
+        })
         if (!hasNewApproval) {
           this.pendingApproval = null
           this.currentAbortController = null
@@ -374,6 +382,9 @@ export default {
           // 审批恢复流结束：以服务端历史为准回填，保证完整渲染
           await this.syncSessionFromServer(sid)
           this.recomputePendingApprovalFlag(sid)
+          // 服务端历史里仍有挂起审批时，按历史重建本地审批态：只清本地状态会让回填出来的
+          // 按钮「看得见、点不动」，只能整页刷新才恢复。
+          if (sid && sid === this.loadedSessionId) this.reconstructPendingApproval()
           await this.loadSessions()
         }
       }

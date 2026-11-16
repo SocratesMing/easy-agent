@@ -7,9 +7,10 @@ const source = (await readFile(new URL('./archiveManager.js', import.meta.url), 
   .replace(/import .* from '..\/..\/api\/chat.js'/, 'const { listSessions, countSessions, setSessionArchived, deleteSession } = globalThis.__archiveApi')
   .replace(/import .* from '..\/..\/features\/chat\/store\/chatStore.js'/, 'const { chatStore, chatBus } = globalThis.__archiveStore')
   .replace("from './state.js'", `from '${new URL('./state.js', import.meta.url).href}'`)
+  .replace(/import .* from '.\/sessionPager.js'/, 'const { reloadSessionList } = globalThis.__archivePager')
   .replace("from '../../utils/autoDismiss.js'", `from '${autoDismissURL.href}'`)
 let moduleId = 0
-async function setup(overrides = {}) {
+async function setup({ reloadSessionList = async () => true, ...overrides } = {}) {
   resetSessions()
   const writes = [], events = [], store = { sessions: [], pendingApprovalSessions: ['A'], streamingSessions: ['A'] }
   globalThis.__archiveApi = {
@@ -17,6 +18,7 @@ async function setup(overrides = {}) {
     setSessionArchived: async (id, archived) => { writes.push([id, archived]) },
     deleteSession: async id => { writes.push([id, 'delete']) }, ...overrides,
   }
+  globalThis.__archivePager = { reloadSessionList }
   globalThis.__archiveStore = { chatStore: store, chatBus: { emit: (event, payload) => events.push([event, payload]) } }
   const { default: mixin } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}#${++moduleId}`)
   const vm = { ...mixin.data(), open: true, $emit() {}, $nextTick: async () => {}, $refs: { confirm: { show: async () => true } } }
@@ -40,7 +42,7 @@ test('取消删除不发请求，确认绑定的 ID 不随行对象变化', asyn
 })
 test('归档保留流式与审批，重复点击仅写一次，刷新失败仍反馈写成功', async () => {
   const write = deferred()
-  const { vm, store, writes } = await setup({ setSessionArchived: async id => { writes.push(id); await write.promise }, listSessions: async () => { throw new Error('离线') } })
+  const { vm, store, writes } = await setup({ setSessionArchived: async id => { writes.push(id); await write.promise }, reloadSessionList: async () => { throw new Error('离线') } })
   const operation = vm.archive({ session_id: 'A', title: '任务' })
   await Promise.resolve(); await Promise.resolve()
   await vm.archive({ session_id: 'A' })

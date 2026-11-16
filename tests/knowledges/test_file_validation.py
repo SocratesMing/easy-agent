@@ -6,7 +6,7 @@ import io
 import pytest
 
 from easy_agent.knowledges.core.config import UploadSecurityConfig
-from easy_agent.knowledges.core.file_validation import (
+from easy_agent.knowledges.files.file_validation import (
     UploadValidationError,
     canonical_content_type,
     validate_upload,

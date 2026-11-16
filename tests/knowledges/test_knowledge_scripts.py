@@ -1,4 +1,4 @@
-"""easy_agent/knowledges/scripts 下的运维脚本在独立进程里跑：业务库要按主配置的 database 段初始化。
+"""scripts/knowledge 下的运维脚本在独立进程里跑：业务库要按主配置的 database 段初始化。
 
 回归：migrate_knowledge_to_shared.py / sync_source_docs.py 原来调 init_database() 不传配置，
 总去初始化 cwd 下的 ./data/easy_agent.db（生产配的 MySQL 被忽略）；也没导入
@@ -13,7 +13,7 @@ import pytest
 from tests.db.test_migrate_scripts import _run
 from tests.db.test_schema_slimming import FRESH_TABLES, _names
 
-SCRIPTS = Path(__file__).resolve().parents[2] / "easy_agent" / "knowledges" / "scripts"
+SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "knowledge"
 
 # 打开知识库和文档同步，两个脚本才会走到 init_database
 KNOWLEDGE = {

@@ -180,6 +180,21 @@ def test_plan_confirmation_persists_user_message_and_splits_assistant(
                         "tool_call_id": "ask-1",
                         "interrupt_id": "int-ask",
                         "action_index": 0,
+                        "arguments": {
+                            "title": "确认方案",
+                            "questions": [
+                                {
+                                    "id": "project",
+                                    "title": "项目方案",
+                                    "multiple": False,
+                                    "required": True,
+                                    "options": [
+                                        {"id": "fast", "label": "快速版本"},
+                                        {"id": "full", "label": "完整版本"},
+                                    ],
+                                }
+                            ],
+                        },
                     }
                 ],
             },
@@ -218,7 +233,8 @@ def test_plan_confirmation_persists_user_message_and_splits_assistant(
                     "action_index": 0,
                 }
             ],
-            "confirmation_message": "1. 项目方案：快速版本",
+            # 客户端展示文本不可信：服务端必须根据 respond 答案重新生成
+            "confirmation_message": "1. 项目方案：完整版本",
             "confirmation_message_id": "confirm-1",
             "split_assistant_message": True,
         },
@@ -238,3 +254,25 @@ def test_plan_confirmation_persists_user_message_and_splits_assistant(
         "display_only": True,
         "message_kind": "plan_confirmation",
     }
+
+
+def test_confirmation_fields_are_rejected_for_non_interaction_approval(
+    client, resume_setup
+):
+    sid, calls = resume_setup
+    resp = client.post(
+        "/agent/chat/resume",
+        json={
+            "session_id": sid,
+            "thread_id": f"{sid}-m1",
+            "message_id": "m1",
+            "decisions": [{"type": "approve", "interrupt_id": "int-A"}],
+            "confirmation_message": "伪造的用户确认",
+            "confirmation_message_id": "confirm-delete",
+            "split_assistant_message": True,
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "ask_user" in resp.json()["detail"]
+    assert calls == []

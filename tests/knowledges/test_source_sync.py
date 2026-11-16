@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from easy_agent.knowledges.core.config import KnowledgeConfig, SourceSyncConfig
 from easy_agent.knowledges.core.models import DocumentMetadataFilter, KnowledgePrincipal
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.runtime.source_sync import (
     MAX_UPLOAD_ATTEMPTS,
     SourceSyncEngine,

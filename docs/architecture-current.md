@@ -28,7 +28,7 @@
 | `services/` | 7 个领域子包：agents（会话 Agent 缓存/流锁/每轮准备）、streaming（SSE 编排/事件/处理器/审批）、sessions（运行期/线程/上传）、mcp（连接器工具/会话/策略/证据）、memory、experts、skills；根下留 scheduler、health、metrics、document_convert |
 | `db/` | `database.py`（连接/迁移/核心表）、`session_messages.py`、`expert_store.py`、`schema_registry.py`、`login_state.py`（登录态校验与活跃时间，主鉴权与知识库鉴权共用） |
 | `middleware/` | JWT 鉴权依赖（`auth.py`，判定在 `db/login_state.py`）、进程内限流（`rate_limit.py`） |
-| `knowledges/` | 知识库 v2：service / api / ragflow client / runtime worker、catalog sync、observability；`runtime/source_sync.py` 负责研报 SQL 增量同步（可选 `staging_dir`：先批量拷贝、READY 后删暂存副本）；`personnel/` 子包负责知识库域的人员管理、Excel 导入、用户扩展字段 |
+| `knowledges/` | 知识库 v2：service / api / ragflow client / runtime worker、catalog sync、observability；`runtime/source_sync/` 负责研报 SQL 增量同步（可选 `staging_dir`：先批量拷贝、READY 后删暂存副本）；`personnel/` 子包负责知识库域的人员管理、Excel 导入、用户扩展字段 |
 | `bootstrap/initialization/` | 环境/日志/运行期初始化（config/log/environment/runtime）。日志级别默认 INFO，`EASY_LOG_LEVEL` / `easy-web --log-level` 覆盖；DEBUG 时 proc 日志记录大模型请求 / 返回报文（`easy_agent.llm_wire`），第三方噪声 logger 仍停在 INFO |
 | `tools/` | web_search、scheduled_task、expert_writer、session_file_reader |
 | `models/` | API / DB Pydantic 模型 |
@@ -62,7 +62,7 @@ Vue2 / Vue3 主页面和侧栏的四个入口仅适配响应式写入、refs 和
 - 文件工具走 CompositeBackend 路由（`/workspace/`、`/user-skills/`、`/skills/builtin/`（只读）、`/memories/`、外部目录）；没命中路由的路径与框架产物（`/.agent/...`：大工具结果、对话历史）落在工作区之外的会话隐藏目录 `workspace/{user}/.agent/{session_id}/`，删除会话时一并删除（DA-04）。共享编译图用两层真实 `CompositeBackend`（`backends/context.py`）按运行期 `SessionContext` 路由（DA-05）。
 - `execute` 默认经 bwrap；不可用降级 Landlock；都不可用 fail-closed（127）。
 - HITL：config.yaml 的 `hitl` 段配置，`enabled` 总开关（关掉后对话和定时任务一样不审批），`tools` 审批名单（默认 execute 删除类命令 / delete / save_expert / create_scheduled_task / access_knowledge_original 的 materialize）；名单外的 MCP 工具按服务端标注 / 名字兜底。
-- 规划确认：输入框通过 `/plan` 斜杠指令进入模式，不再占用常驻按钮；头脑风暴继续使用现有 `brainstorm` 技能，不设专用模式指令。`ask_user` 是只允许 `respond` 的产品级交互工具；多个问题按逐项卡片栈展示，全部选择完成后把确认文本作为普通用户消息落库，并把恢复后的续写拆成新的 assistant 行，保持“需求 → 规划 → 用户确认 → 执行”的时间顺序。定时任务等无人值守运行通过 `enable_user_interaction=False` 不注入该工具。`ChatRequest.interaction_mode` 只注入本轮模型上下文。
+- 规划确认：输入框通过 `/plan` 斜杠指令进入模式，不再占用常驻按钮；头脑风暴继续使用现有 `brainstorm` 技能，不设专用模式指令。`ask_user` 是只允许 `respond` 的产品级交互工具；多个问题按逐项卡片栈展示，全部选择完成后由服务端根据持久化问题与 `respond` 答案重新生成确认文本，作为普通用户消息落库，并把恢复后的续写拆成新的 assistant 行，保持“需求 → 规划 → 用户确认 → 执行”的时间顺序。客户端 `confirmation_message` 仅保留旧客户端兼容，不决定实际展示内容。定时任务等无人值守运行通过 `enable_user_interaction=False` 不注入该工具。`ChatRequest.interaction_mode` 只注入本轮模型上下文。
 - 子代理（office-writer / knowledge-researcher）显式声明与主代理相同的技能源（`/skills/builtin/`、`/user-skills/`）+ 异常兜底 middleware。
 
 ### 技能
@@ -87,7 +87,7 @@ Vue2 / Vue3 主页面和侧栏的四个入口仅适配响应式写入、refs 和
   同步该目录（`npm run check:easy-agent` / `export:easy-agent`，见 `frontend-vue2/integration/README.md`）。
 - `frontend/`：Vue 3.5 + Vite（并行维护的第二基线）。
 - 两套设置页均提供“Token统计”：四卡、7/30日原生 SVG 趋势、可切换图例及键盘/触屏可访问的逐日精确明细。共享坐标和格式化源为 `frontend-shared/utils/tokenUsage.js`，由同步脚本分发；组件不引入图表运行时依赖。
-- 对话内可视化：` ```echarts ` / ` ```mermaid ` / ` ```widget ` 代码块与数据工具的 `chart` 信封，由 `frontend-shared/visual/` 挂成 `sandbox="allow-scripts"` 的 iframe 卡片，加载后端 `/agent/viz/frame.html`；图表库只在后端托管，不进前端包（设计见 `docs/design/2026-11-12-chat-visuals.md`，开关为 config 的 `visual` 段）。
+- 对话内可视化：` ```echarts ` / ` ```mermaid ` / ` ```widget ` 代码块与数据工具的 `chart` 信封，由 `frontend-shared/visual/` 挂成 `sandbox="allow-scripts"` 的 iframe 卡片，加载后端 `/agent/viz/frame.html`；图表库只在后端托管，不进前端包。ECharts、Mermaid 与 HTML 交互组件 `html_widgets` 默认开启；安全要求更高的部署可通过 config 的 `visual` 段关闭 HTML 组件（设计见 `docs/design/2026-11-12-chat-visuals.md`）。
 - 两者都**不是** `npm run dev` 自动代理到 8080 的旧 CLI 结构（已改为 Vite 脚本）；构建命令见各自 `package.json`。
 - 无路由/状态库（Vue2 侧）：视图由 `App.vue` 布尔开关切换；**SSE 解析已统一**为各基线的 `src/api/sse.js`（唯一 `readSSE`），chat/expert/knowledge 只注册回调（审计项 ARCH-05 第一步完成）。
 

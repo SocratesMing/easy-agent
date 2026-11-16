@@ -17,7 +17,7 @@ from easy_agent.knowledges.runtime.observability import (
     resolve_request_id,
     should_audit,
 )
-from easy_agent.knowledges.core.operations_repository import KnowledgeOperationsRepository
+from easy_agent.knowledges.repository.operations import KnowledgeOperationsRepository
 from easy_agent.knowledges.chat.chat_bridge import (
     authorize_scoped_chat,
     empty_knowledge_context,

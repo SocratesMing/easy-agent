@@ -16,7 +16,7 @@ from starlette.concurrency import run_in_threadpool
 
 from easy_agent.knowledges.core.config import KnowledgeConfig, KnowledgeConfigError
 from easy_agent.knowledges.ragflow import RagflowClient
-from easy_agent.knowledges.core.original_store import LocalOriginalStore
+from easy_agent.knowledges.files.original_store import LocalOriginalStore
 from easy_agent.knowledges.runtime.worker import KnowledgeParsePollWorker, KnowledgePurgeWorker
 
 logger = logging.getLogger(__name__)

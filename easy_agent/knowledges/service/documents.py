@@ -20,7 +20,7 @@ from easy_agent.knowledges.core.models import (
     OperationType,
     PageInfo,
 )
-from easy_agent.knowledges.core.original_store import (
+from easy_agent.knowledges.files.original_store import (
     OriginalReadHandle,
     OriginalStorageError,
 )

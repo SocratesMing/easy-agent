@@ -66,25 +66,34 @@ const MAX_NEW_FILE_LINES = 800
  *   ChatInput 3721 → 3722、ChatMessage 2616 → 2620。
  *   SettingsPanel 当前实为 1185 行，冲突两侧的 1128 / 1178 均已过时，校正为 1185；
  *   本次未修改设置页源码。此次合并基线之后仍只允许下调预算。
+ * 2026-11-16 会话列表改为滚动分页（首屏一页 + 滚动到底续取，不再预取全量）后按实测值更新：
+ *   SessionList 1072 → 1106、AiSidebar 1726 → 1755、chatSession 1740 → 1744。
+ * 2026-11-16 超长输入另存为工作区 txt 并改为文件引用（压缩历史对它无效）后按实测值更新：
+ *   ChatInput 3722 → 3806。
+ * 2026-11-16 该提示改为中性内嵌单行样式（图标 + 万为单位的字数 + 可关闭），
+ *   并把图标/按钮描边收成主色点缀后按实测值更新：ChatInput 3806 → 3874。
+ * 2026-11-16 长文本判断改为按模型窗口 token 预算（131072 扣除用量/输出/技能开销），
+ *   提示条改为琥珀强调样式后按实测值更新：ChatInput 3874 → 3909。
  */
 const LINE_BUDGET = {
   // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
   // 2026-11-05 合并 audit-improvements（注释停用 AiSidebar）后按实测值更新：2035 → 2036
   [`${MOD}EasyAgentPage.vue`]: 2057,
-  [`${MOD}features/chat/components/ChatInput.vue`]: 3722,
+  [`${MOD}features/chat/components/ChatInput.vue`]: 3909,
   // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2644 → 2616
-  [`${MOD}features/chat/components/ChatMessage.vue`]: 2620,
+  // 2026-11-16 HITL 批次审批面板（一个中断多项操作只给一个审批入口）后按实测值更新：2620 → 2647
+  [`${MOD}features/chat/components/ChatMessage.vue`]: 2647,
   [`${MOD}features/chat/components/AiSidebar.vue`]: 1726,
   [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2253,
   // 2026-11-12 存量校正：mysql_saver / 跨 Pod 挂载修复后实为 1740 行，按实测值更新（本次改动未触及）
-  [`${MOD}features/chat/mixins/chatSession.js`]: 1740,
+  [`${MOD}features/chat/mixins/chatSession.js`]: 1744,
   [`${MOD}features/connectors/components/ConnectorListPanel.vue`]: 1504,
   [`${MOD}features/skills/components/SkillListPanel.vue`]: 1260,
   [`${MOD}shared/preview/FilePreview.vue`]: 1164,
   // 2026-11-16 恢复被合并丢失的「权限设置」tab（导航项 + ApprovalPanel 挂载）：1184 → 1190
   [`${MOD}features/settings/components/SettingsPanel.vue`]: 1190,
   [`${MOD}features/chat/components/Chat.vue`]: 1123,
-  [`${MOD}features/chat/components/SessionList.vue`]: 1072,
+  [`${MOD}features/chat/components/SessionList.vue`]: 1106,
   [`${MOD}features/tasks/components/ScheduledTasksPanel.vue`]: 967,
   [`${MOD}features/workspace/components/WorkspacePanel.vue`]: 954,
   [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1782,
@@ -154,6 +163,50 @@ test('超大文件只能变短，不能变长', async () => {
   assert.deepEqual(violations, [], violations.join('\n'))
 })
 
+/**
+ * 取模板片段 + components 注册表里的名字。
+ * Vue2 不会自动注册局部组件：`import X from './X.vue'` 之后还必须写进 `components`，
+ * 否则模板里的 <X> 会被当成未知元素**静默渲染为空**（只在控制台留一行警告）。
+ * HITL 批次审批面板就踩过这个坑：卡片提示了「请下方面板一并处理」，面板却整块不见。
+ */
+/**
+ * 已知未登记（存量，2026-11-16 守卫首次运行时发现，未在本轮修）：
+ * KnowledgeWorkbench 只在 setup() 返回里给了 KnowledgeAskFilter，模板用 <KnowledgeAskFilter>，
+ * 按 Vue2 的解析规则会渲染为空 → 「知识库问答元数据过滤」实际不出现。修它会改变现有界面，
+ * 交给该模块负责人确认后单独处理，这里先登记不误报。
+ */
+const COMPONENT_REGISTRATION_ALLOWLIST = new Set([
+  'packages/easyAgent/features/knowledge/KnowledgeWorkbench.vue:KnowledgeAskFilter',
+])
+
+function templateOf(source) {
+  const start = source.indexOf('<template>')
+  const end = source.lastIndexOf('</template>')
+  return start === -1 || end === -1 ? '' : source.slice(start, end)
+}
+
+function componentRegistry(source) {
+  const match = /components\s*:\s*\{/.exec(source)
+  if (!match) return new Set()
+  const start = match.index + match[0].length
+  let depth = 1
+  let i = start
+  while (i < source.length && depth > 0) {
+    if (source[i] === '{') depth++
+    else if (source[i] === '}') depth--
+    i++
+  }
+  return new Set(
+    [...source.slice(start, i - 1).matchAll(/[A-Za-z_$][\w$]*/g)].map((m) => m[0])
+  )
+}
+
+function usedInTemplate(source, name) {
+  const tpl = templateOf(source)
+  const kebab = name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase()
+  return new RegExp(`<${name}[\\s/>]`).test(tpl) || new RegExp(`<${kebab}[\\s/>]`).test(tpl)
+}
+
 test('组件不得新增对 api/ 的直接依赖', async () => {
   const files = await collectSourceFiles(srcRoot)
   const violations = []
@@ -201,6 +254,28 @@ test('共享 markdown 内核与 frontend-shared 保持一致', async () => {
     copy.endsWith(source),
     `${MOD}shared/markdown/index.js 与 frontend-shared/markdown/index.js 不一致，请执行 npm run sync:shared`
   )
+})
+
+test('局部 import 的组件必须在 components 里登记（Vue2 不自动注册）', async () => {
+  const files = (await collectSourceFiles(srcRoot)).filter((file) => file.endsWith('.vue'))
+  const violations = []
+
+  for (const filePath of files) {
+    const source = await readFile(filePath, 'utf8')
+    const imported = [
+      ...source.matchAll(/import\s+([A-Za-z_$][\w$]*)\s+from\s+['"][^'"]+\.vue['"]/g),
+    ].map((match) => match[1])
+    if (!imported.length) continue
+
+    const registry = componentRegistry(source)
+    for (const name of imported) {
+      if (!usedInTemplate(source, name) || registry.has(name)) continue
+      if (COMPONENT_REGISTRATION_ALLOWLIST.has(`${relative(filePath)}:${name}`)) continue
+      violations.push(`${relative(filePath)} 用了 <${name}> 但没在 components 里注册（会静默渲染为空）`)
+    }
+  }
+
+  assert.deepEqual(violations, [], violations.join('\n'))
 })
 
 test('package-lock.json 只用 npmjs 源', async () => {

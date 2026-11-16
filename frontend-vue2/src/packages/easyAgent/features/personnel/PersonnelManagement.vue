@@ -113,7 +113,7 @@
                 <th>SSO账号</th>
                 <th>部门</th>
                 <th>处室</th>
-                <th>团队</th>
+                <th>团队</th><th>角色</th>
                 <th>信息来源</th>
                 <th class="pm-nowrap">知识库管理员</th>
                 <th>状态</th>
@@ -122,12 +122,12 @@
             </thead>
             <tbody>
               <tr v-if="loading">
-                <td colspan="9">
+                <td colspan="10">
                   <div class="pm-loading"><span></span>正在加载人员信息…</div>
                 </td>
               </tr>
               <tr v-else-if="users.length === 0">
-                <td colspan="9">
+                <td colspan="10">
                   <div class="pm-empty">
                     <span>
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
@@ -152,6 +152,7 @@
                   <td><span class="pm-cell-main">{{ user.department_name || '未填写部门名称' }}</span></td>
                   <td><span class="pm-cell-main">{{ user.division_name || '—' }}</span></td>
                   <td><span class="pm-cell-main">{{ user.team_name || '—' }}</span></td>
+                  <td><span class="pm-cell-main">{{ user.position || '—' }}</span></td>
                   <td><span class="pm-source" :title="user.personnel_source || '未记录'">{{ user.personnel_source || '未记录' }}</span></td>
                   <td>
                     <span v-if="isSuperAdmin(user.username)" class="pm-access-note global">系统管理员</span>
@@ -270,8 +271,8 @@
               <small v-if="formErrors.team_name" class="pm-field-error">{{ formErrors.team_name }}</small>
             </label>
             <label>
-              <span>岗位</span>
-              <input v-model="form.position" autocomplete="off" placeholder="选填" />
+              <span>角色（岗位）</span>
+              <input v-model="form.position" autocomplete="off" placeholder="例：研究员" />
             </label>
             <label>
               <span>手机号</span>
@@ -1056,16 +1057,15 @@ export default {
 
 .pm-content { flex: 1 1 auto; min-height: 0; padding: 14px 24px 0; }
 .pm-table-wrap { height: 100%; overflow: auto; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 12px; }
-.pm-table { width: 100%; min-width: 1160px; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+.pm-table { width: 100%; min-width: 1280px; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
 .pm-table th { position: sticky; top: 0; z-index: 1; padding: 11px 13px; color: var(--text-secondary); background: var(--bg-tertiary); border-bottom: 1px solid var(--border-color); text-align: left; font-size: 11px; font-weight: 650; }
-.pm-table th:nth-child(1) { width: 170px; }
-.pm-table th:nth-child(2) { width: 110px; }
-.pm-table th:nth-child(3) { width: 150px; }
-.pm-table th:nth-child(4) { width: 100px; }
-.pm-table th:nth-child(5) { width: 100px; }
-.pm-table th:nth-child(6) { width: 95px; }
-.pm-table th:nth-child(7) { width: 165px; }
-.pm-table th:nth-child(8) { width: 75px; }
+/* 列宽按百分比分配，随容器均匀伸缩；操作列保留按钮所需空间 */
+.pm-table th:nth-child(1) { width: 11%; } .pm-table th:nth-child(2) { width: 8%; }
+.pm-table th:nth-child(3) { width: 11%; } .pm-table th:nth-child(4) { width: 9%; }
+.pm-table th:nth-child(5) { width: 9%; }
+.pm-table th:nth-child(6) { width: 8%; }
+.pm-table th:nth-child(7) { width: 10%; }
+.pm-table th:nth-child(8) { width: 13%; } .pm-table th:nth-child(9) { width: 7%; } .pm-table th:nth-child(10) { width: 14%; }
 .pm-table td { height: 64px; padding: 9px 13px; color: var(--text-primary); border-bottom: 1px solid var(--border-color); vertical-align: middle; font-size: 12px; }
 .pm-table tbody tr:last-child td { border-bottom: 0; }
 .pm-table tbody tr:hover td { background: color-mix(in srgb, var(--accent-color, #0ea5e9) 3%, transparent); }

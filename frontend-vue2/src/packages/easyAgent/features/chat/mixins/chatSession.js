@@ -1,16 +1,15 @@
 import { referenceMessage } from '../../../shared/fileReferences.js'
 import { connectSessionView } from "../../../shared/sessionManagement/viewLifecycle.js";
 import {
-  loadDailySessions,
   sessionGuard,
   isSessionDeleted,
   isStaleSessionError,
 } from "../../../shared/sessionManagement/state.js";
+import { reloadSessionList, loadMoreSessionList } from "../../../shared/sessionManagement/sessionPager.js";
 import { setReactive } from "../../../utils/reactiveSet.js";
 import { parseMCPResult } from "../../../utils/mcpResult.js";
 import {
   createSession,
-  listSessions,
   getChatHistory,
   deleteSession,
   sendMessage,
@@ -37,6 +36,7 @@ import {
   applyApprovalRequests,
   buildApprovalResumePlan,
   derivePendingApproval,
+  isNewApprovalEvent,
   markApprovalDecision,
 } from "../../../utils/hitlApproval.js";
 import { buildPlanContinuationTurn } from "../../../shared/chat/planConfirmationTurn.js";
@@ -126,6 +126,13 @@ export default {
       set(v) {
         chatStore.sessions = v;
       },
+    },
+    // 会话列表分页：还有更早的会话 / 正在续取
+    sessionsHasMore() {
+      return chatStore.sessionsHasMore;
+    },
+    sessionsLoading() {
+      return chatStore.sessionsLoading;
     },
     streamingSessions: {
       get() {
@@ -929,16 +936,22 @@ export default {
     },
     async loadSessions() {
       try {
-        await loadDailySessions(
-          () => listSessions(chatStore.username || null, { archived: false }),
-          rows => {
-            this.sessions = rows;
-            this.hydratePendingApprovalFromServer();
-            if (this.error === "加载会话列表失败") this.error = null;
-          },
-        );
+        await reloadSessionList(chatStore.username || null, () => {
+          this.hydratePendingApprovalFromServer();
+          if (this.error === "加载会话列表失败") this.error = null;
+        });
       } catch (e) {
         if (!isStaleSessionError(e)) this.error = "加载会话列表失败";
+      }
+    },
+    // 会话列表滚动到底：续取下一页（主页面与 AI 侧边栏共用同一份列表）
+    async loadMoreSessions() {
+      try {
+        await loadMoreSessionList(chatStore.username || null, () => {
+          this.hydratePendingApprovalFromServer();
+        });
+      } catch (e) {
+        if (!isStaleSessionError(e)) this.error = "加载更早的会话失败";
       }
     },
     // 服务端列表已带 pending_approval（后端按「最后一条消息」判定）：刷新页面后
@@ -1453,6 +1466,7 @@ export default {
     // HITL: 用户审批后恢复执行。target.interruptId = 用户点的那个中断（DA-02）：
     // 只回答它，其余中断保持挂起，恢复流结束时后端会再次下发 approval_required。
     async handleToolApproval(decision, target) {
+      if (!this.pendingApproval) this.reconstructPendingApproval(); // 审批态被收尾清掉、按钮由历史回填：点之前懒重建
       if (!this.pendingApproval) return;
 
       const currentApproval = this.pendingApproval;
@@ -1491,6 +1505,7 @@ export default {
       // 本次决策已落地，重算标识（若恢复流中再遇嵌套审批会立即重新亮起）
       this.recomputePendingApprovalFlag(sessionId);
 
+      let approvalEvent = null; // 恢复流里的 approval_required（判新审批用中断身份，不看 thread_id）
       const { onChunk } = this.createStreamChunkHandler({
         isResume: true,
         assistantMsgId: resumeAssistantId,
@@ -1503,6 +1518,7 @@ export default {
         initialBlockOrder,
         onApprovalRequired: data => {
           // 嵌套审批
+          approvalEvent = data || null;
           this.pendingApproval = {
             threadId: data.thread_id,
             assistantMsgId: resumeAssistantId,
@@ -1588,13 +1604,9 @@ export default {
         this.untrackStream(streamController);
         // 如果 resumeStream 期间收到了新的 approval_required（onChunk 重新设置了
         // 本会话的 pendingApproval），则不清除，保持 isStreaming=true 等待用户审批。
-        // 判「新」只能比 thread_id：恢复流重放同一条中断时会新建对象，按对象引用比较
-        // 会误判成新审批，把下面的回填与徽标重算整段跳过（徽标要等整页刷新才消失）。
-        const latestApproval = this.pendingApprovalOf(sessionId);
-        const latestThreadId = latestApproval && latestApproval.threadId;
-        const hasNewApproval =
-          !!latestThreadId &&
-          latestThreadId !== (currentApproval && currentApproval.threadId);
+        // 判「新」按中断身份：同一运行 thread_id 相同，只比 thread_id 会把新审批当重放
+        const answered = { threadId: currentApproval && currentApproval.threadId, interruptId };
+        const hasNewApproval = !!approvalEvent && isNewApprovalEvent(approvalEvent, answered);
         if (!this._chatDisposed && !hasNewApproval) {
           // 只清本会话的审批；当前展示的若是另一个会话，它的审批与停止按钮保持不动
           this.clearPendingApprovalOf(sessionId);
@@ -1612,6 +1624,7 @@ export default {
           // 审批恢复流结束：以服务端历史为准回填，保证完整渲染
           await this.syncSessionFromServer(sid);
           this.recomputePendingApprovalFlag(sid);
+          if (sid && sid === this.loadedSessionId) this.reconstructPendingApproval(); // 仍有挂起项：按历史重建，否则按钮点不动
           await this.loadSessions();
         }
       }

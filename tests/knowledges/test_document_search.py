@@ -4,7 +4,7 @@
 folder_id / direct_only 不能把结果限制在当前目录。
 """
 
-from easy_agent.knowledges.core.repository import KnowledgeRepository
+from easy_agent.knowledges.repository import KnowledgeRepository
 
 from .test_folder_upload import (
     _FakeRagflow,

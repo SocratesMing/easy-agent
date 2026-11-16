@@ -8,7 +8,7 @@ import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from easy_agent.knowledges.core.chunks import (
+from easy_agent.knowledges.files.chunks import (
     chunk_id,
     chunk_text,
     collect_document_chunks,

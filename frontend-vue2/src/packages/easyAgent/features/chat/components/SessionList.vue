@@ -41,7 +41,7 @@
       </button>
     </div>
     <div class="divider"></div>
-    <div class="session-items">
+    <div class="session-items" @scroll="onSessionsScroll">
       <div
         v-for="group in groupedSessions"
         :key="group.label"
@@ -122,6 +122,8 @@
           {{ expandedGroups[group.label] ? '收起' : `查看更多 (${group.sessions.length - groupPreviewLimit})` }}
         </button>
       </div>
+      <!-- 分页：滚动到底续取下一页；窗口很高没有滚动条时可点这里 -->
+      <button v-if="sessionsHasMore" class="session-more-hint" :disabled="sessionsLoading" @click="$emit('load-more-sessions')">{{ sessionsLoading ? '加载中…' : '滚动到底加载更早的会话' }}</button>
       <div v-if="sessions.length === 0" class="empty-state">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
@@ -245,9 +247,18 @@ export default {
   knowledgeEnabled: {
     type: Boolean,
     default: false
+  },
+  // 分页：还有更早的会话 / 正在续取
+  sessionsHasMore: {
+    type: Boolean,
+    default: false
+  },
+  sessionsLoading: {
+    type: Boolean,
+    default: false
   }
 },
-  emits: ['create-session', 'select-session', 'delete-session', 'rename-session', 'toggle-sidebar', 'show-knowledge', 'show-skill-center', 'show-scheduled-tasks', 'show-settings', 'show-user-management', 'logout', 'toggle-pin'],
+  emits: ['create-session', 'select-session', 'delete-session', 'rename-session', 'toggle-sidebar', 'show-knowledge', 'show-skill-center', 'show-scheduled-tasks', 'show-settings', 'show-user-management', 'logout', 'toggle-pin', 'load-more-sessions'],
   data() {
     return {
       activeMenu: null,
@@ -361,6 +372,13 @@ export default {
     },
     toggleGroupExpand(label) {
       this.expandedGroups = { ...this.expandedGroups, [label]: !this.expandedGroups[label] }
+    },
+    /** 滚动到底部附近才续取下一页，避免预先加载全部会话 */
+    onSessionsScroll(event) {
+      if (!this.sessionsHasMore || this.sessionsLoading) return
+      const el = event.target
+      if (el.scrollHeight - el.scrollTop - el.clientHeight > 48) return
+      this.$emit('load-more-sessions')
     },
     /** 列表右侧的相对时间：取最后活跃时间，没有则退回创建时间 */
     relativeTime(session) {
@@ -634,6 +652,24 @@ export default {
 .session-more:hover {
   background: var(--bg-tertiary);
   color: var(--text-primary);
+}
+
+/* 分页提示：列表底部居中，样式比会话条目更轻 */
+.session-more-hint {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+  cursor: pointer;
+}
+
+.session-more-hint:disabled {
+  cursor: default;
+  opacity: 0.7;
 }
 
 .session-item.streaming {
