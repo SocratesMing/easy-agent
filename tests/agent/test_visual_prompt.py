@@ -22,14 +22,23 @@ models:
 """
 
 
-def test_prompt_teaches_all_three_blocks_by_default():
+def test_prompt_teaches_charts_and_diagrams_but_not_widgets_by_default():
     prompt = build_visual_prompt(VisualConfig())
 
-    for fence in ("```echarts", "```mermaid", "```widget"):
+    for fence in ("```echarts", "```mermaid"):
         assert fence in prompt
+    assert "```widget" not in prompt
     assert "合法 JSON" in prompt
     assert "不要编造" in prompt
     assert "chart 字段" in prompt
+
+
+def test_widgets_can_be_enabled_explicitly():
+    prompt = build_visual_prompt(VisualConfig(html_widgets=True))
+
+    assert "```echarts" in prompt
+    assert "```mermaid" in prompt
+    assert "```widget" in prompt
 
 
 def test_widgets_off_drops_only_the_widget_block():

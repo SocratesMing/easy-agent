@@ -183,8 +183,8 @@ class ResumeRequest(BaseModel):
         default=None,
         max_length=20000,
         description=(
-            "规划确认等产品交互提交后，作为普通用户消息持久化并显示在会话中的文本；"
-            "为空表示普通工具审批，不新增用户消息"
+            "兼容字段，仅用于旧客户端；服务端不会信任该文本，"
+            "而是从 ask_user 参数和 respond 决策重新生成用户确认消息"
         ),
     )
     confirmation_message_id: Optional[str] = Field(

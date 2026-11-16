@@ -595,8 +595,12 @@ class VisualConfig(BaseModel):
     enabled: bool = True
     """总开关：false 时三类可视化都不渲染、提示词也不再提。"""
 
-    html_widgets: bool = True
-    """是否允许模型写的 HTML 交互组件在沙箱里运行（滑块、参数切换等需要脚本的演示）。"""
+    html_widgets: bool = False
+    """是否允许模型写的 HTML 交互组件在沙箱里运行。
+
+    默认关闭。模型生成脚本可自行导航到外部地址，CSP 只能阻止 fetch/XHR 等请求，
+    不能在所有浏览器中阻止文档导航；需要交互组件的部署必须显式开启并额外配置出站限制。
+    """
 
 
 class StreamingConfig(BaseModel):
