@@ -95,3 +95,19 @@ Vue3 原基线 `Chat.vue` 1018行超过 structure 测试预算986。将其原有
 以上不等于所有供应商及生产环境联调完成；其他模型供应商、生产 MySQL 和实际业务账号仍需按部署环境验收。固定 HTTP 响应契约测试继续覆盖漏报、取消、重复尾块及并发等边界。
 
 本轮日志：`/tmp/easy-token-usage-pytest-final.log`、`/tmp/easy-token-usage-vue3-unit.log`、`/tmp/easy-token-usage-vue3-build.log`、`/tmp/easy-token-provider-all.log`、`/tmp/easy-token-usage-provider-ledger.log`。
+
+## 2026-11-16 会话身份与索引修复验证
+
+会话账本查询改为 `WHERE user_id=? AND session_id=?`，删除按用户名回连用户表的逻辑。普通聊天、专家拒答、HITL 恢复将服务端解析的同一份 `UsageIdentity` 交给模型写账与 SSE 累计包装层；显式 `None` 不重新解析，也不继承外层用户。详情/历史在完成归属校验后解析当前用户。schema 19 新增 `idx_token_usage_user_session(user_id, session_id)`，保留原统计索引及历史账目。
+
+新增或扩展回归覆盖：改名与旧用户名被另一账号复用后的账目隔离；流中改名后 `token_usage` / `done` 仍读取原身份；HITL 恢复接口只解析一次身份；成功与失败身份、提前关闭生成器的 scope 清理；schema 18 存量库补索引、重复初始化与账目保留；SQLite 执行计划同时使用用户与会话索引键。
+
+验证结果：
+
+- `tests/api/test_chat_resume_validation.py`、`tests/services/test_stream_runner.py`、`tests/services/test_session_token_totals.py`、`tests/api/test_sessions.py`、`tests/api/test_usage.py`、`tests/agent/test_token_usage.py`、`tests/agent/test_token_usage_graph.py`、`tests/services/test_usage_scopes.py`：**116 passed**。
+- 扩展回归（上述恢复接口、流包装层，加 `test_run_lifecycle`、`test_expert`、`test_session_thread_api`、`test_stream_concurrency`、`test_chat_turn_prep`、`test_hitl_resume`、`test_schema_version`、`test_migrations`）：**204 passed**。与上一组有重复用例，计数不相加。
+- 本机隔离 MySQL **8.4.10**，通过既有 `EASY_TEST_MYSQL_*` 开关执行完整 `tests/db/test_token_usage.py`：**22 passed、0 skipped**，包含 SQLite 与真实 MySQL 的 schema 18 索引升级、改名与用户名复用隔离。临时实例、数据目录及测试库均已清理，不涉及业务数据库。
+- 修改文件的 Ruff、`git diff --check`、import SCC/分层/包入口、双写冻结及 async 阻塞门禁通过。
+- `uvx pyright` 仍有 **5 errors、1 warning**。将原始 HEAD 的源码导出至独立临时目录并使用相同虚拟环境对照，原基线为 **6 errors、1 warning**；剩余错误均为原有的会话仓储参数、恢复流类型与记忆模型配置问题，warning 为 `olefile` 类型来源缺失。本次未新增类型错误，并修正了身份哨兵的类型收窄。
+
+本次为后端及文档变更，执行定向回归；未运行全量 pytest、前端构建或真实模型供应商调用。
