@@ -6,6 +6,7 @@ import {
   approvalTargetForBlock,
   buildApprovalResumePlan,
   buildResumeDecisions,
+  isNewApprovalEvent,
   markApprovalDecision,
   unmatchedApprovalRequests,
 } from './hitlApproval.js'
@@ -173,4 +174,52 @@ test('buildResumeDecisions: 旧载荷（无 interrupt_id）编辑单条', () => 
     editedAction: { name: 'a', args: { y: 1 } }
   })
   assert.deepEqual(decisions, [{ type: 'edit', edited_action: { name: 'a', args: { y: 1 } } }])
+})
+
+// ── isNewApprovalEvent：恢复流里的事件是新审批还是重放 ──────────────────
+// 一次运行（含其全部恢复流）的 thread_id 是同一个；嵌套审批、并行子代理剩下的中断
+// 都带同一个 thread_id，因此只能按中断身份判，否则新审批会被清掉、按钮变成死按钮。
+
+test('恢复流事件判据：同 thread、同一中断重放 → 不是新审批', () => {
+  const data = { thread_id: 's-1', action_requests: [
+    { tool_name: 'delete', interrupt_id: 'A', action_index: 0 },
+    { tool_name: 'delete', interrupt_id: 'A', action_index: 1 },
+  ] }
+  assert.equal(isNewApprovalEvent(data, { threadId: 's-1', interruptId: 'A' }), false)
+})
+
+test('恢复流事件判据：同 thread、出现未作答的中断 → 是新审批', () => {
+  const data = { thread_id: 's-1', action_requests: [
+    { tool_name: 'delete', interrupt_id: 'B', action_index: 0 },
+  ] }
+  assert.equal(isNewApprovalEvent(data, { threadId: 's-1', interruptId: 'A' }), true)
+})
+
+test('恢复流事件判据：新旧中断混在同一批里 → 是新审批', () => {
+  const data = { thread_id: 's-1', action_requests: [
+    { tool_name: 'delete', interrupt_id: 'A', action_index: 0 },
+    { tool_name: 'delete', interrupt_id: 'B', action_index: 0 },
+  ] }
+  assert.equal(isNewApprovalEvent(data, { threadId: 's-1', interruptId: 'A' }), true)
+})
+
+test('恢复流事件判据：thread_id 变了 → 是新审批', () => {
+  assert.equal(isNewApprovalEvent(
+    { thread_id: 's-2', action_requests: [{ interrupt_id: 'A' }] },
+    { threadId: 's-1', interruptId: 'A' },
+  ), true)
+})
+
+test('恢复流事件判据：缺 thread_id 的事件不算新审批；旧载荷按中断作答与否兜底', () => {
+  assert.equal(isNewApprovalEvent(null, { threadId: 's-1', interruptId: 'A' }), false)
+  assert.equal(isNewApprovalEvent({ action_requests: [{ interrupt_id: 'A' }] }, { threadId: 's-1' }), false)
+  // 旧载荷（无 interrupt_id）：本次没答过中断 → 视为新审批；答过 → 视为重放
+  assert.equal(isNewApprovalEvent(
+    { thread_id: 's-1', action_requests: [{ tool_name: 'delete' }] },
+    { threadId: 's-1', interruptId: 'A' },
+  ), false)
+  assert.equal(isNewApprovalEvent(
+    { thread_id: 's-1', action_requests: [{ tool_name: 'delete' }] },
+    { threadId: 's-1' },
+  ), true)
 })
