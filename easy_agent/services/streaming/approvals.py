@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -311,3 +312,153 @@ def answered_actions(
             if isinstance(decision, dict):
                 pairs.append((action, decision))
     return pairs
+
+
+def _response_payload(decision: Mapping) -> tuple[dict, str]:
+    """Parse one ``respond`` decision into its answers and optional note."""
+    raw = decision.get("message")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError as exc:
+            raise ValueError("ask_user 回复不是合法 JSON") from exc
+    if not isinstance(raw, Mapping):
+        raise ValueError("ask_user 回复必须是对象")
+    answers = raw.get("answers")
+    if not isinstance(answers, Mapping):
+        raise ValueError("ask_user 回复缺少 answers 对象")
+    note = str(raw.get("note") or "").strip()[:2000]
+    return dict(answers), note
+
+
+def _selected_labels(question: Mapping, answer) -> list[str]:
+    """Validate one answer against its question and return display labels."""
+    multiple = question.get("multiple") is True
+    required = question.get("required") is not False
+    options = question.get("options")
+    if not isinstance(options, list) or len(options) < 2:
+        raise ValueError("ask_user 问题缺少有效候选项")
+    labels = {
+        str(option.get("id") or ""): str(option.get("label") or "").strip()
+        for option in options
+        if isinstance(option, Mapping)
+    }
+    labels.pop("", None)
+    if not labels or any(not label for label in labels.values()):
+        raise ValueError("ask_user 候选项缺少有效 ID 或名称")
+
+    if multiple:
+        if answer is None:
+            selected = []
+        elif isinstance(answer, list):
+            selected = [str(item) for item in answer]
+        else:
+            raise ValueError("多选问题必须提交选项数组")
+        if len(selected) != len(set(selected)):
+            raise ValueError("多选答案不能包含重复选项")
+    else:
+        if isinstance(answer, list):
+            raise ValueError("单选问题不能提交选项数组")
+        selected = [] if answer in (None, "") else [str(answer)]
+
+    if required and not selected:
+        raise ValueError("必选确认项尚未作答")
+    unknown = [option_id for option_id in selected if option_id not in labels]
+    if unknown:
+        raise ValueError("ask_user 回复包含未知选项")
+    return [labels[option_id] for option_id in selected]
+
+
+def _render_ask_user_response(
+    arguments: Mapping,
+    decision: Mapping,
+    start: int,
+) -> tuple[list[str], str]:
+    """Render one answered ``ask_user`` call using the persisted question contract."""
+    answers, note = _response_payload(decision)
+    questions = arguments.get("questions")
+    if not isinstance(questions, list) or not questions:
+        fallback = f"补充说明：{note}" if note else "确认项格式不完整，已提交用户反馈。"
+        return [fallback], ""
+
+    question_ids = {
+        str(question.get("id") or "")
+        for question in questions
+        if isinstance(question, Mapping)
+    }
+    question_ids.discard("")
+    unknown_questions = set(answers) - question_ids
+    if unknown_questions:
+        raise ValueError("ask_user 回复包含未知确认项")
+
+    lines: list[str] = []
+    for question in questions:
+        if not isinstance(question, Mapping):
+            raise ValueError("ask_user 问题结构无效")
+        question_id = str(question.get("id") or "")
+        title = str(question.get("title") or "").strip()[:120]
+        if not question_id or not title:
+            raise ValueError("ask_user 问题缺少 ID 或标题")
+        labels = _selected_labels(question, answers.get(question_id))
+        lines.append(
+            f"{start + len(lines)}. {title}：{'、'.join(labels) if labels else '未选择'}"
+        )
+    return lines, note
+
+
+def build_plan_confirmation(
+    message: Mapping | None,
+    decisions: Iterable[Mapping] | None,
+) -> str | None:
+    """Build the user-visible plan confirmation from server-side pending actions.
+
+    Client-provided confirmation text is intentionally not accepted as evidence.
+    The display bubble must be derived from the persisted ``ask_user`` arguments
+    and the ``respond`` decisions that will actually resume the graph.
+    """
+    decision_items = [d for d in (decisions or []) if isinstance(d, Mapping)]
+    respond_decisions = [d for d in decision_items if d.get("type") == "respond"]
+    if not respond_decisions:
+        return None
+
+    pending = message.get("pending_approval") if isinstance(message, Mapping) else None
+    actions = pending.get("action_requests") if isinstance(pending, Mapping) else []
+    actions = [dict(action) for action in (actions or []) if isinstance(action, Mapping)]
+    tagged = any(d.get("interrupt_id") for d in respond_decisions)
+
+    by_slot = {
+        (str(d.get("interrupt_id") or ""), int(d.get("action_index") or 0)): d
+        for d in respond_decisions
+    }
+    lines: list[str] = []
+    notes: list[str] = []
+    matched = False
+    for action_index, action in enumerate(actions):
+        if action_name(action) != "ask_user":
+            continue
+        key = (
+            str(action.get("interrupt_id") or ""),
+            int(action.get("action_index") or action_index),
+        )
+        decision = by_slot.get(key) if tagged else respond_decisions[0]
+        if decision is None:
+            continue
+        matched = True
+        rendered, note = _render_ask_user_response(
+            action_args(action), decision, len(lines) + 1
+        )
+        lines.extend(rendered)
+        if note and note not in notes:
+            notes.append(note)
+
+    if not matched:
+        # Older approvals may not have persisted action arguments. A generic
+        # server-owned summary is still safer than trusting client display text.
+        for decision in respond_decisions:
+            _, note = _response_payload(decision)
+            if note and note not in notes:
+                notes.append(note)
+        lines.append("已提交规划确认，继续执行。")
+
+    lines.extend(f"补充说明：{note}" for note in notes)
+    return "\n".join(lines) or None

@@ -23,6 +23,13 @@ export async function getSystemPrompt() {
   return await response.json()
 }
 
+/** 部署版本（version.json：name + version，version 末尾为 commit id 前 6 位）。 */
+export async function getVersionInfo() {
+  const response = await authFetch(`${API_BASE_URL}/agent/version`)
+  if (!response.ok) throw new Error('获取版本信息失败')
+  return await response.json()
+}
+
 export async function getSkills() {
   const response = await authFetch(`${API_BASE_URL}/agent/settings/skills`)
   if (!response.ok) throw new Error('获取 Skills 列表失败')

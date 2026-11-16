@@ -36,7 +36,7 @@
     <div v-show="expanded" class="tcc-body">
       <div v-if="pendingApproval" class="tcc-approval">
         <div class="tcc-approval-prompt">
-          <span>{{ approvalPrompt }}</span>
+          <span>{{ hideApprovalActions ? '本次审批包含多项操作，请在下方审批面板中一并处理' : approvalPrompt }}</span>
         </div>
         <ul v-if="filePaths && filePaths.length" class="tcc-approval-files">
           <li v-for="(fp, i) in filePaths" :key="i">{{ fp }}</li>
@@ -54,7 +54,7 @@
             <button type="button" class="tcc-btn" @click="cancelEdit">取消</button>
           </div>
         </template>
-        <div v-else class="tcc-approval-actions">
+        <div v-else-if="!hideApprovalActions" class="tcc-approval-actions">
           <button type="button" class="tcc-btn approve" @click="$emit('approve')">批准</button>
           <!-- 删除类操作后端只下发 approve/reject，不提供改参数入口 -->
           <button v-if="canEditDecision" type="button" class="tcc-btn" @click="startEdit">编辑参数</button>
@@ -119,6 +119,8 @@ export default {
     streaming: { type: Boolean, default: false },
     // 后端下发的可选项（approve/edit/reject）。空数组 = 旧载荷，按全部可选处理
     allowedDecisions: { type: Array, default: () => [] },
+    // 该卡片所在中断含多项操作：按钮统一收在批次审批面板里，卡片只提示（避免「点一次批整批」的误解）
+    hideApprovalActions: { type: Boolean, default: false },
   },
   emits: ['approve', 'reject', 'edit'],
   data() {
