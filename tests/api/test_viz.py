@@ -28,17 +28,17 @@ def _script_src(csp: str) -> str:
     return next(part.strip() for part in csp.split(";") if part.strip().startswith("script-src"))
 
 
-def test_frame_page_enables_safe_visuals_by_default(monkeypatch):
+def test_frame_page_enables_every_kind_by_default(monkeypatch):
     response = _client(monkeypatch).get("/agent/viz/frame.html")
 
     assert response.status_code == 200
     assert 'data-enabled="1"' in response.text
-    assert 'data-widgets="0"' in response.text
+    assert 'data-widgets="1"' in response.text
     csp = response.headers["content-security-policy"]
     assert "connect-src 'none'" in csp
     assert "img-src data: blob:" in csp
     assert "default-src 'none'" in csp
-    assert _script_src(csp) == "script-src 'self'"
+    assert _script_src(csp) == "script-src 'self' 'unsafe-inline'"
     assert response.headers["cache-control"] == "public, max-age=60"
     assert response.headers["referrer-policy"] == "no-referrer"
 

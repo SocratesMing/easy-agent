@@ -250,7 +250,7 @@ file_context:
 # ===== 对话内可视化 =====
 visual:
   enabled: true                 # ECharts / Mermaid 总开关
-  html_widgets: false           # 默认关闭模型生成的 HTML/JS；显式开启前应配置出站网络限制
+  html_widgets: true            # HTML/JS 交互组件；false 可关闭，避免执行模型生成的脚本
 
 # ===== 知识库 / RAGFlow（接入、研报同步与研报 SQL 可用环境变量覆盖；入库/检索参数在此配置）=====
 knowledge:

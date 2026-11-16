@@ -100,7 +100,7 @@ class Config(BaseModel):
     streaming: StreamingConfig = Field(default_factory=StreamingConfig)
     """SSE 流式响应配置（streaming 段）；缺失时心跳默认 15 秒。"""
     visual: VisualConfig = Field(default_factory=VisualConfig)
-    """对话内可视化（visual 段）：图表与流程图默认开启，HTML 交互组件默认关闭。"""
+    """对话内可视化（visual 段）：ECharts、Mermaid 与 HTML 交互组件默认开启。"""
     models: dict[str, ProviderConfig] = Field(default_factory=dict)
     active_model: str = "minimax"
     preset_questions: list[PresetQuestionGroup] = Field(default_factory=list)
