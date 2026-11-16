@@ -2,9 +2,12 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from easy_agent.services.agents.chat_turn import _mark_resumed_interaction
 from easy_agent.services.streaming.messages import stable_history
 from easy_agent.services.streaming.projector import last_user_message
+from easy_agent.services.streaming.approvals import build_plan_confirmation
 from easy_agent.services.streaming.orchestrator import (
     _continuation_event_allowed,
     _continuation_tool_records,
@@ -139,3 +142,60 @@ def test_split_continuation_drops_replayed_interrupt_content():
     ]
     assert _continuation_event_allowed({"type": "content", "step": 1}, 1) is False
     assert _continuation_event_allowed({"type": "content", "step": 2}, 1) is True
+
+
+def _confirmation_source() -> dict:
+    return {
+        "role": "assistant",
+        "pending_approval": {
+            "action_requests": [
+                {
+                    "tool_name": "ask_user",
+                    "interrupt_id": "int-ask",
+                    "action_index": 0,
+                    "arguments": {
+                        "questions": [
+                            {
+                                "id": "project",
+                                "title": "项目方案",
+                                "multiple": False,
+                                "required": True,
+                                "options": [
+                                    {"id": "fast", "label": "快速版本"},
+                                    {"id": "full", "label": "完整版本"},
+                                ],
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+    }
+
+
+def test_plan_confirmation_rejects_unknown_option_ids():
+    decisions = [
+        {
+            "type": "respond",
+            "interrupt_id": "int-ask",
+            "action_index": 0,
+            "message": '{"answers":{"project":"unknown"}}',
+        }
+    ]
+
+    with pytest.raises(ValueError, match="未知选项"):
+        build_plan_confirmation(_confirmation_source(), decisions)
+
+
+def test_plan_confirmation_rejects_missing_required_answer():
+    decisions = [
+        {
+            "type": "respond",
+            "interrupt_id": "int-ask",
+            "action_index": 0,
+            "message": '{"answers":{}}',
+        }
+    ]
+
+    with pytest.raises(ValueError, match="尚未作答"):
+        build_plan_confirmation(_confirmation_source(), decisions)
