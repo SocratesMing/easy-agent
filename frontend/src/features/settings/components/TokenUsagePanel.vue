@@ -21,7 +21,7 @@
         <div class="usage-chart-header">
           <div class="usage-chart-heading">
             <h4>每日Token趋势</h4>
-            <div v-if="series.length" class="usage-legend" role="group" aria-label="显示或隐藏模型曲线">
+            <div v-if="series.length" class="usage-legend" role="group" aria-label="显示或隐藏模型柱">
               <button v-for="item in series" :key="item.id" type="button" :aria-pressed="!hiddenIds.includes(item.id)" :class="[{ muted: hiddenIds.includes(item.id) }, 'series-' + item.colorIndex]" @click="toggleSeries(item.id)"><span aria-hidden="true">●</span> {{ item.label }}</button>
             </div>
           </div>
@@ -36,15 +36,14 @@
         </div>
         <template v-else>
         <p v-if="!hasWindowUsage" class="usage-empty" role="status">暂无Token用量</p>
-        <svg class="usage-chart" :viewBox="'0 0 ' + chartWidth + ' 220'" role="group" :aria-label="'近' + usage.days + '日每日Token趋势，按日期聚焦查看精确用量'">
+        <svg class="usage-chart" :viewBox="'0 0 ' + chartWidth + ' 220'" role="group" :aria-label="'近' + usage.days + '日每日Token柱状图，按日期聚焦查看精确用量'">
           <title>每日Token趋势</title>
           <g v-for="tick in chart.ticks" :key="tick.value" class="chart-grid">
             <line :x1="chart.left" :x2="chart.right" :y1="tick.y" :y2="tick.y" />
             <text :x="chart.left - 10" :y="tick.y + 4" text-anchor="end">{{ compact(tick.value) }}</text>
           </g>
           <g v-for="item in chart.series" :key="item.id" :class="'series-' + item.colorIndex">
-            <path :d="item.path" :stroke-dasharray="item.dash" class="chart-line" />
-            <circle v-for="(point, index) in item.points" :key="index" :cx="point.x" :cy="point.y" r="3" class="chart-point" />
+            <rect v-for="(point, index) in item.points" :key="index" :x="point.barX" :y="point.y" :width="point.barWidth" :height="point.height" rx="2" class="chart-bar" />
           </g>
           <line v-if="selectedPoint" :x1="selectedPoint.x" :x2="selectedPoint.x" :y1="chart.top" :y2="chart.bottom" class="chart-selection" />
           <text v-for="tick in chart.dateTicks" :key="'label-' + tick.date" :x="tick.x" :y="chart.bottom + 26" text-anchor="middle" class="chart-date">{{ tick.date.slice(5) }}</text>
@@ -94,7 +93,7 @@ export default {
     series() { return this.usage ? labelUsageSeries(this.usage.daily.series) : [] },
     chart() { return buildUsageChart(this.usage ? this.usage.daily : { dates: [], series: [] }, this.hiddenIds, this.chartWidth, 220) },
     selectedPoint() { return this.chart.dates[this.selectedIndex] },
-    dateHitWidth() { return Math.min(44, (this.chart.right - this.chart.left) / Math.max(this.chart.dates.length - 1, 1)) },
+    dateHitWidth() { return this.chart.slot },
     hasWindowUsage() { return this.usage && this.usage.daily.totals.some(value => value > 0) },
     asOfLabel() {
       return new Date(this.usage.as_of).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
@@ -229,8 +228,7 @@ button:focus-visible, summary:focus-visible, .usage-table-scroll:focus-visible {
 .usage-chart { display: block; width: 100%; height: auto; aspect-ratio: auto; overflow: visible; margin-top: 0.5rem; }
 .chart-grid line { stroke: var(--border-color, #e2e8f0); stroke-dasharray: 3 4; }
 .chart-grid text, .chart-date { fill: var(--text-secondary); font-size: 12px; }
-.chart-line { fill: none; stroke: var(--series-color); stroke-width: 2.5; stroke-linejoin: round; }
-.chart-point { fill: var(--bg-secondary, #fff); stroke: var(--series-color); stroke-width: 2; }
+.chart-bar { fill: var(--series-color); }
 .chart-selection { stroke: var(--accent-color, #1677ee); stroke-dasharray: 3 4; pointer-events: none; }
 .date-hit { fill: transparent; cursor: pointer; outline: none; }
 .date-hit:focus { fill: var(--accent-color, #1677ee); fill-opacity: 0.1; stroke: var(--accent-color, #1677ee); stroke-width: 1; }
