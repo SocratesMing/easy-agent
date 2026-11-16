@@ -155,6 +155,17 @@
             </div>
             <MarkdownBody v-else class="message-text" :content="seg.block.content" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" />
           </template>
+          <!-- 一个中断挂了多项操作（同一条 AIMessage 的多个工具调用被框架打包成一次中断）：
+               只给一个审批入口 + 操作清单，避免「点一次静默批了整批」（DA-28） -->
+          <div v-if="pendingBatchGroups.length > 0" class="pending-approval-panel">
+            <ApprovalBatchPanel
+              v-for="group in pendingBatchGroups"
+              :key="'hitl-batch-' + group.interruptId"
+              :actions="group.actions"
+              @approve="$emit('approve', { interruptId: group.interruptId })"
+              @reject="$emit('reject', { interruptId: group.interruptId })"
+            />
+          </div>
           <!-- 子代理内部触发的审批：主消息里没有对应工具卡片，单独列出（每项只回答自己的中断） -->
           <div v-if="pendingPanelActions.length > 0" class="pending-approval-panel">
             <ToolCallCard
@@ -264,11 +275,12 @@ import KnowledgeEvidence from '../../knowledge/KnowledgeEvidence.vue'
 import FileReferenceTag from './FileReferenceTag.vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
 import ToolCallCard from './ToolCallCard.vue'
+import ApprovalBatchPanel from './ApprovalBatchPanel.vue'
 import MessageError from './MessageError.vue'
 import MessageFallbackNote from './MessageFallbackNote.vue'
 import { buildMessageSegments, describeProcessGroup } from '../../../shared/chat/messageSegments.js'
 import { buildUserRetryRequest, canRetryUserMessage } from '../../../shared/chat/messageRetry.js'
-import { approvalTargetForBlock, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
+import { approvalTargetForBlock, batchedApprovalGroups, isBatchedApprovalBlock, unmatchedApprovalRequests } from '../../../utils/hitlApproval.js'
 import SkillIcon from '../../../shared/components/SkillIcon.vue'
 import { iconCategoryFor } from '../../../utils/skillCategories.js'
 // 专家头像取字 / 配色：与技能中心、+ 号下拉、输入框胶囊共用同一套规则（按 ID 稳定取档）
@@ -533,8 +545,16 @@ watch(() => hasPendingApproval.value, (pending) => {
   nextTick(scrollPendingApprovalIntoView)
 }, { immediate: true })
 
+// 一个中断挂了多项操作（同一条 AIMessage 的多个工具调用被框架打包成一次中断）：整批展示（DA-28）
+const pendingBatchGroups = computed(() => props.message.role === 'assistant' ? batchedApprovalGroups(props.message) : [])
+const batchedInterruptIds = computed(() => new Set(pendingBatchGroups.value.map(group => group.interruptId)))
 // 没有对应工具卡片的待审批操作（子代理内部触发），在消息级面板里单独给出按钮（DA-02）。
-const pendingPanelActions = computed(() => props.message.role === 'assistant' ? unmatchedApprovalRequests(props.message) : [])
+// 已归入批次面板的操作不再重复出现：同一个中断只能整批作答，给两次入口只会造成误解。
+const pendingPanelActions = computed(() => {
+  if (props.message.role !== 'assistant') return []
+  return unmatchedApprovalRequests(props.message)
+    .filter(ar => !(ar.interrupt_id && batchedInterruptIds.value.has(ar.interrupt_id)))
+})
 watch(() => pendingPanelActions.value.length, (len, prev) => {
   if (len && !prev) nextTick(scrollPendingApprovalIntoView)
 })
@@ -564,6 +584,8 @@ function toolCardProps(block) {
     success: block.success !== false,
     duration: block.duration,
     pendingApproval: !!block.pending_approval,
+    // 属于「一个中断多项操作」的卡片不再单给按钮：按钮在批次面板里，一次批整批
+    hideApprovalActions: isBatchedApprovalBlock(props.message, block, pendingBatchGroups.value),
     filePaths: block.file_paths || [],
     allowedDecisions: block.allowed_decisions || [],
     streaming: !!block.streaming,

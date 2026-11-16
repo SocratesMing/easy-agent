@@ -48,20 +48,15 @@ const MAX_NEW_FILE_LINES = 800
  *  2026-11-16 解决文件引用与交互模式的双分支冲突，按合并后的实测值重建基线：
  *    App.vue 3376 → 3371、ChatInput 4851 → 4867、ChatMessage 2499 → 2502。
  *    两侧功能均保留；本次合并基线之后仍只允许下调预算。
- *  2026-11-16 会话列表改为滚动分页（首屏一页 + 滚动到底续取，不再预取全量）后按实测值更新：
- *    App.vue 3371 → 3382、SessionList 1040 → 1078。
- *  2026-11-16 超长输入另存为工作区 txt 并改为文件引用（压缩历史对它无效）后按实测值更新：
- *    ChatInput 4867 → 4947。
- *  2026-11-16 该提示改为中性内嵌单行样式（图标 + 万为单位的字数 + 可关闭），
- *    并把图标/按钮描边收成主色点缀后按实测值更新：ChatInput 4947 → 5010。
- *  2026-11-16 长文本判断改为按模型窗口 token 预算（131072 扣除用量/输出/技能开销），
- *    提示条改为琥珀强调样式后按实测值更新：ChatInput 5010 → 5043。
+ *  2026-11-16 HITL 批次审批面板（一个中断多项操作只给一个审批入口 + 操作清单）：
+ *    ChatMessage.vue 2502 → 2524（批次面板 9 行、批次分组/成员判据/卡片降级 13 行）；新增组件
+ *    ApprovalBatchPanel.vue 不计入存量预算。
  */
 const LINE_BUDGET = {
   'App.vue': 3382,
   'features/chat/components/ChatInput.vue': 5043,
   // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2523 → 2499
-  'features/chat/components/ChatMessage.vue': 2502,
+  'features/chat/components/ChatMessage.vue': 2524,
   'features/experts/components/ExpertListPanel.vue': 2188,
   'features/connectors/components/ConnectorListPanel.vue': 1547,
   'features/settings/components/SettingsPanel.vue': 1226,
