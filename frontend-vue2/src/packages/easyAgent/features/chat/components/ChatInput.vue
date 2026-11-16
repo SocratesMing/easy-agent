@@ -2,7 +2,12 @@
   <div class="chat-input-container">
     <div class="input-box" ref="inputBoxRef">
       <!-- 上传限额汇总提示（整批拒绝 / 文件被跳过时出现，2.6s 自动消失） -->
-      <div v-if="uploadNotice" class="upload-notice" role="status" aria-live="polite">
+      <div
+        v-if="uploadNotice"
+        class="upload-notice"
+        role="status"
+        aria-live="polite"
+      >
         <span class="upload-notice-text">{{ uploadNotice }}</span>
         <button
           type="button"
@@ -10,7 +15,14 @@
           aria-label="关闭提示"
           @click="dismissUploadNotice"
         >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
+            stroke-linecap="round"
+          >
             <line x1="18" y1="6" x2="6" y2="18" />
             <line x1="6" y1="6" x2="18" y2="18" />
           </svg>
@@ -25,12 +37,82 @@
         @remove="removeFile"
         @retry="retryUpload"
       />
-      <SelectedModeChip v-if="interactionMode !== 'normal'" :mode="interactionMode" @clear="interactionMode = 'normal'" />
-      
+      <SelectedModeChip
+        v-if="interactionMode !== 'normal'"
+        :mode="interactionMode"
+        @clear="interactionMode = 'normal'"
+      />
+
       <div v-if="fileReferences.length" class="reference-tags">
-        <FileReferenceTag v-for="ref in fileReferences" :key="ref.path" :item="ref" removable @remove="removeReference(ref)" />
+        <FileReferenceTag
+          v-for="ref in fileReferences"
+          :key="ref.path"
+          :item="ref"
+          removable
+          @remove="removeReference(ref)"
+        />
       </div>
-      <FileReferencePicker ref="referencePicker" :open="referenceOpen" :session-id="sessionId || ''" :load-tree="getWorkspaceTree" :query="referenceSearch" :style="skillPickerStyle" @navigate="resetReferenceQuery" @select="selectReference" @close="closeReference" />
+      <!-- 本轮输入单独就可能撑爆模型窗口：压缩历史（/compact）对它无效，
+           改为存成工作区 txt 再引用，让模型按需分块读取 -->
+      <div v-if="longMessageHint" class="long-message-hint" role="status">
+        <svg
+          class="long-message-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path
+            d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+          />
+          <path d="M14 2v6h6" />
+        </svg>
+        <span class="long-message-text">本轮输入约 {{ longMessageWords }}，<strong>可能超出模型上下文窗口</strong>
+          <!-- <span v-if="longMessageUsagePercent" class="long-message-meta"
+            >（窗口 {{ longMessageWindow }}，已用
+            {{ longMessageUsagePercent }}%）</span> -->
+        </span>
+        <button
+          type="button"
+          class="long-message-action"
+          :disabled="offloadingLongMessage"
+          @click="offloadLongMessage"
+        >
+          {{ offloadingLongMessage ? "正在保存…" : "存为 txt 并引用" }}
+        </button>
+        <button
+          type="button"
+          class="long-message-dismiss"
+          aria-label="关闭提示"
+          @click="longMessageDismissed = true"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+      <FileReferencePicker
+        ref="referencePicker"
+        :open="referenceOpen"
+        :session-id="sessionId || ''"
+        :load-tree="getWorkspaceTree"
+        :query="referenceSearch"
+        :style="skillPickerStyle"
+        @navigate="resetReferenceQuery"
+        @select="selectReference"
+        @close="closeReference"
+      />
       <div class="input-row">
         <div class="input-field">
           <div
@@ -46,23 +128,40 @@
                「光标紧邻标签之后」= selectionStart === 标签结束下标，Backspace 据此整段删掉标签；
                点击标签同样整段移除（标签里不放 ×，避免改变宽度）。
                注：Vue 2 保留模板空白，元素之间必须写成紧邻，否则镜像层会多出空格、换行位置就对不上了。 -->
-          <div v-show="mirrorText" ref="mirrorRef" class="input-mirror" aria-hidden="true"
-            ><template v-for="(seg, index) in mirrorSegments"
-              ><span v-if="seg.type === 'text'" :key="index" class="input-mirror-text">{{ seg.text }}</span
+          <div
+            v-show="mirrorText"
+            ref="mirrorRef"
+            class="input-mirror"
+            aria-hidden="true"
+          >
+            <template v-for="(seg, index) in mirrorSegments"
+              ><span
+                v-if="seg.type === 'text'"
+                :key="index"
+                class="input-mirror-text"
+                >{{ seg.text }}</span
               ><span
                 v-else
                 :key="index"
                 class="input-skill-pill"
                 :title="`${seg.name}（点击移除）`"
                 @click.stop.prevent="removeSkillToken(seg.dirName)"
-              ><span class="input-skill-pill-mark">／<SkillIcon :icon="seg.icon" :category="iconCategoryFor(seg.categoryId)" size="xs" /></span>{{ seg.label }}</span
-            ></template
-          ></div>
+                ><span class="input-skill-pill-mark"
+                  >／<SkillIcon
+                    :icon="seg.icon"
+                    :category="iconCategoryFor(seg.categoryId)"
+                    size="xs" /></span
+                >{{ seg.label }}</span
+              ></template
+            >
+          </div>
           <textarea
             ref="textareaRef"
             v-model="message"
             spellcheck="false"
-            v-tip:hover="'输入消息，Enter 发送 · Shift+Enter 换行 · 输入 / 选择技能 · 输入 @ 引用会话文件'"
+            v-tip:hover="
+              '输入消息，Enter 发送 · Shift+Enter 换行 · 输入 / 选择技能 · 输入 @ 引用会话文件'
+            "
             @keydown="onKeydown"
             @beforeinput="onBeforeInput"
             @paste="invalidateEnhancement"
@@ -80,10 +179,10 @@
           ></textarea>
         </div>
       </div>
-      
+
       <div class="input-actions">
         <div class="left-actions">
-            <!-- 「+」添加菜单：添加文件 / 专家 / 技能 / 连接器（Vue 2.7 无 Teleport，菜单留在 wrapper 内） -->
+          <!-- 「+」添加菜单：添加文件 / 专家 / 技能 / 连接器（Vue 2.7 无 Teleport，菜单留在 wrapper 内） -->
           <div class="plus-menu-wrapper" ref="plusMenuRef">
             <button
               type="button"
@@ -95,7 +194,15 @@
               :aria-expanded="showPlusMenu ? 'true' : 'false'"
               @click="togglePlusMenu"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
                 <line x1="12" y1="5" x2="12" y2="19"></line>
                 <line x1="5" y1="12" x2="19" y2="12"></line>
               </svg>
@@ -115,66 +222,84 @@
             />
           </div>
 
-            <div v-if="subpanelCategory" ref="plusSubpanel" class="plus-subpanel" :style="plusSubpanelStyle" @click.stop @mouseenter="onSubpanelEnter" @mouseleave="onSubpanelLeave" @focusin="onSubpanelFocusIn" @focusout="onSubpanelFocusOut">
-              <PlusSubpanelHeader
-                :title="plusListTitle"
-                :count="plusListCount"
-                :keyword="subpanelKeyword"
-                :placeholder="plusListSearchPlaceholder"
-                :searchable="!plusListLoading && !plusListError && hasPanelItems"
-                @update:keyword="subpanelKeyword = $event"
-              />
+          <div
+            v-if="subpanelCategory"
+            ref="plusSubpanel"
+            class="plus-subpanel"
+            :style="plusSubpanelStyle"
+            @click.stop
+            @mouseenter="onSubpanelEnter"
+            @mouseleave="onSubpanelLeave"
+            @focusin="onSubpanelFocusIn"
+            @focusout="onSubpanelFocusOut"
+          >
+            <PlusSubpanelHeader
+              :title="plusListTitle"
+              :count="plusListCount"
+              :keyword="subpanelKeyword"
+              :placeholder="plusListSearchPlaceholder"
+              :searchable="!plusListLoading && !plusListError && hasPanelItems"
+              @update:keyword="subpanelKeyword = $event"
+            />
 
-              <!-- 专家：上下两区（我的专家 / 公共专家），点击行 = 召唤（再点 = 取消召唤） -->
-              <ExpertSubpanelList
-                v-if="!plusListLoading && !plusListError && subpanelCategory === 'experts'"
-                :my-experts="myExperts"
-                :my-experts-total="myExpertsTotal"
-                :my-experts-loading="myExpertsLoading"
-                :my-experts-error="myExpertsError"
-                :public-experts="filteredPublicExperts"
-                :visible-public-experts="visiblePublicExperts"
-                :keyword="subpanelKeyword"
-                :active-expert-id="activeExpert && activeExpert.export_agent_id"
-                :stacked="compact"
-                @toggle="toggleExpert"
-                @more-mine="loadMoreMyExperts"
-                @more-public="loadMorePublicExperts"
-                @create="handleMenuPanel('experts')"
-              />
+            <!-- 专家：上下两区（我的专家 / 公共专家），点击行 = 召唤（再点 = 取消召唤） -->
+            <ExpertSubpanelList
+              v-if="
+                !plusListLoading &&
+                !plusListError &&
+                subpanelCategory === 'experts'
+              "
+              :my-experts="myExperts"
+              :my-experts-total="myExpertsTotal"
+              :my-experts-loading="myExpertsLoading"
+              :my-experts-error="myExpertsError"
+              :public-experts="filteredPublicExperts"
+              :visible-public-experts="visiblePublicExperts"
+              :keyword="subpanelKeyword"
+              :active-expert-id="activeExpert && activeExpert.export_agent_id"
+              :stacked="compact"
+              @toggle="toggleExpert"
+              @more-mine="loadMoreMyExperts"
+              @more-public="loadMorePublicExperts"
+              @create="handleMenuPanel('experts')"
+            />
 
-              <!-- 技能 / 连接器：沿用通用条目列表 -->
-              <PlusList
-                v-else
-                :loading="plusListLoading"
-                :error="plusListError"
-                :empty-text="plusListEmptyText"
-                :no-match="filteredPlusList.length === 0"
-                :no-match-text="plusListNoMatchText"
-                :rows="panelRows"
-                :is-connector="isConnectorPanel"
-                :selectable="isSkillListRow"
-                :selected-keys="selectedSkillDirs"
-                :toggling-key="connectorToggling"
-                @select="onPlusListItemClick"
-                @toggle-connector="toggleConnectorSwitch"
-              />
-              <!-- 操作反馈：刚改过的连接器开关提示一句，并说明已同步到「专家·技能·连接器」 -->
-              <div
-                v-if="isConnectorPanel && connectorNotice"
-                class="plus-subpanel-notice"
-                :class="connectorNoticeType"
-                role="status"
-                aria-live="polite"
-              >
-                {{ connectorNotice }}
-              </div>
-              <div v-if="showManageEntry" class="plus-subpanel-footer">
-                <button type="button" class="plus-subpanel-manage" @click="handleMenuPanel(subpanelCategory)">
-                  在管理面板中打开 →
-                </button>
-              </div>
+            <!-- 技能 / 连接器：沿用通用条目列表 -->
+            <PlusList
+              v-else
+              :loading="plusListLoading"
+              :error="plusListError"
+              :empty-text="plusListEmptyText"
+              :no-match="filteredPlusList.length === 0"
+              :no-match-text="plusListNoMatchText"
+              :rows="panelRows"
+              :is-connector="isConnectorPanel"
+              :selectable="isSkillListRow"
+              :selected-keys="selectedSkillDirs"
+              :toggling-key="connectorToggling"
+              @select="onPlusListItemClick"
+              @toggle-connector="toggleConnectorSwitch"
+            />
+            <!-- 操作反馈：刚改过的连接器开关提示一句，并说明已同步到「专家·技能·连接器」 -->
+            <div
+              v-if="isConnectorPanel && connectorNotice"
+              class="plus-subpanel-notice"
+              :class="connectorNoticeType"
+              role="status"
+              aria-live="polite"
+            >
+              {{ connectorNotice }}
             </div>
+            <div v-if="showManageEntry" class="plus-subpanel-footer">
+              <button
+                type="button"
+                class="plus-subpanel-manage"
+                @click="handleMenuPanel(subpanelCategory)"
+              >
+                在管理面板中打开 →
+              </button>
+            </div>
+          </div>
           <!-- 知识库引用：仅由加号菜单「知识库」入口打开（常驻触发按钮隐藏），
                面板与技能子面板同款样式，锚到「知识库」菜单项右侧弹出 -->
           <KnowledgeScopeSelector
@@ -209,15 +334,28 @@
 
           <button
             class="action-btn web-search-btn"
-            :class="{ active: webSearchEnabled, disabled: webSearchUnavailable || isStreaming || disabled }"
+            :class="{
+              active: webSearchEnabled,
+              disabled: webSearchUnavailable || isStreaming || disabled,
+            }"
             :disabled="isStreaming || disabled"
             v-tip="webSearchTitle"
             @click="toggleWebSearch"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
               <circle cx="12" cy="12" r="10"></circle>
               <line x1="2" y1="12" x2="22" y2="12"></line>
-              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+              <path
+                d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
+              ></path>
             </svg>
           </button>
 
@@ -230,8 +368,14 @@
             :title="`当前专家：${activeExpert.export_name_cn}（点击 × 退出专家模式）`"
           >
             <!-- 头像颜色与专家 Tab / 下拉 / 回答面板标识同源（按专家 ID 稳定取色） -->
-            <span class="expert-chip-avatar" :class="expertAvatarClass(activeExpert)">{{ expertAvatarChar(activeExpert) }}</span>
-            <span class="expert-chip-name">{{ activeExpert.export_name_cn }}</span>
+            <span
+              class="expert-chip-avatar"
+              :class="expertAvatarClass(activeExpert)"
+              >{{ expertAvatarChar(activeExpert) }}</span
+            >
+            <span class="expert-chip-name">{{
+              activeExpert.export_name_cn
+            }}</span>
             <button
               type="button"
               class="expert-chip-clear"
@@ -239,84 +383,152 @@
               aria-label="退出专家模式"
               @click="$emit('clear-expert')"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                aria-hidden="true"
+              >
                 <line x1="18" y1="6" x2="6" y2="18"></line>
                 <line x1="6" y1="6" x2="18" y2="18"></line>
               </svg>
             </button>
           </div>
         </div>
-        
+
         <div class="right-actions">
-          <PromptEnhancementActions :enabled="canEnhance" :state="enhancement" @enhance="enhancePrompt" />
-          <div 
-            v-if="showTokenRing" 
+          <PromptEnhancementActions
+            :enabled="canEnhance"
+            :state="enhancement"
+            @enhance="enhancePrompt"
+          />
+          <div
+            v-if="showTokenRing"
             ref="ringRef"
-            class="context-ring-wrapper" 
+            class="context-ring-wrapper"
             @click.stop="toggleTokenPopup"
           >
             <span class="context-ring-inner">
               <svg class="context-ring" viewBox="0 0 36 36">
-                <circle class="context-ring-bg" cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" stroke-width="3" />
-                <circle class="context-ring-fill" cx="18" cy="18" r="15.9" fill="none"
-                  :stroke="contextColor" stroke-width="3" stroke-linecap="round"
-                  :stroke-dasharray="`${contextPercent} ${100 - contextPercent}`"
-                  transform="rotate(-90 18 18)" />
+                <circle
+                  class="context-ring-bg"
+                  cx="18"
+                  cy="18"
+                  r="15.9"
+                  fill="none"
+                  stroke="#e5e7eb"
+                  stroke-width="3"
+                />
+                <circle
+                  class="context-ring-fill"
+                  cx="18"
+                  cy="18"
+                  r="15.9"
+                  fill="none"
+                  :stroke="contextColor"
+                  stroke-width="3"
+                  stroke-linecap="round"
+                  :stroke-dasharray="`${contextPercent} ${
+                    100 - contextPercent
+                  }`"
+                  transform="rotate(-90 18 18)"
+                />
               </svg>
             </span>
             <span class="context-ring-text">{{ contextPercent }}%</span>
             <!-- Vue 2.7 不支持 Teleport：弹窗留在 wrapper 内，依赖 wrapper 无 transform（hover 缩放作用于 .context-ring-inner）保证 fixed 定位正确 -->
-              <div v-if="showTokenPopup" class="token-popup" :style="popupStyle" @click.stop>
-                <div class="token-popup-title">会话信息</div>
-                <div class="token-popup-section">
-                  <div class="token-popup-row">
-                    <span class="token-popup-label">会话耗时</span>
-                    <span class="token-popup-value duration-value">{{ formattedDuration }}</span>
-                  </div>
-                  <div class="token-popup-row">
-                    <span class="token-popup-label">迭代次数</span>
-                    <span class="token-popup-value">{{ iterationCount }}</span>
-                  </div>
-                </div>
-                <div class="token-popup-divider"></div>
-                <div class="token-popup-section">
+            <div
+              v-if="showTokenPopup"
+              class="token-popup"
+              :style="popupStyle"
+              @click.stop
+            >
+              <div class="token-popup-title">会话信息</div>
+              <div class="token-popup-section">
                 <div class="token-popup-row">
-                  <span class="token-popup-label">本轮上下文占用{{ sessionUsage.context_estimated ? '（估算）' : '' }}</span>
-                </div>
-                <div class="token-popup-context-row">
-                  <span class="token-popup-context-value">{{ formatTokens(sessionUsage.context_tokens) }}/{{ formatTokens(sessionUsage.context_length) }}</span>
-                    <span class="token-popup-context-percent" :style="{ color: contextColor }">{{ contextPercent }}%</span>
-                  </div>
-                  <div class="token-popup-bar">
-                    <div class="token-popup-bar-inner">
-                      <div class="token-popup-bar-fill" :style="{ width: contextPercent + '%', background: contextColor }"></div>
-                    </div>
-                  </div>
-                </div>
-                <div class="token-popup-divider"></div>
-                <div class="token-popup-row">
-                  <span class="token-popup-label">输入 Token</span>
-                  <span class="token-popup-value input">{{ formatTokens(sessionUsage.input_tokens) }}</span>
+                  <span class="token-popup-label">会话耗时</span>
+                  <span class="token-popup-value duration-value">{{
+                    formattedDuration
+                  }}</span>
                 </div>
                 <div class="token-popup-row">
-                  <span class="token-popup-label">输出 Token</span>
-                  <span class="token-popup-value output">{{ formatTokens(sessionUsage.output_tokens) }}</span>
-                </div>
-                <div class="token-popup-row">
-                  <span class="token-popup-label">思考 Token</span>
-                  <span class="token-popup-value reasoning">{{ formatTokens(sessionUsage.reasoning_tokens) }}</span>
+                  <span class="token-popup-label">迭代次数</span>
+                  <span class="token-popup-value">{{ iterationCount }}</span>
                 </div>
               </div>
+              <div class="token-popup-divider"></div>
+              <div class="token-popup-section">
+                <div class="token-popup-row">
+                  <span class="token-popup-label"
+                    >本轮上下文占用{{
+                      sessionUsage.context_estimated ? "（估算）" : ""
+                    }}</span
+                  >
+                </div>
+                <div class="token-popup-context-row">
+                  <span class="token-popup-context-value"
+                    >{{ formatTokens(sessionUsage.context_tokens) }}/{{
+                      formatTokens(sessionUsage.context_length)
+                    }}</span
+                  >
+                  <span
+                    class="token-popup-context-percent"
+                    :style="{ color: contextColor }"
+                    >{{ contextPercent }}%</span
+                  >
+                </div>
+                <div class="token-popup-bar">
+                  <div class="token-popup-bar-inner">
+                    <div
+                      class="token-popup-bar-fill"
+                      :style="{
+                        width: contextPercent + '%',
+                        background: contextColor,
+                      }"
+                    ></div>
+                  </div>
+                </div>
+              </div>
+              <div class="token-popup-divider"></div>
+              <div class="token-popup-row">
+                <span class="token-popup-label">输入 Token</span>
+                <span class="token-popup-value input">{{
+                  formatTokens(sessionUsage.input_tokens)
+                }}</span>
+              </div>
+              <div class="token-popup-row">
+                <span class="token-popup-label">输出 Token</span>
+                <span class="token-popup-value output">{{
+                  formatTokens(sessionUsage.output_tokens)
+                }}</span>
+              </div>
+              <div class="token-popup-row">
+                <span class="token-popup-label">思考 Token</span>
+                <span class="token-popup-value reasoning">{{
+                  formatTokens(sessionUsage.reasoning_tokens)
+                }}</span>
+              </div>
+            </div>
           </div>
-          <button 
+          <button
             v-if="!isStreaming"
-            @click="send" 
+            @click="send"
             class="action-btn send-btn"
             :class="{ active: canSend }"
-            :disabled="!canSend || disabled || preparingFiles || enhancement.pending"
+            :disabled="
+              !canSend || disabled || preparingFiles || enhancement.pending
+            "
             v-tip="'发送（Enter）'"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
               <line x1="5" y1="12" x2="19" y2="12"></line>
               <polyline points="12 5 19 12 12 19"></polyline>
             </svg>
@@ -327,7 +539,11 @@
             class="action-btn stop-btn"
             v-tip="'停止生成'"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+            >
               <rect x="6" y="6" width="12" height="12" rx="2"></rect>
             </svg>
           </button>
@@ -348,19 +564,46 @@
         <span class="skill-picker-hint">↑↓ 选择 · Enter 确认 · Esc 关闭</span>
       </div>
 
-      <div v-if="skillPickerLoading" class="skill-picker-state">正在加载技能…</div>
-      <div v-if="menuItems.length === 0 && !skillPickerLoading" class="skill-picker-state">
-        {{ skillOptions.length === 0 ? '没有匹配项，可到技能中心添加并启用技能' : '没有匹配的指令或技能' }}
+      <div v-if="skillPickerLoading" class="skill-picker-state">
+        正在加载技能…
+      </div>
+      <div
+        v-if="menuItems.length === 0 && !skillPickerLoading"
+        class="skill-picker-state"
+      >
+        {{
+          skillOptions.length === 0
+            ? "没有匹配项，可到技能中心添加并启用技能"
+            : "没有匹配的指令或技能"
+        }}
       </div>
 
-      <div v-if="menuItems.length" class="skill-picker-list" role="listbox" aria-label="指令和技能">
-        <ul v-for="group in pickerGroups" :key="group.title" class="picker-group" role="group" :aria-label="group.title">
-          <li class="picker-group-title" role="presentation">{{ group.title }} ({{ group.rows.length }})</li>
+      <div
+        v-if="menuItems.length"
+        class="skill-picker-list"
+        role="listbox"
+        aria-label="指令和技能"
+      >
+        <ul
+          v-for="group in pickerGroups"
+          :key="group.title"
+          class="picker-group"
+          role="group"
+          :aria-label="group.title"
+        >
+          <li class="picker-group-title" role="presentation">
+            {{ group.title }} ({{ group.rows.length }})
+          </li>
           <li
             v-for="row in group.rows"
-            :key="(row.skill.command ? 'command:' : 'skill:') + row.skill.dir_name"
+            :key="
+              (row.skill.command ? 'command:' : 'skill:') + row.skill.dir_name
+            "
             class="skill-picker-item"
-            :class="{ active: row.index === skillPickerIndex, unavailable: row.skill.disabled }"
+            :class="{
+              active: row.index === skillPickerIndex,
+              unavailable: row.skill.disabled,
+            }"
             :aria-disabled="row.skill.disabled ? 'true' : 'false'"
             role="option"
             :aria-selected="row.index === skillPickerIndex ? 'true' : 'false'"
@@ -368,10 +611,28 @@
             @mousedown.prevent="selectSkill(row.skill)"
             @click="selectSkill(row.skill)"
           >
-            <SkillIcon :icon="row.skill.icon" :category="iconCategoryFor(row.skill.category_id)" size="xs" />
+            <SkillIcon
+              :icon="row.skill.icon"
+              :category="iconCategoryFor(row.skill.category_id)"
+              size="xs"
+            />
             <span class="skill-picker-body">
-              <span class="skill-picker-name"><span v-for="(part, pi) in row.nameParts" :key="'n' + pi" :class="{ 'skill-picker-hit': part.hit }">{{ part.text }}</span></span>
-              <span class="skill-picker-desc"><span v-for="(part, pi) in row.descParts" :key="'d' + pi" :class="{ 'skill-picker-hit': part.hit }">{{ part.text }}</span></span>
+              <span class="skill-picker-name"
+                ><span
+                  v-for="(part, pi) in row.nameParts"
+                  :key="'n' + pi"
+                  :class="{ 'skill-picker-hit': part.hit }"
+                  >{{ part.text }}</span
+                ></span
+              >
+              <span class="skill-picker-desc"
+                ><span
+                  v-for="(part, pi) in row.descParts"
+                  :key="'d' + pi"
+                  :class="{ 'skill-picker-hit': part.hit }"
+                  >{{ part.text }}</span
+                ></span
+              >
             </span>
             <span class="skill-picker-slash">/{{ row.skill.dir_name }}</span>
           </li>
@@ -386,17 +647,42 @@
 </template>
 
 <script>
-import FileReferencePicker from './FileReferencePicker.vue'
-import FileReferenceTag from './FileReferenceTag.vue'
-import { referenceDraft, restoreReferenceDraft } from '../../../shared/fileReferences.js'
-import fileReferenceInputMixin from '../mixins/fileReferenceInputMixin.js'
-import { uploadFile, deleteFile, getWorkspaceTree } from '../../../api/files.js'
-import { getKnowledgeStatus, getWebSearchStatus, getUploadLimits } from '../../../api/settings.js'
-import { getUserSkills } from '../../../api/skills.js'
-import { iconCategoryFor } from '../../../utils/skillCategories.js'
-import { buildMessageText, parseSlashQuery, splitByQuery } from '../../../utils/skillSlash.js'
-import SelectedModeChip from './SelectedModeChip.vue'
-import { interactionCommandItems } from '../../../shared/chat/planInteraction.js'
+import FileReferencePicker from "./FileReferencePicker.vue";
+import FileReferenceTag from "./FileReferenceTag.vue";
+import {
+  addReference,
+  referenceDraft,
+  restoreReferenceDraft,
+} from "../../../shared/fileReferences.js";
+import {
+  formatCharCount,
+  formatContextWindow,
+  longMessageFileContent,
+  longMessageFileName,
+  longMessageNotice,
+  needsOffload,
+  usagePercent,
+} from "../../../shared/chat/longMessage.js";
+import fileReferenceInputMixin from "../mixins/fileReferenceInputMixin.js";
+import {
+  uploadFile,
+  deleteFile,
+  getWorkspaceTree,
+} from "../../../api/files.js";
+import {
+  getKnowledgeStatus,
+  getWebSearchStatus,
+  getUploadLimits,
+} from "../../../api/settings.js";
+import { getUserSkills } from "../../../api/skills.js";
+import { iconCategoryFor } from "../../../utils/skillCategories.js";
+import {
+  buildMessageText,
+  parseSlashQuery,
+  splitByQuery,
+} from "../../../utils/skillSlash.js";
+import SelectedModeChip from "./SelectedModeChip.vue";
+import { interactionCommandItems } from "../../../shared/chat/planInteraction.js";
 // 内联技能标签：标签文字 = textarea 文本里的子串，选中/删除/发送前的剥离都走这套纯逻辑
 import {
   buildSegments,
@@ -411,86 +697,113 @@ import {
   tokenAfterCaret,
   tokenBeforeCaret,
   tokenForSkill,
-} from '../../../utils/skillPillTokens.js'
-import { getConnectors, toggleConnector } from '../../../api/connectors.js'
-import { emitConnectorsChanged, onConnectorsChanged } from '../../../utils/connectorSync.js'
-import { eventTarget } from '../../../utils/domEvent.js'
-import { listExperts, listPublicExperts } from '../../../api/expert.js'
+} from "../../../utils/skillPillTokens.js";
+import { getConnectors, toggleConnector } from "../../../api/connectors.js";
+import {
+  emitConnectorsChanged,
+  onConnectorsChanged,
+} from "../../../utils/connectorSync.js";
+import { eventTarget } from "../../../utils/domEvent.js";
+import { listExperts, listPublicExperts } from "../../../api/expert.js";
 // 别名导入：模板要用同名方法（Vue2 模板只能访问实例成员），避免与方法名混淆
 import {
   expertAvatarChar as buildExpertAvatarChar,
-  expertAvatarClass as buildExpertAvatarClass
-} from '../../../utils/expertAvatar.js'
-import ExpertSubpanelList from './ExpertSubpanelList.vue'
-import PlusSubpanelHeader from './PlusSubpanelHeader.vue'
-import PlusList from './PlusList.vue'
-import PlusMenu from './PlusMenu.vue'
-import ModelPicker from './ModelPicker.vue'
-import PromptEnhancementActions from './PromptEnhancementActions.vue'
-import UploadTray from './UploadTray.vue'
-import FileIcon from '../../../shared/components/FileIcon.vue'
-import SkillIcon from '../../../shared/components/SkillIcon.vue'
-import KnowledgeScopeSelector from '../../knowledge/KnowledgeScopeSelector.vue'
-import tip from '../../../directives/tip.js'
+  expertAvatarClass as buildExpertAvatarClass,
+} from "../../../utils/expertAvatar.js";
+import ExpertSubpanelList from "./ExpertSubpanelList.vue";
+import PlusSubpanelHeader from "./PlusSubpanelHeader.vue";
+import PlusList from "./PlusList.vue";
+import PlusMenu from "./PlusMenu.vue";
+import ModelPicker from "./ModelPicker.vue";
+import PromptEnhancementActions from "./PromptEnhancementActions.vue";
+import UploadTray from "./UploadTray.vue";
+import FileIcon from "../../../shared/components/FileIcon.vue";
+import SkillIcon from "../../../shared/components/SkillIcon.vue";
+import KnowledgeScopeSelector from "../../knowledge/KnowledgeScopeSelector.vue";
+import tip from "../../../directives/tip.js";
 
 // 镜像层为画出技能芯片的外扩留白，把裁剪盒向外扩了这么多 px（见 .input-mirror 的 padding/margin）：
 // 补滚动条占位时要一起加上，否则镜像内容比 textarea 窄、换行位置对不上。
-const MIRROR_BLEED = 6
+const MIRROR_BLEED = 6;
 
 // 「+」子面板的尺寸与贴边间距：JS 定位与 CSS 宽度必须同源，否则面板放大后会溢出视口。
 // 单行布局（名称 + 描述同排）需要更宽的面板，380px 下描述只剩 130px 左右不够看。
-const SUBPANEL_WIDTH = 480
+const SUBPANEL_WIDTH = 480;
 // 子面板与主菜单之间的水平间隙；CSS 里的 ::before 热桥按「间隙 + 2px 重叠」覆盖这段空白
-const SUBPANEL_GAP = 6
+const SUBPANEL_GAP = 6;
 // 子面板高度上限。面板整体底边贴主菜单底边、向上生长，可视空间有多大就长多高，
 // 但封顶在这个值——否则技能多的用户会顶到屏幕顶端，观感像「整个页面被面板占住」。
 // 按行高约 44px 算，560px ≈ 列表能露出 10 行，比原来的 300px 一屏 5 行舒服很多。
-const SUBPANEL_MAX_HEIGHT = 560
+const SUBPANEL_MAX_HEIGHT = 560;
 
 // 输入草稿持久化：页面刷新后恢复用户尚未发送的输入内容（“输入框的状态不变”）
-const DRAFT_KEY = 'easy_agent_input_draft'
+const DRAFT_KEY = "easy_agent_input_draft";
 
 // 待选技能：由技能中心「创建技能」等入口写入，本组件挂载时恢复成技能标签
-const PENDING_SKILL_KEY = 'easy_agent_pending_skill'
+const PENDING_SKILL_KEY = "easy_agent_pending_skill";
 
 // 待修改专家：由专家面板「编辑」写入（{expert_agent_id, export_name_cn}）。
 // 专家 ID 不进消息正文（防篡改），挂载时消费为组件状态，发送时随请求的
 // pending_expert_id 字段上行；发送后清空。与后端 save_expert 的 edit_targets 绑定配套。
-const PENDING_EXPERT_EDIT_KEY = 'easy_agent_pending_expert_edit'
+const PENDING_EXPERT_EDIT_KEY = "easy_agent_pending_expert_edit";
 
 // 输入框最大高度：5 行（行高 1.6 × 15px = 24px）。文本再长就在框内滚动（右侧滚动条），
 // 输入框不再无限增高——与 CSS 的 max-height 保持一致，两处改要一起改。
-const TEXTAREA_MAX_ROWS = 5
-const TEXTAREA_LINE_HEIGHT = 24
-const TEXTAREA_MAX_HEIGHT = TEXTAREA_MAX_ROWS * TEXTAREA_LINE_HEIGHT
+const TEXTAREA_MAX_ROWS = 5;
+const TEXTAREA_LINE_HEIGHT = 24;
+const TEXTAREA_MAX_HEIGHT = TEXTAREA_MAX_ROWS * TEXTAREA_LINE_HEIGHT;
 
-import promptEnhancementMixin from '../mixins/promptEnhancementMixin.js'
-import contextUsageMixin from '../mixins/contextUsageMixin.js'
-import { commandItems } from '../../../shared/compaction/state.js'
+import promptEnhancementMixin from "../mixins/promptEnhancementMixin.js";
+import contextUsageMixin from "../mixins/contextUsageMixin.js";
+import { commandItems } from "../../../shared/compaction/state.js";
 
 // 「+」→ 专家：上区「我的专家」走服务端分页（后端 /agent/list 已支持 keyword/status/page），
 // 一页 5 条，首屏取第 1 页，之后点「点击加载更多」再取下一页。
 // 不再用「一次拉全量 + 本地 slice」：库里第 N 页的专家从来没被请求过，
 // 关键字再准也搜不到（这是原来的缺陷）。
-const PLUS_EXPERTS_PAGE_SIZE = 5
+const PLUS_EXPERTS_PAGE_SIZE = 5;
 // 下区「公共专家」是随发行包内置的目录（只有个位数），继续本地过滤 + 本地分页：
 // 首屏 6 行，点「还有 N 位」再放 3 行。
-const PUBLIC_EXPERTS_PAGE_SIZE = 6
-const PUBLIC_EXPERTS_MORE_STEP = 3
+const PUBLIC_EXPERTS_PAGE_SIZE = 6;
+const PUBLIC_EXPERTS_MORE_STEP = 3;
 // 专家搜索防抖：连续输入时只在停手后打一次接口
-const EXPERT_SEARCH_DEBOUNCE_MS = 300
+const EXPERT_SEARCH_DEBOUNCE_MS = 300;
 
 export default {
   mixins: [promptEnhancementMixin, contextUsageMixin, fileReferenceInputMixin],
-  components: { SelectedModeChip, FileReferenceTag, FileReferencePicker, PromptEnhancementActions, FileIcon, SkillIcon, KnowledgeScopeSelector, UploadTray, ModelPicker, PlusMenu, ExpertSubpanelList, PlusList, PlusSubpanelHeader },
+  components: {
+    SelectedModeChip,
+    FileReferenceTag,
+    FileReferencePicker,
+    PromptEnhancementActions,
+    FileIcon,
+    SkillIcon,
+    KnowledgeScopeSelector,
+    UploadTray,
+    ModelPicker,
+    PlusMenu,
+    ExpertSubpanelList,
+    PlusList,
+    PlusSubpanelHeader,
+  },
   directives: { tip },
   props: {
-    compactReason: { type: String, default: '请先开始对话' },
+    compactReason: { type: String, default: "请先开始对话" },
     compactBusy: { type: Boolean, default: false },
     disabled: { type: Boolean, default: false },
     sessionId: { type: String, default: null },
     isStreaming: { type: Boolean, default: false },
-    sessionUsage: { type: Object, default: () => ({ input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: null, auto_compress_tokens: null, context_tokens: 0 }) },
+    sessionUsage: {
+      type: Object,
+      default: () => ({
+        input_tokens: 0,
+        output_tokens: 0,
+        reasoning_tokens: 0,
+        context_length: null,
+        auto_compress_tokens: null,
+        context_tokens: 0,
+      }),
+    },
     sessionDuration: { type: Number, default: 0 },
     iterationCount: { type: Number, default: 0 },
     models: { type: Array, default: () => [] },
@@ -504,17 +817,21 @@ export default {
     activeExpert: { type: Object, default: null },
     // 外部预填的问题（如专家详情弹窗点「专家帮你做」示例）：非空时写入输入框，
     // 写入后立即 $emit('expert-prompt-applied') 通知父组件清空，避免重复触发。
-    expertPrompt: { type: String, default: '' },
+    expertPrompt: { type: String, default: "" },
     // 「+」二级面板底部的「在管理面板中打开」入口（无可跳转的管理面板时隐藏）
     showManageEntry: { type: Boolean, default: true },
     // 窄输入框（AI 侧边栏）：不放专家胶囊（会挤掉发送按钮，已选只在「+」→ 专家面板体现），专家行名称、描述分两行
-    compact: { type: Boolean, default: false }
+    compact: { type: Boolean, default: false },
   },
   data() {
     return {
-      message: '', interactionMode: 'normal',
+      message: "",
+      interactionMode: "normal",
+      // 长文本转附件：保存中禁止重复点击；用户可关闭提示，正文回到阈值以下时重新可提示
+      offloadingLongMessage: false,
+      longMessageDismissed: false,
       // 镜像渲染层显示的文字（textarea 文字透明，用户看到的都是这一层，见 syncMirror）
-      mirrorText: '',
+      mirrorText: "",
       uploadedFiles: [],
       // 新对话里勾选的知识库：只暂存在前端，首条消息发送时随请求提交，
       // 避免“选知识库”阶段提前创建空会话（已有会话仍走 knowledge-scope 接口保存）。
@@ -524,13 +841,18 @@ export default {
       // 联网搜索：available=false 时按钮置灰（后端未启用或未配置 api_key）
       webSearchEnabled: false,
       webSearchAvailable: false,
-      webSearchReason: '',
+      webSearchReason: "",
       // 上传限额（后端 config.yaml 的 upload_limits 段，经 /agent/settings/upload-limits 下发）：
       // 约束「单个会话、单次对话」的附件，发送后清空即重置。拉取失败保留此默认值，
       // 绝不因接口异常而放行。
-      uploadLimits: { enabled: true, maxFileSizeMb: 10, maxFiles: 5, maxTotalMb: 20 },
+      uploadLimits: {
+        enabled: true,
+        maxFileSizeMb: 10,
+        maxFiles: 5,
+        maxTotalMb: 20,
+      },
       // 上传限额汇总提示条文案（空串=不显示，2.6s 自动消失）
-      uploadNotice: '',
+      uploadNotice: "",
       knowledgeEnabled: false,
       // 光标所在行高亮（overlay 技术：textareal 本身无法按行上色）
       caretLineTop: null, // 高亮条 top，null 表示隐藏
@@ -552,10 +874,10 @@ export default {
       subpanelHovered: false,
       subpanelFocused: false,
       plusHoverTimer: null,
-      plusListCategory: '',
+      plusListCategory: "",
       plusList: [],
       plusListLoading: false,
-      plusListError: '',
+      plusListError: "",
       // ========== 专家快捷面板（「+」→ 专家）==========
       // 上区：本人创建且「可用」的专家（服务端按 status=active 过滤 + 分页）；
       // 下区：内置公共（预置）专家（全量下发，本地过滤）。
@@ -563,11 +885,11 @@ export default {
       myExpertsTotal: 0,
       myExpertsPage: 0,
       myExpertsLoading: false,
-      myExpertsError: '',
+      myExpertsError: "",
       publicExperts: [],
       publicExpertsLimit: PUBLIC_EXPERTS_PAGE_SIZE,
       // 上一次真正提交给接口的关键字：面板打开时清空搜索词不该再触发一次「按关键字重查」
-      expertsKeyword: '',
+      expertsKeyword: "",
       expertsSearchTimer: null,
       // 请求序号：搜索时快速连续输入会有多个请求在飞，只认最后一次的结果
       expertsRequestSeq: 0,
@@ -583,25 +905,25 @@ export default {
       // 只有启用状态的技能会被 Agent 加载，停用技能即使手打 /name 也不生效，故选择面板只列启用的。
       knownSkills: [],
       // 上一次 textarea 的文本：移动端兜底自愈要拿它做差分（见 onInput）
-      lastInputText: '',
+      lastInputText: "",
       // 本组件自己发起的建会话（上传文件 / 切连接器开关）：sessionId watcher 据此不剥离技能标签
       selfCreatedSession: false,
       // ========== 连接器开关（「+」→ 连接器） ==========
       // 开关直接对应连接器自身的启用状态（用户 mcp.json 里每个 server 的 enabled），
       // 与「专家·技能·连接器」面板是同一份状态：这里改，那边实时跟着变（见 connectorSync.js）。
       // 正在提交的连接器 id（该行开关暂时禁用，避免连点产生竞态）。
-      connectorToggling: '',
+      connectorToggling: "",
       // 操作反馈：改完开关在面板内提示一句，3s 后自动消失
-      connectorNotice: '',
-      connectorNoticeType: 'success',
+      connectorNotice: "",
+      connectorNoticeType: "success",
       connectorNoticeTimer: null,
       // 子面板搜索（专家 / 技能 / 连接器共用一份，切换分类时清空）
-      subpanelKeyword: '',
+      subpanelKeyword: "",
       skillPickerOpen: false,
       skillPickerIndex: 0,
       skillPickerLoading: false,
       skillOptions: [],
-      skillQuery: '',
+      skillQuery: "",
       slashStart: -1,
       skillPickerStyle: {},
       skillLoadedAt: 0,
@@ -611,87 +933,137 @@ export default {
       preselectedSkillDirs: [],
       // 待修改专家 ID（专家面板「编辑」带入，不展示给用户）：发送时随请求的
       // pending_expert_id 字段上行，后端校验归属后绑定为 save_expert 的修改目标。
-      pendingExpertEditId: '',
-    }
+      pendingExpertEditId: "",
+    };
   },
   computed: {
+    // 长文本：本轮输入单独就可能撑爆模型窗口，提示拆发或存为附件（压缩历史治不了）
+    longMessageChars() {
+      return this.message.trim().length;
+    },
+    longMessageWords() {
+      return formatCharCount(this.longMessageChars);
+    },
+    // 预算按当前模型的真实窗口算：会话用量（含 system prompt / 技能 / 历史）优先，
+    // 还没跑过任何一轮时退回选中模型的 context_length，再退回 131072
+    longMessageUsage() {
+      const usage = this.sessionUsage || {};
+      const model = (this.models || []).find(
+        m =>
+          m &&
+          (m.name === this.selectedModel || m.model === this.selectedModel),
+      );
+      return {
+        contextLength:
+          usage.context_length || (model && model.context_length) || null,
+        usedTokens: usage.context_tokens || 0,
+        autoCompressTokens: usage.auto_compress_tokens || null,
+      };
+    },
+    longMessageWindow() {
+      return formatContextWindow(this.longMessageUsage.contextLength);
+    },
+    longMessageUsagePercent() {
+      return usagePercent(this.longMessageUsage);
+    },
+    longMessageHint() {
+      return (
+        !this.longMessageDismissed &&
+        needsOffload(this.message, this.longMessageUsage)
+      );
+    },
     webSearchUnavailable() {
-      return !this.webSearchAvailable
+      return !this.webSearchAvailable;
     },
     webSearchTitle() {
       if (!this.webSearchAvailable) {
-        if (this.webSearchReason === 'disabled') return '联网搜索未启用（后端配置 web_search.enabled 为 false）'
-        if (this.webSearchReason === 'unreachable') return '联网搜索状态获取失败，点击重试'
-        return '联网搜索未配置（需配置 WEB_SEARCH_API_KEY 后重启后端）'
+        if (this.webSearchReason === "disabled")
+          return "联网搜索未启用（后端配置 web_search.enabled 为 false）";
+        if (this.webSearchReason === "unreachable")
+          return "联网搜索状态获取失败，点击重试";
+        return "联网搜索未配置（需配置 WEB_SEARCH_API_KEY 后重启后端）";
       }
-      return this.webSearchEnabled ? '联网搜索已开启，点击关闭' : '联网搜索（点击开启）'
+      return this.webSearchEnabled
+        ? "联网搜索已开启，点击关闭"
+        : "联网搜索（点击开启）";
     },
     /** 计额口径：上传失败的文件不占额度（上传中/已上传都占） */
     chargedFiles() {
-      return this.uploadedFiles.filter(f => f.uploadStatus !== 'error')
+      return this.uploadedFiles.filter(f => f.uploadStatus !== "error");
     },
     usedCount() {
-      return this.chargedFiles.length
+      return this.chargedFiles.length;
     },
     usedBytes() {
-      return this.chargedFiles.reduce((sum, f) => sum + (f.size || 0), 0)
+      return this.chargedFiles.reduce((sum, f) => sum + (f.size || 0), 0);
     },
     failedCount() {
-      return this.uploadedFiles.filter(f => f.uploadStatus === 'error').length
+      return this.uploadedFiles.filter(f => f.uploadStatus === "error").length;
     },
     remainBytes() {
-      const max = this.mbToBytes(this.uploadLimits.maxTotalMb)
-      return Math.max(max - this.usedBytes, 0)
+      const max = this.mbToBytes(this.uploadLimits.maxTotalMb);
+      return Math.max(max - this.usedBytes, 0);
     },
     limitsText() {
-      const L = this.uploadLimits
-      if (!L.enabled) return ''
-      const failedTip = this.failedCount > 0 ? `（${this.failedCount} 个失败未计入）` : ''
-      return `已用 ${this.formatSize(this.usedBytes)} / ${L.maxTotalMb}MB · ${this.usedCount} / ${L.maxFiles} 个${failedTip}`
+      const L = this.uploadLimits;
+      if (!L.enabled) return "";
+      const failedTip =
+        this.failedCount > 0 ? `（${this.failedCount} 个失败未计入）` : "";
+      return `已用 ${this.formatSize(this.usedBytes)} / ${L.maxTotalMb}MB · ${
+        this.usedCount
+      } / ${L.maxFiles} 个${failedTip}`;
     },
     limitsFull() {
-      const L = this.uploadLimits
-      return L.enabled && this.usedCount >= L.maxFiles
+      const L = this.uploadLimits;
+      return L.enabled && this.usedCount >= L.maxFiles;
     },
     plusListTitle() {
-      const meta = { experts: '专家', skills: '我的技能', connectors: '我的连接器' }
-      return meta[this.plusListCategory] || ''
+      const meta = {
+        experts: "专家",
+        skills: "我的技能",
+        connectors: "我的连接器",
+      };
+      return meta[this.plusListCategory] || "";
     },
     /** 标题右侧计数：专家 = 已加载的我的专家 + 公共专家命中数；技能 / 连接器 = 过滤后条数 */
     plusListCount() {
-      if (this.plusListCategory === 'experts') {
-        return this.myExperts.length + this.filteredPublicExperts.length
+      if (this.plusListCategory === "experts") {
+        return this.myExperts.length + this.filteredPublicExperts.length;
       }
-      return this.filteredPlusList.length
+      return this.filteredPlusList.length;
     },
     /** 常驻搜索框的占位文案（按面板类型） */
     plusListSearchPlaceholder() {
-      const meta = { experts: '搜索专家', skills: '搜索技能', connectors: '搜索连接器' }
-      return meta[this.plusListCategory] || '搜索'
+      const meta = {
+        experts: "搜索专家",
+        skills: "搜索技能",
+        connectors: "搜索连接器",
+      };
+      return meta[this.plusListCategory] || "搜索";
     },
     /** 有搜索词但无命中时的提示（按面板类型） */
     plusListNoMatchText() {
       const meta = {
-        experts: '未找到匹配的专家',
-        skills: '未找到匹配的技能',
-        connectors: '未找到匹配的连接器',
-      }
-      return meta[this.plusListCategory] || '未找到匹配的内容'
+        experts: "未找到匹配的专家",
+        skills: "未找到匹配的技能",
+        connectors: "未找到匹配的连接器",
+      };
+      return meta[this.plusListCategory] || "未找到匹配的内容";
     },
     /** 当前面板是否有数据：空列表不显示搜索框，免得对着空列表以为「搜不到」 */
     hasPanelItems() {
-      if (this.plusListCategory === 'experts') {
-        return this.myExperts.length + this.publicExperts.length > 0
+      if (this.plusListCategory === "experts") {
+        return this.myExperts.length + this.publicExperts.length > 0;
       }
-      return this.plusList.length > 0
+      return this.plusList.length > 0;
     },
     /** 当前子面板是否为连接器列表 */
     isConnectorPanel() {
-      return this.plusListCategory === 'connectors'
+      return this.plusListCategory === "connectors";
     },
     /** 当前子面板实际渲染的行（技能 / 连接器都走搜索结果） */
     panelRows() {
-      return this.filteredPlusList
+      return this.filteredPlusList;
     },
     /**
      * 技能 / 连接器的搜索结果。
@@ -699,41 +1071,45 @@ export default {
      * 因此只在名称完全没命中时才回退到描述（与输入框「/」检索同一取舍）。
      */
     filteredPlusList() {
-      const kw = this.subpanelKeyword.trim().toLowerCase()
-      if (!kw) return this.plusList
-      const byName = this.plusList.filter((item) => {
-        const name = String(item.name || '').toLowerCase()
-        const dir = String(item.dir_name || '').toLowerCase()
-        return name.includes(kw) || dir.includes(kw)
-      })
-      if (byName.length > 0) return byName
-      return this.plusList.filter((item) => String(item.desc || '').toLowerCase().includes(kw))
+      const kw = this.subpanelKeyword.trim().toLowerCase();
+      if (!kw) return this.plusList;
+      const byName = this.plusList.filter(item => {
+        const name = String(item.name || "").toLowerCase();
+        const dir = String(item.dir_name || "").toLowerCase();
+        return name.includes(kw) || dir.includes(kw);
+      });
+      if (byName.length > 0) return byName;
+      return this.plusList.filter(item =>
+        String(item.desc || "")
+          .toLowerCase()
+          .includes(kw),
+      );
     },
     /** 我的专家：服务端按 status=active 过滤后下发，前端不再筛状态、也不再按关键字过滤 */
     filteredPublicExperts() {
-      return this.filterExperts(this.publicExperts)
+      return this.filterExperts(this.publicExperts);
     },
     /** 下区当前可见条目：搜索时全量展示，否则按 publicExpertsLimit 分页 */
     visiblePublicExperts() {
-      if (this.subpanelKeyword.trim()) return this.filteredPublicExperts
-      return this.filteredPublicExperts.slice(0, this.publicExpertsLimit)
+      if (this.subpanelKeyword.trim()) return this.filteredPublicExperts;
+      return this.filteredPublicExperts.slice(0, this.publicExpertsLimit);
     },
     plusListEmptyText() {
       const meta = {
-        experts: '暂无专家，可在「专家·技能·连接器」面板创建',
-        skills: '还没有自己的技能，可在「专家·技能·连接器」面板添加',
-        connectors: '还没有已添加的连接器，可在「专家·技能·连接器」面板添加',
-      }
-      return meta[this.plusListCategory] || '暂无内容'
+        experts: "暂无专家，可在「专家·技能·连接器」面板创建",
+        skills: "还没有自己的技能，可在「专家·技能·连接器」面板添加",
+        connectors: "还没有已添加的连接器，可在「专家·技能·连接器」面板添加",
+      };
+      return meta[this.plusListCategory] || "暂无内容";
     },
     /** 当前子面板是否为技能列表（通用列表同时承载连接器，二者点击行为不同） */
     isSkillListRow() {
-      return this.subpanelCategory === 'skills'
+      return this.subpanelCategory === "skills";
     },
     // 模型选择：本地双向绑定，变化时同步父组件
     /** 标签文本 → 技能 的映射（`/显示名` 反解回技能目录名） */
     tokenMap() {
-      return buildTokenMap(this.knownSkills)
+      return buildTokenMap(this.knownSkills);
     },
     /**
      * 镜像层的分段结果：普通文字段 + 技能标签段（标签文字与 textarea 文本逐字相同）。
@@ -743,21 +1119,25 @@ export default {
       return buildSegments(
         this.mirrorText,
         this.tokenMap,
-        this.skillPickerOpen ? { suppressStart: this.slashStart } : null
-      )
+        this.skillPickerOpen ? { suppressStart: this.slashStart } : null,
+      );
     },
     /** 已选技能目录名（按出现顺序去重）：canSend 与发送时的 skills 字段。
      *  = 输入框内联标签 + 预选技能（preselectedSkillDirs，见 restorePendingSkill）。 */
     selectedSkillDirs() {
-      const dirs = this.preselectedSkillDirs.slice()
+      const dirs = this.preselectedSkillDirs.slice();
       for (const dir of skillDirsInText(this.message, this.tokenMap)) {
-        if (!dirs.includes(dir)) dirs.push(dir)
+        if (!dirs.includes(dir)) dirs.push(dir);
       }
-      return dirs
+      return dirs;
     },
     canSend() {
-      return this.message.trim() || this.fileReferences.length > 0 || this.uploadedFiles.length > 0 ||
+      return (
+        this.message.trim() ||
+        this.fileReferences.length > 0 ||
+        this.uploadedFiles.length > 0 ||
         this.selectedSkillDirs.length > 0
+      );
     },
     /**
      * 技能检索：优先按「目录名 / 技能名」匹配；仅当没有任何名称命中时，才回退到描述匹配。
@@ -765,14 +1145,17 @@ export default {
      * 直接参与匹配会让检索看起来「完全没生效」，因此降级为兜底。
      */
     filteredSkills() {
-      const q = this.skillQuery.trim().toLowerCase()
-      if (!q) return this.skillOptions
-      const byName = this.skillOptions.filter(s =>
-        (s.dir_name || '').toLowerCase().includes(q) ||
-        (s.name || '').toLowerCase().includes(q)
-      )
-      if (byName.length > 0) return byName
-      return this.skillOptions.filter(s => (s.description || '').toLowerCase().includes(q))
+      const q = this.skillQuery.trim().toLowerCase();
+      if (!q) return this.skillOptions;
+      const byName = this.skillOptions.filter(
+        s =>
+          (s.dir_name || "").toLowerCase().includes(q) ||
+          (s.name || "").toLowerCase().includes(q),
+      );
+      if (byName.length > 0) return byName;
+      return this.skillOptions.filter(s =>
+        (s.description || "").toLowerCase().includes(q),
+      );
     },
     /**
      * 技能面板的行数据：把名称 / 描述按查询词切成片段，命中片段由模板上色。
@@ -781,57 +1164,75 @@ export default {
      * 右侧的 `/目录名` 与名称基本重复，不再单独上色，避免一行出现三处蓝。
      */
     menuItems() {
-      return [...interactionCommandItems(this.skillQuery), ...commandItems(this.skillQuery, this.compactReason, this.compactBusy), ...this.filteredSkills]
+      return [
+        ...interactionCommandItems(this.skillQuery),
+        ...commandItems(this.skillQuery, this.compactReason, this.compactBusy),
+        ...this.filteredSkills,
+      ];
     },
     pickerGroups() {
       return [
-        { title: '指令', rows: this.skillRows.filter(row => row.skill.command) },
-        { title: '技能', rows: this.skillRows.filter(row => !row.skill.command) },
-      ].filter(group => group.rows.length)
+        {
+          title: "指令",
+          rows: this.skillRows.filter(row => row.skill.command),
+        },
+        {
+          title: "技能",
+          rows: this.skillRows.filter(row => !row.skill.command),
+        },
+      ].filter(group => group.rows.length);
     },
     skillRows() {
       return this.menuItems.map((skill, index) => ({
-        skill, index,
+        skill,
+        index,
         nameParts: splitByQuery(skill.name || skill.dir_name, this.skillQuery),
-        descParts: splitByQuery(skill.description || '暂无描述', this.skillQuery),
-      }))
+        descParts: splitByQuery(
+          skill.description || "暂无描述",
+          this.skillQuery,
+        ),
+      }));
     },
-
   },
   watch: {
+    // 正文回落到安全范围就把「已关闭」复位，下次再贴长文时提示照常出现
+    longMessageChars() {
+      if (!needsOffload(this.message, this.longMessageUsage))
+        this.longMessageDismissed = false;
+    },
     // 联网开关的真身在本组件，但发送动作不止「输入框回车」一条：消息下方「重新发送」
     // 走的是页面层的 handleRetry，不经过这里。父级没有镜像就只能用默认值 false 发请求，
     // 于是出现「按钮亮着、请求却是关网」。所以状态一变就上报，immediate 保证挂载时先对齐一次。
     webSearchEnabled: {
       immediate: true,
       handler(val) {
-        this.$emit('web-search-change', Boolean(val))
+        this.$emit("web-search-change", Boolean(val));
       },
     },
     // 搜索词一变，列表条数就变，面板高度必须跟着重算（底边会随条数上下浮动，
     // 所以变多/变少都要重算；是否关闭由 schedulePlusClose 的「聚焦保护」负责）。
     // 专家面板额外做一件事：关键字交给接口查（服务端分页），本地只保留公共专家那半区的过滤。
     subpanelKeyword(val) {
-      this.$nextTick(this.syncSubpanelBox)
-      if (this.subpanelCategory !== 'experts') return
-      const kw = String(val || '').trim()
+      this.$nextTick(this.syncSubpanelBox);
+      if (this.subpanelCategory !== "experts") return;
+      const kw = String(val || "").trim();
       // 面板打开时会主动清空搜索词（openPlusList），那不是用户输入，不该再打一次接口
-      if (kw === this.expertsKeyword) return
-      this.expertsKeyword = kw
-      if (this.expertsSearchTimer) clearTimeout(this.expertsSearchTimer)
+      if (kw === this.expertsKeyword) return;
+      this.expertsKeyword = kw;
+      if (this.expertsSearchTimer) clearTimeout(this.expertsSearchTimer);
       this.expertsSearchTimer = setTimeout(() => {
-        this.expertsSearchTimer = null
+        this.expertsSearchTimer = null;
         // 防抖窗口内面板可能已关闭 / 已切到别的分类
-        if (this.subpanelCategory !== 'experts') return
-        this.myExperts = []
-        this.myExpertsTotal = 0
-        this.myExpertsPage = 0
-        this.loadMyExpertsPage(1)
-      }, EXPERT_SEARCH_DEBOUNCE_MS)
+        if (this.subpanelCategory !== "experts") return;
+        this.myExperts = [];
+        this.myExpertsTotal = 0;
+        this.myExpertsPage = 0;
+        this.loadMyExpertsPage(1);
+      }, EXPERT_SEARCH_DEBOUNCE_MS);
     },
     shouldCountLive(on) {
-      if (on) this.startLiveDuration()
-      else this.stopLiveDuration()
+      if (on) this.startLiveDuration();
+      else this.stopLiveDuration();
     },
     // 会话切换：文件保持原语义——oldVal 为 null（新对话加文件时触发的建会话）不清，
     // 否则会清掉刚选的文件。
@@ -844,65 +1245,81 @@ export default {
     // 会话切换/新建时清空已添加文件：文件属于原会话，不得残留到新会话。
     // 注意 oldVal 为 null（新对话加文件时触发的建会话）不清，否则会清掉刚选的文件。
     sessionId(newVal, oldVal) {
-      if (newVal === oldVal) return
-      this.restoreInitialReferences(newVal, oldVal); this.closeReference()
+      if (newVal === oldVal) return;
+      this.restoreInitialReferences(newVal, oldVal);
+      this.closeReference();
       // 会话已切换/已创建：下一次发送需要按新的 sessionId 重新判断
-      this._pendingSessionPromise = null
+      this._pendingSessionPromise = null;
       if (oldVal && newVal !== oldVal) {
-        this.uploadedFiles = []
-        this.dismissUploadNotice()
+        this.uploadedFiles = [];
+        this.dismissUploadNotice();
         // 切到其他会话/历史会话：新对话暂存的知识选择不再适用
-        this.pendingKnowledgeBaseIds = []
+        this.pendingKnowledgeBaseIds = [];
       }
       if (!newVal) {
         // 回到新对话首页：知识选择从空开始
-        this.pendingKnowledgeBaseIds = []
+        this.pendingKnowledgeBaseIds = [];
       }
-      this.subpanelKeyword = ''
+      this.subpanelKeyword = "";
       // 技能标签是文本的一部分：切会话时把标签从草稿里剥掉（等价于旧的「令牌复位」）。
       // 本组件自己发起的建会话（上传文件）由上传链路标记，不算切换、保留标签，见 ensureSessionId。
       if (!this.selfCreatedSession) {
-        this.message = stripSkillTokens(this.message, this.tokenMap)
+        this.message = stripSkillTokens(this.message, this.tokenMap);
       }
-      this.selfCreatedSession = false
+      this.selfCreatedSession = false;
     },
     message(val) {
       try {
-        sessionStorage.setItem(this.draftKey, referenceDraft(val, this.fileReferences, this.sessionId, sessionStorage.getItem(this.draftKey)))
+        sessionStorage.setItem(
+          this.draftKey,
+          referenceDraft(
+            val,
+            this.fileReferences,
+            this.sessionId,
+            sessionStorage.getItem(this.draftKey),
+          ),
+        );
       } catch (e) {
         // 隐私模式等场景下 sessionStorage 可能不可用，忽略即可
       }
       // 程序化赋值（恢复草稿、切会话、发送后清空）不触发 input 事件，镜像层在这里补同步
-      this.$nextTick(() => this.syncMirror())
+      this.$nextTick(() => this.syncMirror());
     },
     disabled(val) {
       if (!val) {
-        const ta = this.$refs.textareaRef
-        if (ta) ta.focus()
+        const ta = this.$refs.textareaRef;
+        if (ta) ta.focus();
       }
     },
     // 外部预填问题变化时（如专家详情弹窗再点一条示例）写入输入框
     expertPrompt(val) {
-      this.applyExpertPrompt(val)
+      this.applyExpertPrompt(val);
     },
   },
   mounted() {
     // 联网搜索可用性：公共接口，失败时按不可用处理（按钮置灰）
     getWebSearchStatus()
       .then(status => {
-        this.webSearchAvailable = Boolean(status && status.configured)
-        this.webSearchReason = (status && status.reason) || ''
+        this.webSearchAvailable = Boolean(status && status.configured);
+        this.webSearchReason = (status && status.reason) || "";
       })
-      .catch(() => { this.webSearchAvailable = false; this.webSearchReason = 'unreachable' })
+      .catch(() => {
+        this.webSearchAvailable = false;
+        this.webSearchReason = "unreachable";
+      });
     getKnowledgeStatus()
-      .then(status => { this.knowledgeEnabled = Boolean(status && status.enabled) })
-      .catch(() => { this.knowledgeEnabled = false })
+      .then(status => {
+        this.knowledgeEnabled = Boolean(status && status.enabled);
+      })
+      .catch(() => {
+        this.knowledgeEnabled = false;
+      });
     // 恢复刷新前的输入草稿
     try {
-      const draft = sessionStorage.getItem(this.draftKey)
+      const draft = sessionStorage.getItem(this.draftKey);
       if (draft) {
-        Object.assign(this, restoreReferenceDraft(draft, this.sessionId))
-        this.$nextTick(() => this.autoResize())
+        Object.assign(this, restoreReferenceDraft(draft, this.sessionId));
+        this.$nextTick(() => this.autoResize());
       }
     } catch (e) {
       // 忽略草稿恢复失败
@@ -912,182 +1329,189 @@ export default {
       .then(() => {
         // 旧版草稿里的半角 / 标签迁移成全角形式（要等技能列表就绪才能识别旧 token）
         if (this.message) {
-          const migrated = migrateLegacySkillTokens(this.message, this.tokenMap)
-          if (migrated !== this.message) this.message = migrated
+          const migrated = migrateLegacySkillTokens(
+            this.message,
+            this.tokenMap,
+          );
+          if (migrated !== this.message) this.message = migrated;
         }
       })
-      .catch(() => { /* 列表拉取失败时标签按普通文本显示，不影响输入 */ })
+      .catch(() => {
+        /* 列表拉取失败时标签按普通文本显示，不影响输入 */
+      });
 
     // 恢复待选技能（技能中心「创建技能」等入口预置），读取后即清除
-    if (this.consumePendingSkill) this.restorePendingSkill()
+    if (this.consumePendingSkill) this.restorePendingSkill();
 
     // 消费待修改专家（专家面板「编辑」预置）：ID 存组件状态、不进正文，发送时
     // 随请求的 pending_expert_id 字段上行（后端校验归属后绑定为修改目标）
     try {
-      const rawEdit = sessionStorage.getItem(PENDING_EXPERT_EDIT_KEY)
-      if (rawEdit) sessionStorage.removeItem(PENDING_EXPERT_EDIT_KEY)
-      const parsed = rawEdit ? JSON.parse(rawEdit) : null
-      if (parsed && parsed.expert_agent_id) this.pendingExpertEditId = parsed.expert_agent_id
+      const rawEdit = sessionStorage.getItem(PENDING_EXPERT_EDIT_KEY);
+      if (rawEdit) sessionStorage.removeItem(PENDING_EXPERT_EDIT_KEY);
+      const parsed = rawEdit ? JSON.parse(rawEdit) : null;
+      if (parsed && parsed.expert_agent_id)
+        this.pendingExpertEditId = parsed.expert_agent_id;
     } catch (e) {
       // 隐私模式等场景忽略
     }
 
-    this.syncMirror()
+    this.syncMirror();
     // 「专家·技能·连接器」面板里改了开关 → 本面板同步（两个面板不在同一组件树分支，走事件广播）
-    this.offConnectorsChanged = onConnectorsChanged(this.onConnectorsChanged)
+    this.offConnectorsChanged = onConnectorsChanged(this.onConnectorsChanged);
 
     // 上传限额：公共接口，失败时保留默认值（10MB / 5 个 / 20MB）
-    this.loadUploadLimits()
+    this.loadUploadLimits();
 
-    document.addEventListener('click', this.closeTokenPopup)
-    document.addEventListener('click', this.closeSkillPickerOnClick)
-    window.addEventListener('resize', this.handleViewportChange)
-    document.addEventListener('click', this.closePlusMenu)
+    document.addEventListener("click", this.closeTokenPopup);
+    document.addEventListener("click", this.closeSkillPickerOnClick);
+    window.addEventListener("resize", this.handleViewportChange);
+    document.addEventListener("click", this.closePlusMenu);
     // 点示例问题会先关闭 SkillCenter 面板 → Chat/ChatInput 重新挂载，
     // 此时 expertPrompt 初始值即非空；watch 只响应"变化"，挂载时的初始值不会触发，
     // 因此在这里补一次（放在草稿恢复之后，确保示例问题覆盖草稿）。
-    if (this.expertPrompt) this.applyExpertPrompt(this.expertPrompt)
+    if (this.expertPrompt) this.applyExpertPrompt(this.expertPrompt);
   },
   beforeDestroy() {
-    document.removeEventListener('click', this.closeTokenPopup)
-    document.removeEventListener('click', this.closeSkillPickerOnClick)
-    window.removeEventListener('resize', this.handleViewportChange)
-    document.removeEventListener('click', this.closePlusMenu)
-    if (this.offConnectorsChanged) this.offConnectorsChanged()
-    if (this.connectorNoticeTimer) clearTimeout(this.connectorNoticeTimer)
-    if (this.expertsSearchTimer) clearTimeout(this.expertsSearchTimer)
-    this.cancelPlusClose()
-    this.stopLiveDuration()
-    if (this._uploadNoticeTimer) clearTimeout(this._uploadNoticeTimer)
+    document.removeEventListener("click", this.closeTokenPopup);
+    document.removeEventListener("click", this.closeSkillPickerOnClick);
+    window.removeEventListener("resize", this.handleViewportChange);
+    document.removeEventListener("click", this.closePlusMenu);
+    if (this.offConnectorsChanged) this.offConnectorsChanged();
+    if (this.connectorNoticeTimer) clearTimeout(this.connectorNoticeTimer);
+    if (this.expertsSearchTimer) clearTimeout(this.expertsSearchTimer);
+    this.cancelPlusClose();
+    this.stopLiveDuration();
+    if (this._uploadNoticeTimer) clearTimeout(this._uploadNoticeTimer);
   },
   methods: {
     getWorkspaceTree,
     async toggleWebSearch() {
-      if (this.isStreaming || this.disabled) return
+      if (this.isStreaming || this.disabled) return;
       // 页面加载可能早于后端配置完成（状态在 mounted 固化）：
       // 灰色态点击时先重查一次，配置就绪则本次点击直接点亮（符合点击意图）。
       if (!this.webSearchAvailable) {
         try {
-          const status = await getWebSearchStatus()
-          this.webSearchAvailable = Boolean(status && status.configured)
-          this.webSearchReason = (status && status.reason) || ''
+          const status = await getWebSearchStatus();
+          this.webSearchAvailable = Boolean(status && status.configured);
+          this.webSearchReason = (status && status.reason) || "";
         } catch (_) {
           /* 查询失败保持不可用 */
         }
-        if (!this.webSearchAvailable) return
+        if (!this.webSearchAvailable) return;
       }
-      this.webSearchEnabled = !this.webSearchEnabled
+      this.webSearchEnabled = !this.webSearchEnabled;
     },
     applyExpertPrompt(val) {
-      if (!val) return
-      this.message = val
+      if (!val) return;
+      this.message = val;
       this.$nextTick(() => {
-        this.autoResize()
-        const ta = this.$refs.textareaRef
-        if (ta) ta.focus()
-      })
-      this.$emit('expert-prompt-applied')
+        this.autoResize();
+        const ta = this.$refs.textareaRef;
+        if (ta) ta.focus();
+      });
+      this.$emit("expert-prompt-applied");
     },
     /** 供父组件调用：聚焦输入框并把光标移到末尾（如侧边栏打开时） */
     focusInput() {
       this.$nextTick(() => {
-        const ta = this.$refs.textareaRef
-        if (!ta || ta.disabled) return
-        ta.focus()
-        const end = ta.value.length
-        ta.setSelectionRange(end, end)
-      })
+        const ta = this.$refs.textareaRef;
+        if (!ta || ta.disabled) return;
+        ta.focus();
+        const end = ta.value.length;
+        ta.setSelectionRange(end, end);
+      });
     },
     /** 供父组件调用：替换输入内容（如侧边栏的快捷提问、划词提问） */
     setDraft(text) {
-      this.message = text || ''
-      this.$nextTick(() => this.autoResize())
-      this.focusInput()
+      this.message = text || "";
+      this.$nextTick(() => this.autoResize());
+      this.focusInput();
     },
     updateCaretLine() {
-      this.syncMirror() // 聚焦/点击/按键/滚动都会走到这里，顺带把镜像层对齐（含 scrollTop）
-      const ta = this.$refs.textareaRef
-      if (!ta) return
-      const lh = parseFloat(getComputedStyle(ta).lineHeight)
-      if (!isNaN(lh) && lh > 0) this.lineHeight = lh
-      const pos = ta.selectionStart ?? 0
-      const lineIndex = ta.value.slice(0, pos).split('\n').length - 1
-      this.caretLineTop = lineIndex * this.lineHeight - ta.scrollTop
+      this.syncMirror(); // 聚焦/点击/按键/滚动都会走到这里，顺带把镜像层对齐（含 scrollTop）
+      const ta = this.$refs.textareaRef;
+      if (!ta) return;
+      const lh = parseFloat(getComputedStyle(ta).lineHeight);
+      if (!isNaN(lh) && lh > 0) this.lineHeight = lh;
+      const pos = ta.selectionStart ?? 0;
+      const lineIndex = ta.value.slice(0, pos).split("\n").length - 1;
+      this.caretLineTop = lineIndex * this.lineHeight - ta.scrollTop;
     },
     hideCaretLine() {
-      this.caretLineTop = null
+      this.caretLineTop = null;
     },
     togglePlusMenu() {
-      if (this.isStreaming || this.disabled) return
+      if (this.isStreaming || this.disabled) return;
       if (this.showPlusMenu) {
-        this.showPlusMenu = false
-        this.subpanelCategory = null
-        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
-        this.cancelPlusClose()
-        return
+        this.showPlusMenu = false;
+        this.subpanelCategory = null;
+        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover();
+        this.cancelPlusClose();
+        return;
       }
       // 菜单贴着按钮上方弹出（与模型下拉同款定位方式）
-      const anchor = this.$refs.plusMenuRef
+      const anchor = this.$refs.plusMenuRef;
       if (anchor) {
-        const rect = anchor.getBoundingClientRect()
+        const rect = anchor.getBoundingClientRect();
         this.plusMenuStyle = {
-          position: 'fixed',
+          position: "fixed",
           bottom: `${window.innerHeight - rect.top + 6}px`,
           left: `${rect.left}px`,
-          minWidth: '188px',
-        }
+          minWidth: "188px",
+        };
       }
       // 只弹出一级菜单：二级面板在悬停 / 点击对应菜单项时才展开
-      this.subpanelCategory = null
-      this.showPlusMenu = true
+      this.subpanelCategory = null;
+      this.showPlusMenu = true;
     },
     closePlusMenu(event) {
-      const anchor = this.$refs.plusMenuRef
+      const anchor = this.$refs.plusMenuRef;
       // 点击知识库面板内部不算「菜单外」（面板不在菜单 DOM 内，但属于同一浮层交互）
-      const scopeRoot = this.$refs.knowledgeScope && this.$refs.knowledgeScope.$el
-      const target = eventTarget(event)
-      const inScope = scopeRoot && scopeRoot.contains(target)
+      const scopeRoot =
+        this.$refs.knowledgeScope && this.$refs.knowledgeScope.$el;
+      const target = eventTarget(event);
+      const inScope = scopeRoot && scopeRoot.contains(target);
       if (this.showPlusMenu && anchor && !anchor.contains(target) && !inScope) {
-        this.showPlusMenu = false
-        this.subpanelCategory = null
-        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
+        this.showPlusMenu = false;
+        this.subpanelCategory = null;
+        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover();
       }
     },
     handleMenuAddFile() {
-      this.showPlusMenu = false
-      this.subpanelCategory = null
-      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
-      const input = this.$refs.fileInputRef
-      if (input) input.click()
+      this.showPlusMenu = false;
+      this.subpanelCategory = null;
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover();
+      const input = this.$refs.fileInputRef;
+      if (input) input.click();
     },
     // 二级列表：展示当前用户自己的条目（不跳转页面）
     // 技能 = user-skills（含已停用）；连接器 = 用户 mcp.json 中已安装的内置连接器 + 自定义服务；
     // 专家 = 我的专家列表。
     openPlusList(category) {
-      this.plusListCategory = category
-      this.plusListLoading = true
-      this.plusListError = ''
-      this.plusList = []
+      this.plusListCategory = category;
+      this.plusListLoading = true;
+      this.plusListError = "";
+      this.plusList = [];
       // 每次打开都重新拉取（接口很轻，且公共专家目录是服务端实时扫描的）
-      this.myExperts = []
-      this.myExpertsTotal = 0
-      this.myExpertsPage = 0
-      this.myExpertsLoading = false
-      this.myExpertsError = ''
-      this.publicExperts = []
-      this.publicExpertsLimit = PUBLIC_EXPERTS_PAGE_SIZE
+      this.myExperts = [];
+      this.myExpertsTotal = 0;
+      this.myExpertsPage = 0;
+      this.myExpertsLoading = false;
+      this.myExpertsError = "";
+      this.publicExperts = [];
+      this.publicExpertsLimit = PUBLIC_EXPERTS_PAGE_SIZE;
       // 三个面板共用一份搜索词：切分类时一律清空，避免把上一个面板的关键字带过来
-      this.subpanelKeyword = ''
+      this.subpanelKeyword = "";
       // 同步记下「已提交的关键字」，让清空动作不触发 subpanelKeyword 的按关键字重查
-      this.expertsKeyword = ''
+      this.expertsKeyword = "";
       if (this.expertsSearchTimer) {
-        clearTimeout(this.expertsSearchTimer)
-        this.expertsSearchTimer = null
+        clearTimeout(this.expertsSearchTimer);
+        this.expertsSearchTimer = null;
       }
       // 作废上一轮还在飞的请求，避免旧结果落到新面板上
-      this.expertsRequestSeq += 1
-      if (category === 'connectors') this.clearConnectorNotice()
-      this.loadPlusList(category)
+      this.expertsRequestSeq += 1;
+      if (category === "connectors") this.clearConnectorNotice();
+      this.loadPlusList(category);
     },
     /**
      * 打开二级浮动面板（主菜单常驻），并给首帧一个占位尺寸。
@@ -1108,42 +1532,46 @@ export default {
      */
     openSubpanel(category, event) {
       // click 触发同面板已打开则翻转关闭；hover 触发保持
-      if (this.subpanelCategory === category) return
-      this.subpanelCategory = category
+      if (this.subpanelCategory === category) return;
+      this.subpanelCategory = category;
       // 换面板时先清掉可能残留的关闭计时器（例如从搜索框失焦后立刻点了另一个菜单项）
-      this.cancelPlusClose()
-      this.subpanelFocused = false
-      this.subpanelHovered = false
-      this.subpanelRefHeight = 0
-      const anchor = event.currentTarget
-      const rect = anchor.getBoundingClientRect()
+      this.cancelPlusClose();
+      this.subpanelFocused = false;
+      this.subpanelHovered = false;
+      this.subpanelRefHeight = 0;
+      const anchor = event.currentTarget;
+      const rect = anchor.getBoundingClientRect();
       // 对齐基准是一级菜单容器（.plus-menu）：底边决定「齐平」，顶边是上收的极限
-      const menuEl = anchor.closest ? anchor.closest('.plus-menu') : null
-      const menuRect = menuEl ? menuEl.getBoundingClientRect() : null
-      this.plusMenuTop = menuRect ? menuRect.top : rect.top
-      this.plusMenuBottom = menuRect ? menuRect.bottom : rect.bottom
+      const menuEl = anchor.closest ? anchor.closest(".plus-menu") : null;
+      const menuRect = menuEl ? menuEl.getBoundingClientRect() : null;
+      this.plusMenuTop = menuRect ? menuRect.top : rect.top;
+      this.plusMenuBottom = menuRect ? menuRect.bottom : rect.bottom;
       // 宽度与 CSS 同源，并受视口宽度约束（窄窗口下不许溢出）
-      const width = Math.min(SUBPANEL_WIDTH, window.innerWidth - 16)
-      const fitsRight = rect.right + SUBPANEL_GAP + width <= window.innerWidth - 8
+      const width = Math.min(SUBPANEL_WIDTH, window.innerWidth - 16);
+      const fitsRight =
+        rect.right + SUBPANEL_GAP + width <= window.innerWidth - 8;
       const left = fitsRight
         ? rect.right + SUBPANEL_GAP
-        : Math.max(8, rect.left - SUBPANEL_GAP - width)
+        : Math.max(8, rect.left - SUBPANEL_GAP - width);
       // 占位：真实高度未知（列表异步加载）。先按「底边贴菜单底边、上限 = 菜单竖向空间」摆一下，
       // sync 随后用真实内容高度校正。height 必须给 auto —— 像素值会把面板撑住。
       const provisionalMax = Math.max(
         120,
-        Math.min(SUBPANEL_MAX_HEIGHT, this.plusMenuBottom - Math.max(8, this.plusMenuTop))
-      )
+        Math.min(
+          SUBPANEL_MAX_HEIGHT,
+          this.plusMenuBottom - Math.max(8, this.plusMenuTop),
+        ),
+      );
       this.plusSubpanelStyle = {
-        position: 'fixed',
+        position: "fixed",
         left: `${left}px`,
         width: `${width}px`,
         top: `${Math.max(8, this.plusMenuBottom - provisionalMax)}px`,
-        height: 'auto',
+        height: "auto",
         maxHeight: `${provisionalMax}px`,
-      }
-      this.openPlusList(category)
-      this.$nextTick(this.syncSubpanelBox)
+      };
+      this.openPlusList(category);
+      this.$nextTick(this.syncSubpanelBox);
     },
     /**
      * 计算并应用子面板的位置与高度（打开时、首屏数据到位后、搜索词变化、加载更多时）。
@@ -1158,43 +1586,43 @@ export default {
      * 4. 变矮会让鼠标「悬空」掉出面板，由 schedulePlusClose 的聚焦/悬停保护兜住。
      */
     syncSubpanelBox() {
-      const el = this.$refs.plusSubpanel
-      const dom = el && el.$el ? el.$el : el
-      if (!dom) return
-      const viewportH = window.innerHeight
+      const el = this.$refs.plusSubpanel;
+      const dom = el && el.$el ? el.$el : el;
+      if (!dom) return;
+      const viewportH = window.innerHeight;
       // 拿不到基准时退化到视口下半部，保证仍能算出一个合理位置
-      const menuTop = this.plusMenuTop || Math.round(viewportH * 0.6)
-      const menuBottom = this.plusMenuBottom || menuTop + 40
+      const menuTop = this.plusMenuTop || Math.round(viewportH * 0.6);
+      const menuBottom = this.plusMenuBottom || menuTop + 40;
       // 可用空间 = 视口顶到菜单底边（底边最低就贴到这里）
-      const cap = Math.max(120, Math.min(SUBPANEL_MAX_HEIGHT, menuBottom - 8))
+      const cap = Math.max(120, Math.min(SUBPANEL_MAX_HEIGHT, menuBottom - 8));
       // 量「内容自然高度」之前必须把上一轮写进去的 height / max-height 都放开，
       // 否则量到的是被压扁的那份高度。
-      dom.style.height = 'auto'
-      dom.style.maxHeight = 'none'
-      const natural = dom.offsetHeight
+      dom.style.height = "auto";
+      dom.style.maxHeight = "none";
+      const natural = dom.offsetHeight;
       // 拿不到高度（面板还没布局）就别动样式，否则会被压成 1px
-      if (!natural) return
-      const height = Math.min(natural, cap)
+      if (!natural) return;
+      const height = Math.min(natural, cap);
       // 本次打开以来量到过的最大内容高度 = 顶边基准（只增不减）：
       // 搜索过滤后顶边不许跟着往下滑，只能底边上收。
-      if (height > this.subpanelRefHeight) this.subpanelRefHeight = height
-      const refHeight = this.subpanelRefHeight || height
+      if (height > this.subpanelRefHeight) this.subpanelRefHeight = height;
+      const refHeight = this.subpanelRefHeight || height;
       // 基准顶边：最满时底边正好贴菜单底边 → 打开时左右两面板底部齐平
-      let top = menuBottom - refHeight
+      let top = menuBottom - refHeight;
       // 上收极限：底边最多收到与「菜单顶边」齐平（判据用底边，不能用 top）
-      if (top + height < menuTop) top = menuTop - height
+      if (top + height < menuTop) top = menuTop - height;
       // 兜底：不许越过菜单底边、不许钻出视口顶
-      top = Math.max(8, Math.min(top, menuBottom - height))
+      top = Math.max(8, Math.min(top, menuBottom - height));
       // ★ 关键：不写死 height 像素，只给 max-height。面板高度交给内容决定，
       // 搜索后条数变少 → 面板立刻变矮、下边框上收（2026-10-24）；
       // 即使 offsetHeight 量偏，也只影响 top 与上限，不会把面板撑住。
-      dom.style.maxHeight = `${refHeight}px`
+      dom.style.maxHeight = `${refHeight}px`;
       this.plusSubpanelStyle = {
         ...this.plusSubpanelStyle,
         top: `${top}px`,
-        height: 'auto',
+        height: "auto",
         maxHeight: `${refHeight}px`,
-      }
+      };
     },
     // ========== 悬停触发二级面板 ==========
     // 鼠标悬停主菜单项即切换对应面板，无需点击；点击仍保留（触屏/键盘回退）。
@@ -1202,169 +1630,188 @@ export default {
     // 鼠标停在面板上、或焦点还在面板内（正在搜索框里打字）时都不关。
     cancelPlusClose() {
       if (this.plusHoverTimer) {
-        clearTimeout(this.plusHoverTimer)
-        this.plusHoverTimer = null
+        clearTimeout(this.plusHoverTimer);
+        this.plusHoverTimer = null;
       }
     },
     schedulePlusClose() {
-      this.cancelPlusClose()
+      this.cancelPlusClose();
       // 保护一：焦点在面板内（搜索框有光标）。面板会随搜索结果变矮，鼠标可能被
       // 布局变化「抽」到面板外触发 mouseleave —— 此刻不能关，否则就是用户反馈的
       // 「搜索一下就消失」。失焦后再判断（见 onSubpanelFocusOut）。
-      if (this.subpanelFocused) return
+      if (this.subpanelFocused) return;
       // 保护二：鼠标还在面板上
-      if (this.subpanelHovered) return
+      if (this.subpanelHovered) return;
       // 350ms：给「从菜单项斜移进子面板」留足时间（原先 250ms 在面板较远时不够用）。
       // 真正的兜底是 .plus-subpanel::before 的热桥，这里只是余量。
       this.plusHoverTimer = setTimeout(() => {
-        this.plusHoverTimer = null
-        this.subpanelHovered = false
-        this.subpanelFocused = false
-        this.showPlusMenu = false
-        this.subpanelCategory = null
-        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
-      }, 350)
+        this.plusHoverTimer = null;
+        this.subpanelHovered = false;
+        this.subpanelFocused = false;
+        this.showPlusMenu = false;
+        this.subpanelCategory = null;
+        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover();
+      }, 350);
     },
     /** 进入面板：取消关闭计时（面板会变矮，鼠标可能中途「悬空」，靠这个标志兜住） */
     onSubpanelEnter() {
-      this.subpanelHovered = true
-      this.cancelPlusClose()
+      this.subpanelHovered = true;
+      this.cancelPlusClose();
     },
     onSubpanelLeave() {
-      this.subpanelHovered = false
-      this.schedulePlusClose()
+      this.subpanelHovered = false;
+      this.schedulePlusClose();
     },
     /** 焦点进入面板（搜索框 / 行按钮）：锁定，不因鼠标移出而关闭 */
     onSubpanelFocusIn() {
-      this.subpanelFocused = true
-      this.cancelPlusClose()
+      this.subpanelFocused = true;
+      this.cancelPlusClose();
     },
     /** 焦点离开面板：只有在面板内部换焦点才算没走（focusout 早于新的 focusin） */
     onSubpanelFocusOut(e) {
-      if (e && e.relatedTarget && e.currentTarget && e.currentTarget.contains(e.relatedTarget)) return
-      this.subpanelFocused = false
-      if (!this.subpanelHovered) this.schedulePlusClose()
+      if (
+        e &&
+        e.relatedTarget &&
+        e.currentTarget &&
+        e.currentTarget.contains(e.relatedTarget)
+      )
+        return;
+      this.subpanelFocused = false;
+      if (!this.subpanelHovered) this.schedulePlusClose();
     },
     hoverPlusItem(category) {
-      this.cancelPlusClose()
+      this.cancelPlusClose();
       // 知识库与技能/专家一致：悬停即展开面板，无需点击
-      if (category === 'knowledge') {
-        this.subpanelCategory = null
-        if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover(this.$el.querySelector('.plus-menu-item-knowledge'))
-        return
+      if (category === "knowledge") {
+        this.subpanelCategory = null;
+        if (this.$refs.knowledgeScope)
+          this.$refs.knowledgeScope.openPopover(
+            this.$el.querySelector(".plus-menu-item-knowledge"),
+          );
+        return;
       }
       // 切到其他菜单项时收起知识库面板，避免两个浮层叠着
-      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
-      if (category === 'experts' || category === 'skills' || category === 'connectors') {
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover();
+      if (
+        category === "experts" ||
+        category === "skills" ||
+        category === "connectors"
+      ) {
         // openSubpanel 需要事件定位；hover 无事件对象时用菜单项元素
-        const el = [...this.$el.querySelectorAll('.plus-menu-item')].find(i => i.textContent.includes(
-          { experts: '专家', skills: '技能', connectors: '连接器' }[category]
-        ))
-        this.openSubpanel(category, { currentTarget: el })
-        return
+        const el = [...this.$el.querySelectorAll(".plus-menu-item")].find(i =>
+          i.textContent.includes(
+            { experts: "专家", skills: "技能", connectors: "连接器" }[category],
+          ),
+        );
+        this.openSubpanel(category, { currentTarget: el });
+        return;
       }
       // 其余项（如添加文件）收起子面板，主菜单保持
-      this.subpanelCategory = null
+      this.subpanelCategory = null;
     },
     async loadPlusList(category) {
       try {
-        if (category === 'experts') {
+        if (category === "experts") {
           // 并行拉取：我的专家第 1 页（服务端 status=active + 分页） + 公共专家（内置目录，全量）
           const [mine, preset] = await Promise.all([
-            listExperts({ status: 'active', page: 1, pageSize: PLUS_EXPERTS_PAGE_SIZE }),
+            listExperts({
+              status: "active",
+              page: 1,
+              pageSize: PLUS_EXPERTS_PAGE_SIZE,
+            }),
             listPublicExperts(),
-          ])
+          ]);
           // 期间用户已切到别的分类：这批结果直接丢弃，避免串到技能 / 连接器面板
-          if (this.plusListCategory !== 'experts') return
-          this.myExperts = mine.items || []
-          this.myExpertsTotal = Number(mine.total) || 0
-          this.myExpertsPage = 1
-          this.publicExperts = preset.items || []
-        } else if (category === 'skills') {
-          const data = await getUserSkills()
-          this.rememberSkills(data.skills || [])
-          this.plusList = (data.skills || []).map((s) => ({
+          if (this.plusListCategory !== "experts") return;
+          this.myExperts = mine.items || [];
+          this.myExpertsTotal = Number(mine.total) || 0;
+          this.myExpertsPage = 1;
+          this.publicExperts = preset.items || [];
+        } else if (category === "skills") {
+          const data = await getUserSkills();
+          this.rememberSkills(data.skills || []);
+          this.plusList = (data.skills || []).map(s => ({
             key: `skill:${s.dir_name}`,
             dir_name: s.dir_name,
             name: s.name,
-            desc: s.description || '暂无描述',
-            icon: s.icon || '',
+            desc: s.description || "暂无描述",
+            icon: s.icon || "",
             category_id: s.category_id,
             initial: (s.name || s.dir_name).slice(0, 1).toUpperCase(),
             enabled: !!s.enabled,
-            tag: s.enabled ? '已启用' : '已停用',
-            tagType: s.enabled ? 'on' : 'off',
-          }))
-        } else if (category === 'connectors') {
-          const data = await getConnectors()
+            tag: s.enabled ? "已启用" : "已停用",
+            tagType: s.enabled ? "on" : "off",
+          }));
+        } else if (category === "connectors") {
+          const data = await getConnectors();
           // connectorId = 会话开关的标识，也是 mcp.json 的 server key（目录条目用 id，
           // 自定义服务用 server 名）；mcp.json 层面已停用的项仍列出，但标出「已停用」。
           const installed = (data.connectors || [])
-            .filter((c) => c.installed)
-            .map((c) => ({
+            .filter(c => c.installed)
+            .map(c => ({
               key: `connector:${c.id}`,
               connectorId: c.id,
               name: c.name,
-              desc: c.description || '暂无描述',
-              icon: '',
+              desc: c.description || "暂无描述",
+              icon: "",
               initial: (c.name || c.id).slice(0, 1).toUpperCase(),
               // mcp.json 里的启用状态：会话开关必须与它一致（停用 = 开关关闭），
               // 「专家·技能·连接器」面板显示的也是这个值
               enabled: c.enabled !== false,
               // 启用时展示的 tag 单独存一份：开关来回切时按它还原（停用统一显示「已停用」）
-              enabledTag: '已添加',
-              enabledTagType: 'on',
-              tag: c.enabled === false ? '已停用' : '已添加',
-              tagType: c.enabled === false ? 'off' : 'on',
-            }))
-          const custom = (data.custom || []).map((c) => ({
+              enabledTag: "已添加",
+              enabledTagType: "on",
+              tag: c.enabled === false ? "已停用" : "已添加",
+              tagType: c.enabled === false ? "off" : "on",
+            }));
+          const custom = (data.custom || []).map(c => ({
             key: `custom:${c.name}`,
             connectorId: c.name,
             name: c.name,
-            desc: '用户自定义 MCP 服务',
-            icon: '',
-            initial: (c.name || '').slice(0, 1).toUpperCase(),
+            desc: "用户自定义 MCP 服务",
+            icon: "",
+            initial: (c.name || "").slice(0, 1).toUpperCase(),
             enabled: c.enabled !== false,
-            enabledTag: '自定义',
-            enabledTagType: 'custom',
-            tag: c.enabled === false ? '已停用' : '自定义',
-            tagType: c.enabled === false ? 'off' : 'custom',
-          }))
-          this.plusList = installed.concat(custom)
+            enabledTag: "自定义",
+            enabledTagType: "custom",
+            tag: c.enabled === false ? "已停用" : "自定义",
+            tagType: c.enabled === false ? "off" : "custom",
+          }));
+          this.plusList = installed.concat(custom);
         }
       } catch (e) {
-        this.plusListError = (e && e.message) || '加载失败'
+        this.plusListError = (e && e.message) || "加载失败";
       } finally {
-        this.plusListLoading = false
+        this.plusListLoading = false;
         // 首屏数据到位后高度才稳定：再算一次，把「按预估值占位」的顶边校正成真实内容
         // 对应的位置（否则连接器这类短列表会跟左侧菜单脱开）。
-        this.$nextTick(this.syncSubpanelBox)
+        this.$nextTick(this.syncSubpanelBox);
       }
     },
     // ========== 「+」菜单通用条目行：技能挂令牌 / 连接器挂胶囊 ==========
     /** 该技能是否已在输入框文本里（与「/」唤起技能共用同一套内联标签） */
     isSkillSelected(dirName) {
-      if (!dirName) return false
-      return this.selectedSkillDirs.includes(dirName)
+      if (!dirName) return false;
+      return this.selectedSkillDirs.includes(dirName);
     },
     /** 通用条目行是否可点选：只有技能行可点（挂成输入框令牌）；连接器行由行尾开关控制 */
     isPlusRowSelectable() {
-      return this.isSkillListRow
+      return this.isSkillListRow;
     },
     /** 停用技能行不可点：Agent 只加载已启用的技能，挂上去也不会生效 */
     isPlusRowDisabled(item) {
-      return this.isSkillListRow && !item.enabled
+      return this.isSkillListRow && !item.enabled;
     },
     /** 行尾「已选」态：技能看已挂令牌（连接器行改用开关） */
     isPlusRowSelected(item) {
-      return this.isSkillListRow && this.isSkillSelected(item.dir_name)
+      return this.isSkillListRow && this.isSkillSelected(item.dir_name);
     },
     /** 行悬浮提示：技能给「选择/已停用」；连接器行由开关自身的 title 承载 */
     plusRowTitle(item) {
       if (this.isSkillListRow) {
-        return item.enabled ? `选择「${item.name}」` : '该技能已停用'
+        return item.enabled ? `选择「${item.name}」` : "该技能已停用";
       }
-      return ''
+      return "";
     },
     /**
      * 通用条目列表行点击：技能行插入 / 移除内联标签 —— 与「/」唤起技能共用同一套标签，
@@ -1372,48 +1819,56 @@ export default {
      */
     onPlusListItemClick(item) {
       if (this.isSkillListRow) {
-        this.toggleSkillFromPlus(item)
+        this.toggleSkillFromPlus(item);
       }
     },
     /** 收起「+」菜单与其二级面板（含待执行的悬停关闭定时器、知识库浮层） */
     hidePlusMenu() {
-      this.showPlusMenu = false
-      this.subpanelCategory = null
-      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
-      this.cancelPlusClose()
+      this.showPlusMenu = false;
+      this.subpanelCategory = null;
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover();
+      this.cancelPlusClose();
     },
     /**
      * 点击技能行 = 插入 / 移除技能标签，行为与「/」唤起技能完全一致（标签落在光标处，光标停在标签之后）。
      * 停用技能不参与：Agent 只加载已启用的技能，挂上去也不会生效。
      */
     toggleSkillFromPlus(item) {
-      if (!this.isSkillListRow || !item || !item.dir_name || !item.enabled) return
+      if (!this.isSkillListRow || !item || !item.dir_name || !item.enabled)
+        return;
       if (this.isSkillSelected(item.dir_name)) {
-        this.removeSkillToken(item.dir_name)
-        return
+        this.removeSkillToken(item.dir_name);
+        return;
       }
-      this.rememberSkills([{ ...item, description: item.description || item.desc }])
-      const ta = this.$refs.textareaRef
-      const base = (ta && ta.value) || this.message
-      const caret = ta && typeof ta.selectionStart === 'number' ? ta.selectionStart : base.length
-      this.replaceTextWithCaret(insertSkillToken(base, caret, tokenForSkill(item)))
-      console.log(`[${new Date().toISOString()}] [技能选择] ${item.dir_name}`)
+      this.rememberSkills([
+        { ...item, description: item.description || item.desc },
+      ]);
+      const ta = this.$refs.textareaRef;
+      const base = (ta && ta.value) || this.message;
+      const caret =
+        ta && typeof ta.selectionStart === "number"
+          ? ta.selectionStart
+          : base.length;
+      this.replaceTextWithCaret(
+        insertSkillToken(base, caret, tokenForSkill(item)),
+      );
+      console.log(`[${new Date().toISOString()}] [技能选择] ${item.dir_name}`);
     },
     // ========== 连接器开关（「+」→ 连接器，与「专家·技能·连接器」同一份状态） ==========
     /** 连接器标识（目录条目用 id，自定义服务用 server 名，即 mcp.json 的 server key） */
     connectorKeyOf(item) {
-      return (item && item.connectorId) || ''
+      return (item && item.connectorId) || "";
     },
     /**
      * 连接器在 mcp.json 里是否启用。
      * 「专家·技能·连接器」面板的开关读的是同一个字段：两处必须显示同一状态。
      */
     connectorEnabled(item) {
-      return !!item && item.enabled !== false
+      return !!item && item.enabled !== false;
     },
     /** 该连接器的开关是否为「打开」 */
     isConnectorOn(item) {
-      return !!this.connectorKeyOf(item) && this.connectorEnabled(item)
+      return !!this.connectorKeyOf(item) && this.connectorEnabled(item);
     },
     /**
      * 开关是否不可点。
@@ -1421,56 +1876,57 @@ export default {
      * 只有「正在提交该行」时才临时禁用，避免连点产生竞态。
      */
     isConnectorSwitchDisabled(item) {
-      const key = this.connectorKeyOf(item)
-      if (!key) return true
-      return this.connectorToggling === key
+      const key = this.connectorKeyOf(item);
+      if (!key) return true;
+      return this.connectorToggling === key;
     },
     /** 该行开关是否正在提交（显示忙碌态的转圈） */
     isConnectorBusy(item) {
-      const key = this.connectorKeyOf(item)
-      return !!key && this.connectorToggling === key
+      const key = this.connectorKeyOf(item);
+      return !!key && this.connectorToggling === key;
     },
     /** 开关的无障碍名称 */
     connectorSwitchLabel(item) {
-      if (this.isConnectorBusy(item)) return `正在保存连接器 ${item.name} 的开关`
-      return `${this.isConnectorOn(item) ? '停用' : '启用'}连接器 ${item.name}`
+      if (this.isConnectorBusy(item))
+        return `正在保存连接器 ${item.name} 的开关`;
+      return `${this.isConnectorOn(item) ? "停用" : "启用"}连接器 ${item.name}`;
     },
     /** 开关的 title：说清点下去会发生什么、以及会同步到哪里 */
     connectorSwitchTitle(item) {
-      if (this.isConnectorBusy(item)) return '正在保存…'
+      if (this.isConnectorBusy(item)) return "正在保存…";
       return this.isConnectorOn(item)
-        ? '已启用（点击停用，「专家·技能·连接器」面板同步生效）'
-        : '已停用（点击启用，「专家·技能·连接器」面板同步生效）'
+        ? "已启用（点击停用，「专家·技能·连接器」面板同步生效）"
+        : "已停用（点击启用，「专家·技能·连接器」面板同步生效）";
     },
     /** 面板内的操作反馈（连接器开关），ms 后自动消失 */
-    showConnectorNotice(message, type = 'success', ms = 2600) {
-      if (this.connectorNoticeTimer) clearTimeout(this.connectorNoticeTimer)
-      this.connectorNotice = message
-      this.connectorNoticeType = type
+    showConnectorNotice(message, type = "success", ms = 2600) {
+      if (this.connectorNoticeTimer) clearTimeout(this.connectorNoticeTimer);
+      this.connectorNotice = message;
+      this.connectorNoticeType = type;
       this.connectorNoticeTimer = setTimeout(() => {
-        this.connectorNoticeTimer = null
-        this.connectorNotice = ''
-      }, ms)
+        this.connectorNoticeTimer = null;
+        this.connectorNotice = "";
+      }, ms);
     },
     /** 清掉提示（打开面板时调用，避免看到上一次操作留下的文案） */
     clearConnectorNotice() {
-      if (this.connectorNoticeTimer) clearTimeout(this.connectorNoticeTimer)
-      this.connectorNoticeTimer = null
-      this.connectorNotice = ''
+      if (this.connectorNoticeTimer) clearTimeout(this.connectorNoticeTimer);
+      this.connectorNoticeTimer = null;
+      this.connectorNotice = "";
     },
     /** 按最新状态刷新某个连接器行的开关与 tag（tag 停用时统一显示「已停用」） */
     applyConnectorState(id, enabled) {
-      if (!id) return
-      const item = this.plusList.find(i => this.connectorKeyOf(i) === id)
-      if (!item) return
-      item.enabled = !!enabled
-      item.tag = item.enabled ? (item.enabledTag || '') : '已停用'
-      item.tagType = item.enabled ? (item.enabledTagType || 'on') : 'off'
+      if (!id) return;
+      const item = this.plusList.find(i => this.connectorKeyOf(i) === id);
+      if (!item) return;
+      item.enabled = !!enabled;
+      item.tag = item.enabled ? item.enabledTag || "" : "已停用";
+      item.tagType = item.enabled ? item.enabledTagType || "on" : "off";
     },
     /** 其它面板（「专家·技能·连接器」）改了开关：同步本面板显示（忽略自己派发的回声） */
     onConnectorsChanged(payload) {
-      if (!payload || payload.source === 'plus-panel') return
-      this.applyConnectorState(payload.id, payload.enabled)
+      if (!payload || payload.source === "plus-panel") return;
+      this.applyConnectorState(payload.id, payload.enabled);
     },
     /**
      * 切换连接器的启用状态：直接改连接器自身的开关（后端写用户 mcp.json 的 enabled，
@@ -1478,54 +1934,66 @@ export default {
      * 启用 → 停用、停用 → 启用都走这里，两个面板都可以操作。
      */
     async toggleConnectorSwitch(item) {
-      const id = this.connectorKeyOf(item)
-      if (!id) return
+      const id = this.connectorKeyOf(item);
+      if (!id) return;
       // 同一行正在提交时忽略连点（按钮此时也已 disabled）
-      if (this.connectorToggling) return
-      const next = !this.connectorEnabled(item)
-      this.connectorToggling = id
+      if (this.connectorToggling) return;
+      const next = !this.connectorEnabled(item);
+      this.connectorToggling = id;
       // 本面板先乐观更新（点下去立即有反馈，不等接口往返）
-      this.applyConnectorState(id, next)
+      this.applyConnectorState(id, next);
       try {
-        await toggleConnector(id, next)
+        await toggleConnector(id, next);
         // 只在真正改成功后才广播：对方收到后会重新拉取，若在请求途中广播，
         // 它拉到的还是旧数据，会出现「跟着变一下又弹回去」的抖动
-        emitConnectorsChanged(id, next, 'plus-panel')
+        emitConnectorsChanged(id, next, "plus-panel");
         console.log(
-          `[${new Date().toISOString()}] [连接器开关] ${item.name} -> ${next ? '启用' : '停用'}`
-        )
+          `[${new Date().toISOString()}] [连接器开关] ${item.name} -> ${
+            next ? "启用" : "停用"
+          }`,
+        );
         this.showConnectorNotice(
-          `已${next ? '启用' : '停用'}「${item.name}」，已同步到「专家·技能·连接器」`
-        )
+          `已${next ? "启用" : "停用"}「${
+            item.name
+          }」，已同步到「专家·技能·连接器」`,
+        );
       } catch (e) {
         // 后端没改成功：只回滚本面板（对方从未收到通知，保持原状态即可）
-        this.applyConnectorState(id, !next)
-        this.showConnectorNotice(e.message || '切换连接器开关失败', 'error', 4000)
+        this.applyConnectorState(id, !next);
+        this.showConnectorNotice(
+          e.message || "切换连接器开关失败",
+          "error",
+          4000,
+        );
       } finally {
-        this.connectorToggling = ''
+        this.connectorToggling = "";
       }
     },
     // ========== 专家快捷面板：行渲染与选择 ==========
     // 头像取字与配色统一走 utils/expertAvatar.js（全局 8 色板 .ea-0 ~ .ea-7），
     // 按 export_agent_id 稳定取档，与技能中心 / 胶囊 / 消息标识同色。
     expertAvatarChar(item) {
-      return buildExpertAvatarChar(item)
+      return buildExpertAvatarChar(item);
     },
     expertAvatarClass(item) {
-      return buildExpertAvatarClass(item)
+      return buildExpertAvatarClass(item);
     },
     /** 行右侧的浅灰小字描述：优先功能描述，回退专家描述 */
     expertDesc(item) {
       return (
-        String((item && item.export_description) || '').replace(/\s*\n+\s*/g, ' ').trim() ||
-        String((item && item.export_prompt) || '').replace(/\s*\n+\s*/g, ' ').trim() ||
-        '暂无描述'
-      )
+        String((item && item.export_description) || "")
+          .replace(/\s*\n+\s*/g, " ")
+          .trim() ||
+        String((item && item.export_prompt) || "")
+          .replace(/\s*\n+\s*/g, " ")
+          .trim() ||
+        "暂无描述"
+      );
     },
     /** 是否为当前会话已召唤的专家（activeExpert 由 App.vue 传入） */
     isExpertSelected(item) {
-      if (!item || !this.activeExpert) return false
-      return this.activeExpert.export_agent_id === item.export_agent_id
+      if (!item || !this.activeExpert) return false;
+      return this.activeExpert.export_agent_id === item.export_agent_id;
     },
     /**
      * 点击专家行：与专家 Tab 的「召唤」同一链路。
@@ -1533,16 +2001,16 @@ export default {
      * 操作完成后直接关闭面板（选中态由胶囊与「已选」标承载）。
      */
     toggleExpert(item) {
-      if (!item || !item.export_agent_id) return
+      if (!item || !item.export_agent_id) return;
       if (this.isExpertSelected(item)) {
-        this.$emit('clear-expert')
+        this.$emit("clear-expert");
       } else {
-        this.$emit('select-expert', item)
+        this.$emit("select-expert", item);
       }
-      if (this.compact) return
-      this.showPlusMenu = false
-      this.subpanelCategory = null
-      this.cancelPlusClose()
+      if (this.compact) return;
+      this.showPlusMenu = false;
+      this.subpanelCategory = null;
+      this.cancelPlusClose();
     },
     /**
      * 拉「我的专家」的某一页（服务端分页 + 关键字过滤）。
@@ -1552,37 +2020,37 @@ export default {
      * 用户再点一次「点击加载更多」就能重试。
      */
     async loadMyExpertsPage(page = 1) {
-      const seq = ++this.expertsRequestSeq
-      this.myExpertsLoading = true
-      this.myExpertsError = ''
+      const seq = ++this.expertsRequestSeq;
+      this.myExpertsLoading = true;
+      this.myExpertsError = "";
       try {
         const data = await listExperts({
           keyword: this.expertsKeyword,
-          status: 'active',
+          status: "active",
           page,
           pageSize: PLUS_EXPERTS_PAGE_SIZE,
-        })
-        if (seq !== this.expertsRequestSeq) return
-        const items = data.items || []
-        this.myExperts = page === 1 ? items : this.myExperts.concat(items)
-        this.myExpertsTotal = Number(data.total) || 0
-        this.myExpertsPage = page
+        });
+        if (seq !== this.expertsRequestSeq) return;
+        const items = data.items || [];
+        this.myExperts = page === 1 ? items : this.myExperts.concat(items);
+        this.myExpertsTotal = Number(data.total) || 0;
+        this.myExpertsPage = page;
       } catch (e) {
-        if (seq !== this.expertsRequestSeq) return
-        this.myExpertsError = (e && e.message) || '加载失败'
+        if (seq !== this.expertsRequestSeq) return;
+        this.myExpertsError = (e && e.message) || "加载失败";
       } finally {
         if (seq === this.expertsRequestSeq) {
-          this.myExpertsLoading = false
+          this.myExpertsLoading = false;
           // 条数变了，面板高度要跟着重算（变高才允许向上长）
-          this.$nextTick(this.syncSubpanelBox)
+          this.$nextTick(this.syncSubpanelBox);
         }
       }
     },
     /** 「点击加载更多」：再取一页追加；已加载满 total 时按钮本身不渲染 */
     loadMoreMyExperts() {
-      if (this.myExpertsLoading) return
-      if (this.myExperts.length >= this.myExpertsTotal) return
-      this.loadMyExpertsPage(this.myExpertsPage + 1)
+      if (this.myExpertsLoading) return;
+      if (this.myExperts.length >= this.myExpertsTotal) return;
+      this.loadMyExpertsPage(this.myExpertsPage + 1);
     },
     /**
      * 专家搜索过滤：中英文名 / 功能描述。
@@ -1591,119 +2059,124 @@ export default {
      * 已下推给接口（服务端分页，本地拿不到未加载的条目，过滤会漏）。
      */
     filterExperts(list) {
-      const kw = this.subpanelKeyword.trim().toLowerCase()
-      if (!kw) return list
-      return (list || []).filter((item) => {
-        if (!item) return false
-        const name = String(item.export_name_cn || '').toLowerCase()
-        const nameEn = String(item.export_name_en || '').toLowerCase()
-        const desc = String(item.export_description || '').toLowerCase()
-        return name.includes(kw) || nameEn.includes(kw) || desc.includes(kw)
-      })
+      const kw = this.subpanelKeyword.trim().toLowerCase();
+      if (!kw) return list;
+      return (list || []).filter(item => {
+        if (!item) return false;
+        const name = String(item.export_name_cn || "").toLowerCase();
+        const nameEn = String(item.export_name_en || "").toLowerCase();
+        const desc = String(item.export_description || "").toLowerCase();
+        return name.includes(kw) || nameEn.includes(kw) || desc.includes(kw);
+      });
     },
     /** 公共专家本地分页：再放 3 条 */
     loadMorePublicExperts() {
-      if (this.publicExpertsLimit >= this.filteredPublicExperts.length) return
-      this.publicExpertsLimit += PUBLIC_EXPERTS_MORE_STEP
+      if (this.publicExpertsLimit >= this.filteredPublicExperts.length) return;
+      this.publicExpertsLimit += PUBLIC_EXPERTS_MORE_STEP;
       // 内容变多是唯一允许面板长高的场景（向上长），重算一次尺寸
-      this.$nextTick(this.syncSubpanelBox)
+      this.$nextTick(this.syncSubpanelBox);
     },
     // 列表底部入口：跳到「专家·技能·连接器」面板做完整管理
     handleMenuPanel(tab) {
-      this.showPlusMenu = false
-      this.subpanelCategory = null
-      this.$emit('open-panel', tab)
+      this.showPlusMenu = false;
+      this.subpanelCategory = null;
+      this.$emit("open-panel", tab);
     },
     // 加号菜单「知识库」：与技能子面板一致，点击保持主菜单常驻，面板贴菜单项右侧弹出
     openKnowledgeScope(event) {
-      this.cancelPlusClose()
-      this.subpanelCategory = null
-      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.openPopover(event && event.currentTarget)
+      this.cancelPlusClose();
+      this.subpanelCategory = null;
+      if (this.$refs.knowledgeScope)
+        this.$refs.knowledgeScope.openPopover(event && event.currentTarget);
     },
     // 知识库子面板底部入口：关闭菜单并打开知识库工作台
     openKnowledgeManage() {
-      this.showPlusMenu = false
-      this.subpanelCategory = null
-      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover()
-      this.$emit('open-knowledge')
+      this.showPlusMenu = false;
+      this.subpanelCategory = null;
+      if (this.$refs.knowledgeScope) this.$refs.knowledgeScope.closePopover();
+      this.$emit("open-knowledge");
     },
     // 知识库勾选变化：已有会话由选择器立即 PUT 落库；新对话只暂存，
     // 等首条消息发送时随 /agent/chat/stream 提交，由后端建会话后落库。
     handleKnowledgeScopeChange(baseIds) {
-      this.pendingKnowledgeBaseIds = this.sessionId ? [] : [...baseIds]
+      this.pendingKnowledgeBaseIds = this.sessionId ? [] : [...baseIds];
     },
     // 供父组件把预置问题完整文本填进输入框（卡片上最多显示 3 行，长问题展示不全）
     setMessage(text) {
-      this.message = text || ''
+      this.message = text || "";
       this.$nextTick(() => {
-        const ta = this.$refs.textareaRef
-        if (ta) ta.focus()
-      })
+        const ta = this.$refs.textareaRef;
+        if (ta) ta.focus();
+      });
     },
     getMessage() {
-      return this.message
+      return this.message;
     },
     startLiveDuration() {
-      this.stopLiveDuration()
-      this.liveDuration = 0
+      this.stopLiveDuration();
+      this.liveDuration = 0;
       this.durationTimer = setInterval(() => {
-        this.liveDuration += 1
-      }, 1000)
+        this.liveDuration += 1;
+      }, 1000);
     },
     stopLiveDuration() {
       if (this.durationTimer) {
-        clearInterval(this.durationTimer)
-        this.durationTimer = null
+        clearInterval(this.durationTimer);
+        this.durationTimer = null;
       }
     },
     toggleTokenPopup() {
-      this.showTokenPopup = !this.showTokenPopup
+      this.showTokenPopup = !this.showTokenPopup;
     },
     closeTokenPopup() {
       if (this.showTokenPopup) {
-        this.showTokenPopup = false
+        this.showTokenPopup = false;
       }
     },
     formatTokens(n) {
-      if (!n) return '0'
-      if (n >= 1000) return (n / 1000).toFixed(1) + 'k'
-      return n.toString()
+      if (!n) return "0";
+      if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+      return n.toString();
     },
     formatSize(bytes) {
-      if (bytes < 1024) return bytes + ' B'
-      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-      return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+      if (bytes < 1024) return bytes + " B";
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+      return (bytes / (1024 * 1024)).toFixed(1) + " MB";
     },
     mbToBytes(mb) {
-      return (Number(mb) || 0) * 1024 * 1024
+      return (Number(mb) || 0) * 1024 * 1024;
     },
     /** 拉取上传限额（公共接口）；失败保留默认值 10MB / 5 个 / 20MB */
     async loadUploadLimits() {
       try {
-        const data = await getUploadLimits()
-        const toPositive = (v, fallback) => (Number(v) > 0 ? Number(v) : fallback)
+        const data = await getUploadLimits();
+        const toPositive = (v, fallback) =>
+          Number(v) > 0 ? Number(v) : fallback;
         this.uploadLimits = {
           enabled: data && data.enabled !== false,
           maxFileSizeMb: toPositive(data && data.max_file_size_mb, 10),
           maxFiles: toPositive(data && data.max_files_per_message, 5),
           maxTotalMb: toPositive(data && data.max_total_size_mb, 20),
-        }
+        };
       } catch (e) {
-        console.error('获取上传限额失败，使用默认限额（10MB / 5 个 / 20MB）:', e)
+        console.error(
+          "获取上传限额失败，使用默认限额（10MB / 5 个 / 20MB）:",
+          e,
+        );
       }
     },
     /** 汇总提示条：2.6s 自动消失，可手动关闭 */
     showUploadNotice(text) {
-      if (!text) return
-      this.uploadNotice = text
-      if (this._uploadNoticeTimer) clearTimeout(this._uploadNoticeTimer)
+      if (!text) return;
+      this.uploadNotice = text;
+      if (this._uploadNoticeTimer) clearTimeout(this._uploadNoticeTimer);
       this._uploadNoticeTimer = setTimeout(() => {
-        this.uploadNotice = ''
-      }, 2600)
+        this.uploadNotice = "";
+      }, 2600);
     },
     dismissUploadNotice() {
-      if (this._uploadNoticeTimer) clearTimeout(this._uploadNoticeTimer)
-      this.uploadNotice = ''
+      if (this._uploadNoticeTimer) clearTimeout(this._uploadNoticeTimer);
+      this.uploadNotice = "";
     },
     /**
      * 选出本批可以上传的文件（入列前校验，避免"传了一半才发现超限"）。
@@ -1719,39 +2192,44 @@ export default {
      * - 失败文件不占额度，因此删除/失败都会立即释放名额与空间。
      */
     uploadFileKey(file) {
-      const lastModified = file && typeof file.lastModified === 'number' ? file.lastModified : ''
-      return [file.name, file.size, lastModified].join('\u0000')
+      const lastModified =
+        file && typeof file.lastModified === "number" ? file.lastModified : "";
+      return [file.name, file.size, lastModified].join("\u0000");
     },
     pickAcceptable(files) {
-      const L = this.uploadLimits
+      const L = this.uploadLimits;
 
       // 重复过滤：与本轮已添加文件重复、或本批内互相重复的，只保留第一个
       const existingKeys = new Set(
         this.uploadedFiles
-          .filter(f => f.uploadStatus !== 'error')
+          .filter(f => f.uploadStatus !== "error")
           .map(f => {
-            const lastModified = f.file && typeof f.file.lastModified === 'number' ? f.file.lastModified : ''
-            return [f.filename, f.size, lastModified].join('\u0000')
-          })
-      )
-      const deduped = []
-      const rejected = []
-      const batchKeys = new Set()
+            const lastModified =
+              f.file && typeof f.file.lastModified === "number"
+                ? f.file.lastModified
+                : "";
+            return [f.filename, f.size, lastModified].join("\u0000");
+          }),
+      );
+      const deduped = [];
+      const rejected = [];
+      const batchKeys = new Set();
       for (const file of files) {
-        const key = this.uploadFileKey(file)
+        const key = this.uploadFileKey(file);
         if (existingKeys.has(key) || batchKeys.has(key)) {
-          rejected.push({ file, reason: 'duplicate' })
-          continue
+          rejected.push({ file, reason: "duplicate" });
+          continue;
         }
-        batchKeys.add(key)
-        deduped.push(file)
+        batchKeys.add(key);
+        deduped.push(file);
       }
 
-      if (!L.enabled) return { accepted: deduped, rejected, batchRejected: false }
+      if (!L.enabled)
+        return { accepted: deduped, rejected, batchRejected: false };
 
-      let count = this.usedCount
-      let total = this.usedBytes
-      const accepted = []
+      let count = this.usedCount;
+      let total = this.usedBytes;
+      const accepted = [];
 
       if (count + deduped.length > L.maxFiles) {
         return {
@@ -1759,77 +2237,90 @@ export default {
           rejected,
           batchRejected: true,
           message: `最多只能上传 ${L.maxFiles} 个文件（已用 ${count} 个），请重新选择`,
-        }
+        };
       }
 
       for (const file of deduped) {
         if (file.size > this.mbToBytes(L.maxFileSizeMb)) {
-          rejected.push({ file, reason: 'file_size' })
-          continue
+          rejected.push({ file, reason: "file_size" });
+          continue;
         }
         if (total + file.size > this.mbToBytes(L.maxTotalMb)) {
-          rejected.push({ file, reason: 'total' })
-          continue
+          rejected.push({ file, reason: "total" });
+          continue;
         }
-        accepted.push(file)
-        count += 1
-        total += file.size
+        accepted.push(file);
+        count += 1;
+        total += file.size;
       }
-      return { accepted, rejected, batchRejected: false }
+      return { accepted, rejected, batchRejected: false };
     },
     /** 把被拒文件拼成一条汇总提示 */
     buildRejectNotice(result, acceptedCount) {
-      const L = this.uploadLimits
+      const L = this.uploadLimits;
       const parts = result.rejected.map(({ file, reason }) => {
-        if (reason === 'duplicate') {
-          return `${file.name}（与本轮已添加文件重复，已过滤）`
+        if (reason === "duplicate") {
+          return `${file.name}（与本轮已添加文件重复，已过滤）`;
         }
-        if (reason === 'file_size') {
-          return `${file.name}（超过单文件上限 ${L.maxFileSizeMb}MB）`
+        if (reason === "file_size") {
+          return `${file.name}（超过单文件上限 ${L.maxFileSizeMb}MB）`;
         }
-        if (reason === 'total') {
-          return `${file.name}（超出剩余空间 ${this.formatSize(this.remainBytes)}，总上限 ${L.maxTotalMb}MB）`
+        if (reason === "total") {
+          return `${file.name}（超出剩余空间 ${this.formatSize(
+            this.remainBytes,
+          )}，总上限 ${L.maxTotalMb}MB）`;
         }
-        return file.name
-      })
-      const onlyDuplicates = result.rejected.length > 0 && result.rejected.every(r => r.reason === 'duplicate')
-      const head = acceptedCount > 0
-        ? `已添加 ${acceptedCount} 个文件，忽略 ${result.rejected.length} 个：`
-        : (onlyDuplicates
+        return file.name;
+      });
+      const onlyDuplicates =
+        result.rejected.length > 0 &&
+        result.rejected.every(r => r.reason === "duplicate");
+      const head =
+        acceptedCount > 0
+          ? `已添加 ${acceptedCount} 个文件，忽略 ${result.rejected.length} 个：`
+          : onlyDuplicates
           ? `已忽略 ${result.rejected.length} 个重复文件：`
-          : `无法上传，已忽略 ${result.rejected.length} 个文件：`)
-      return head + parts.join('；')
+          : `无法上传，已忽略 ${result.rejected.length} 个文件：`;
+      return head + parts.join("；");
     },
     /** 重新上传一个失败的文件（复用同一个 File 对象，无需用户重新选择） */
     retryUpload(index) {
-      const item = this.uploadedFiles[index]
-      if (!item || item.uploadStatus !== 'error' || !item.retryable) return
+      const item = this.uploadedFiles[index];
+      if (!item || item.uploadStatus !== "error" || !item.retryable) return;
 
       // 失败文件不占额度，所以重试等价于「新增一个文件」，同样受限额约束：
       // 已满名额 / 超出剩余空间 / 超过单文件上限 时不允许重新上传
-      const L = this.uploadLimits
+      const L = this.uploadLimits;
       if (L.enabled) {
         if (this.usedCount + 1 > L.maxFiles) {
-          this.showUploadNotice(`最多只能上传 ${L.maxFiles} 个文件（已用 ${this.usedCount} 个），无法重新上传 ${item.filename}`)
-          return
+          this.showUploadNotice(
+            `最多只能上传 ${L.maxFiles} 个文件（已用 ${this.usedCount} 个），无法重新上传 ${item.filename}`,
+          );
+          return;
         }
         if (item.size > this.mbToBytes(L.maxFileSizeMb)) {
-          this.showUploadNotice(`${item.filename} 超过单文件上限 ${L.maxFileSizeMb}MB，无法重新上传`)
-          return
+          this.showUploadNotice(
+            `${item.filename} 超过单文件上限 ${L.maxFileSizeMb}MB，无法重新上传`,
+          );
+          return;
         }
         if (this.usedBytes + item.size > this.mbToBytes(L.maxTotalMb)) {
-          this.showUploadNotice(`${item.filename} 超出剩余空间 ${this.formatSize(this.remainBytes)}，无法重新上传`)
-          return
+          this.showUploadNotice(
+            `${item.filename} 超出剩余空间 ${this.formatSize(
+              this.remainBytes,
+            )}，无法重新上传`,
+          );
+          return;
         }
       }
 
       // 重试同样遵循「发送时才上传」：回到待发送状态，用户点发送时再上传。
-      item.uploadStatus = 'pending'
-      item.uploadProgress = 0
-      item.errorMessage = ''
-      item.retryable = false
-      item.cancelled = false
-      this.uploadedFiles = [...this.uploadedFiles]
+      item.uploadStatus = "pending";
+      item.uploadProgress = 0;
+      item.errorMessage = "";
+      item.retryable = false;
+      item.cancelled = false;
+      this.uploadedFiles = [...this.uploadedFiles];
     },
     /**
      * 确保会话存在并返回 sessionId（并行上传共享同一个创建 Promise，
@@ -1839,112 +2330,154 @@ export default {
      * 留在前端，用户点发送后才创建会话并上传。
      */
     ensureSessionId() {
-      if (this.sessionId) return Promise.resolve(this.sessionId)
+      if (this.sessionId) return Promise.resolve(this.sessionId);
       if (!this._pendingSessionPromise) {
         this._pendingSessionPromise = new Promise((resolve, reject) => {
-          let unwatch = null
+          let unwatch = null;
           // 会话创建失败（接口异常等）时避免上传链路永久挂起
           const timer = setTimeout(() => {
-            if (unwatch) unwatch()
-            reject(new Error('会话创建超时，请重试'))
-          }, 15000)
+            if (unwatch) unwatch();
+            reject(new Error("会话创建超时，请重试"));
+          }, 15000);
           unwatch = this.$watch(
             () => this.sessionId,
-            (newSessionId) => {
-              if (!newSessionId) return
-              clearTimeout(timer)
-              unwatch()
-              resolve(newSessionId)
-            }
-          )
+            newSessionId => {
+              if (!newSessionId) return;
+              clearTimeout(timer);
+              unwatch();
+              resolve(newSessionId);
+            },
+          );
           // 触发会话创建（标记为「自己发起」，watcher 据此不剥离输入框里的技能标签）
-          this.selfCreatedSession = true
-          this.$emit('create-session')
-        }).catch((error) => {
-          this._pendingSessionPromise = null
-          throw error
-        })
+          this.selfCreatedSession = true;
+          this.$emit("create-session");
+        }).catch(error => {
+          this._pendingSessionPromise = null;
+          throw error;
+        });
       }
-      return this._pendingSessionPromise
+      return this._pendingSessionPromise;
+    },
+    /**
+     * 长文本转附件：正文写进会话工作区的 txt，输入框只留开头一段 + 文件引用。
+     *
+     * 引用走 file_references：后端以「本轮用户明确引用以下对象」注入 /workspace 路径，
+     * agent 再用 read_file(limit/offset) / grep 分块读取，单轮输入就不会把整段塞进 prompt。
+     * 压缩历史（/compact）对「本轮输入过长」无效，所以这条路是独立入口。
+     */
+    async offloadLongMessage() {
+      if (this.offloadingLongMessage || !needsOffload(this.message)) return;
+      const text = this.message;
+      const fileName = longMessageFileName();
+      this.offloadingLongMessage = true;
+      try {
+        const sessionId = await this.ensureSessionId();
+        if (!sessionId) throw new Error("会话创建失败");
+        const response = await uploadFile(
+          sessionId,
+          new File([longMessageFileContent(text)], fileName, {
+            type: "text/plain",
+          }),
+        );
+        const path = response && response.parsed_path;
+        // file_context 关闭或正文解析失败时拿不到可引用的工作区路径：保留正文，别让用户以为已保存
+        if (!path) throw new Error("附件正文未就绪，请稍后重试");
+        this.fileReferences = addReference(this.fileReferences, {
+          path,
+          type: "file",
+        });
+        this.message = longMessageNotice(text, fileName);
+      } catch (error) {
+        this.showUploadNotice((error && error.message) || "长文本转附件失败");
+      } finally {
+        this.offloadingLongMessage = false;
+      }
     },
     /** 单个文件的上传流程（各文件并行执行，互不阻塞） */
     async uploadOneFile(fileItem) {
-      const file = fileItem.file
+      const file = fileItem.file;
       try {
-        const sessionId = await this.ensureSessionId()
+        const sessionId = await this.ensureSessionId();
         if (!sessionId) {
-          throw new Error('会话创建失败')
+          throw new Error("会话创建失败");
         }
 
         // 等待会话创建期间被用户点 × 删除：不再上传
-        if (fileItem.cancelled) return
+        if (fileItem.cancelled) return;
 
         // 调用实际的上传接口；signal 用于外部中断（删除上传中的文件）
-        const controller = new AbortController()
-        fileItem.abortController = controller
-        const response = await uploadFile(sessionId, file, (progress) => {
-          // 找到对应的文件项并更新进度
-          if (fileItem.cancelled) return
-          const index = this.uploadedFiles.findIndex(f => f.file === file)
-          if (index !== -1) {
-            this.uploadedFiles[index].uploadProgress = progress
-            // 强制触发更新
-            this.uploadedFiles = [...this.uploadedFiles]
-          }
-        }, controller.signal)
+        const controller = new AbortController();
+        fileItem.abortController = controller;
+        const response = await uploadFile(
+          sessionId,
+          file,
+          progress => {
+            // 找到对应的文件项并更新进度
+            if (fileItem.cancelled) return;
+            const index = this.uploadedFiles.findIndex(f => f.file === file);
+            if (index !== -1) {
+              this.uploadedFiles[index].uploadProgress = progress;
+              // 强制触发更新
+              this.uploadedFiles = [...this.uploadedFiles];
+            }
+          },
+          controller.signal,
+        );
 
         // 上传期间被用户删除：丢弃结果
-        if (fileItem.cancelled) return
+        if (fileItem.cancelled) return;
 
         // 找到对应的文件项并更新状态
-        const index = this.uploadedFiles.findIndex(f => f.file === file)
+        const index = this.uploadedFiles.findIndex(f => f.file === file);
         if (index !== -1) {
-          this.uploadedFiles[index].uploadStatus = 'completed'
-          this.uploadedFiles[index].uploadProgress = 100
-          this.uploadedFiles[index].filePath = response.file_path
-          this.uploadedFiles[index].id = response.id
+          this.uploadedFiles[index].uploadStatus = "completed";
+          this.uploadedFiles[index].uploadProgress = 100;
+          this.uploadedFiles[index].filePath = response.file_path;
+          this.uploadedFiles[index].id = response.id;
           // 强制触发更新
-          this.uploadedFiles = [...this.uploadedFiles]
+          this.uploadedFiles = [...this.uploadedFiles];
         }
 
-        console.log('文件上传成功:', response)
+        console.log("文件上传成功:", response);
       } catch (error) {
         // 用户主动取消，不算失败
-        if (fileItem.cancelled) return
+        if (fileItem.cancelled) return;
         // 找到对应的文件项并更新状态
-        const index = this.uploadedFiles.findIndex(f => f.file === file)
+        const index = this.uploadedFiles.findIndex(f => f.file === file);
         if (index !== -1) {
-          const reason = (error && error.message) || '上传失败'
+          const reason = (error && error.message) || "上传失败";
           // 超过单文件大小限制的失败不给「重试」（重试也没用），其余可重试
           const isSizeLimit =
-            (error && error.code === 'UPLOAD_FILE_TOO_LARGE') ||
-            /不能超过\s*\d+(\.\d+)?\s*MB/.test(reason)
-          this.uploadedFiles[index].uploadStatus = 'error'
-          this.uploadedFiles[index].errorMessage = reason
-          this.uploadedFiles[index].retryable = !isSizeLimit
+            (error && error.code === "UPLOAD_FILE_TOO_LARGE") ||
+            /不能超过\s*\d+(\.\d+)?\s*MB/.test(reason);
+          this.uploadedFiles[index].uploadStatus = "error";
+          this.uploadedFiles[index].errorMessage = reason;
+          this.uploadedFiles[index].retryable = !isSizeLimit;
           // 强制触发更新
-          this.uploadedFiles = [...this.uploadedFiles]
+          this.uploadedFiles = [...this.uploadedFiles];
         }
-        console.error('文件上传失败:', error)
+        console.error("文件上传失败:", error);
       }
     },
     async handleFileSelect(event) {
-      const files = Array.from(event.target.files)
+      const files = Array.from(event.target.files);
       // 先清空 input，避免同一文件二次选择不触发 change
-      event.target.value = ''
-      if (files.length === 0) return
+      event.target.value = "";
+      if (files.length === 0) return;
 
       // 入列前校验：通过的文件才入列、才上传
-      const result = this.pickAcceptable(files)
+      const result = this.pickAcceptable(files);
 
       if (result.batchRejected) {
         // 数量不满足：整批拒绝，让用户重新选择
-        this.showUploadNotice(result.message)
-        return
+        this.showUploadNotice(result.message);
+        return;
       }
       if (result.rejected.length > 0) {
         // 单文件超限 / 超出剩余空间：只跳过这些文件，其余照常上传
-        this.showUploadNotice(this.buildRejectNotice(result, result.accepted.length))
+        this.showUploadNotice(
+          this.buildRejectNotice(result, result.accepted.length),
+        );
       }
 
       // 统一「发送时上传」：无论新对话还是已有会话，选完文件都只留在前端（pending），
@@ -1955,107 +2488,130 @@ export default {
           file: file,
           filename: file.name,
           size: file.size,
-          uploadStatus: 'pending',
+          uploadStatus: "pending",
           uploadProgress: 0,
           cancelled: false,
           abortController: null,
-          errorMessage: '',
-          retryable: false
-        }
+          errorMessage: "",
+          retryable: false,
+        };
 
         // 添加到数组
-        this.uploadedFiles.push(fileItem)
+        this.uploadedFiles.push(fileItem);
 
         // 强制触发初始渲染
-        this.uploadedFiles = [...this.uploadedFiles]
+        this.uploadedFiles = [...this.uploadedFiles];
       }
 
-      event.target.value = ''
+      event.target.value = "";
     },
     async removeFile(index) {
-      const file = this.uploadedFiles[index]
-      if (!file) return
+      const file = this.uploadedFiles[index];
+      if (!file) return;
 
       // 标记取消：排队/等待会话中的不再上传，上传中的立即中断请求
-      file.cancelled = true
-      if (file.uploadStatus === 'uploading' && file.abortController) {
+      file.cancelled = true;
+      if (file.uploadStatus === "uploading" && file.abortController) {
         try {
-          file.abortController.abort()
+          file.abortController.abort();
         } catch (e) {
           /* 忽略中断异常 */
         }
       }
 
       // 如果文件已经上传成功，调用后台的删除接口
-      if (file.uploadStatus === 'completed' && file.id && this.sessionId) {
+      if (file.uploadStatus === "completed" && file.id && this.sessionId) {
         try {
-          await deleteFile(this.sessionId, file)
-          console.log('文件删除成功:', file.filename)
+          await deleteFile(this.sessionId, file);
+          console.log("文件删除成功:", file.filename);
         } catch (error) {
-          console.error('文件删除失败:', error)
+          console.error("文件删除失败:", error);
         }
       }
 
       // 从前端列表中移除文件
-      this.uploadedFiles.splice(index, 1)
+      this.uploadedFiles.splice(index, 1);
       // 强制触发更新
-      this.uploadedFiles = [...this.uploadedFiles]
+      this.uploadedFiles = [...this.uploadedFiles];
     },
     /** 发送前把“待发送”附件上传到会话（新对话此时才会创建会话） */
     async preparePendingFiles() {
-      const pending = this.uploadedFiles.filter(f => f.uploadStatus === 'pending')
-      if (!pending.length) return
+      const pending = this.uploadedFiles.filter(
+        f => f.uploadStatus === "pending",
+      );
+      if (!pending.length) return;
       for (const item of pending) {
-        if (item.cancelled) continue
-        item.uploadStatus = 'uploading'
-        item.uploadProgress = 0
-        item.errorMessage = ''
-        item.retryable = false
+        if (item.cancelled) continue;
+        item.uploadStatus = "uploading";
+        item.uploadProgress = 0;
+        item.errorMessage = "";
+        item.retryable = false;
       }
-      this.uploadedFiles = [...this.uploadedFiles]
+      this.uploadedFiles = [...this.uploadedFiles];
       await Promise.all(
-        pending.filter(item => !item.cancelled).map(item => this.uploadOneFile(item))
-      )
+        pending
+          .filter(item => !item.cancelled)
+          .map(item => this.uploadOneFile(item)),
+      );
     },
     async send() {
-      if (!this.canSend || this.disabled || this.preparingFiles || this.enhancement.pending) return
-      this.preparingFiles = true
+      if (
+        !this.canSend ||
+        this.disabled ||
+        this.preparingFiles ||
+        this.enhancement.pending
+      )
+        return;
+      this.preparingFiles = true;
       try {
-        const knowledgeBaseIds = this.sessionId ? [] : [...this.pendingKnowledgeBaseIds]
+        const knowledgeBaseIds = this.sessionId
+          ? []
+          : [...this.pendingKnowledgeBaseIds];
 
-        await this.preparePendingFiles()
+        await this.preparePendingFiles();
 
-        const uploadingFiles = this.uploadedFiles.filter(f => f.uploadStatus === 'uploading')
+        const uploadingFiles = this.uploadedFiles.filter(
+          f => f.uploadStatus === "uploading",
+        );
         if (uploadingFiles.length > 0) {
-          console.log('文件正在上传中，请稍候...')
-          return
+          console.log("文件正在上传中，请稍候...");
+          return;
         }
 
-        const failedFiles = this.uploadedFiles.filter(f => f.uploadStatus === 'error')
+        const failedFiles = this.uploadedFiles.filter(
+          f => f.uploadStatus === "error",
+        );
         if (failedFiles.length > 0) {
-          console.warn(`[发送消息] ${failedFiles.length} 个文件上传失败，已从本次发送中剔除:`,
-            failedFiles.map(f => f.filename).join(', '))
+          console.warn(
+            `[发送消息] ${failedFiles.length} 个文件上传失败，已从本次发送中剔除:`,
+            failedFiles.map(f => f.filename).join(", "),
+          );
         }
         const filesToSend = this.uploadedFiles
-          .filter(f => f.uploadStatus === 'completed')
+          .filter(f => f.uploadStatus === "completed")
           .map(f => ({
             id: f.id,
             filename: f.filename,
             size: f.size,
             file: f.file,
             file_path: f.filePath || null,
-            type: f.file?.type || f.fileType || ''
-          }))
+            type: f.file?.type || f.fileType || "",
+          }));
 
-        const payload = this.buildPayload()
-        if (!payload && !filesToSend.length && !this.selectedSkillDirs.length && !this.fileReferences.length) {
-          return
+        const payload = this.buildPayload();
+        if (
+          !payload &&
+          !filesToSend.length &&
+          !this.selectedSkillDirs.length &&
+          !this.fileReferences.length
+        ) {
+          return;
         }
 
-        const turnSkills = this.selectedSkillDirs
-        const expertEditId = this.pendingExpertEditId
+        const turnSkills = this.selectedSkillDirs;
+        const expertEditId = this.pendingExpertEditId;
         this.$emit(
-          'send',
+          "send",
           payload,
           filesToSend,
           null,
@@ -2065,22 +2621,23 @@ export default {
           expertEditId,
           knowledgeBaseIds,
           this.fileReferences.slice(),
-          this.interactionMode
-        )
+          this.interactionMode,
+        );
 
-        this.message = ''
-        this.fileReferences = []
-        this.closeReference()
-        this.uploadedFiles = []
-        if (this.sessionId) this.pendingKnowledgeBaseIds = []
-        this.selectedSkills = []
-        this.preselectedSkillDirs = []
-        this.pendingExpertEditId = ''; this.interactionMode = 'normal'
-        this.dismissUploadNotice()
-        this.closeSkillPicker()
-        this.$nextTick(() => this.autoResize())
+        this.message = "";
+        this.fileReferences = [];
+        this.closeReference();
+        this.uploadedFiles = [];
+        if (this.sessionId) this.pendingKnowledgeBaseIds = [];
+        this.selectedSkills = [];
+        this.preselectedSkillDirs = [];
+        this.pendingExpertEditId = "";
+        this.interactionMode = "normal";
+        this.dismissUploadNotice();
+        this.closeSkillPicker();
+        this.$nextTick(() => this.autoResize());
       } finally {
-        this.preparingFiles = false
+        this.preparingFiles = false;
       }
     },
 
@@ -2089,17 +2646,17 @@ export default {
      * 已选技能以 skills（目录名）参数带给后端（见 send()）。
      */
     buildPayload() {
-      return buildMessageText(stripSkillTokens(this.message, this.tokenMap))
+      return buildMessageText(stripSkillTokens(this.message, this.tokenMap));
     },
     stop() {
-      this.$emit('stop')
+      this.$emit("stop");
     },
     autoResize() {
-      const ta = this.$refs.textareaRef
+      const ta = this.$refs.textareaRef;
       if (ta) {
-        ta.style.height = 'auto'
-        ta.style.height = Math.min(ta.scrollHeight, TEXTAREA_MAX_HEIGHT) + 'px'
-        this.syncMirror() // 高度变化会改变 textarea 的可滚动区间（scrollTop 被钳制），镜像层要跟上
+        ta.style.height = "auto";
+        ta.style.height = Math.min(ta.scrollHeight, TEXTAREA_MAX_HEIGHT) + "px";
+        this.syncMirror(); // 高度变化会改变 textarea 的可滚动区间（scrollTop 被钳制），镜像层要跟上
       }
     },
     /**
@@ -2107,39 +2664,45 @@ export default {
      * 输入（含输入法合成中）、程序化赋值、滚动后都要调，否则两侧文字会对不上。
      */
     syncMirror() {
-      const ta = this.$refs.textareaRef
-      const mirror = this.$refs.mirrorRef
-      if (!ta || !mirror) return
+      const ta = this.$refs.textareaRef;
+      const mirror = this.$refs.mirrorRef;
+      if (!ta || !mirror) return;
       // 直接读 textarea：输入法合成中的文字 v-model 还没提交，镜像也要实时显示
-      this.mirrorText = ta.value
-      this.lastInputText = ta.value
+      this.mirrorText = ta.value;
+      this.lastInputText = ta.value;
       // 出现纵向滚动条后 textarea 内容区变窄，镜像补同等右内边距，保证两侧换行位置一致
       // （镜像自身还有 MIRROR_BLEED 的 padding 用于扩裁剪盒，要一起算进去，否则内容窄 6px 导致换行错位）
-      const gutter = ta.offsetWidth - ta.clientWidth
-      mirror.style.paddingRight = gutter > 0 ? (gutter + MIRROR_BLEED) + 'px' : ''
+      const gutter = ta.offsetWidth - ta.clientWidth;
+      mirror.style.paddingRight =
+        gutter > 0 ? gutter + MIRROR_BLEED + "px" : "";
       // 不加偏移：镜像的 padding-top 与负 margin-top 相互抵消，scrollTop 与 textarea 保持同值即可对齐
-      mirror.scrollTop = ta.scrollTop
+      mirror.scrollTop = ta.scrollTop;
     },
     onInput(event) {
-      this.invalidateEnhancement()
-      const ta = (event && event.target) || this.$refs.textareaRef
+      this.invalidateEnhancement();
+      const ta = (event && event.target) || this.$refs.textareaRef;
       // 移动端兜底（见 utils/skillPillTokens.js 的 reconcileTokenDeletion）：Android Chrome 的
       // Backspace 不给 keydown、部分浏览器也没有 beforeinput，浏览器只啃掉标签的一两个字时，
       // 在这里按「编辑前/后文本差分」把整个标签补删干净，避免留下半个标签的残缺文本。
-      if (ta && typeof ta.value === 'string') {
-        const healed = reconcileTokenDeletion(this.lastInputText, ta.value, ta.selectionStart, this.tokenMap)
+      if (ta && typeof ta.value === "string") {
+        const healed = reconcileTokenDeletion(
+          this.lastInputText,
+          ta.value,
+          ta.selectionStart,
+          this.tokenMap,
+        );
         if (healed) {
-          this.replaceTextWithCaret(healed)
-          this.$emit('typing')
-          return
+          this.replaceTextWithCaret(healed);
+          this.$emit("typing");
+          return;
         }
       }
-      this.autoResize()
-      this.updateCaretLine()
-      this.updateSkillPicker()
-      this.updateReference(ta)
-      this.syncMirror()
-      this.$emit('typing')
+      this.autoResize();
+      this.updateCaretLine();
+      this.updateSkillPicker();
+      this.updateReference(ta);
+      this.syncMirror();
+      this.$emit("typing");
     },
 
     /**
@@ -2147,133 +2710,139 @@ export default {
      * 等 DOM 更新后再设置光标，避免 v-model 回写把光标顶到末尾；焦点始终留在输入框。
      */
     replaceTextWithCaret(next) {
-      const ta = this.$refs.textareaRef
-      this.message = next.text
+      const ta = this.$refs.textareaRef;
+      this.message = next.text;
       return this.$nextTick(() => {
         // v-model 可能在本轮 input 里把旧值又写回 message（输入事件的处理顺序由框架决定），
         // 这里再断言一次，保证 ref 与 DOM 都是我们算好的文本，否则后续发送会带上半个标签。
-        if (this.message !== next.text) this.message = next.text
-        this.autoResize()
+        if (this.message !== next.text) this.message = next.text;
+        this.autoResize();
         if (ta) {
-          if (ta.value !== next.text) ta.value = next.text
-          ta.focus()
-          ta.setSelectionRange(next.caret, next.caret)
+          if (ta.value !== next.text) ta.value = next.text;
+          ta.focus();
+          ta.setSelectionRange(next.caret, next.caret);
         }
-        this.updateCaretLine()
-        this.syncMirror()
-      })
+        this.updateCaretLine();
+        this.syncMirror();
+      });
     },
 
     /** 记住技能元信息（标签 `/显示名` 要靠它反解技能）：/ 面板与「+」面板的接口都会往这里补 */
     rememberSkills(skills) {
-      const incoming = (Array.isArray(skills) ? skills : []).filter((s) => s && s.dir_name)
-      if (!incoming.length) return
-      const byDir = new Map(this.knownSkills.map((s) => [s.dir_name, s]))
-      let changed = false
-      incoming.forEach((skill) => {
-        const prev = byDir.get(skill.dir_name)
+      const incoming = (Array.isArray(skills) ? skills : []).filter(
+        s => s && s.dir_name,
+      );
+      if (!incoming.length) return;
+      const byDir = new Map(this.knownSkills.map(s => [s.dir_name, s]));
+      let changed = false;
+      incoming.forEach(skill => {
+        const prev = byDir.get(skill.dir_name);
         if (!prev) {
-          byDir.set(skill.dir_name, skill)
-          changed = true
-        } else if ((prev.name || '') !== (skill.name || '')) {
+          byDir.set(skill.dir_name, skill);
+          changed = true;
+        } else if ((prev.name || "") !== (skill.name || "")) {
           // 技能改名后，标签要按最新显示名解析
-          byDir.set(skill.dir_name, { ...prev, ...skill })
-          changed = true
+          byDir.set(skill.dir_name, { ...prev, ...skill });
+          changed = true;
         }
-      })
-      if (changed) this.knownSkills = Array.from(byDir.values())
+      });
+      if (changed) this.knownSkills = Array.from(byDir.values());
     },
 
     // ========== 技能选择（输入 / 唤起） ==========
 
     /** 暴露给模板：类别 id → SkillIcon 配色 key */
     iconCategoryFor(categoryId) {
-      return iconCategoryFor(categoryId)
+      return iconCategoryFor(categoryId);
     },
 
     async loadSkillOptions() {
-      const now = Date.now()
+      const now = Date.now();
       // 技能列表变动不频繁，60s 内复用上次结果，避免每次输入 / 都打接口
-      if (this.skillOptions.length && now - this.skillLoadedAt < 60000) return
-      this.skillPickerLoading = true
+      if (this.skillOptions.length && now - this.skillLoadedAt < 60000) return;
+      this.skillPickerLoading = true;
       try {
-        const data = await getUserSkills()
+        const data = await getUserSkills();
         // 标签解析要认识所有技能（草稿里可能留着已停用技能的标签），故先登记全量再过滤面板列表
-        this.rememberSkills(data.skills || [])
-        this.skillOptions = (data.skills || []).filter(s => s.enabled)
-        this.skillLoadedAt = now
+        this.rememberSkills(data.skills || []);
+        this.skillOptions = (data.skills || []).filter(s => s.enabled);
+        this.skillLoadedAt = now;
       } catch (e) {
-        console.error('获取技能列表失败:', e)
+        console.error("获取技能列表失败:", e);
       } finally {
-        this.skillPickerLoading = false
+        this.skillPickerLoading = false;
       }
     },
 
     /** 面板出现在输入框上方（Vue2 无 Teleport，用 fixed 定位脱离 overflow: hidden） */
     updateSkillPickerPosition() {
-      const box = this.$refs.inputBoxRef
-      if (!box) return
-      const rect = box.getBoundingClientRect()
-      const margin = 8
-      const maxPanelHeight = 320
-      const spaceAbove = rect.top - margin * 2
-      const spaceBelow = window.innerHeight - rect.bottom - margin * 2
+      const box = this.$refs.inputBoxRef;
+      if (!box) return;
+      const rect = box.getBoundingClientRect();
+      const margin = 8;
+      const maxPanelHeight = 320;
+      const spaceAbove = rect.top - margin * 2;
+      const spaceBelow = window.innerHeight - rect.bottom - margin * 2;
       // 技能装多之后面板会撑到最大高度：若仍按「贴着输入框上沿 + 固定高度」定位，
       // 面板顶部会越过视口，首个技能被裁在屏幕外且怎么滚都够不着。因此改为优先向上
       // 弹出、但把高度限制在输入框上方的可用空间内（下方空间明显更宽裕时才向下弹）。
-      const placeAbove = spaceAbove >= 160 || spaceAbove >= spaceBelow
-      const available = placeAbove ? spaceAbove : spaceBelow
-      const maxHeight = Math.max(96, Math.min(maxPanelHeight, available))
+      const placeAbove = spaceAbove >= 160 || spaceAbove >= spaceBelow;
+      const available = placeAbove ? spaceAbove : spaceBelow;
+      const maxHeight = Math.max(96, Math.min(maxPanelHeight, available));
       this.skillPickerStyle = {
-        position: 'fixed',
+        position: "fixed",
         left: `${rect.left}px`,
         width: `${rect.width}px`,
         maxHeight: `${Math.round(maxHeight)}px`,
         ...(placeAbove
           ? { bottom: `${window.innerHeight - rect.top + margin}px` }
           : { top: `${rect.bottom + margin}px` }),
-      }
+      };
     },
 
     /** 键盘切换选项时把当前高亮项滚进可视区（只滚列表本身，不带动外层级） */
     scrollActiveSkillIntoView() {
-      const picker = this.$refs.skillPickerRef
-      if (!picker) return
-      const list = picker.querySelector('.skill-picker-list')
-      const item = list && list.querySelectorAll('.skill-picker-item')[this.skillPickerIndex]
-      if (!list || !item) return
-      const top = item.offsetTop
-      const bottom = top + item.offsetHeight
-      if (top < list.scrollTop) list.scrollTop = top
-      else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight
+      const picker = this.$refs.skillPickerRef;
+      if (!picker) return;
+      const list = picker.querySelector(".skill-picker-list");
+      const item =
+        list &&
+        list.querySelectorAll(".skill-picker-item")[this.skillPickerIndex];
+      if (!list || !item) return;
+      const top = item.offsetTop;
+      const bottom = top + item.offsetHeight;
+      if (top < list.scrollTop) list.scrollTop = top;
+      else if (bottom > list.scrollTop + list.clientHeight)
+        list.scrollTop = bottom - list.clientHeight;
     },
 
     /** 判定光标前是否为「/查询词」（/ 位于开头或空白之后），决定展开或收起面板 */
     updateSkillPicker() {
-      const ta = this.$refs.textareaRef
-      if (!ta) return
-      const caret = ta.selectionStart === null || ta.selectionStart === undefined
-        ? ta.value.length
-        : ta.selectionStart
-      const slash = parseSlashQuery(ta.value, caret)
+      const ta = this.$refs.textareaRef;
+      if (!ta) return;
+      const caret =
+        ta.selectionStart === null || ta.selectionStart === undefined
+          ? ta.value.length
+          : ta.selectionStart;
+      const slash = parseSlashQuery(ta.value, caret);
       if (!slash) {
-        this.closeSkillPicker()
-        return
+        this.closeSkillPicker();
+        return;
       }
 
-      this.slashStart = slash.start
-      this.skillQuery = slash.query
-      this.skillPickerIndex = 0
-      this.skillPickerOpen = true
-      this.updateSkillPickerPosition()
-      this.loadSkillOptions()
+      this.slashStart = slash.start;
+      this.skillQuery = slash.query;
+      this.skillPickerIndex = 0;
+      this.skillPickerOpen = true;
+      this.updateSkillPickerPosition();
+      this.loadSkillOptions();
     },
 
     closeSkillPicker() {
-      this.skillPickerOpen = false
-      this.skillPickerIndex = 0
-      this.skillQuery = ''
-      this.slashStart = -1
+      this.skillPickerOpen = false;
+      this.skillPickerIndex = 0;
+      this.skillQuery = "";
+      this.slashStart = -1;
     },
 
     /**
@@ -2281,52 +2850,62 @@ export default {
      * 已在文本里的同一技能不重复插入（光标落到已有标签之后）。
      */
     async selectSkill(skill) {
-      if (!this.skillPickerOpen || !skill || !skill.dir_name) return
+      if (!this.skillPickerOpen || !skill || !skill.dir_name) return;
 
-      const ta = this.$refs.textareaRef
-      const base = (ta && ta.value) || this.message
-      const caret = ta && ta.selectionStart !== null && ta.selectionStart !== undefined
-        ? ta.selectionStart
-        : base.length
+      const ta = this.$refs.textareaRef;
+      const base = (ta && ta.value) || this.message;
+      const caret =
+        ta && ta.selectionStart !== null && ta.selectionStart !== undefined
+          ? ta.selectionStart
+          : base.length;
       // 以当前光标为准重算一次 /查询词 的范围，避免用户中途改动文本后误删内容
-      const slash = parseSlashQuery(base, caret)
-      const start = slash ? slash.start : caret
-      const cleared = base.slice(0, start) + base.slice(caret)
+      const slash = parseSlashQuery(base, caret);
+      const start = slash ? slash.start : caret;
+      const cleared = base.slice(0, start) + base.slice(caret);
 
       if (skill.command) {
-        if (skill.interactionMode) { if (this.isStreaming || this.disabled) return; this.interactionMode = skill.interactionMode; this.closeSkillPicker(); this.replaceTextWithCaret({ text: cleared, caret: start }); return }
-        if (this.compactReason || skill.disabled) return
-        this.closeSkillPicker()
-        this.replaceTextWithCaret({ text: cleared, caret: start })
-        this.$emit('compact-context')
-        return
+        if (skill.interactionMode) {
+          if (this.isStreaming || this.disabled) return;
+          this.interactionMode = skill.interactionMode;
+          this.closeSkillPicker();
+          this.replaceTextWithCaret({ text: cleared, caret: start });
+          return;
+        }
+        if (this.compactReason || skill.disabled) return;
+        this.closeSkillPicker();
+        this.replaceTextWithCaret({ text: cleared, caret: start });
+        this.$emit("compact-context");
+        return;
       }
 
-      this.rememberSkills([skill])
-      const existing = skillSegments(cleared, this.tokenMap)
-        .find((seg) => seg.dirName === skill.dir_name)
+      this.rememberSkills([skill]);
+      const existing = skillSegments(cleared, this.tokenMap).find(
+        seg => seg.dirName === skill.dir_name,
+      );
       const next = existing
         ? { text: cleared, caret: existing.end }
-        : insertSkillToken(cleared, start, tokenForSkill(skill))
+        : insertSkillToken(cleared, start, tokenForSkill(skill));
 
-      this.closeSkillPicker()
-      await this.replaceTextWithCaret(next)
-      console.log(`[${new Date().toISOString()}] [技能选择] ${skill.dir_name}`)
+      this.closeSkillPicker();
+      await this.replaceTextWithCaret(next);
+      console.log(`[${new Date().toISOString()}] [技能选择] ${skill.dir_name}`);
     },
 
     /** 整段删除技能标签 + 复位光标（Backspace / Delete / 点击标签都走这里） */
     applyTokenRemoval(base, segsToRemove) {
-      if (!Array.isArray(segsToRemove) || !segsToRemove.length) return
-      this.replaceTextWithCaret(removeTokenSegments(base, segsToRemove))
+      if (!Array.isArray(segsToRemove) || !segsToRemove.length) return;
+      this.replaceTextWithCaret(removeTokenSegments(base, segsToRemove));
     },
 
     /** 点击标签 / 面板里取消选择：把该技能的标签从文本里整段删掉 */
     removeSkillToken(dirName) {
-      const ta = this.$refs.textareaRef
-      const base = (ta && ta.value) || this.message
-      const segs = skillSegments(base, this.tokenMap).filter((seg) => seg.dirName === dirName)
-      if (!segs.length) return
-      this.applyTokenRemoval(base, segs)
+      const ta = this.$refs.textareaRef;
+      const base = (ta && ta.value) || this.message;
+      const segs = skillSegments(base, this.tokenMap).filter(
+        seg => seg.dirName === dirName,
+      );
+      if (!segs.length) return;
+      this.applyTokenRemoval(base, segs);
     },
 
     /**
@@ -2342,44 +2921,55 @@ export default {
      * 记为预选，发送时随 skills 字段交给后端激活。
      */
     restorePendingSkill() {
-      let raw = null
+      let raw = null;
       try {
-        raw = sessionStorage.getItem(PENDING_SKILL_KEY)
-        if (raw) sessionStorage.removeItem(PENDING_SKILL_KEY)
-      } catch (_) { /* 隐私模式等场景忽略 */ }
-      if (!raw) return
+        raw = sessionStorage.getItem(PENDING_SKILL_KEY);
+        if (raw) sessionStorage.removeItem(PENDING_SKILL_KEY);
+      } catch (_) {
+        /* 隐私模式等场景忽略 */
+      }
+      if (!raw) return;
 
       try {
-        const parsed = JSON.parse(raw)
+        const parsed = JSON.parse(raw);
         // 两种载荷：单个技能对象（技能中心）与 {skills: [...]}（专家面板：
         // 新建带 expert-creator，编辑还会带上该专家已绑定的技能包）
         const list = Array.isArray(parsed && parsed.skills)
           ? parsed.skills
-          : (parsed ? [parsed] : [])
+          : parsed
+          ? [parsed]
+          : [];
         for (const skill of list) {
-          if (!skill || !skill.dir_name) continue
+          if (!skill || !skill.dir_name) continue;
           if (skill.command) {
-        if (this.compactReason || skill.disabled) return
-        this.closeSkillPicker()
-        this.replaceTextWithCaret({ text: cleared, caret: start })
-        this.$emit('compact-context')
-        return
-      }
+            if (this.compactReason || skill.disabled) return;
+            this.closeSkillPicker();
+            this.replaceTextWithCaret({ text: cleared, caret: start });
+            this.$emit("compact-context");
+            return;
+          }
 
-      this.rememberSkills([skill])
+          this.rememberSkills([skill]);
           if (skill.insert_token === false) {
             if (!this.preselectedSkillDirs.includes(skill.dir_name)) {
-              this.preselectedSkillDirs.push(skill.dir_name)
+              this.preselectedSkillDirs.push(skill.dir_name);
             }
-            continue
+            continue;
           }
-          const ta = this.$refs.textareaRef
-          const base = (ta && ta.value) || this.message
-          if (skillSegments(base, this.tokenMap).some((seg) => seg.dirName === skill.dir_name)) continue
-          this.replaceTextWithCaret(insertSkillToken(base, base.length, tokenForSkill(skill)))
+          const ta = this.$refs.textareaRef;
+          const base = (ta && ta.value) || this.message;
+          if (
+            skillSegments(base, this.tokenMap).some(
+              seg => seg.dirName === skill.dir_name,
+            )
+          )
+            continue;
+          this.replaceTextWithCaret(
+            insertSkillToken(base, base.length, tokenForSkill(skill)),
+          );
         }
       } catch (e) {
-        console.error('恢复待选技能失败:', e)
+        console.error("恢复待选技能失败:", e);
       }
     },
 
@@ -2388,20 +2978,21 @@ export default {
      * 光标「紧邻标签之后」= selectionStart === 标签结束下标，与文本是同一套下标，桌面端/移动端一致。
      */
     handleTokenDeleteKey(event) {
-      if (event.isComposing) return false
-      if (event.key !== 'Backspace' && event.key !== 'Delete') return false
-      const ta = event.target
-      if (!ta || typeof ta.selectionStart !== 'number') return false
+      if (event.isComposing) return false;
+      if (event.key !== "Backspace" && event.key !== "Delete") return false;
+      const ta = event.target;
+      if (!ta || typeof ta.selectionStart !== "number") return false;
       // 有选区时按常规删除（用户是在删一段选中的文本）
-      if (ta.selectionStart !== ta.selectionEnd) return false
-      const caret = ta.selectionStart
-      const seg = event.key === 'Backspace'
-        ? tokenBeforeCaret(ta.value, caret, this.tokenMap)
-        : tokenAfterCaret(ta.value, caret, this.tokenMap)
-      if (!seg) return false
-      event.preventDefault()
-      this.applyTokenRemoval(ta.value, [seg])
-      return true
+      if (ta.selectionStart !== ta.selectionEnd) return false;
+      const caret = ta.selectionStart;
+      const seg =
+        event.key === "Backspace"
+          ? tokenBeforeCaret(ta.value, caret, this.tokenMap)
+          : tokenAfterCaret(ta.value, caret, this.tokenMap);
+      if (!seg) return false;
+      event.preventDefault();
+      this.applyTokenRemoval(ta.value, [seg]);
+      return true;
     },
 
     /**
@@ -2409,88 +3000,98 @@ export default {
      * 拦截后自行整段删标签；拦不到的情况由 onInput 的差分自愈兜底（见 reconcileTokenDeletion）。
      */
     onBeforeInput(event) {
-      this.invalidateEnhancement()
-      if (event.isComposing) return
-      const deleteBackward = event.inputType === 'deleteContentBackward'
-      const deleteForward = event.inputType === 'deleteContentForward'
-      if (!deleteBackward && !deleteForward) return
-      const ta = event.target
-      if (!ta || typeof ta.selectionStart !== 'number') return
-      if (ta.selectionStart !== ta.selectionEnd) return
-      const caret = ta.selectionStart
+      this.invalidateEnhancement();
+      if (event.isComposing) return;
+      const deleteBackward = event.inputType === "deleteContentBackward";
+      const deleteForward = event.inputType === "deleteContentForward";
+      if (!deleteBackward && !deleteForward) return;
+      const ta = event.target;
+      if (!ta || typeof ta.selectionStart !== "number") return;
+      if (ta.selectionStart !== ta.selectionEnd) return;
+      const caret = ta.selectionStart;
       const seg = deleteBackward
         ? tokenBeforeCaret(ta.value, caret, this.tokenMap)
-        : tokenAfterCaret(ta.value, caret, this.tokenMap)
-      if (!seg) return
-      event.preventDefault()
-      this.applyTokenRemoval(ta.value, [seg])
+        : tokenAfterCaret(ta.value, caret, this.tokenMap);
+      if (!seg) return;
+      event.preventDefault();
+      this.applyTokenRemoval(ta.value, [seg]);
     },
 
     /** 键盘：面板打开时接管 ↑↓ / Enter / Esc，其余情况保持原有 Enter 发送 */
     onKeydown(event) {
-      if (event.isComposing || event.keyCode === 229) return
-      if (this.referenceOpen && this.$refs.referencePicker && this.$refs.referencePicker.key(event)) return
-      if (this.handleTokenDeleteKey(event)) return
+      if (event.isComposing || event.keyCode === 229) return;
+      if (
+        this.referenceOpen &&
+        this.$refs.referencePicker &&
+        this.$refs.referencePicker.key(event)
+      )
+        return;
+      if (this.handleTokenDeleteKey(event)) return;
 
       if (this.skillPickerOpen) {
-        const count = this.menuItems.length
-        if (event.key === 'ArrowDown' && count > 0) {
-          event.preventDefault()
-          this.skillPickerIndex = (this.skillPickerIndex + 1) % count
-          this.$nextTick(() => this.scrollActiveSkillIntoView())
-          return
+        const count = this.menuItems.length;
+        if (event.key === "ArrowDown" && count > 0) {
+          event.preventDefault();
+          this.skillPickerIndex = (this.skillPickerIndex + 1) % count;
+          this.$nextTick(() => this.scrollActiveSkillIntoView());
+          return;
         }
-        if (event.key === 'ArrowUp' && count > 0) {
-          event.preventDefault()
-          this.skillPickerIndex = (this.skillPickerIndex - 1 + count) % count
-          this.$nextTick(() => this.scrollActiveSkillIntoView())
-          return
+        if (event.key === "ArrowUp" && count > 0) {
+          event.preventDefault();
+          this.skillPickerIndex = (this.skillPickerIndex - 1 + count) % count;
+          this.$nextTick(() => this.scrollActiveSkillIntoView());
+          return;
         }
-        if (event.key === 'Escape') {
-          event.preventDefault()
-          this.closeSkillPicker()
-          return
+        if (event.key === "Escape") {
+          event.preventDefault();
+          this.closeSkillPicker();
+          return;
         }
-        if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
-          const skill = this.menuItems[this.skillPickerIndex]
+        if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+          const skill = this.menuItems[this.skillPickerIndex];
           if (skill) {
-            event.preventDefault()
-            this.selectSkill(skill)
-            return
+            event.preventDefault();
+            this.selectSkill(skill);
+            return;
           }
-          this.closeSkillPicker()
+          this.closeSkillPicker();
         }
       }
 
       if (
-        event.key === 'Enter' &&
-        !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey &&
+        event.key === "Enter" &&
+        !event.shiftKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
         !event.isComposing
       ) {
-        event.preventDefault()
-        this.send()
+        event.preventDefault();
+        this.send();
       }
     },
 
     /** 点击面板外的区域时收起技能面板 */
     closeSkillPickerOnClick(event) {
       if (this.referenceOpen) {
-        const picker = this.$refs.referencePicker
-        if (picker && picker.$el.contains(eventTarget(event))) return
-        if (eventTarget(event) !== this.$refs.textareaRef) this.closeReference()
+        const picker = this.$refs.referencePicker;
+        if (picker && picker.$el.contains(eventTarget(event))) return;
+        if (eventTarget(event) !== this.$refs.textareaRef)
+          this.closeReference();
       }
-      if (!this.skillPickerOpen) return
-      const picker = this.$refs.skillPickerRef
-      if (picker && picker.contains(eventTarget(event))) return
-      this.closeSkillPicker()
+      if (!this.skillPickerOpen) return;
+      const picker = this.$refs.skillPickerRef;
+      if (picker && picker.contains(eventTarget(event))) return;
+      this.closeSkillPicker();
     },
 
     /** 窗口尺寸变化时重新定位（移动端键盘弹出会触发 resize） */
     handleViewportChange() {
-      if (this.skillPickerOpen || this.referenceOpen) this.updateSkillPickerPosition()
+      if (this.skillPickerOpen || this.referenceOpen)
+        this.updateSkillPickerPosition();
     },
   },
-}
+};
 </script>
 
 <style scoped>
@@ -2546,7 +3147,7 @@ export default {
   /* translateZ(0)：提升为独立合成层。Chromium 对「超长 inline 内容 + overflow:hidden +
      程序化 scrollTop」的组合存在裁剪渗漏（内容被画到裁剪区外），强制独立层后消失 */
   transform: translateZ(0);
-  font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
+  font-family: "Microsoft YaHei", "微软雅黑", sans-serif;
   font-size: 15px;
   line-height: 1.6;
   color: var(--text-primary);
@@ -2596,7 +3197,7 @@ export default {
     （芯片高 23px 时半径被 clamp 到 11.5px；不写死 px，免得将来改高度就露出直角）。 */
 
 .input-skill-pill::before {
-  content: '';
+  content: "";
   position: absolute;
   inset: -3.75px 9px -2.25px -6px;
   z-index: -1;
@@ -2611,7 +3212,6 @@ export default {
 .input-skill-pill:has(+ .input-skill-pill)::before {
   right: 11px;
 }
-
 
 .input-skill-pill:hover::before {
   background: color-mix(in srgb, var(--accent-color) 32%, var(--bg-secondary));
@@ -2666,7 +3266,6 @@ export default {
 
 /* 提交中：明确禁止态（正常状态下开关任何一端都能点） */
 
-
 /* 正在提交：开关中心转圈 */
 
 @keyframes connector-switch-spin {
@@ -2674,7 +3273,6 @@ export default {
     transform: rotate(360deg);
   }
 }
-
 
 /* 连接器面板内的操作反馈条（改完开关提示一句） */
 .plus-subpanel-notice {
@@ -2886,31 +3484,116 @@ export default {
   height: 10px;
 }
 
+/* 长文本提示：要让用户一眼看出「这段发出去大概率会撑爆窗口」——
+   琥珀底 + 左侧强调条 + 关键短语加粗，CTA 用实心琥珀而不是描边 */
+.long-message-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 16px 0;
+  padding: 6px 6px 6px 12px;
+  border: 1px solid var(--warning-border, #fcd34d);
+  border-radius: 10px;
+  background: var(--warning-bg, #fffbeb);
+  /* box-shadow: inset 3px 0 0 var(--warning-strong, #d97706); */
+  color: var(--warning-text, #92400e);
+  font-size: 12px;
+  line-height: 1.5;
+  animation: long-message-in 0.18s ease-out;
+}
 
+@keyframes long-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
 
+.long-message-icon {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  color: var(--warning-strong, #d97706);
+}
 
+.long-message-text {
+  flex: 1 1 200px;
+  min-width: 0;
+}
 
+.long-message-text strong {
+  font-weight: 600;
+}
 
+.long-message-meta {
+  opacity: 0.85;
+}
 
+/* 主操作：实心琥珀，与整条提示同一语义，点击目标更明确 */
+.long-message-action {
+  flex-shrink: 0;
+  padding: 3px 12px;
+  border: none;
+  border-radius: 999px;
+  background: var(--warning-strong, #d97706);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
 
+.long-message-action:hover:not(:disabled) {
+  filter: brightness(0.94);
+}
 
+.long-message-action:focus-visible,
+.long-message-dismiss:focus-visible {
+  outline: 2px solid var(--warning-strong, #d97706);
+  outline-offset: 1px;
+}
 
+.long-message-action:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
 
+.long-message-dismiss {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+}
 
+.long-message-dismiss:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--warning-text, #92400e) 12%, transparent);
+}
 
-
-
-
-
-
+.long-message-dismiss svg {
+  width: 11px;
+  height: 11px;
+}
 
 /* 失败卡片上的「重试」：仅可重试的失败（非单文件超限）才渲染 */
 
-
 /* × 常驻卡片内部右上角：上传前/上传中/上传完成/失败均可点击删除。
    兼容 Edge 114~155：仅用绝对定位 + 圆角 + 字面量回退，不用新特性。 */
-
-
 
 .input-row {
   padding: 12px 16px;
@@ -2972,16 +3655,38 @@ export default {
 .easy-agent-root[data-theme="dark"] .input-actions .web-search-btn {
   /* 输入框在深色下就是 --bg-tertiary，按钮同色会糊成一片，
      掺一点主文字色提亮，形成可辨识的「芯片」层级 */
-  background: color-mix(in srgb, var(--text-primary) 7%, var(--bg-tertiary)) !important;
-  border-color: color-mix(in srgb, var(--text-primary) 14%, var(--border-color)) !important;
+  background: color-mix(
+    in srgb,
+    var(--text-primary) 7%,
+    var(--bg-tertiary)
+  ) !important;
+  border-color: color-mix(
+    in srgb,
+    var(--text-primary) 14%,
+    var(--border-color)
+  ) !important;
   box-shadow: none !important;
 }
 
-.easy-agent-root[data-theme="dark"] .input-actions .model-btn:hover:not(.disabled),
-.easy-agent-root[data-theme="dark"] .input-actions .plus-btn:hover:not(.disabled),
-.easy-agent-root[data-theme="dark"] .input-actions .web-search-btn:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--accent-color) 55%, var(--border-color)) !important;
-  background: color-mix(in srgb, var(--accent-color) 16%, var(--bg-tertiary)) !important;
+.easy-agent-root[data-theme="dark"]
+  .input-actions
+  .model-btn:hover:not(.disabled),
+.easy-agent-root[data-theme="dark"]
+  .input-actions
+  .plus-btn:hover:not(.disabled),
+.easy-agent-root[data-theme="dark"]
+  .input-actions
+  .web-search-btn:hover:not(:disabled) {
+  border-color: color-mix(
+    in srgb,
+    var(--accent-color) 55%,
+    var(--border-color)
+  ) !important;
+  background: color-mix(
+    in srgb,
+    var(--accent-color) 16%,
+    var(--bg-tertiary)
+  ) !important;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35) !important;
 }
 
@@ -2993,11 +3698,26 @@ export default {
   color: var(--text-secondary) !important;
 }
 
-.easy-agent-root[data-theme="dark"] .input-actions .model-btn:hover:not(.disabled) .model-btn-icon,
-.easy-agent-root[data-theme="dark"] .input-actions .model-btn:hover:not(.disabled) .model-btn-label,
-.easy-agent-root[data-theme="dark"] .input-actions .model-btn:hover:not(.disabled) .model-btn-arrow,
-.easy-agent-root[data-theme="dark"] .input-actions .plus-btn:hover:not(.disabled) svg,
-.easy-agent-root[data-theme="dark"] .input-actions .web-search-btn:hover:not(:disabled) svg {
+.easy-agent-root[data-theme="dark"]
+  .input-actions
+  .model-btn:hover:not(.disabled)
+  .model-btn-icon,
+.easy-agent-root[data-theme="dark"]
+  .input-actions
+  .model-btn:hover:not(.disabled)
+  .model-btn-label,
+.easy-agent-root[data-theme="dark"]
+  .input-actions
+  .model-btn:hover:not(.disabled)
+  .model-btn-arrow,
+.easy-agent-root[data-theme="dark"]
+  .input-actions
+  .plus-btn:hover:not(.disabled)
+  svg,
+.easy-agent-root[data-theme="dark"]
+  .input-actions
+  .web-search-btn:hover:not(:disabled)
+  svg {
   color: var(--accent-color) !important;
 }
 
@@ -3008,17 +3728,21 @@ export default {
     color-mix(in srgb, var(--accent-color) 85%, #ffffff),
     var(--accent-color)
   ) !important;
-  box-shadow: 0 2px 12px color-mix(in srgb, var(--accent-color) 45%, transparent) !important;
+  box-shadow: 0 2px 12px
+    color-mix(in srgb, var(--accent-color) 45%, transparent) !important;
 }
 
-.easy-agent-root[data-theme="dark"] .input-actions .web-search-btn.active:hover:not(:disabled) {
+.easy-agent-root[data-theme="dark"]
+  .input-actions
+  .web-search-btn.active:hover:not(:disabled) {
   border-color: transparent !important;
   background: linear-gradient(
     135deg,
     color-mix(in srgb, var(--accent-color) 92%, #ffffff),
     var(--accent-color)
   ) !important;
-  box-shadow: 0 4px 16px color-mix(in srgb, var(--accent-color) 55%, transparent) !important;
+  box-shadow: 0 4px 16px
+    color-mix(in srgb, var(--accent-color) 55%, transparent) !important;
 }
 
 .easy-agent-root[data-theme="dark"] .input-actions .web-search-btn.active svg {
@@ -3044,7 +3768,7 @@ export default {
   border: none;
   background: transparent;
   resize: none;
-  font-family: 'Microsoft YaHei', '微软雅黑', sans-serif;
+  font-family: "Microsoft YaHei", "微软雅黑", sans-serif;
   font-size: 15px;
   line-height: 1.6;
   /* 文字由上层的 .input-mirror 镜像层显示，这里只保留光标与选区（见 syncMirror） */
@@ -3087,16 +3811,6 @@ export default {
   display: inline-flex;
 }
 
-
-
-
-
-
-
-
-
-
-
 /* 键盘可达性：工具按钮共用一致的焦点环 */
 .plus-btn:focus-visible,
 .web-search-btn:focus-visible,
@@ -3105,18 +3819,7 @@ export default {
   outline-offset: 2px;
 }
 
-
-
-
-
 /* ========== 「+」添加菜单 ========== */
-
-
-
-
-
-
-
 
 .easy-agent-root[data-theme="dark"] .plus-menu {
   background: var(--bg-tertiary);
@@ -3129,38 +3832,11 @@ export default {
 
 /* 二级列表视图 */
 
-
-
-
-
-
-
-
-
-
-
 /* 可点选行（技能 / 连接器）：加手型 + 已选态整行高亮（再点一次取消） */
-
 
 /* 停用技能行不可点：Agent 只加载已启用的技能，挂上去也不会生效 */
 
-
 /* 行尾「已选」标：技能 / 连接器共用，与专家行的召唤态样式一致 */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 .easy-agent-root[data-theme="dark"] .plus-list-item:hover {
   background: color-mix(in srgb, var(--text-primary) 8%, transparent);
@@ -3175,8 +3851,6 @@ export default {
   background: rgba(124, 58, 237, 0.2);
   color: #c4b5fd;
 }
-
-
 
 .right-actions {
   display: flex;
@@ -3470,9 +4144,14 @@ export default {
 
 .plus-btn:hover:not(.disabled),
 .web-search-btn:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--accent-color) 45%, var(--border-color));
+  border-color: color-mix(
+    in srgb,
+    var(--accent-color) 45%,
+    var(--border-color)
+  );
   background: color-mix(in srgb, var(--accent-color) 8%, var(--bg-secondary));
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-color) 18%, transparent);
+  box-shadow: 0 4px 12px
+    color-mix(in srgb, var(--accent-color) 18%, transparent);
   transform: translateY(-1px);
 }
 
@@ -3618,9 +4297,12 @@ export default {
   color: var(--text-secondary);
 }
 
-
-
-.reference-tags { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 16px 0; }
+.reference-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px 16px 0;
+}
 </style>
 
 <style>
@@ -3643,7 +4325,7 @@ export default {
    面板底边最低与一级菜单底边平齐（内容少了会往上收），所以再向下延 28px 把
    「右上角接缝」也划进面板，从菜单项斜着往左上角挪时不会中途掉出去。 */
 :where(.easy-agent-root) .plus-subpanel::before {
-  content: '';
+  content: "";
   position: absolute;
   top: 0;
   bottom: -28px;
@@ -3713,9 +4395,25 @@ export default {
 </style>
 
 <style scoped>
-.picker-group { margin: 0; padding: 0; list-style: none; }
-.picker-group + .picker-group { margin-top: 12px; }
-.picker-group-title { padding: 8px 10px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
-.skill-picker-header { justify-content: flex-end; }
-.skill-picker-item.unavailable { opacity: .55; cursor: not-allowed; }
+.picker-group {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.picker-group + .picker-group {
+  margin-top: 12px;
+}
+.picker-group-title {
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.skill-picker-header {
+  justify-content: flex-end;
+}
+.skill-picker-item.unavailable {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 </style>

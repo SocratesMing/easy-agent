@@ -14,7 +14,7 @@ import { resolveEnvMode } from "./scripts/env-mode.mjs";
  * 它只在 dev server 进程里读取，不会进入构建产物。
  */
 const PROXY_TARGETS = {
-  dev: "http://183.196.130.56:22333",
+  dev: "http://127.0.0.1:8080",
   test: "http://192.168.1.100:8007",
   prod: "http://192.168.1.200:8000",
   win: "http://127.0.0.1:8080",

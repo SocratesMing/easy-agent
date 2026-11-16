@@ -68,12 +68,18 @@ const MAX_NEW_FILE_LINES = 800
  *   本次未修改设置页源码。此次合并基线之后仍只允许下调预算。
  * 2026-11-16 会话列表改为滚动分页（首屏一页 + 滚动到底续取，不再预取全量）后按实测值更新：
  *   SessionList 1072 → 1106、AiSidebar 1726 → 1755、chatSession 1740 → 1744。
+ * 2026-11-16 超长输入另存为工作区 txt 并改为文件引用（压缩历史对它无效）后按实测值更新：
+ *   ChatInput 3722 → 3806。
+ * 2026-11-16 该提示改为中性内嵌单行样式（图标 + 万为单位的字数 + 可关闭），
+ *   并把图标/按钮描边收成主色点缀后按实测值更新：ChatInput 3806 → 3874。
+ * 2026-11-16 长文本判断改为按模型窗口 token 预算（131072 扣除用量/输出/技能开销），
+ *   提示条改为琥珀强调样式后按实测值更新：ChatInput 3874 → 3909。
  */
 const LINE_BUDGET = {
   // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
   // 2026-11-05 合并 audit-improvements（注释停用 AiSidebar）后按实测值更新：2035 → 2036
   [`${MOD}EasyAgentPage.vue`]: 2057,
-  [`${MOD}features/chat/components/ChatInput.vue`]: 3722,
+  [`${MOD}features/chat/components/ChatInput.vue`]: 3909,
   // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2644 → 2616
   [`${MOD}features/chat/components/ChatMessage.vue`]: 2620,
   [`${MOD}features/chat/components/AiSidebar.vue`]: 1755,
