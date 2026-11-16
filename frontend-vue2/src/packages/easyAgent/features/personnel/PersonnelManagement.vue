@@ -1060,10 +1060,8 @@ export default {
 .pm-table { width: 100%; min-width: 1280px; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
 .pm-table th { position: sticky; top: 0; z-index: 1; padding: 11px 13px; color: var(--text-secondary); background: var(--bg-tertiary); border-bottom: 1px solid var(--border-color); text-align: left; font-size: 11px; font-weight: 650; }
 /* 列宽按百分比分配，随容器均匀伸缩；操作列保留按钮所需空间 */
-.pm-table th:nth-child(1) { width: 11%; }
-.pm-table th:nth-child(2) { width: 8%; }
-.pm-table th:nth-child(3) { width: 11%; }
-.pm-table th:nth-child(4) { width: 9%; }
+.pm-table th:nth-child(1) { width: 11%; } .pm-table th:nth-child(2) { width: 8%; }
+.pm-table th:nth-child(3) { width: 11%; } .pm-table th:nth-child(4) { width: 9%; }
 .pm-table th:nth-child(5) { width: 9%; }
 .pm-table th:nth-child(6) { width: 8%; }
 .pm-table th:nth-child(7) { width: 10%; }
