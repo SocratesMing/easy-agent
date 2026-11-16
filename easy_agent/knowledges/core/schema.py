@@ -308,7 +308,7 @@ def initialize_knowledge_schema(db: Database, cursor) -> None:
         cursor, "idx_knowledge_audit_object", "knowledge_audit_events", "object_type, object_id, created_at"
     )
 
-    # ---- 知识库管理员（可在本部门创建知识库，管理自己创建的库） ----
+    # ---- 旧版部门管理员授权表（已不参与权限判定，保留用于历史数据清理） ----
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS knowledge_department_managers (
             id VARCHAR(255) PRIMARY KEY,

@@ -222,48 +222,6 @@ class TeamSpaceManagementCapability(ContractModel):
     departments: list[TeamSpaceDepartmentSummary] = Field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# 知识库管理员
-# ---------------------------------------------------------------------------
-class DepartmentManagerSummary(ContractModel):
-    id: str
-    user_id: str
-    username: str = ""
-    display_name: str = ""
-    department_id: str
-    department_name: str = ""
-    account_status: Literal["active", "disabled"]
-    granted_by: str
-    granted_at: datetime
-    updated_at: datetime
-
-
-class DepartmentManagerListResponse(ContractModel):
-    items: list[DepartmentManagerSummary] = Field(default_factory=list)
-
-
-class DepartmentManagerGrantRequest(ContractModel):
-    user_id: str = Field(min_length=1, max_length=255)
-
-    @field_validator("user_id")
-    @classmethod
-    def user_not_blank(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("user_id 不能为空")
-        return stripped
-
-
-class DepartmentManagerGrantResponse(ContractModel):
-    manager: DepartmentManagerSummary
-
-
-class DepartmentManagerRevokeResponse(ContractModel):
-    user_id: str
-    department_id: str
-    revoked: StrictBool
-
-
 class KnowledgeBaseListResponse(ContractModel):
     items: list[KnowledgeBaseSummary]
     page: PageInfo
@@ -601,11 +559,6 @@ __all__ = [
     "AskRequest",
     "AskResponse",
     "ConversationTurn",
-    "DepartmentManagerGrantRequest",
-    "DepartmentManagerGrantResponse",
-    "DepartmentManagerListResponse",
-    "DepartmentManagerRevokeResponse",
-    "DepartmentManagerSummary",
     "DocumentListResponse",
     "DocumentMoveRequest",
     "DocumentStatus",

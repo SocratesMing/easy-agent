@@ -13,14 +13,14 @@ test('admin never sees a self-authorization prompt', () => {
   assert.equal(teamSpaceEmptyHint(management), '请先在人员与部门中配置可用部门')
 })
 
-test('regular account prompt distinguishes missing grant from missing department', () => {
+test('regular account sees public spaces are admin-only', () => {
   assert.equal(
     teamSpaceOptionSuffix({ can_create: false, department_id: 'dept-market' }),
-    '（需 admin 授权）',
+    '（仅系统管理员可创建）',
   )
   assert.equal(
     teamSpaceOptionSuffix({ can_create: false, department_id: null }),
-    '（需配置部门）',
+    '（仅系统管理员可创建）',
   )
 })
 

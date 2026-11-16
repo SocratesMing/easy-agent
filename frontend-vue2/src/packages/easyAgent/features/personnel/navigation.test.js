@@ -30,15 +30,21 @@ test('personnel entry stays reachable with no knowledge base and in narrow layou
   assert.doesNotMatch(workbench, /\.ke-library-panel,\.ke-resizer\.library\{display:none\}/)
 })
 
-test('personnel page explains knowledge-base manager authorization and its scope', async () => {
-  const source = await readFile(path.join(moduleRoot, 'features/personnel/PersonnelManagement.vue'), 'utf8')
+test('knowledge-base administrator authorization lives in permission management', async () => {
+  const personnel = await readFile(path.join(moduleRoot, 'features/personnel/PersonnelManagement.vue'), 'utf8')
+  const workbench = await readFile(path.join(moduleRoot, 'features/knowledge/KnowledgeWorkbench.vue'), 'utf8')
+  const api = await readFile(path.join(moduleRoot, 'features/knowledge/api.js'), 'utf8')
 
-  assert.match(source, /知识库管理员权限说明/)
-  assert.match(source, /仅可在本部门内部创建公共空间知识库/)
-  assert.match(source, /仅可管理自己创建的知识库/)
-  assert.match(source, /admin 默认拥有全局权限，无需在此授权/)
-  assert.match(source, /「权限管理」中按部门、处室、团队勾选限定/)
-  assert.match(source, /\{\{ isDeptManagerOf\(user\.user_id, user\.department_id\) \? '知识库管理员' : '普通成员' \}\}/)
+  // 人员管理只维护账号与部门，不再承载知识库管理员授权
+  assert.doesNotMatch(personnel, /知识库管理员权限说明/)
+  assert.doesNotMatch(personnel, /isDeptManagerOf|toggleDeptManager|grantDepartmentManager/)
+  // 权限管理弹窗内新增知识库管理员选择，保存时按 maintainer 角色提交
+  assert.match(workbench, /知识库管理员/)
+  assert.match(workbench, /permissionAdminDirectory/)
+  assert.match(workbench, /canManageBaseAdmins/)
+  assert.match(api, /role:\s*'maintainer'/)
+  // 被授权的管理员不能创建公共空间知识库
+  assert.match(workbench, /仅系统管理员可创建公共空间/)
 })
 
 test('team-space viewing is default-on, no per-user viewer switch', async () => {

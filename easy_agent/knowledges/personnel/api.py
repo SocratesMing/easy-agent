@@ -1,6 +1,6 @@
 """Personnel management API: admin only; everyone else gets 403.
 
-知识库管理员只授予知识库侧的创建/管理能力，不涉及人员管理。
+人员管理只维护账号与部门；知识库管理员授权在对应知识库的「权限管理」中配置。
 """
 
 from __future__ import annotations

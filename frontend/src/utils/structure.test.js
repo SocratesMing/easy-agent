@@ -48,6 +48,8 @@ const MAX_NEW_FILE_LINES = 800
  *  2026-11-16 解决文件引用与交互模式的双分支冲突，按合并后的实测值重建基线：
  *    App.vue 3376 → 3371、ChatInput 4851 → 4867、ChatMessage 2499 → 2502。
  *    两侧功能均保留；本次合并基线之后仍只允许下调预算。
+ *  2026-11-16 权限管理新增知识库管理员单库授权（管理员/查看者双树）后按实测值更新：
+ *    KnowledgeWorkbench 1779 → 1817。
  */
 const LINE_BUDGET = {
   'App.vue': 3371,
@@ -63,7 +65,7 @@ const LINE_BUDGET = {
   'features/chat/components/SessionList.vue': 1040,
   'features/workspace/components/WorkspacePanel.vue': 978,
   'features/tasks/components/ScheduledTasksPanel.vue': 842,
-  'features/knowledge/KnowledgeWorkbench.vue': 1779,
+  'features/knowledge/KnowledgeWorkbench.vue': 1817,
 }
 
 /** 组件里已经存在的 api 直连（存量，只允许删） */

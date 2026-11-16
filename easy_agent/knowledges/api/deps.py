@@ -1,4 +1,4 @@
-"""知识库路由的请求级依赖：身份解析、服务装配、错误映射与审计。
+"""知识库路由的请求级依赖：身份解析、服务装配与错误映射。
 
 路由模块只声明端点，鉴权、服务构造和异常转 HTTP 的规则集中在本模块，
 保证所有端点使用同一套 fail-closed 语义。
@@ -9,14 +9,12 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
-from starlette.concurrency import run_in_threadpool
 
 from easy_agent.db import Database, get_database
 from easy_agent.db.login_state import LoginRejected, bearer_token, verify_login_token
 from easy_agent.db.repositories.user_repository import UserRepository
 from easy_agent.knowledges.core.config import KnowledgeConfig
 from easy_agent.knowledges.core.models import KnowledgePrincipal
-from easy_agent.knowledges.repository.operations import KnowledgeOperationsRepository
 from easy_agent.knowledges.repository import KnowledgeRepository
 from easy_agent.knowledges.runtime.observability import resolve_request_id
 from easy_agent.knowledges.service import KnowledgeService, KnowledgeServiceError
@@ -68,33 +66,6 @@ def _request_id(request: Request) -> str:
     if state_request_id:
         return str(state_request_id)
     return resolve_request_id(request.headers.get("X-Request-Id"))
-
-
-async def _record_manager_audit(
-    request: Request,
-    db: Database,
-    principal: KnowledgePrincipal,
-    *,
-    action: str,
-    object_id: str,
-    department_id: str,
-) -> None:
-    """部门管理员变更审计：仅在审计开关打开时记录。"""
-
-    config = _get_knowledge_config(request)
-    if not config.audit.enabled:
-        return
-    await run_in_threadpool(
-        KnowledgeOperationsRepository(db).record_audit,
-        request_id=str(getattr(request.state, "request_id", "unknown")),
-        actor_user_id=principal.user_id,
-        actor_username=principal.username,
-        action=action,
-        object_type="department_manager",
-        object_id=object_id,
-        details={"department_id": department_id},
-        max_details_bytes=config.audit.max_details_bytes,
-    )
 
 
 def _service(
