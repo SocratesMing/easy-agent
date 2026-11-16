@@ -7,6 +7,9 @@ import {
   buildResumeDecisions,
   buildApprovalResumePlan,
   derivePendingApproval,
+  approvalActionSummary,
+  batchedApprovalGroups,
+  isBatchedApprovalBlock,
   isNewApprovalEvent,
   markApprovalDecision,
   unmatchedApprovalRequests,
@@ -308,4 +311,86 @@ test('恢复流事件判据：缺 thread_id 的事件不算新审批；旧载荷
     { thread_id: 's-1', action_requests: [{ tool_name: 'delete' }] },
     { threadId: 's-1' },
   ), true)
+})
+
+// ── 批次审批（DA-28）：一个中断挂多项操作时，只能整批作答，展示上必须整批给出 ──────
+// 现实依据：日志 `2 个操作待审批` + 一次 resume 带 2 条 decisions —— 框架把同一条 AIMessage
+// 里命中审批的多个工具调用打包成一个中断，前端点一张卡片就把整批答完了。
+
+const batchedMessage = {
+  role: 'assistant',
+  pending_approval: {
+    thread_id: 's-1',
+    action_requests: [
+      { tool_name: 'delete', name: 'delete', interrupt_id: 'I-1', action_index: 1, tool_call_id: 'c2', arguments: { file_path: '/w/notes_5.txt' }, file_paths: ['/w/notes_5.txt'] },
+      { tool_name: 'delete', name: 'delete', interrupt_id: 'I-1', action_index: 0, tool_call_id: 'c1', arguments: { file_path: '/w/notes_4.txt' }, file_paths: ['/w/notes_4.txt'] },
+      { tool_name: 'delete', name: 'delete', interrupt_id: 'I-2', action_index: 0, tool_call_id: 'c3', arguments: { file_path: '/w/other.txt' } },
+    ],
+  },
+  blocks: [
+    { type: 'tool_call', tool_name: 'delete', tool_call_id: 'c1', hitl_interrupt_id: 'I-1', pending_approval: true, approval_status: 'pending' },
+    { type: 'tool_call', tool_name: 'delete', tool_call_id: 'c2', hitl_interrupt_id: 'I-1', pending_approval: true, approval_status: 'pending' },
+    { type: 'tool_call', tool_name: 'delete', tool_call_id: 'c3', hitl_interrupt_id: 'I-2', pending_approval: true, approval_status: 'pending' },
+  ],
+}
+
+test('批次分组：同一中断的多项操作合成一组，按 action_index 排序', () => {
+  const groups = batchedApprovalGroups(batchedMessage)
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0].interruptId, 'I-1')
+  assert.equal(groups[0].count, 2)
+  assert.deepEqual(groups[0].actions.map(a => a.tool_call_id), ['c1', 'c2'])
+})
+
+test('批次分组：单项中断不成批（每块各自回答自己的中断）', () => {
+  const single = { role: 'assistant', pending_approval: { thread_id: 's-1', action_requests: [
+    { tool_name: 'delete', interrupt_id: 'I-1', action_index: 0, tool_call_id: 'c1' },
+    { tool_name: 'delete', interrupt_id: 'I-2', action_index: 0, tool_call_id: 'c2' },
+  ] } }
+  assert.deepEqual(batchedApprovalGroups(single), [])
+})
+
+test('批次分组：旧载荷（无 interrupt_id）与交互动作不进批次', () => {
+  const legacy = { role: 'assistant', pending_approval: { thread_id: 's-1', action_requests: [
+    { tool_name: 'delete', tool_call_id: 'c1' },
+    { tool_name: 'delete', tool_call_id: 'c2' },
+    { tool_name: 'ask_user', interrupt_id: 'I-9', action_index: 0 },
+  ] } }
+  assert.deepEqual(batchedApprovalGroups(legacy), [])
+  assert.deepEqual(batchedApprovalGroups(null), [])
+})
+
+test('整批作答：点一次批次面板 = 该中断全部操作各一条 approve', () => {
+  const { decisions } = buildResumeDecisions(batchedMessage.pending_approval.action_requests, 'approve', { interruptId: 'I-1' })
+  assert.equal(decisions.length, 2)
+  assert.deepEqual(decisions.map(d => [d.interrupt_id, d.action_index, d.type]), [
+    ['I-1', 0, 'approve'],
+    ['I-1', 1, 'approve'],
+  ])
+})
+
+test('操作清单摘要素材：路径 / 命令 / 参数 JSON / 超长截断', () => {
+  assert.deepEqual(approvalActionSummary({ tool_name: 'delete', arguments: { file_path: '/w/a.txt' } }), { name: 'delete', detail: '/w/a.txt' })
+  assert.deepEqual(approvalActionSummary({ tool_name: 'execute', arguments: { command: 'ls -la' } }), { name: 'execute', detail: 'ls -la' })
+  assert.deepEqual(approvalActionSummary({ name: 'write_file', arguments: { path: '/w/b.md' } }), { name: 'write_file', detail: '/w/b.md' })
+  assert.equal(approvalActionSummary({ tool_name: 'mcp_write', arguments: { id: 7 } }).detail, '{"id":7}')
+  assert.equal(approvalActionSummary({ tool_name: 'delete', file_paths: ['/w/c.txt'] }).detail, '/w/c.txt')
+  assert.equal(approvalActionSummary({ tool_name: 'x', arguments: { s: 'a'.repeat(200) } }).detail.length, 140)
+})
+
+test('批次成员判据：刷新后只靠 tool_call_id 也能认出批次成员（隐藏卡片按钮）', () => {
+  // 服务端落库的块没有 hitl_interrupt_id，只有 tool_call_id
+  const refreshed = { ...batchedMessage, blocks: [
+    { type: 'tool_call', tool_name: 'delete', tool_call_id: 'c1', approval_status: 'pending' },
+    { type: 'tool_call', tool_name: 'delete', tool_call_id: 'c2', approval_status: 'pending' },
+    { type: 'tool_call', tool_name: 'delete', tool_call_id: 'c3', approval_status: 'pending' },
+  ] }
+  const groups = batchedApprovalGroups(refreshed)
+  assert.equal(isBatchedApprovalBlock(refreshed, refreshed.blocks[0], groups), true)
+  assert.equal(isBatchedApprovalBlock(refreshed, refreshed.blocks[1], groups), true)
+  // 另一个中断只有 1 项 → 不是批次成员，按钮留在卡片上
+  assert.equal(isBatchedApprovalBlock(refreshed, refreshed.blocks[2], groups), false)
+  // 没有待审批批次时一律 false（单项 / 旧载荷都不隐藏按钮）
+  assert.equal(isBatchedApprovalBlock(batchedMessage, null, groups), false)
+  assert.equal(isBatchedApprovalBlock({ role: 'assistant' }, { tool_call_id: 'c1' }), false)
 })

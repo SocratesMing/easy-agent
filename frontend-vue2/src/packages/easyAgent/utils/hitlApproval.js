@@ -206,6 +206,22 @@ export function approvalActionSummary (action) {
   return { name, detail: detail.length > 140 ? `${detail.slice(0, 137)}...` : detail }
 }
 
+/**
+ * 某个工具卡片是否属于「一个中断多项操作」的批次（按钮统一收在批次面板，卡片不再单给）。
+ *
+ * 同时认 interrupt_id 与 tool_call_id：服务端落库的 blocks **不带** hitl_interrupt_id
+ * （只有消息级 pending_approval.action_requests 带 interrupt_id），刷新后只能按调用 id 认。
+ * 只认 interrupt_id 的后果是「刷新后卡片重新长出按钮」，点任意一个又静默批了整批。
+ */
+export function isBatchedApprovalBlock (message, block, groups) {
+  const batches = groups || batchedApprovalGroups(message)
+  if (!block || !batches.length) return false
+  const interruptId = block.hitl_interrupt_id
+  const callId = block.tool_call_id || block.id
+  return batches.some(group => group.interruptId === interruptId ||
+    (!!callId && group.actions.some(ar => ar.tool_call_id === callId)))
+}
+
 /** 工具卡片上的按钮回答哪个中断：卡片自身记录的，否则按 tool_call_id 到载荷里查。 */
 export function approvalTargetForBlock (message, block) {
   const id = block && (block.tool_call_id || block.id)

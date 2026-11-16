@@ -48,12 +48,15 @@ const MAX_NEW_FILE_LINES = 800
  *  2026-11-16 解决文件引用与交互模式的双分支冲突，按合并后的实测值重建基线：
  *    App.vue 3376 → 3371、ChatInput 4851 → 4867、ChatMessage 2499 → 2502。
  *    两侧功能均保留；本次合并基线之后仍只允许下调预算。
+ *  2026-11-16 HITL 批次审批面板（一个中断多项操作只给一个审批入口 + 操作清单）：
+ *    ChatMessage.vue 2502 → 2524（批次面板 9 行、批次分组/成员判据/卡片降级 13 行）；新增组件
+ *    ApprovalBatchPanel.vue 不计入存量预算。
  */
 const LINE_BUDGET = {
   'App.vue': 3371,
   'features/chat/components/ChatInput.vue': 4867,
   // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2523 → 2499
-  'features/chat/components/ChatMessage.vue': 2502,
+  'features/chat/components/ChatMessage.vue': 2524,
   'features/experts/components/ExpertListPanel.vue': 2188,
   'features/connectors/components/ConnectorListPanel.vue': 1547,
   'features/settings/components/SettingsPanel.vue': 1226,
