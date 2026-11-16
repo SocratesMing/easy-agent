@@ -163,8 +163,7 @@ export async function shouldAttachOnOpen(sessionId, getStatus) {
 }
 
 /** 逐个问后端「这一轮还在跑吗」，返回确实活跃的会话。 */
-export async function probeActive(ids, getStatus) {
-  const active = []
+export async function probeActive(ids, getStatus) {  const active = []
   for (const sid of ids) {
     try {
       const status = await getStatus(sid)

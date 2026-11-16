@@ -25,6 +25,7 @@ import httpx
 from langgraph.types import Command
 
 from easy_agent.agent import EasyAgent
+from easy_agent.agent.hitl import MANUAL_APPROVAL_DONE_NOTE, brief_args
 from easy_agent.db import Database
 from easy_agent.persistence.checkpoints import checkpoint_instance
 from easy_agent.agent.model import resolve_context_length
@@ -39,6 +40,10 @@ from easy_agent.services.agents.manager import get_agent_config
 from easy_agent.services.streaming.approvals import (
     HitlDecisionError,
     ResumePlan,
+    action_args,
+    action_name,
+    answered_actions,
+    decision_label,
     normalize_resume_decisions,
     pending_hitl_interrupts,
     plan_resume,
@@ -1456,7 +1461,29 @@ async def _resume_stream_impl(
             if isinstance(d, dict) else str(d)
             for d in decisions
         )
-        logger.info(f"[{sid}] 👤 用户审批操作: {decision_desc}")
+        # 人工审批结论逐条落日志：带工具名与参数，和 auto 模式的
+        # 「用户已选择自动审批，跳过人工审批」形成对照——两者都含「审批」关键词，
+        # 排查时按「用户已人工审批」/「用户已选择自动审批」即可区分是谁放行的。
+        approval_pairs = answered_actions(
+            plan.answered, snapshot.pending_action_requests
+        )
+        for action, decision in approval_pairs:
+            logger.info(
+                "[%s] 👤 %s：%s | 工具: %s | 参数: %s",
+                sid or "-",
+                MANUAL_APPROVAL_DONE_NOTE,
+                decision_label(decision),
+                action_name(action) or "-",
+                brief_args(action_args(action)),
+            )
+        if decisions and not approval_pairs:
+            # 取不到待审批载荷（旧记录 / 字段缺失）时保留改造前的汇总日志
+            decision_desc = "、".join(
+                ("批准" if (d or {}).get("type") == "approve" else "拒绝")
+                if isinstance(d, dict) else str(d)
+                for d in decisions
+            )
+            logger.info(f"[{sid}] 👤 用户审批操作: {decision_desc}")
 
     context_length, auto_compress_tokens = resolve_resume_context(agent)
 
