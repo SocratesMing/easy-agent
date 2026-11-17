@@ -7,8 +7,7 @@
  * 已选技能不进消息文本：以请求体的 `skills` 字段（技能目录名）单独传给后端，
  * 由后端决定怎么交给模型（见 `api/chat.js` / `api/expert.js` 的 payload）。这样气泡、
  * 会话标题与历史里都不会出现 `/技能名` 这类机器语言。
- * 连接器不随消息提交：本会话启用哪些连接器由输入框「+」→ 连接器面板的开关设置
- * （见 `api/connectors.js` 的 setSessionConnectors）。
+ * 连接器不随消息提交：启用哪些连接器由持久开关决定（`api/connectors.js` 的 toggleConnector，写入用户 mcp.json 的 enabled 字段）。
  * 后端仍兼容消息文本里的旧指令写法（旧前端 / 用户手打）。
  */
 
