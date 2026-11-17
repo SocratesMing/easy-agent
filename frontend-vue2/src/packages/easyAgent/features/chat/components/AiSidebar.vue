@@ -149,7 +149,7 @@
                     @keydown.esc="showHistory = false"
                   />
                 </div>
-                <div class="ais-history-list">
+                <div class="ais-history-list" @scroll="onHistoryScroll">
                   <div v-if="historyGroups.length === 0" class="ais-history-empty">
                     {{ historyQuery ? '没有匹配的会话' : '还没有会话' }}
                   </div>
@@ -194,6 +194,8 @@
                       </span>
                     </div>
                   </div>
+                  <!-- 分页：滚动到底续取下一页；没有滚动条时可点这里 -->
+                  <button v-if="sessionsHasMore" type="button" class="ais-history-more" :disabled="sessionsLoading" @click="loadMoreSessions">{{ sessionsLoading ? '加载中…' : '滚动到底加载更早的会话' }}</button>
                 </div>
               </div>
             </transition>
@@ -703,6 +705,15 @@ export default {
     sendQuick(text) {
       if (this.isStreaming) return
       this.handleSendMessage(text)
+    },
+
+    // 历史列表滚动到底续取下一页（搜索时以已加载的结果为准，不触发分页）
+    onHistoryScroll(event) {
+      if (!this.showHistory || this.historyQuery.trim()) return
+      if (!this.sessionsHasMore || this.sessionsLoading) return
+      const el = event.target
+      if (el.scrollHeight - el.scrollTop - el.clientHeight > 48) return
+      this.loadMoreSessions()
     },
 
     preferPageSession() {
@@ -1301,6 +1312,24 @@ export default {
   flex: 1;
   overflow-y: auto;
   padding: 0 8px 12px;
+}
+
+/* 分页提示：列表底部居中，样式比会话条目更轻 */
+.ais-history-more {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+  cursor: pointer;
+}
+
+.ais-history-more:disabled {
+  cursor: default;
+  opacity: 0.7;
 }
 
 .ais-history-empty {

@@ -35,9 +35,6 @@ class BaseMixin:
         """分页列出用户可见的知识库，附带公共空间管理能力信息。"""
 
         is_admin = is_super_admin(principal.username)
-        has_dept_grant = bool(principal.department_id) and await self._has_department_management_grant(
-            principal, principal.department_id
-        )
         can_manage_all = is_admin  # 仅超级管理员全局管理
         departments: list[TeamSpaceDepartmentSummary] = []
         if is_admin:
@@ -50,8 +47,8 @@ class BaseMixin:
                 for row in department_rows
                 if str(row.get("department_id") or "").strip()
             ]
-        # 超级管理员需要有可选的在职部门才能建公共空间；知识库管理员固定在本部门创建
-        can_create_team = has_dept_grant or (is_admin and bool(departments))
+        # 公共空间只能由超级管理员创建；被授权的知识库管理员仅管理指定库
+        can_create_team = is_admin and bool(departments)
         candidates = await self._repo(
             self.repository.list_candidate_bases,
             user_id=principal.user_id,
@@ -114,7 +111,7 @@ class BaseMixin:
         restrict_access: bool = False,
         permission_user_ids: list[str] | None = None,
     ) -> KnowledgeBaseSummary:
-        """创建知识库：公共空间需知识库管理员授权，且只能归属本部门；纯本地建库，走共享数据集。
+        """创建知识库：公共空间仅超级管理员可建，纯本地建库，走共享数据集。
 
         创建即配置可见性（仅公共空间）：勾选名单模式下仅勾选人员可见，
         语义与创建后的权限管理（replace_permissions）完全一致。
@@ -140,7 +137,7 @@ class BaseMixin:
             if not await self._can_create_team_base(principal):
                 raise KnowledgeServiceError(
                     "KNOWLEDGE_TEAM_SPACE_MANAGER_REQUIRED",
-                    "当前账号未获得公共空间创建与管理权限，请联系 admin 或部门管理员配置",
+                    "当前账号无权创建公共空间知识库，请联系系统管理员",
                     status_code=403,
                 )
             target_department_id = await self._resolve_team_department_id(

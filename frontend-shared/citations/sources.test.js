@@ -28,6 +28,27 @@ test('混合外部引用按正文顺序编号，模型知识不分配编号；�
   assert.match(html, /href="https:\/\/unknown.example.com"/)
 })
 
+test('旧式外部连接器来源说明可按唯一工具名匹配 MCP 数字引用', () => {
+  const content = '贵金属K线表字典如下（来源：外部连接器 (precious_metal_qa)）：字段说明。'
+  const call = { ...mcp, tool_name: 'precious_metal_qa',
+    result: mcp.result.replace('finance/query', 'market/precious_metal_qa') }
+  const { items, numberMap } = relatedEvidence({ content, blocks: [call] })
+  assert.deepEqual(numberMap, { 'mcp:market/precious_metal_qa': 1 })
+  assert.equal(items[0].source_type, 'mcp')
+  const html = renderMarkdown(linkKnowledgeCitations(content, numberMap, true), createMarkdownRenderer({}))
+  assert.match(html, /data-cite="1"/)
+  assert.doesNotMatch(html, /来源：外部连接器|precious_metal_qa/)
+})
+
+test('同名 MCP 工具无法唯一匹配时保留旧来源文字，不误连引用', () => {
+  const content = '来源：外部连接器（precious_metal_qa）'
+  const first = { ...mcp, tool_call_id: 'mcp-1', result: mcp.result.replace('finance/query', 'market-a/precious_metal_qa') }
+  const second = { ...mcp, tool_call_id: 'mcp-2', result: mcp.result.replace('finance/query', 'market-b/precious_metal_qa') }
+  const result = relatedEvidence({ content, blocks: [first, second] })
+  assert.deepEqual(result.numberMap, {})
+  assert.equal(linkKnowledgeCitations(content, result.numberMap, true), content)
+})
+
 test('失败、空、审批中和伪造的连接器标记不能成为依据；普通链接不能冒充搜索结果', () => {
   const bad = [
     { ...mcp, success: false },

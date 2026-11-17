@@ -16,6 +16,9 @@ export const chatStore = reactive({
   pendingApprovalSessions: [],
   // 最近开始流式的会话（页面刷新后据此重新挂载）
   lastStreamingSession: null,
+  // 会话列表分页：还有更早的会话 / 正在续取（由 shared/sessionManagement/sessionPager.js 维护）
+  sessionsHasMore: false,
+  sessionsLoading: false,
   username: '',
   contextLength: null,
   models: [],

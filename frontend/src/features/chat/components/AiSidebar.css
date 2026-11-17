@@ -406,6 +406,24 @@
   padding: 0 8px 12px;
 }
 
+/* 分页提示：列表底部居中，样式比会话条目更轻 */
+.ais-history-more {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+  cursor: pointer;
+}
+
+.ais-history-more:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
 .ais-history-empty {
   padding: 32px 0;
   text-align: center;

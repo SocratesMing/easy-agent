@@ -180,14 +180,15 @@ export function listPermissions(baseId) {
   return request(`/bases/${encodeURIComponent(baseId)}/permissions`)
 }
 
-// 权限管理：userIds 为勾选的可见人员；勾选名单非空时该库仅勾选人员可见
-export function replacePermissions(baseId, userIds) {
+// 权限管理：adminIds 为知识库管理员（maintainer），viewerIds 为可见人员
+export function replacePermissions(baseId, { adminIds = [], viewerIds = [] } = {}) {
+  const items = [
+    ...adminIds.map(id => ({ subject_type: 'user', subject_id: id, role: 'maintainer' })),
+    ...viewerIds.map(id => ({ subject_type: 'user', subject_id: id, role: 'viewer' })),
+  ]
   return request(`/bases/${encodeURIComponent(baseId)}/permissions`, {
     method: 'PUT',
-    json: {
-      items: userIds.map(id => ({ subject_type: 'user', subject_id: id, role: 'viewer' })),
-      restrict_access: userIds.length > 0,
-    },
+    json: { items, restrict_access: items.length > 0 },
   })
 }
 

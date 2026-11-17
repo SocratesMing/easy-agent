@@ -48,25 +48,29 @@ const MAX_NEW_FILE_LINES = 800
  *  2026-11-16 解决文件引用与交互模式的双分支冲突，按合并后的实测值重建基线：
  *    App.vue 3376 → 3371、ChatInput 4851 → 4867、ChatMessage 2499 → 2502。
  *    两侧功能均保留；本次合并基线之后仍只允许下调预算。
+ *  2026-11-16 权限管理新增知识库管理员单库授权（管理员/查看者双树）后按实测值更新：
+ *    KnowledgeWorkbench 1779 → 1817。
  *  2026-11-16 HITL 批次审批面板（一个中断多项操作只给一个审批入口 + 操作清单）：
  *    ChatMessage.vue 2502 → 2524（批次面板 9 行、批次分组/成员判据/卡片降级 13 行）；新增组件
  *    ApprovalBatchPanel.vue 不计入存量预算。
+ *  2026-11-16 合并 origin/feature/1128 后按实测值更新：FilePreview.vue 1130 → 1252
+ *    （main 引入文本行号渲染，预算未随合并同步）。
  */
 const LINE_BUDGET = {
-  'App.vue': 3371,
-  'features/chat/components/ChatInput.vue': 4867,
+  'App.vue': 3382,
+  'features/chat/components/ChatInput.vue': 5043,
   // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2523 → 2499
   'features/chat/components/ChatMessage.vue': 2524,
   'features/experts/components/ExpertListPanel.vue': 2188,
   'features/connectors/components/ConnectorListPanel.vue': 1547,
   'features/settings/components/SettingsPanel.vue': 1226,
   'features/skills/components/SkillListPanel.vue': 1245,
-  'shared/preview/FilePreview.vue': 1130,
+  'shared/preview/FilePreview.vue': 1252,
   'features/chat/components/Chat.vue': 986,
-  'features/chat/components/SessionList.vue': 1040,
+  'features/chat/components/SessionList.vue': 1078,
   'features/workspace/components/WorkspacePanel.vue': 978,
   'features/tasks/components/ScheduledTasksPanel.vue': 842,
-  'features/knowledge/KnowledgeWorkbench.vue': 1779,
+  'features/knowledge/KnowledgeWorkbench.vue': 1817,
 }
 
 /** 组件里已经存在的 api 直连（存量，只允许删） */

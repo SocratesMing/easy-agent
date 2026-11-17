@@ -1,8 +1,8 @@
-import { defineConfig } from 'vite'
-import vue from '@vitejs/plugin-vue'
-import Icons from 'unplugin-icons/vite'
-import monacoEditorPlugin from 'vite-plugin-monaco-editor'
-import { resolveEnvMode } from './scripts/env-mode.mjs'
+import { defineConfig } from "vite";
+import vue from "@vitejs/plugin-vue";
+import Icons from "unplugin-icons/vite";
+import monacoEditorPlugin from "vite-plugin-monaco-editor";
+import { resolveEnvMode } from "./scripts/env-mode.mjs";
 
 /**
  * 平台 / AGENT_ENV -> 构建 MODE（scripts/run-vite.mjs 通过 --mode 传入）。
@@ -14,18 +14,20 @@ import { resolveEnvMode } from './scripts/env-mode.mjs'
  * 它只在 dev server 进程里读取，不会进入构建产物。
  */
 const PROXY_TARGETS = {
-  dev: 'http://localhost:8080',
-  test: 'http://192.168.1.100:8007',
-  prod: 'http://192.168.1.200:8000',
-  win: 'http://127.0.0.1:8080',
-}
+  dev: "http://127.0.0.1:8080",
+  test: "http://192.168.1.100:8007",
+  prod: "http://192.168.1.200:8000",
+  win: "http://127.0.0.1:8080",
+};
 
 export default defineConfig(() => {
-  const effectiveMode = resolveEnvMode(process.argv.includes('build') ? 'build' : 'dev')
+  const effectiveMode = resolveEnvMode(
+    process.argv.includes("build") ? "build" : "dev",
+  );
   const proxyTarget =
-    (process.env.AGENT_PROXY_TARGET || '').trim() ||
+    (process.env.AGENT_PROXY_TARGET || "").trim() ||
     PROXY_TARGETS[effectiveMode] ||
-    PROXY_TARGETS.dev
+    PROXY_TARGETS.dev;
 
   // 根据操作系统选择默认监听地址：
   //   Linux / macOS -> 0.0.0.0（允许局域网访问，适合服务器/容器）
@@ -33,21 +35,35 @@ export default defineConfig(() => {
   const isWindows = process.platform === 'win32'
   const defaultHost = isWindows ? '127.0.0.1' : '0.0.0.0'
 
+  // /agent 前缀接口（REST + SSE 流式）的反向代理：dev 与 preview 共用同一份配置。
+  const agentProxy = {
+    '/agent': {
+      target: proxyTarget,
+      changeOrigin: true,
+      // SSE 长连接：禁止中间层缓存/攒包，保证流式输出逐步到达
+      configure(proxy) {
+        proxy.on('proxyRes', (proxyRes) => {
+          proxyRes.headers['cache-control'] = 'no-cache'
+        })
+      },
+    },
+  }
+
   // 启动/构建时在终端输出配置信息
   const banner = `
 ╔══════════════════════════════════════════════════╗
 ║           Easy Agent Frontend                    ║
 ╠══════════════════════════════════════════════════╣
-║  AGENT_ENV:        ${process.env.AGENT_ENV || '(未设置, 使用默认)'}
-║  平台:             ${isWindows ? 'Windows' : 'Linux/macOS'}
+║  AGENT_ENV:        ${process.env.AGENT_ENV || "(未设置, 使用默认)"}
+║  平台:             ${isWindows ? "Windows" : "Linux/macOS"}
 ║  环境模式 (mode):  ${effectiveMode}
 ║  后端地址 (API):   同源相对路径 /agent/...
-║  开发代理目标:     ${proxyTarget}  (仅 npm run dev 生效)
+║  开发代理目标:     ${proxyTarget}  (dev 与 preview 生效)
 ║  应用名称 (title): Easy Agent
-║  监听地址 (host):  ${defaultHost}  (${isWindows ? 'Windows' : 'Linux/macOS'})
+║  监听地址 (host):  ${defaultHost}  (${isWindows ? "Windows" : "Linux/macOS"})
 ╚══════════════════════════════════════════════════╝
-`
-  console.log(banner)
+`;
+  console.log(banner);
 
   return {
     plugins: [
@@ -55,23 +71,20 @@ export default defineConfig(() => {
       Icons({
         autoInstall: true,
       }),
-      monacoEditorPlugin.default({})
+      monacoEditorPlugin.default({}),
     ],
     server: {
       host: defaultHost,
       // 开发代理：/agent 前缀的接口（REST + SSE 流式）全部转发到后端
-      proxy: {
-        '/agent': {
-          target: proxyTarget,
-          changeOrigin: true,
-          // SSE 长连接：禁止中间层缓存/攒包，保证流式输出逐步到达
-          configure(proxy) {
-            proxy.on('proxyRes', (proxyRes) => {
-              proxyRes.headers['cache-control'] = 'no-cache'
-            })
-          },
-        },
-      },
+      proxy: agentProxy,
     },
-  }
-})
+    // 静态预览（npm run serve 底层换成 vite preview 服务 dist/）同样代理 /agent，
+    // 修复：原 npx serve -s dist/ 无代理，/agent 落到 SPA 兜底返回 index.html，
+    // 前端 response.json() 解析 HTML 报 Unexpected token '<'。
+    preview: {
+      host: defaultHost,
+      port: 5173,
+      proxy: agentProxy,
+    },
+  };
+});

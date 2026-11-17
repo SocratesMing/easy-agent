@@ -155,8 +155,13 @@ test('列表成功更新后恢复审批徽标，归档使旧列表及其徽标�
   const request = deferred(), hydrated = []
   let calls = 0
   const scope = {
-    loadDailySessions, isStaleSessionError, userProfile: ref({ username: 'test' }),
+    isStaleSessionError, userProfile: ref({ username: 'test' }),
     sessions: ref([]), error: ref(null),
+    // 分页器本身另有测试；这里只关心 loadSessions 在拿到有效列表后才水合徽标
+    reloadSessionList: (username, after) => loadDailySessions(
+      () => scope.listSessions(username, { archived: false }),
+      rows => { scope.sessions.value = rows; after?.() },
+    ),
     listSessions: (_username, params) => {
       assert.equal(params.archived, false)
       return ++calls === 1 ? request.promise : Promise.resolve([{ session_id: 's2', pending_approval: true }])

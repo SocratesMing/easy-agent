@@ -14,7 +14,7 @@
         <button
           v-if="teamSpaceManagement.can_manage"
           class="ke-button admin-access"
-          title="配置人员、部门及公共空间创建与管理权限"
+          title="管理人员与部门信息"
           @click="$emit('manage-personnel')"
         ><IconUserRoundCog />人员管理</button>
         <span class="ke-health" :class="healthClass"><i></i>{{ healthLabel }}</span>
@@ -289,7 +289,7 @@
           <select v-model="baseForm.visibility"><option value="personal">个人空间</option><option value="team" :disabled="!teamSpaceManagement.can_create">公共空间{{ teamSpaceOptionSuffix(teamSpaceManagement) }}</option></select>
           <small v-if="!teamSpaceManagement.can_create && teamSpaceManagement.can_manage" class="ke-modal-shortcut">公共空间要先有可用部门。<button type="button" @click="showBaseModal = false; $emit('manage-personnel')">去配置人员与部门</button></small>
           <small v-if="baseForm.visibility === 'team' && teamSpaceManagement.is_admin">admin 无需授权；请选择公共空间所属部门。</small>
-          <small v-else-if="baseForm.visibility === 'team'">已授权管理员可创建和管理；本部门其他成员默认只读，可在权限管理中勾选限定可见人员。</small>
+          <small v-else-if="baseForm.visibility === 'team'">仅系统管理员可创建公共空间；本部门其他成员默认只读，可在权限管理中勾选限定可见人员。</small>
           <small v-else>空间决定知识库的默认可见范围，创建后可在权限管理中精细控制可见人员。</small>
         </label>
         <label v-if="baseModalMode === 'create' && baseForm.visibility === 'team' && teamSpaceManagement.is_admin">所属部门
@@ -313,8 +313,8 @@
               </div>
               <KnowledgePermissionTree class="ke-create-perm-tree" :tree="createPermTree" :collapsed="createPermCollapsed" :is-collapsed="isCreatePermCollapsed" empty-text="暂无可选人员，请先在人员与部门中导入账号。" @toggle-expand="toggleCreatePermExpand" @toggle-node="togglePermNode" />
               <p class="ke-permission-note">
-                <template v-if="createPermSelectedTotal > 0">创建后，该知识库仅勾选人员及所有者、空间管理员可见；未勾选人员（含本部门其他成员）不可见。</template>
-                <template v-else>未勾选任何人员，创建后仅所有者与空间管理员可见。</template>
+                <template v-if="createPermSelectedTotal > 0">创建后，该知识库仅勾选人员及所有者、知识库管理员可见；未勾选人员（含本部门其他成员）不可见。</template>
+                <template v-else>未勾选任何人员，创建后仅所有者与系统管理员可见。</template>
               </p>
             </template>
           </template>
@@ -349,26 +349,36 @@
         <header>
           <div>
             <h3>权限管理</h3>
-            <p>按部门 &gt; 处室 &gt; 团队勾选可见人员，或直接搜索姓名/账号；勾选目录级即全选该级别下所有人员。保存后，仅勾选人员可查看「{{ selectedBase ? selectedBase.name : '' }}」。</p>
+            <p>为「{{ selectedBase ? selectedBase.name : '' }}」指定知识库管理员与可见人员。管理员可管理文档并调整查看权限，但不能创建或删除知识库。</p>
           </div>
           <button aria-label="关闭" @click="showPermissionModal = false"><IconX /></button>
         </header>
         <div v-if="permissionDirectoryLoading" class="ke-perm-loading"><span class="ke-spinner"></span><p>正在加载人员目录…</p></div>
         <template v-else>
-          <div class="ke-perm-toolbar">
-            <span>已选 <strong>{{ permSelectedTotal }}</strong> / {{ permDirectoryTotal }} 人</span>
-            <span v-if="permissionRestricted">当前已限定：仅勾选人员可见</span>
-            <span v-else>当前：默认可见范围（公共空间对本部门成员可见）</span>
+          <div class="ke-perm-section">
+            <div class="ke-perm-section-head"><strong>知识库管理员</strong><span>已选 {{ permAdminTotal }} 人；仅所有者或系统管理员可调整</span></div>
+            <template v-if="canManageBaseAdmins">
+              <label class="ke-search-box ke-perm-search"><IconSearch /><input v-model="permissionAdminQuery" placeholder="搜索人员姓名或账号" /><button v-if="permissionAdminQuery" aria-label="清空搜索" @click="permissionAdminQuery = ''"><IconX /></button></label>
+              <div v-if="permissionAdminQuery.trim()" class="ke-perm-tree">
+                <label v-for="user in permissionAdminSearchResults" :key="user.user_id" class="ke-perm-user"><input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" /><span>{{ user.display_name }}</span><small>{{ user.username }}</small></label>
+                <p v-if="!permissionAdminSearchResults.length" class="ke-perm-empty">没有匹配的人员</p>
+              </div>
+              <KnowledgePermissionTree v-else :tree="permissionAdminTree" :collapsed="permissionAdminCollapsed" :is-collapsed="isAdminPermCollapsed" empty-text="暂无可选人员，请先在人员与部门中导入账号。" @toggle-expand="toggleAdminPermExpand" @toggle-node="toggleAdminPermNode" />
+            </template>
+            <p v-else class="ke-permission-note">为「{{ selectedBase ? selectedBase.name : '' }}」指定可见人员</p>
           </div>
-          <label class="ke-search-box ke-perm-search"><IconSearch /><input v-model="permissionQuery" placeholder="搜索人员姓名或账号" /><button v-if="permissionQuery" aria-label="清空搜索" @click="permissionQuery = ''"><IconX /></button></label>
-          <div v-if="permissionQuery.trim()" class="ke-perm-tree">
-            <label v-for="user in permissionSearchResults" :key="user.user_id" class="ke-perm-user"><input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" /><span>{{ user.display_name }}</span><small>{{ user.username }}</small></label>
-            <p v-if="!permissionSearchResults.length" class="ke-perm-empty">没有匹配的人员</p>
+          <div class="ke-perm-section">
+            <div class="ke-perm-section-head"><strong>查看人员</strong><span>已选 {{ permSelectedTotal }} / {{ permDirectoryTotal }} 人</span></div>
+            <label class="ke-search-box ke-perm-search"><IconSearch /><input v-model="permissionQuery" placeholder="搜索人员姓名或账号" /><button v-if="permissionQuery" aria-label="清空搜索" @click="permissionQuery = ''"><IconX /></button></label>
+            <div v-if="permissionQuery.trim()" class="ke-perm-tree">
+              <label v-for="user in permissionSearchResults" :key="user.user_id" class="ke-perm-user"><input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" /><span>{{ user.display_name }}</span><small>{{ user.username }}</small></label>
+              <p v-if="!permissionSearchResults.length" class="ke-perm-empty">没有匹配的人员</p>
+            </div>
+            <KnowledgePermissionTree v-else :tree="permissionTree" :collapsed="permissionCollapsed" :is-collapsed="isPermCollapsed" empty-text="暂无可选人员，请先在人员与部门中导入账号。" @toggle-expand="togglePermExpand" @toggle-node="togglePermNode" />
           </div>
-          <KnowledgePermissionTree v-else :tree="permissionTree" :collapsed="permissionCollapsed" :is-collapsed="isPermCollapsed" empty-text="暂无可选人员，请先在人员与部门中导入账号。" @toggle-expand="togglePermExpand" @toggle-node="togglePermNode" />
           <p class="ke-permission-note">
-            <template v-if="permSelectedTotal > 0">保存后，该知识库仅勾选人员及所有者、空间管理员可见；未勾选人员（含本部门其他成员）不可见。</template>
-            <template v-else>未勾选任何人员，保存后恢复默认可见范围（公共空间对本部门成员可见）。</template>
+            <template v-if="permSelectedTotal > 0 || permAdminTotal > 0">保存后，该知识库仅勾选人员及所有者、知识库管理员可见；未勾选人员（含本部门其他成员）不可见。</template>
+            <template v-else>未勾选任何查看人员，保存后恢复默认可见范围（公共空间对本部门成员可见）。</template>
           </p>
         </template>
         <footer><button class="ke-button quiet" @click="showPermissionModal = false">取消</button><button class="ke-button primary" :disabled="saving || permissionDirectoryLoading" @click="savePermissions">{{ saving ? '保存中…' : '保存权限' }}</button></footer>
@@ -682,13 +692,16 @@ const saving = ref(false)
 const baseForm = reactive({ name: '', description: '', visibility: 'personal', department_id: '' })
 const folderForm = reactive({ id: '', name: '', parentId: '' })
 const confirmation = reactive({ open: false, title: '', description: '', confirmLabel: '确认删除', tone: 'danger' })
-// 权限管理：人员目录（含 checked 勾选态）、三级树、展开态与受限标记
+// 权限管理：查看者/知识库管理员两份勾选态、三级树、展开态与受限标记
 const permissionDirectory = ref([])
 const permissionTree = ref([])
+const permissionAdminDirectory = ref([])
+const permissionAdminTree = ref([])
 const permissionDirectoryLoading = ref(false)
-const permissionRestricted = ref(false)
 const permissionCollapsed = ref({})
+const permissionAdminCollapsed = ref({})
 const permissionQuery = ref(''); const permissionSearchResults = computed(() => filterPermissionUsers(permissionDirectory.value, permissionQuery.value))
+const permissionAdminQuery = ref(''); const permissionAdminSearchResults = computed(() => filterPermissionUsers(permissionAdminDirectory.value, permissionAdminQuery.value))
 let permissionLoadSeq = 0
 // 创建知识库时的可见人员配置（与权限管理同款三级树，独立状态避免串扰）
 const createPermDirectory = ref([])
@@ -725,7 +738,9 @@ const hasActiveWork = computed(() => documents.value.some(
   item => !item.optimistic && ['pending', 'processing', 'cancel_requested', 'deleting'].includes(item.status),
 ))
 const permSelectedTotal = computed(() => permissionDirectory.value.filter(user => user.checked).length)
+const permAdminTotal = computed(() => permissionAdminDirectory.value.filter(user => user.checked).length)
 const permDirectoryTotal = computed(() => permissionDirectory.value.length)
+const canManageBaseAdmins = computed(() => selectedBase.value?.role === 'manager')
 const createPermSelectedTotal = computed(() => createPermDirectory.value.filter(user => user.checked).length)
 const createPermDirectoryTotal = computed(() => createPermDirectory.value.length)
 
@@ -1184,12 +1199,23 @@ function togglePermExpand(key) {
   else next[key] = true
   permissionCollapsed.value = next
 }
+function toggleAdminPermNode(node, checked) {
+  node.allUsers.forEach(user => { user.checked = checked })
+}
+function isAdminPermCollapsed(key) { return Boolean(permissionAdminCollapsed.value[key]) }
+function toggleAdminPermExpand(key) {
+  const next = { ...permissionAdminCollapsed.value }
+  if (next[key]) delete next[key]
+  else next[key] = true
+  permissionAdminCollapsed.value = next
+}
 
 async function openPermissions() {
   const seq = ++permissionLoadSeq
   showPermissionModal.value = true
   permissionDirectoryLoading.value = true
   permissionCollapsed.value = {}; permissionQuery.value = ''
+  permissionAdminCollapsed.value = {}; permissionAdminQuery.value = ''
   try {
     const baseId = selectedBaseId.value
     const [permissionResponse, directoryResponse] = await Promise.all([
@@ -1197,21 +1223,25 @@ async function openPermissions() {
       listPermissionDirectory(baseId),
     ])
     if (seq !== permissionLoadSeq) return
-    const checkedIds = new Set(
-      (permissionResponse.items || [])
-        .filter(item => item.subject_type === 'user')
+    const items = permissionResponse.items || []
+    const checkedIds = role => new Set(
+      items.filter(item => item.subject_type === 'user' && item.role === role)
         .map(item => item.subject_id),
     )
-    permissionRestricted.value = Boolean(permissionResponse.restrict_access)
-    const users = (directoryResponse.items || []).map(item => ({
-      ...item,
-      checked: checkedIds.has(item.user_id),
-    }))
-    permissionDirectory.value = users
-    permissionTree.value = buildPermissionTree(users)
+    const adminIds = checkedIds('maintainer')
+    const viewerIds = checkedIds('viewer')
+    const directory = directoryResponse.items || []
+    const admins = directory.map(item => ({ ...item, checked: adminIds.has(item.user_id) }))
+    const viewers = directory.map(item => ({ ...item, checked: viewerIds.has(item.user_id) }))
+    permissionAdminDirectory.value = admins
+    permissionAdminTree.value = buildPermissionTree(admins)
+    permissionDirectory.value = viewers
+    permissionTree.value = buildPermissionTree(viewers)
   } catch (error) {
     if (seq !== permissionLoadSeq) return
     handleError(error)
+    permissionAdminDirectory.value = []
+    permissionAdminTree.value = []
     permissionDirectory.value = []
     permissionTree.value = []
   } finally {
@@ -1222,11 +1252,14 @@ async function openPermissions() {
 async function savePermissions() {
   saving.value = true
   try {
-    const userIds = permissionDirectory.value
-      .filter(user => user.checked)
+    const adminIds = canManageBaseAdmins.value
+      ? permissionAdminDirectory.value.filter(user => user.checked).map(user => user.user_id)
+      : []
+    const adminSet = new Set(adminIds)
+    const viewerIds = permissionDirectory.value
+      .filter(user => user.checked && !adminSet.has(user.user_id))
       .map(user => user.user_id)
-    await replacePermissions(selectedBaseId.value, userIds)
-    permissionRestricted.value = userIds.length > 0
+    await replacePermissions(selectedBaseId.value, { adminIds, viewerIds })
     showPermissionModal.value = false
     notify('权限已保存')
   } catch (error) { handleError(error) } finally { saving.value = false }
@@ -1582,7 +1615,7 @@ function startPolling() {
   }, 3000)
 }
 function stopPolling() { clearInterval(pollTimer); pollTimer = null }
-function roleLabel(role) { return ({ viewer: '查看者', maintainer: '维护者', manager: '管理员' })[role] || role }
+function roleLabel(role) { return ({ viewer: '查看者', maintainer: '知识库管理员', manager: '管理员' })[role] || role }
 function spaceLabel(space) { return ({ personal: '个人空间', team: '公共空间' })[space] || space }
 function folderPath(folder) {
   const parts = [folder.name]
@@ -1678,9 +1711,14 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
       openPermissions,
       operations,
       permissionCollapsed,
+      permissionAdminCollapsed,
+      permissionAdminQuery, permissionAdminSearchResults,
+      permissionAdminTree,
       permissionDirectoryLoading,
-      permissionRestricted,
+      permissionQuery, permissionSearchResults,
       permissionTree,
+      isAdminPermCollapsed, toggleAdminPermExpand, toggleAdminPermNode,
+      permAdminTotal, canManageBaseAdmins,
       permDirectoryTotal,
       permSelectedTotal,
       preview,
@@ -1772,7 +1810,7 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
 .ke-folder-art{background:linear-gradient(180deg,#7dd3fc,#38bdf8)}.ke-folder-art:before{background:#0ea5e9}
 .ke-preview-loading{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text-secondary);font-size:11px}.ke-preview-loading p{margin:0}.ke-preview-loading .ke-spinner{flex:none}
 .ke-stop-button{color:#d14b4b!important}.ke-answer-text{min-height:18px}.ke-stream-cursor{display:inline-block;width:2px;height:1em;margin-left:3px;vertical-align:-2px;background:var(--accent-color);animation:ke-cursor-blink .8s steps(2,end) infinite}.ke-ask-error{margin-top:14px;padding:11px;border:1px solid color-mix(in srgb,#d14b4b 28%,var(--border-color));border-radius:10px;background:color-mix(in srgb,#d14b4b 7%,var(--bg-secondary));color:var(--text-secondary);font-size:10px;line-height:1.55;display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:7px;align-items:start}.ke-ask-error>svg{width:15px;height:15px;color:#d14b4b;margin-top:1px}.ke-ask-error p{margin:0}.ke-ask-error button{border:0;background:transparent;color:var(--accent-color);font-weight:600;display:flex;align-items:center;gap:4px;cursor:pointer}.ke-ask-error button svg{width:12px;height:12px}@keyframes ke-cursor-blink{50%{opacity:0}}
-.ke-agent-message{width:100%;min-width:0}.ke-agent-message :deep(.message.assistant){width:100%;max-width:none;margin:0;padding:0}.ke-agent-message :deep(.message-content){min-width:0}.ke-agent-message :deep(.process-group),.ke-agent-message :deep(.knowledge-citations){box-sizing:border-box}.ke-permission-note{margin:10px 0 0;color:var(--text-secondary);font-size:9px;line-height:1.5}.ke-create-perm{margin-top:16px;border:1px solid #e3e7e4;border-radius:10px;padding:12px;background:#fbfdfb}.ke-create-perm-toggle{display:grid;grid-template-columns:16px auto 1fr;gap:8px;align-items:start;cursor:pointer;color:#3d4640;font-size:12px}.ke-create-perm-toggle input{width:16px;height:16px;margin:1px 0 0;accent-color:var(--ke-accent);cursor:pointer}.ke-create-perm-toggle span{font-weight:600;white-space:nowrap}.ke-create-perm-toggle small{grid-column:2/4;color:#9ba19d;font-size:9px;line-height:1.5;white-space:normal}.ke-create-perm .ke-perm-toolbar{margin-top:12px}.ke-perm-search{width:100%;max-width:none;margin-top:8px;box-sizing:border-box}.ke-create-perm-tree{max-height:240px}
+.ke-agent-message{width:100%;min-width:0}.ke-agent-message :deep(.message.assistant){width:100%;max-width:none;margin:0;padding:0}.ke-agent-message :deep(.message-content){min-width:0}.ke-agent-message :deep(.process-group),.ke-agent-message :deep(.knowledge-citations){box-sizing:border-box}.ke-permission-note{margin:10px 0 0;color:var(--text-secondary);font-size:9px;line-height:1.5}.ke-perm-section{margin-top:14px}.ke-perm-section-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;color:var(--text-secondary);font-size:9px}.ke-perm-section-head strong{color:var(--text-primary);font-size:11px}.ke-create-perm{margin-top:16px;border:1px solid #e3e7e4;border-radius:10px;padding:12px;background:#fbfdfb}.ke-create-perm-toggle{display:grid;grid-template-columns:16px auto 1fr;gap:8px;align-items:start;cursor:pointer;color:#3d4640;font-size:12px}.ke-create-perm-toggle input{width:16px;height:16px;margin:1px 0 0;accent-color:var(--ke-accent);cursor:pointer}.ke-create-perm-toggle span{font-weight:600;white-space:nowrap}.ke-create-perm-toggle small{grid-column:2/4;color:#9ba19d;font-size:9px;line-height:1.5;white-space:normal}.ke-create-perm .ke-perm-toolbar{margin-top:12px}.ke-perm-search{width:100%;max-width:none;margin-top:8px;box-sizing:border-box}.ke-create-perm-tree{max-height:240px}
 /* 弹窗内的搜索框：.ke-modal input 会给嵌套 input 误加边框/内边距，形成框中框，这里显式还原 */
 .ke-modal .ke-search-box input{width:auto;min-width:0;flex:1;border:0;border-radius:0;box-shadow:none;outline:0;background:transparent;padding:0;color:var(--text-primary);font-size:12px}
 </style>

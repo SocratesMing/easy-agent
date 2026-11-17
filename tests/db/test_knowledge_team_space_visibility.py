@@ -1,8 +1,9 @@
-"""公共空间默认可见性回归测试。
+"""公共空间可见性与单库管理员授权回归测试。
 
 公共（team）空间对同部门账号默认只读可见；跨部门 / 无部门访问仍需
 owner 或单库权限行。权限管理勾选名单模式（access_restricted=1）下，
 同部门默认可见与部门授权行被屏蔽，仅勾选人员、owner 与 admin 可见。
+知识库管理员按库授权（maintainer），不再通过部门管理员身份获得建库权。
 """
 
 import uuid
@@ -106,66 +107,105 @@ async def test_same_department_user_gets_default_viewer_role(db, tmp_path):
     assert await service._effective_role(base, other, []) is None
 
 
-async def test_department_manager_only_manages_own_bases_in_own_department(db, tmp_path):
-    """知识库管理员：本部门他人创建的库只读；仅自己创建的库为 MANAGER；跨部门不可见。"""
+async def test_legacy_department_manager_grant_no_longer_creates_or_manages(db, tmp_path):
+    """旧「部门管理员」授权已失效：不再授予建库权，也不获得他人库的管理角色。"""
     _insert_user(db, "u-owner", "owner", "dept-a")
     _insert_user(db, "u-mgr", "mgr", "dept-a")
-    # other 为 base-b 本部门普通账号（默认 VIEWER）；out 为跨部门普通账号（不可见）
-    _insert_user(db, "u-other", "other", "dept-b")
-    _insert_user(db, "u-out", "out", "dept-c")
     _insert_team_base(db, "base-others", "dept-a", owner_user_id="u-owner")
-    _insert_team_base(db, "base-mine", "dept-a", owner_user_id="u-mgr")
-    _insert_team_base(db, "base-b", "dept-b", owner_user_id="u-owner")
     _grant_department_manager(db, "u-mgr", "dept-a")
 
     repository = KnowledgeRepository(db)
     service = _service(db, tmp_path)
     mgr = KnowledgePrincipal(user_id="u-mgr", username="mgr", department_id="dept-a")
-    other = KnowledgePrincipal(user_id="u-other", username="other", department_id="dept-b")
-    out = KnowledgePrincipal(user_id="u-out", username="out", department_id="dept-c")
-
     base_others = repository.get_base("base-others")
-    base_mine = repository.get_base("base-mine")
-    base_b = repository.get_base("base-b")
-    assert await service._effective_role(base_others, mgr, []) == KnowledgeBaseRole.VIEWER
-    assert await service._effective_role(base_mine, mgr, []) == KnowledgeBaseRole.MANAGER
-    assert await service._effective_role(base_b, mgr, []) is None
-    # 普通账号行为不变：本部门默认 VIEWER，跨部门不可见
-    assert await service._effective_role(base_b, other, []) == KnowledgeBaseRole.VIEWER
-    assert await service._effective_role(base_b, out, []) is None
 
+    assert await service._effective_role(base_others, mgr, []) == KnowledgeBaseRole.VIEWER
     response = await service.list_bases(mgr, page=1, page_size=20)
-    assert {item.id for item in response.items} == {"base-others", "base-mine"}
-    roles = {item.id: item.role for item in response.items}
-    assert roles == {
-        "base-others": KnowledgeBaseRole.VIEWER,
-        "base-mine": KnowledgeBaseRole.MANAGER,
+    assert response.team_space_management.can_create is False
+    actions = {
+        item.id: {action.value for action in item.allowed_actions}
+        for item in response.items
     }
-    assert response.team_space_management.can_create is True
-    assert response.team_space_management.can_manage is False
-    actions = {item.id: item.allowed_actions for item in response.items}
-    assert "manage_permissions" in actions["base-mine"]
     assert "manage_permissions" not in actions["base-others"]
 
-    # 只能在本部门创建：显式指定其他部门直接拒绝
+
+async def test_base_admin_manages_only_authorized_base(db, tmp_path):
+    """单库授权的知识库管理员：只能管理被授权库，能传文档/管查看权限，不能建库或再授权管理员。"""
     from types import SimpleNamespace
 
     from easy_agent.knowledges.core.models import KnowledgeBaseVisibility
     from easy_agent.knowledges.service import KnowledgeServiceError
 
+    _insert_user(db, "u-owner", "owner", "dept-a")
+    _insert_user(db, "u-admin", "baseadmin", "dept-a")
+    _insert_user(db, "u-alice", "alice", "dept-a")
+    _insert_team_base(db, "base-a", "dept-a", owner_user_id="u-owner")
+    _insert_team_base(db, "base-b", "dept-b", owner_user_id="u-owner")
+
+    repository = KnowledgeRepository(db)
+    service = _service(db, tmp_path)
     service.config = SimpleNamespace(embedding=SimpleNamespace(model="test-model"))
+    owner = KnowledgePrincipal(user_id="u-owner", username="owner", department_id="dept-a")
+    admin = KnowledgePrincipal(user_id="u-admin", username="baseadmin", department_id="dept-a")
+
+    await service.replace_permissions(
+        base_id="base-a",
+        principal=owner,
+        items=[PermissionEntry(subject_type="user", subject_id="u-admin", role="maintainer")],
+        restrict_access=True,
+    )
+    base_a = repository.get_base("base-a")
+    base_b = repository.get_base("base-b")
+    permissions = repository.list_permissions("base-a")
+    assert await service._effective_role(base_a, admin, permissions) == KnowledgeBaseRole.MAINTAINER
+    assert await service._effective_role(base_b, admin, []) is None
+
+    response = await service.list_bases(admin, page=1, page_size=20)
+    assert {item.id for item in response.items} == {"base-a"}
+    actions = {action.value for action in response.items[0].allowed_actions}
+    assert {"upload", "manage_permissions"} <= actions
+    assert "edit_base" not in actions and "delete_base" not in actions
+    assert response.team_space_management.can_create is False
+
+    # 管理员可调整查看者；既有管理员授权由服务层保留
+    updated = await service.replace_permissions(
+        base_id="base-a",
+        principal=admin,
+        items=[PermissionEntry(subject_type="user", subject_id="u-alice", role="viewer")],
+        restrict_access=True,
+    )
+    roles = {(item.subject_id, item.role) for item in updated.items}
+    assert ("u-admin", KnowledgeBaseRole.MAINTAINER) in roles
+    assert ("u-alice", KnowledgeBaseRole.VIEWER) in roles
+
+    # 管理员不能再授权其他管理员
+    try:
+        await service.replace_permissions(
+            base_id="base-a",
+            principal=admin,
+            items=[
+                PermissionEntry(
+                    subject_type="user", subject_id="u-alice", role="maintainer"
+                )
+            ],
+            restrict_access=True,
+        )
+        raise AssertionError("应当抛出 KNOWLEDGE_PERMISSION_MANAGER_REQUIRED")
+    except KnowledgeServiceError as exc:
+        assert exc.code == "KNOWLEDGE_PERMISSION_MANAGER_REQUIRED"
+
+    # 不能创建公共空间知识库
     try:
         await service.create_base(
-            principal=mgr,
-            name="跨部门库",
+            principal=admin,
+            name="新公共库",
             description="",
             visibility=KnowledgeBaseVisibility.TEAM,
             request_id="req-test",
-            department_id="dept-b",
         )
-        raise AssertionError("应当抛出 KNOWLEDGE_DEPARTMENT_FORBIDDEN")
+        raise AssertionError("应当抛出 KNOWLEDGE_TEAM_SPACE_MANAGER_REQUIRED")
     except KnowledgeServiceError as exc:
-        assert exc.code == "KNOWLEDGE_DEPARTMENT_FORBIDDEN"
+        assert exc.code == "KNOWLEDGE_TEAM_SPACE_MANAGER_REQUIRED"
 
 
 async def test_liufengbao_is_super_admin_for_team_spaces(db, tmp_path):
@@ -201,10 +241,9 @@ async def test_restricted_team_base_only_visible_to_selected_users(db, tmp_path)
     response = await service.replace_permissions(
         base_id="base-a",
         principal=owner,
-        items=[PermissionEntry(subject_type="user", subject_id="u-bob", role="manager")],
+        items=[PermissionEntry(subject_type="user", subject_id="u-bob", role="viewer")],
         restrict_access=True,
     )
-    # 请求角色一律归一为 viewer（新权限管理仅控制可见人员）
     assert isinstance(response, PermissionListResponse)
     assert response.restrict_access is True
     assert response.items == [
@@ -289,14 +328,13 @@ async def test_create_team_base_with_initial_permission_list(db, tmp_path):
 
     from easy_agent.knowledges.core.models import KnowledgeBaseVisibility
 
-    _insert_user(db, "u-owner", "owner", "dept-a")
+    _insert_user(db, "u-lfb", "liufengbao", "dept-a")
     _insert_user(db, "u-picked", "picked", "dept-a")
     _insert_user(db, "u-same", "same", "dept-a")
-    _grant_department_manager(db, "u-owner", "dept-a")
 
     service = _service(db, tmp_path)
     service.config = SimpleNamespace(embedding=SimpleNamespace(model="test-model"))
-    owner = KnowledgePrincipal(user_id="u-owner", username="owner", department_id="dept-a")
+    owner = KnowledgePrincipal(user_id="u-lfb", username="liufengbao", department_id="dept-a")
 
     # 名单含重复与空白项：service 应去重去空并剔除 owner 本人
     created = await service.create_base(
@@ -305,7 +343,7 @@ async def test_create_team_base_with_initial_permission_list(db, tmp_path):
         description="",
         visibility=KnowledgeBaseVisibility.TEAM,
         request_id="req-test",
-        permission_user_ids=["u-picked", "u-picked", " u-picked ", "u-owner", ""],
+        permission_user_ids=["u-picked", "u-picked", " u-picked ", "u-lfb", ""],
     )
     assert created.visibility == KnowledgeBaseVisibility.TEAM
 

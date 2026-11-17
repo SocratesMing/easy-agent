@@ -477,6 +477,7 @@ async def test_expert_precheck_uses_verified_real_user_id(db, monkeypatch):
         assert get_usage_identity() == UsageIdentity("unrelated-parent")
     assert isinstance(plan, chat_turn.RefusalPlan)
     assert observed == [UsageIdentity(user.user_id, plan.session_id)]
+    assert plan.usage_identity == observed[0]
 
 
 @pytest.mark.parametrize("lookup_failure", [False, True])
@@ -527,6 +528,7 @@ async def test_chat_reuses_precheck_identity_through_knowledge_stream(db, monkey
         frames = [frame async for frame in plan.event_stream]
         assert get_usage_identity() == UsageIdentity("unrelated-parent")
     expected = None if lookup_failure else UsageIdentity(user.user_id, plan.session_id)
+    assert plan.usage_identity == expected
     assert observed == [expected, expected]
     assert lookups == [user.username]
     assert [json.loads(frame.removeprefix("data: "))["type"] for frame in frames] == [
