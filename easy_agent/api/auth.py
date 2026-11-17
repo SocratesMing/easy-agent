@@ -34,7 +34,12 @@ from easy_agent.models.api import (
     AuthResponse,
 )
 from easy_agent.services.agents.manager import get_agent_config
-from easy_agent.utils.auth import create_access_token, hash_password, is_super_admin
+from easy_agent.utils.auth import (
+    create_access_token,
+    get_super_admin_usernames,
+    hash_password,
+    is_super_admin,
+)
 from easy_agent.utils.auth import decode_access_token
 from easy_agent.utils.auth import ACCESS_TOKEN_EXPIRE_MINUTES
 
@@ -548,4 +553,5 @@ async def get_auth_config(
         "agent_env": agent_env,
         "idle_logout_minutes": idle_logout_minutes,
         "app_welcome_title": app_welcome_title,
+        "super_admin_usernames": sorted(get_super_admin_usernames()),
     }

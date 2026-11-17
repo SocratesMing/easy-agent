@@ -5,6 +5,7 @@ import logging
 import os
 import secrets
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -18,15 +19,51 @@ logger = logging.getLogger(__name__)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# 超级管理员账号（与内置 admin 同权）。
-# admin 禁止免密登录；启用免密登录的门户部署用 shijiabao 作为总管理员。
-SUPER_ADMIN_USERNAMES = frozenset({"admin", "shijiabao"})
+# 内置超级管理员账号：admin 恒为超级管理员，不可通过配置移除。
+# 其余超级管理员在 config.yaml 的 personnel.super_admin_usernames 中配置。
+BUILTIN_SUPER_ADMIN_USERNAMES = frozenset({"admin"})
+
+# 配置读取失败只提示一次，避免每个请求刷日志。
+_super_admin_config_warned = False
+
+
+@lru_cache(maxsize=4)
+def _load_configured_super_admins(
+    path: str, mtime_ns: int, size: int
+) -> frozenset[str]:
+    """按 (路径, mtime, 大小) 缓存配置解析结果，改配置后自动重新加载。"""
+
+    # 延迟导入：bootstrap.config 依赖面较大，避免 utils.auth 被其反向导入时成环。
+    from easy_agent.bootstrap.config import Config
+
+    config = Config.from_yaml(path)
+    return frozenset(config.personnel.super_admin_usernames)
+
+
+def get_super_admin_usernames() -> frozenset[str]:
+    """超级管理员账号集合：内置 admin + config.yaml 配置的账号。"""
+
+    global _super_admin_config_warned
+    names = set(BUILTIN_SUPER_ADMIN_USERNAMES)
+    try:
+        from easy_agent.bootstrap.config import Config
+
+        path = Config.resolve_config_path()
+        stat = path.stat()
+        names |= _load_configured_super_admins(
+            str(path), stat.st_mtime_ns, stat.st_size
+        )
+    except Exception as exc:  # 配置缺失/非法时退化为仅 admin，保持服务可用
+        if not _super_admin_config_warned:
+            logger.warning(f"读取超级管理员配置失败，仅内置 admin 生效: {exc}")
+            _super_admin_config_warned = True
+    return frozenset(names)
 
 
 def is_super_admin(username: str | None) -> bool:
-    """是否为超级管理员账号（与 admin 同权）。"""
+    """是否为超级管理员账号（内置 admin 或 config.yaml 配置的账号）。"""
 
-    return (username or "").strip() in SUPER_ADMIN_USERNAMES
+    return (username or "").strip() in get_super_admin_usernames()
 
 
 # 默认的 JWT 密钥持久化路径（data/ 运行时目录，已被 gitignore）。

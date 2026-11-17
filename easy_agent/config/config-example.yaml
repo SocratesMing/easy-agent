@@ -164,6 +164,9 @@ checkpoint:
 personnel:
   self_registration_enabled: false   # 自助注册：true 时登录页显示注册入口
   passwordless_login_enabled: false  # 门户免密登录：true 时支持 URL 直登与 /login-passwordless（admin 不支持）
+  # 超级管理员（与内置 admin 同权）：可写多个用户名，用于门户部署的总管理员；
+  # admin 恒为超级管理员，不受本列表影响。
+  super_admin_usernames: ["shijiabao"]
   # 人员接口同步：等外部接口信息确定后再取消注释并填写；未配置时「更新人员信息」按钮返回 422。
   # sync:
   #   enabled: ${PERSONNEL_SYNC_ENABLED:-false}

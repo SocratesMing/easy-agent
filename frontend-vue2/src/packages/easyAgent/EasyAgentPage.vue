@@ -91,6 +91,7 @@
 
       <UserManagementPanel
         v-if="showUserManagementPanel"
+        :super-admin-usernames="superAdminUsernames"
         @close="showUserManagementPanel = false"
       />
       
@@ -262,6 +263,8 @@ export default {
       // 重试/续发不经过输入框，必须从这里取当前状态，否则会落回默认值 false。
       webSearchEnabled: false,
       welcomeTitle: getRuntime().app.welcomeTitle,
+      // 超级管理员账号由后端 config.yaml 下发（admin 恒在其中）
+      superAdminUsernames: ['admin'],
       // 「未授权」提示态（登录页关闭且免密登录未成功时显示）
       authBlocked: false,
       // 未授权原因：kicked = 被其他设备顶下线（不自动重新登录，避免两端互踢）
@@ -631,6 +634,9 @@ export default {
       }
       if (typeof configData.app_welcome_title === 'string' && configData.app_welcome_title.trim()) {
         this.welcomeTitle = configData.app_welcome_title
+      }
+      if (Array.isArray(configData.super_admin_usernames) && configData.super_admin_usernames.length) {
+        this.superAdminUsernames = configData.super_admin_usernames.map(String)
       }
     },
     // 依据持久化的选择恢复初始会话视图：

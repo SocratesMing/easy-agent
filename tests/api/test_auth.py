@@ -208,6 +208,16 @@ def test_super_admin_shijiabao_can_reset_user_password(db):
     assert db.verify_user_password("alice", "123456") is not None
 
 
+def test_auth_config_exposes_configured_super_admin_usernames(client):
+    """超级管理员名单来自 config.yaml（测试配置为 shijiabao），随 /auth/config 下发。"""
+    resp = client.get("/agent/auth/config")
+
+    assert resp.status_code == 200
+    names = resp.json()["super_admin_usernames"]
+    assert "admin" in names
+    assert "shijiabao" in names
+
+
 def test_legacy_reset_password_requires_admin(db):
     request = ResetPasswordRequest(username="alice", new_password="new12345")
 

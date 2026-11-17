@@ -518,6 +518,28 @@ class PersonnelConfig(BaseModel):
     passwordless_login_enabled: bool = False
     """门户免密登录开关：默认关闭；启用后外部系统可通过用户名+用户ID 直登。"""
 
+    super_admin_usernames: list[str] = Field(default_factory=list)
+    """额外的超级管理员用户名（与内置 admin 同权）。
+
+    部署侧在 config.yaml 的 personnel 段配置，更换门户总管理员无需改代码；
+    内置 ``admin`` 始终是超级管理员，不受本列表影响。修改后按配置文件
+    mtime 热生效，无需重启。
+    """
+
+    @field_validator("super_admin_usernames", mode="before")
+    @classmethod
+    def _normalize_super_admin_usernames(cls, value):
+        """兼容 YAML 列表与 ``a,b`` 字符串（便于用环境变量占位）。"""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            items = value.split(",")
+        elif isinstance(value, (list, tuple, set)):
+            items = value
+        else:
+            return value
+        return [str(item).strip() for item in items if str(item).strip()]
+
     sync: PersonnelSyncConfig = Field(default_factory=PersonnelSyncConfig)
     """「更新人员信息」按钮调用的外部接口同步配置。"""
 

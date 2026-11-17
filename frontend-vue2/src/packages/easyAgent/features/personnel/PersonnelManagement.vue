@@ -357,7 +357,14 @@ import {
 
 export default {
   name: 'PersonnelManagement',
-  setup() {
+  props: {
+    // 超级管理员账号（后端 config.yaml 下发，admin 恒在其中）
+    superAdminUsernames: {
+      type: Array,
+      default: () => ['admin'],
+    },
+  },
+  setup(props) {
     const users = ref([])
     const total = ref(0)
     const loading = ref(false)
@@ -366,10 +373,10 @@ export default {
     const departmentName = ref('')
     const page = ref(1)
     const pageSize = 50
-    // 与后端 is_super_admin 保持一致：shijiabao 是免密门户的总管理员
-    const SUPER_ADMIN_USERNAMES = ['admin', 'shijiabao']
+    // 与后端 is_super_admin 保持一致：账号列表由 config.yaml 的
+    // personnel.super_admin_usernames 下发（admin 恒为超级管理员）
     function isSuperAdmin(username) {
-      return SUPER_ADMIN_USERNAMES.includes(String(username || ''))
+      return props.superAdminUsernames.includes(String(username || ''))
     }
     const noticeText = ref('')
     const noticeType = ref('success')
