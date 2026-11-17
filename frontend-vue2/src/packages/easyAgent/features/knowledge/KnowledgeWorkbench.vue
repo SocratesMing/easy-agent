@@ -242,8 +242,7 @@
           <button v-if="asking" class="ke-icon-button subtle ke-stop-button" aria-label="停止回答" title="停止回答" @click="stopQuestion('user')"><IconSquare /></button>
           <button class="ke-icon-button subtle" aria-label="收起问答" title="收起问答" @click="closeAskPanel"><IconPanelRightClose /></button>
         </header>
-
-        <div class="ke-answer" ref="askBody">
+        <div class="ke-answer" ref="askBody" @mouseover="previewCitation" @mouseout="leaveCitation" @focusin="previewCitation" @focusout="leaveCitation">
           <div v-if="!agentMessage && !asking && !askHistory.length" class="ke-answer-welcome">
             <div class="ke-answer-orb"><IconSparkles /></div>
             <h3>{{ selectedBase ? '从资料里找答案' : '先选择一个知识库' }}</h3>
@@ -256,17 +255,16 @@
             <div v-if="entry.question" class="ke-question-bubble">{{ entry.question }}</div>
             <template v-if="entry.message">
               <div class="ke-answer-label"><span class="ke-ai-avatar small"><IconSparkles /></span><strong>EasyAgent 知识库回答</strong></div>
-              <div class="ke-agent-message"><ChatMessage :message="entry.message" /></div>
+              <div class="ke-agent-message" :data-message-index="index"><ChatMessage :message="entry.message" citation-presentation="popover" /></div>
             </template>
           </div>
           <template v-if="agentMessage">
             <div class="ke-question-bubble">{{ lastQuestion }}</div>
             <div class="ke-answer-label"><span class="ke-ai-avatar small"><IconSparkles /></span><strong>EasyAgent 知识库回答</strong></div>
-            <div class="ke-agent-message"><ChatMessage :message="agentMessage" /></div>
+            <div class="ke-agent-message" :data-message-index="askHistory.length"><ChatMessage :message="agentMessage" citation-presentation="popover" /></div>
           </template>
           <div v-if="askError && !asking" class="ke-ask-error"><IconCircleAlert /><p>{{ askError }}</p><button @click="retryQuestion"><IconRefreshCw />重试</button></div>
         </div>
-
         <form class="ke-ask-form" @submit.prevent="submitQuestion()">
           <KnowledgeAskFilter v-if="selectedBase" @change="askMetadataFilter = $event" />
           <div class="ke-composer" :class="{ disabled: !selectedBase }">
@@ -394,11 +392,10 @@
         <pre v-else>{{ preview.text }}</pre>
       </div>
     </div>
-
+    <CitationPopover v-if="citationPreview" ref="citationPopover" :item="citationPreview.item" :number="citationPreview.number" :popover-id="citationPopoverId" :position="citationStyle" @keep="keepCitation" @leave="deferCitationClose" @resize="positionCitation" />
     <Transition name="ke-toast"><div v-if="toast" class="ke-toast" :class="toast.type"><IconCircleCheck v-if="toast.type !== 'error'" /><IconCircleAlert v-else />{{ toast.message }}</div></Transition>
   </section>
 </template>
-
 <script>
 import { computed, getCurrentInstance, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 // 图标统一走 ./icons.js（vue2 构建栈为 unplugin-icons raw 编译 + 函数式组件包装），
@@ -449,6 +446,8 @@ import DocxPreview from '../../shared/preview/DocxPreview.vue'
 import ExcelPreview from '../../shared/preview/ExcelPreview.vue'
 import FileIcon from '../../shared/components/FileIcon.vue'
 import ChatMessage from '../chat/components/ChatMessage.vue'
+import CitationPopover from '../chat/components/CitationPopover.vue'
+import knowledgeCitationMixin from '../../shared/citations/knowledgeWorkbench.js'
 import KnowledgeAskFilter from './KnowledgeAskFilter.vue'
 import KnowledgeImportMenu from './KnowledgeImportMenu.vue'
 import KnowledgePermissionPicker from './KnowledgePermissionPicker.vue'
@@ -473,9 +472,10 @@ import {
   moveDocument, pauseDocument, prepareKnowledgeChatSession, replacePermissions, resumeDocument, retryDocument,
   updateFolder, updateKnowledgeBase, uploadDocument,
 } from './api.js'
-
 export default {
+  mixins: [knowledgeCitationMixin],
   components: {
+    CitationPopover,
     ChatMessage,
     DocxPreview,
     ExcelPreview,
