@@ -490,14 +490,45 @@ class RetrievalMixin:
                     metadata_filter=metadata_filter,
                 )
                 for base_id in scope.base_ids
-            )
+            ),
+            # 单库失败隔离：一个库的上游异常不应拖垮整轮多库检索
+            return_exceptions=True,
         )
+        succeeded: list[RetrieveResponse] = []
+        failures: list[tuple[str, Exception]] = []
         warnings: list[str] = []
-        for result in results:
-            warnings.extend(result.warnings)
+        for base_id, result in zip(scope.base_ids, results):
+            if isinstance(result, RetrieveResponse):
+                succeeded.append(result)
+                warnings.extend(result.warnings)
+                continue
+            # 取消/退出信号必须继续上抛，不能被“部分成功”吞掉
+            if not isinstance(result, Exception):
+                raise result
+            failures.append((base_id, result))
+            logger.warning(
+                "知识库检索失败，已跳过该库 | session=%s base=%s error=%s",
+                session_id,
+                base_id,
+                result,
+            )
+        if not succeeded:
+            # 全部失败：保持原有失败语义，避免悄悄退化成“无知识回答”
+            first_base_id, first_error = failures[0]
+            logger.error(
+                "所选知识库全部检索失败 | session=%s base=%s error=%s",
+                session_id,
+                first_base_id,
+                first_error,
+            )
+            if isinstance(first_error, RagflowError):
+                raise self._upstream_error(first_error) from first_error
+            raise first_error
+        if failures:
+            warnings.append("部分知识库检索失败，本轮仅使用检索成功库的结果")
         return RetrieveResponse(
             evidence=self._merge_session_evidence(
-                results,
+                succeeded,
                 top_n=top_n,
                 per_base_quota=self.config.retrieval.per_base_quota,
             ),

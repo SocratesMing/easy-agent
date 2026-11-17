@@ -1080,6 +1080,90 @@ async def test_retrieve_session_applies_per_base_quota(db, tmp_path, monkeypatch
     assert "b0.txt" in names and "b1.txt" in names
 
 
+async def test_retrieve_session_isolates_failed_base(db, tmp_path, monkeypatch):
+    """单库失败不拖垮整轮：成功库证据照常返回，并给出部分失败提示。"""
+
+    ragflow = _FakeRagflow()
+    service = _make_service(db, ragflow, tmp_path)
+    base_a = _create_base_row(db, space_type="team", owner_user_id="u-admin")
+    base_b = _create_base_row(db, space_type="team", owner_user_id="u-admin")
+
+    async def get_scope(*, session_id, principal):
+        return SessionKnowledgeScopeResponse(
+            session_id=session_id,
+            base_ids=[str(base_a["id"]), str(base_b["id"])],
+        )
+
+    async def fake_retrieve(
+        *, base_id, principal, question, document_ids, top_n, request_id,
+        metadata_filter=None,
+    ):
+        if base_id == str(base_b["id"]):
+            raise KnowledgeServiceError(
+                "KNOWLEDGE_UPSTREAM_ERROR", "上游检索失败", status_code=502
+            )
+        return RetrieveResponse(
+            evidence=[
+                Evidence(
+                    document_id="a1",
+                    document_name="a1.txt",
+                    snippet="片段",
+                    score=0.9,
+                )
+            ],
+            request_id=request_id,
+        )
+
+    monkeypatch.setattr(service, "get_session_scope", get_scope)
+    monkeypatch.setattr(service, "_retrieve_base_evidence", fake_retrieve)
+
+    result = await service.retrieve_session_evidence(
+        session_id="session-1",
+        principal=_principal(),
+        question="问题",
+        top_n=8,
+        request_id="req-isolation",
+    )
+
+    assert [item.document_name for item in result.evidence] == ["a1.txt"]
+    assert any("部分知识库检索失败" in item for item in result.warnings)
+
+
+async def test_retrieve_session_raises_when_all_bases_fail(db, tmp_path, monkeypatch):
+    """全部库失败时保持整轮失败语义，不静默退化成无知识回答。"""
+
+    ragflow = _FakeRagflow()
+    service = _make_service(db, ragflow, tmp_path)
+    base_a = _create_base_row(db, space_type="team", owner_user_id="u-admin")
+    base_b = _create_base_row(db, space_type="team", owner_user_id="u-admin")
+
+    async def get_scope(*, session_id, principal):
+        return SessionKnowledgeScopeResponse(
+            session_id=session_id,
+            base_ids=[str(base_a["id"]), str(base_b["id"])],
+        )
+
+    async def fake_retrieve(
+        *, base_id, principal, question, document_ids, top_n, request_id,
+        metadata_filter=None,
+    ):
+        raise KnowledgeServiceError(
+            "KNOWLEDGE_UPSTREAM_ERROR", f"{base_id} 检索失败", status_code=502
+        )
+
+    monkeypatch.setattr(service, "get_session_scope", get_scope)
+    monkeypatch.setattr(service, "_retrieve_base_evidence", fake_retrieve)
+
+    with pytest.raises(KnowledgeServiceError):
+        await service.retrieve_session_evidence(
+            session_id="session-1",
+            principal=_principal(),
+            question="问题",
+            top_n=8,
+            request_id="req-all-failed",
+        )
+
+
 async def test_upload_rejects_duplicate_content_in_same_base(db, tmp_path):
     """同库重复内容直接拒绝上传，并提示已存在的文档名。"""
 
