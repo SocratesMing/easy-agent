@@ -3,7 +3,8 @@
 // 同步：npm run sync:shared（frontend-vue2 / frontend 各自目录下执行）
 import { listSessions, countSessions, setSessionArchived, deleteSession } from '../../api/chat.js'
 import { chatStore, chatBus } from '../../features/chat/store/chatStore.js'
-import { archiveChanged, loadDailySessions, sessionGuard, subscribeSessions, isStaleSessionError } from './state.js'
+import { archiveChanged, sessionGuard, subscribeSessions, isStaleSessionError } from './state.js'
+import { reloadSessionList } from './sessionPager.js'
 import { createAutoDismiss } from '../../utils/autoDismiss.js'
 
 const busEmit = (event, payload) => (chatBus.$emit || chatBus.emit).call(chatBus, event, payload)
@@ -104,7 +105,7 @@ export default {
       // Report refresh failures separately: the write has already succeeded.
       const valid = sessionGuard()
       const results = await Promise.allSettled([
-        loadDailySessions(() => listSessions(null, { archived: false }), rows => { chatStore.sessions = rows }),
+        reloadSessionList(null),
         this.open ? this.reload() : Promise.resolve(),
       ])
       if (valid() && results.some(r => r.status === 'rejected')) this.showNotice([this.notice, '日常列表刷新失败，请重试'].filter(Boolean).join('；'))

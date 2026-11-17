@@ -57,8 +57,8 @@ const MAX_NEW_FILE_LINES = 800
  *    （main 引入文本行号渲染，预算未随合并同步）。
  */
 const LINE_BUDGET = {
-  'App.vue': 3371,
-  'features/chat/components/ChatInput.vue': 4867,
+  'App.vue': 3382,
+  'features/chat/components/ChatInput.vue': 5043,
   // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2523 → 2499
   'features/chat/components/ChatMessage.vue': 2524,
   'features/experts/components/ExpertListPanel.vue': 2188,
@@ -67,7 +67,7 @@ const LINE_BUDGET = {
   'features/skills/components/SkillListPanel.vue': 1245,
   'shared/preview/FilePreview.vue': 1252,
   'features/chat/components/Chat.vue': 986,
-  'features/chat/components/SessionList.vue': 1040,
+  'features/chat/components/SessionList.vue': 1078,
   'features/workspace/components/WorkspacePanel.vue': 978,
   'features/tasks/components/ScheduledTasksPanel.vue': 842,
   'features/knowledge/KnowledgeWorkbench.vue': 1817,

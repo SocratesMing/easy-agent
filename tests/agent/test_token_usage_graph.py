@@ -18,7 +18,7 @@ from easy_agent.db.repositories.token_usage import TokenUsageRepository
 from easy_agent.services.streaming.processor import StreamProcessor
 from easy_agent.services import usage as usage_service
 from easy_agent.services.streaming.sse import format_sse, parse_sse_frame
-from easy_agent.utils.usage_context import get_usage_identity, usage_scope
+from easy_agent.utils.usage_context import UsageIdentity, get_usage_identity, usage_scope
 
 
 @tool
@@ -293,7 +293,7 @@ async def test_public_chat_counts_all_calls_and_turns_while_context_stays_curren
             yield format_sse(event)
 
     first = [parse_sse_frame(frame) async for frame in usage_service.with_session_token_totals(
-        turn(), "graph-user", "chat",
+        turn(), UsageIdentity(user.user_id, "chat"),
     )]
     assert [(event["input_tokens"], event["output_tokens"]) for event in first
             if event["type"] == "token_usage"] == [(100, 10), (300, 30)]
@@ -302,7 +302,7 @@ async def test_public_chat_counts_all_calls_and_turns_while_context_stays_curren
     assert done["usage"]["context_tokens"] == 200
 
     second = [parse_sse_frame(frame) async for frame in usage_service.with_session_token_totals(
-        turn(), "graph-user", "chat",
+        turn(), UsageIdentity(user.user_id, "chat"),
     )]
     done = next(event for event in second if event["type"] == "done")
     assert len(requests) == 3

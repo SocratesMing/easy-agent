@@ -46,7 +46,7 @@
 
     <div class="divider"></div>
 
-    <div class="session-items">
+    <div class="session-items" @scroll="onSessionsScroll">
       <div
         v-for="group in groupedSessions"
         :key="group.label"
@@ -113,6 +113,9 @@
           </div>
         </div>
       </div>
+
+      <!-- 分页：滚动到底续取下一页；窗口很高没有滚动条时可点这里 -->
+      <button v-if="sessionsHasMore" class="session-more-hint" :disabled="sessionsLoading" @click="$emit('loadMoreSessions')">{{ sessionsLoading ? '加载中…' : '滚动到底加载更早的会话' }}</button>
 
       <div v-if="sessions.length === 0" class="empty-state">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -216,7 +219,7 @@ import { ref, nextTick, onMounted, computed } from 'vue'
 import { APP_TITLE } from '../../../config.js'
 import { ensureSkillDirectoryLoaded, skillFreeTitle } from '../../skills/store/skillDirectoryStore.js'
 
-const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showKnowledge', 'showSkillCenter', 'showScheduledTasks', 'showSettings', 'showUserManagement', 'logout', 'togglePin'])
+const emit = defineEmits(['createSession', 'selectSession', 'deleteSession', 'renameSession', 'toggleSidebar', 'showKnowledge', 'showSkillCenter', 'showScheduledTasks', 'showSettings', 'showUserManagement', 'logout', 'togglePin', 'loadMoreSessions'])
 
 const props = defineProps({
   sessions: {
@@ -254,12 +257,29 @@ const props = defineProps({
   showKnowledge: {
     type: Boolean,
     default: false
+  },
+  // 分页：还有更早的会话 / 正在续取
+  sessionsHasMore: {
+    type: Boolean,
+    default: false
+  },
+  sessionsLoading: {
+    type: Boolean,
+    default: false
   }
 })
 const activeMenu = ref(null)
 const archiveManager = ref(null)
 function archiveRow(session) { activeMenu.value = null; archiveManager.value.archive(session) }
 function archiveBusy(id) { return !!archiveManager.value?.busy[id] }
+
+// 滚动到底部附近才续取下一页，避免预先加载全部会话
+function onSessionsScroll(event) {
+  if (!props.sessionsHasMore || props.sessionsLoading) return
+  const el = event.target
+  if (el.scrollHeight - el.scrollTop - el.clientHeight > 48) return
+  emit('loadMoreSessions')
+}
 const showRenameModal = ref(false)
 const newTitle = ref('')
 const renamingSession = ref(null)
@@ -558,6 +578,24 @@ function handleLogout() {
   padding: 6px 6px;
   padding-bottom: 60px;
   scroll-behavior: smooth;
+}
+
+/* 分页提示：列表底部，样式比会话条目更轻 */
+.session-more-hint {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.session-more-hint:disabled {
+  cursor: default;
+  opacity: 0.7;
 }
 
 .session-group-header {

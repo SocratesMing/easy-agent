@@ -1,7 +1,8 @@
 import { connectSessionView } from '../../../shared/sessionManagement/viewLifecycle.js'
-import { loadDailySessions, sessionGuard, isSessionDeleted, isStaleSessionError } from '../../../shared/sessionManagement/state.js'
+import { sessionGuard, isSessionDeleted, isStaleSessionError } from '../../../shared/sessionManagement/state.js'
+import { reloadSessionList, loadMoreSessionList } from '../../../shared/sessionManagement/sessionPager.js'
 import { setReactive } from '../../../utils/reactiveSet.js'
-import { createSession, listSessions, getChatHistory, deleteSession, renameSession, togglePinSession, attachStream } from '../../../api/chat.js'
+import { createSession, getChatHistory, deleteSession, renameSession, togglePinSession, attachStream } from '../../../api/chat.js'
 import { getSessionGeneratedFiles } from '../../../api/files.js'
 import { chatBus, chatStore, syncPendingApprovalFlag as setPendingApprovalFlag } from '../store/chatStore.js'
 import { applyApprovalRequests, derivePendingApproval } from '../../../utils/hitlApproval.js'
@@ -64,6 +65,13 @@ export default {
     sessions: {
       get() { return chatStore.sessions },
       set(v) { chatStore.sessions = v },
+    },
+    // 会话列表分页：还有更早的会话 / 正在续取
+    sessionsHasMore() {
+      return chatStore.sessionsHasMore
+    },
+    sessionsLoading() {
+      return chatStore.sessionsLoading
     },
     streamingSessions: {
       get() { return chatStore.streamingSessions },
@@ -582,9 +590,17 @@ export default {
     },
     async loadSessions() {
       try {
-        await loadDailySessions(() => listSessions(chatStore.username || null, { archived: false }), rows => { this.sessions = rows })
+        await reloadSessionList(chatStore.username || null)
       } catch (e) {
         if (!isStaleSessionError(e)) this.error = '加载会话列表失败'
+      }
+    },
+    // 会话列表滚动到底：续取下一页（主页面与 AI 侧边栏共用同一份列表）
+    async loadMoreSessions() {
+      try {
+        await loadMoreSessionList(chatStore.username || null)
+      } catch (e) {
+        if (!isStaleSessionError(e)) this.error = '加载更早的会话失败'
       }
     },
     async ensureCurrentSession(initialTitle = '') {

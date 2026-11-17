@@ -387,7 +387,7 @@ async def chat_stream(
         # 专家相关性预检短路：不建 Agent、不登记 run，只推一条极简拒答流
         return sse_response(
             _detached_event_stream(
-                with_session_token_totals(plan.event_stream, username, plan.session_id),
+                with_session_token_totals(plan.event_stream, plan.usage_identity),
                 plan.session_id,
                 plan.sid,
                 renew_stream=repo.renew_stream,
@@ -397,7 +397,7 @@ async def chat_stream(
         )
     return sse_response(
         _detached_event_stream(
-            with_session_token_totals(plan.event_stream, username, plan.session_id),
+            with_session_token_totals(plan.event_stream, plan.usage_identity),
             plan.session_id,
             plan.sid,
             renew_stream=repo.renew_stream,
@@ -458,7 +458,7 @@ async def chat_resume(
     )
     return sse_response(
         _detached_event_stream(
-            with_session_token_totals(plan.event_stream, username, plan.session_id),
+            with_session_token_totals(plan.event_stream, plan.usage_identity),
             plan.session_id,
             plan.sid,
             renew_stream=repo.renew_stream,
