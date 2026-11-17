@@ -45,6 +45,7 @@ from easy_agent.services.experts.runtime import (  # noqa: F401 - re-export 历�
     _session_logger_for,
     _with_guardrail,
 )
+from easy_agent.services.experts.name_guard import find_name_conflict
 from easy_agent.services.experts.service import (
     generate_expert_config,
     slugify,
@@ -113,21 +114,22 @@ def _ensure_name_available(
     exclude_agent_id: str = "",
     is_update: bool = False,
 ) -> None:
-    """校验专家中文名在本用户下唯一（创建/修改共用）。
+    """校验专家中文名唯一（创建/修改共用）：本用户自定义专家 + 全局预置专家。
 
     重名会让同一个列表里出现两张看不出区别的卡片，因此在**落库/生成之前**就
-    拦住。比较口径为「忽略空白 + 忽略大小写」；**已删除（软删除）的专家不参与
-    校验**——它们已从列表移除，名字视为可复用，否则「删掉重建同名专家」会被
-    莫名其妙地拦住。
+    拦住。查重范围与口径见 :func:`easy_agent.services.experts.name_guard.find_name_conflict`
+    ——「忽略空白 + 忽略大小写」、软删除不参与、自定义专家仅本用户、预置专家全局。
 
     Args:
-        exclude_agent_id: 修改场景传入自身 ID，避免「和自己重名」。
+        exclude_agent_id: 修改场景传入自身 ID，避免「和自己重名」（仅作用于自定义专家）。
         is_update: 提示语区分创建与修改（修改时额外引导用户改名）。
 
     Raises:
         HTTPException: 409 —— 已存在同名专家（``detail`` 为可直接展示的提示语）。
     """
-    conflict = store.find_by_name_cn(user_id, name_cn, exclude_agent_id=exclude_agent_id)
+    conflict = find_name_conflict(
+        store, user_id, name_cn, exclude_agent_id=exclude_agent_id
+    )
     if not conflict:
         return
 

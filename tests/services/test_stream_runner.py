@@ -138,13 +138,19 @@ async def test_chat_prep_error_emits_error_frame_and_writes_nothing():
 
 
 @pytest.mark.parametrize("resume", [False, True])
-async def test_closing_public_generator_closes_inner_stream_with_identity(monkeypatch, resume):
+@pytest.mark.parametrize("pre_resolved", [False, True])
+@pytest.mark.parametrize("identity_missing", [False, True])
+async def test_closing_public_generator_closes_inner_stream_with_identity(
+    monkeypatch, resume, pre_resolved, identity_missing,
+):
     from easy_agent.utils.usage_context import UsageIdentity, get_usage_identity, usage_scope
 
     observed = []
-    identity = UsageIdentity("real-id", "s1")
+    identity = None if identity_missing else UsageIdentity("real-id", "s1")
+    lookups = []
 
     async def resolve(*args):
+        lookups.append(args)
         return identity
 
     async def stream(run, payload):
@@ -157,14 +163,17 @@ async def test_closing_public_generator_closes_inner_stream_with_identity(monkey
     monkeypatch.setattr(orchestrator, "resolve_usage_identity", resolve)
     monkeypatch.setattr(orchestrator, "_run_stream", stream)
     graph = FakeGraph([], states=[_hitl_state()] if resume else [])
+    identity_kwargs = {"usage_identity": identity} if pre_resolved else {}
     if resume:
         generator = orchestrator.resume_stream_generator(
             FakeDB(_resume_messages()), _agent(graph), "s1", "s1-m1", [{"type": "approve"}],
             session_logger=FakeLogger(), message_id="m1",
+            **identity_kwargs,
         )
     else:
         generator = orchestrator.chat_stream_generator(
             ChatRequest(message="hi"), FakeDB(), _agent(graph), "s1", "m1", "tester",
+            **identity_kwargs,
         )
     with usage_scope("parent"):
         assert _types(_events([await anext(generator)])) == ["start"]
@@ -172,6 +181,7 @@ async def test_closing_public_generator_closes_inner_stream_with_identity(monkey
         await generator.aclose()
         assert get_usage_identity() == UsageIdentity("parent")
         assert observed == [("stream", identity), ("closed", identity)]
+        assert len(lookups) == (0 if pre_resolved else 1)
 
 
 async def test_chat_identity_survives_client_disconnect_until_background_finishes(monkeypatch):

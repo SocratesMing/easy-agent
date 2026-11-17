@@ -141,13 +141,19 @@ for (const file of [page, mixin]) {
     const vm = { sessions: [], userProfile: { username: 'test' }, error: '加载会话列表失败',
       hydratePendingApprovalFromServer() { hydrated.push(this.sessions[0].session_id) },
     }
-    Object.assign(vm, methods(file, ['loadSessions'], {
-      loadDailySessions, isStaleSessionError, chatStore: { username: 'test' },
+    const scope = {
+      isStaleSessionError, chatStore: { username: 'test' },
       listSessions: (_username, params) => {
         assert.equal(params.archived, false)
         return ++calls === 1 ? request.promise : Promise.resolve([{ session_id: 's2', pending_approval: true }])
       },
-    }))
+      // 分页器本身另有测试；这里只关心 loadSessions 在拿到有效列表后才水合徽标
+      reloadSessionList: (username, after) => loadDailySessions(
+        () => scope.listSessions(username, { archived: false }),
+        rows => { vm.sessions = rows; after?.() },
+      ),
+    }
+    Object.assign(vm, methods(file, ['loadSessions'], scope))
     const old = vm.loadSessions()
     archiveChanged('s1', true)
     await vm.loadSessions()

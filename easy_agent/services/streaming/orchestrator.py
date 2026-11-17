@@ -1147,7 +1147,7 @@ async def chat_stream_generator(
 ) -> AsyncGenerator[str, None]:
     """消费时绑定服务端身份；省略时解析，显式 ``None`` 禁用采集。"""
     identity = usage_identity
-    if identity is _UNRESOLVED_USAGE_IDENTITY:
+    if isinstance(identity, _UnresolvedUsageIdentity):
         identity = await resolve_usage_identity(username, session_id)
     with usage_scope(identity):
         async with aclosing(_chat_stream_impl(
@@ -1333,6 +1333,7 @@ async def resume_stream_generator(
     message_id: str = "",
     handle: str | None = None,
     *,
+    usage_identity: UsageIdentity | None | _UnresolvedUsageIdentity = _UNRESOLVED_USAGE_IDENTITY,
     outcome: StreamOutcome | None = None,
     split_assistant: bool = False,
 ) -> AsyncGenerator[str, None]:
@@ -1344,7 +1345,9 @@ async def resume_stream_generator(
     ``thread_id`` 是真正恢复的 thread；``handle`` 是给前端的审批句柄（DA-03：会话 thread
     模式下两者不同），缺省时与 ``thread_id`` 相同。
     """
-    identity = await resolve_usage_identity(username, session_id)
+    identity = usage_identity
+    if isinstance(identity, _UnresolvedUsageIdentity):
+        identity = await resolve_usage_identity(username, session_id)
     with usage_scope(identity):
         async with aclosing(_resume_stream_impl(
             db, agent, session_id, thread_id, decisions, username,

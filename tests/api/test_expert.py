@@ -520,6 +520,82 @@ def test_update_expert_name_of_deleted_expert_ok(client, fake_llm):
     assert resp.json()["export_name_cn"] == "专家乙"
 
 
+# ── 中文名唯一性：预置专家（自定义 + 预置统一查重） ──────────────────────
+
+
+@pytest.fixture()
+def preset_root(tmp_path, monkeypatch):
+    """把预置专家根目录指向临时目录，并写入一个名为「预置插画师」的预置专家。"""
+    import easy_agent.services.experts.public as public_mod
+
+    preset_dir = tmp_path / "presets" / "preset_illustrator"
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "v1").mkdir()
+    (preset_dir / "active").write_text("1", encoding="utf-8")
+    (preset_dir / "v1" / "config.yaml").write_text(
+        "expert_agent_id: preset_illustrator\nname_cn: 预置插画师\n"
+        "name_en: preset-illustrator\nversion: 1\n",
+        encoding="utf-8",
+    )
+    (preset_dir / "v1" / "illustrator.md").write_text("你是预置插画师。", encoding="utf-8")
+    monkeypatch.setattr(public_mod, "public_experts_root", lambda: tmp_path / "presets")
+    return tmp_path / "presets"
+
+
+def test_add_expert_duplicate_preset_name_409(client, fake_llm, preset_root):
+    """新建撞上预置专家名：409，且不触发 LLM 生成。"""
+    resp = _add(client, name="预置插画师")
+    assert resp.status_code == 409, resp.text
+    assert "已有同名的专家Agent" in resp.json()["detail"]
+    assert fake_llm["generate_calls"] == 0
+    assert client.get("/agent/list").json()["total"] == 0
+
+
+def test_add_expert_preset_name_ignores_space_and_case(client, fake_llm, preset_root):
+    """预置专家查重同样忽略空白与大小写。"""
+    assert _add(client, name=" 预置  插画师 ").status_code == 409
+
+
+def test_update_expert_to_preset_name_409(client, fake_llm, preset_root, db):
+    """改名撞上预置专家名：409 + 提示改名，且版本不推进、生成不触发。"""
+    created = _add(client, name="原创专家").json()
+    calls_before = fake_llm["generate_calls"]
+
+    resp = client.post(
+        "/agent/update",
+        json={
+            "export_agent_id": created["export_agent_id"],
+            "name_cn": "预置插画师",
+            "prompt": "想改成预置专家的名字",
+        },
+    )
+    assert resp.status_code == 409, resp.text
+    assert "请修改专家名称" in resp.json()["detail"]
+    assert fake_llm["generate_calls"] == calls_before
+
+    unchanged = ExpertStore(db).get(created["export_agent_id"])
+    assert unchanged["export_name_cn"] == "原创专家"
+    assert unchanged["export_version"] == 1
+
+
+def test_update_expert_keep_own_name_ok(client, fake_llm):
+    """特殊场景：修改专家时不改名，应排除自身（不与自己重名），可正常修改。"""
+    created = _add(client, name="插画师").json()
+
+    resp = client.post(
+        "/agent/update",
+        json={
+            "export_agent_id": created["export_agent_id"],
+            "name_cn": "插画师",  # 名称不变
+            "prompt": "只改描述，不改名字",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["export_version"] == 2
+    assert resp.json()["export_name_cn"] == "插画师"
+
+
+
 # ── /agent/del ────────────────────────────────────────────────────────
 
 

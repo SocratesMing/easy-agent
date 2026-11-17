@@ -109,6 +109,24 @@ def test_multiple_experts_sorted_by_name(root):
     assert names == ["乙专家", "甲专家"]
 
 
+def test_find_public_expert_by_name_cn_ignores_space_and_case(root):
+    """重名校验口径与自定义专家一致：忽略全部空白 + 忽略大小写。"""
+    _flat_expert(root, "preset_a", name_cn="经营分析专家")
+
+    hit = P.find_public_expert_by_name_cn(" 经营  分析专家 ")
+    assert hit is not None
+    assert hit["export_agent_id"] == "preset_a"
+    assert hit["export_name_cn"] == "经营分析专家"
+    assert hit["scope"] == "public"
+
+    # 英文名同样走 casefold
+    _flat_expert(root, "preset_en", name_cn="Quant Expert", name_en="quant-expert")
+    assert P.find_public_expert_by_name_cn("  quant   expert ")["export_agent_id"] == "preset_en"
+
+    assert P.find_public_expert_by_name_cn("不存在的专家") is None
+    assert P.find_public_expert_by_name_cn("   ") is None
+
+
 # ── 2/3. 版本目录布局 ──────────────────────────────────────────────────
 
 

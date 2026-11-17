@@ -41,7 +41,8 @@ logger = logging.getLogger("easy_agent.db.schema")
 # 17：逐模型调用 Token 账本（独立于会话生命周期）。
 # 18：删除 agent_checkpoints。HITL checkpoint 改由 persistence/mysql_saver.py 的
 #     4 张 cp_* 表承载（协议级 split-blob），旧的全量快照后端整体下线，表一并退役。
-SCHEMA_VERSION = 18
+# 19：会话 Token 累计查询增加 (user_id, session_id) 索引。
+SCHEMA_VERSION = 19
 # utf8mb4 复合主键必须 ≤ 3072 字节：(512 + 191) * 4 = 2812。
 LANGGRAPH_STORE_NS_LEN = 512
 LANGGRAPH_STORE_KEY_LEN = 191
@@ -644,6 +645,7 @@ def _create_token_usage_table(db, cursor):
     """)
     _create_index(db, cursor, "idx_token_usage_user_completed", "token_usage", "user_id, completed_at_ms")
     _create_index(db, cursor, "idx_token_usage_user_date", "token_usage", "user_id, usage_date")
+    _create_index(db, cursor, "idx_token_usage_user_session", "token_usage", "user_id, session_id")
 
 def _create_expert_tables(db, cursor):
     """专家 Agent 表 expert_agents（见 docs/expert-agent-solution.md §3.1）。

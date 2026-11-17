@@ -1,7 +1,7 @@
 import { protectCodeRegions } from './codeRegions.js'
 import { citationMarker } from './markers.js'
 import { externalSources } from '../citations/sources.js'
-import { rewriteReferences } from './sourceReferences.js'
+import { resolveReferenceKey, rewriteReferences } from './sourceReferences.js'
 
 const CITATION = /\[知识(?:库)?依据\s*(\d+)\]/g
 
@@ -16,12 +16,14 @@ export function relatedEvidence(message) {
   evidence.forEach((item, index) => sources.set(String(index + 1), item))
   const numbers = new Set()
   const collect = (key, raw) => {
-    if (sources.has(key)) numbers.add(key)
+    const resolved = resolveReferenceKey(key, [...sources.keys()])
+    if (sources.has(resolved)) numbers.add(resolved)
     return raw
   }
   rewriteReferences(text, collect, collect)
+  const numberMap = Object.fromEntries([...numbers].map((key, index) => [key, index + 1]))
   return {
-    numberMap: Object.fromEntries([...numbers].map((key, index) => [key, index + 1])),
+    numberMap,
     items: numbers.size ? [...numbers].map(key => sources.get(key)) : evidence,
   }
 }
@@ -30,7 +32,10 @@ export function linkKnowledgeCitations(content, citeMap, compact = false) {
   if (typeof content !== 'string') return content
   const map = citeMap || {}
   if (compact) {
-    const replace = (key, raw) => map[key] ? citationMarker(map[key], true) : raw
+    const replace = (key, raw) => {
+      const resolved = resolveReferenceKey(key, Object.keys(map))
+      return map[resolved] ? citationMarker(map[resolved], true) : raw
+    }
     return rewriteReferences(content, replace, replace)
   }
   return protectCodeRegions(content, text =>
