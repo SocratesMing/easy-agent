@@ -4,6 +4,7 @@ import csv
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -26,11 +27,6 @@ try:
     from docx import Document
 except ImportError:
     Document = None
-
-try:
-    import olefile
-except ImportError:
-    olefile = None
 
 try:
     import openpyxl
@@ -296,78 +292,82 @@ def _parse_pdf(path: Path) -> str:
     return f"[PDF文件: {path.name}，未安装PDF解析库，请安装: uv pip install pymupdf pdfminer.six pdfplumber]"
 
 
+def _read_docx_text(path: Path) -> str:
+    """提取正文；失败时抛错，供 DOC 转换链路区分正文与失败占位。"""
+    if Document is None:
+        raise ImportError("未安装 python-docx，请安装: uv pip install python-docx")
+
+    doc = Document(str(path))
+    text_parts = []
+
+    for p in doc.paragraphs:
+        if p.text.strip():
+            text_parts.append(p.text)
+
+    for table in doc.tables:
+        rows = []
+        for row in table.rows:
+            if any(cell.text.strip() for cell in row.cells):
+                rows.append(" | ".join(cell.text for cell in row.cells))
+        if rows:
+            text_parts.append("--- [表格] ---")
+            text_parts.extend(rows)
+
+    text = "\n".join(text_parts)
+    if not text.strip():
+        raise ValueError("未能提取正文（文档为空或仅包含图片）")
+    return text
+
+
 def _parse_docx(path: Path) -> str:
     try:
-        if Document is None:
-            raise ImportError
-
-        doc = Document(str(path))
-        text_parts = []
-
-        for p in doc.paragraphs:
-            if p.text.strip():
-                text_parts.append(p.text)
-
-        for table in doc.tables:
-            text_parts.append("--- [表格] ---")
-            for row in table.rows:
-                row_text = " | ".join(cell.text for cell in row.cells)
-                if row_text.strip():
-                    text_parts.append(row_text)
-
-        text = "\n".join(text_parts)
-        if text.strip():
-            return text
-    except ImportError:
-        pass
+        return _read_docx_text(path)
     except Exception as e:
         logger.warning(f"python-docx 解析失败: {e}")
-
-    return (
-        f"[DOCX文件: {path.name}，未安装python-docx，请安装: uv pip install python-docx]"
-    )
+        return f"[DOCX文件: {path.name}，解析失败: {e}]"
 
 
 def _parse_doc(path: Path) -> str:
+    # 保留已有轻量工具路径；显式指定 UTF-8，避免中文受服务器 locale 影响。
+    for command in (
+        ["antiword", "-m", "UTF-8.txt", str(path)],
+        ["catdoc", "-d", "utf-8", str(path)],
+    ):
+        try:
+            result = subprocess.run(
+                command, capture_output=True, text=True, encoding="utf-8", timeout=30
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.warning("%s 解析失败: %s", command[0], e)
+
+    # DOC 的 OLE 表流含格式/索引等二进制数据，不能直接 decode 当正文。
+    # 复用服务端 LibreOffice 转换能力，再用与 DOCX 相同的段落和表格提取逻辑。
     try:
-        result = subprocess.run(
-            ["antiword", str(path)], capture_output=True, text=True, timeout=30
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout
-    except FileNotFoundError:
-        pass
+        from easy_agent.services.document_convert import convert_office_document
+
+        return _read_docx_text(convert_office_document(path, "docx"))
     except Exception as e:
-        logger.warning(f"antiword 解析失败: {e}")
+        reason = str(e)
+        logger.warning("DOC 转换解析失败 | %s | %s", path, e)
 
-    try:
-        result = subprocess.run(
-            ["catdoc", str(path)], capture_output=True, text=True, timeout=30
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        logger.warning(f"catdoc 解析失败: {e}")
+    # macOS 自带 textutil，无需另外安装 LibreOffice 也可提取旧版 Word 文本。
+    if sys.platform == "darwin":
+        try:
+            result = subprocess.run(
+                ["/usr/bin/textutil", "-convert", "txt", "-stdout", "-encoding", "UTF-8", str(path)],
+                capture_output=True, text=True, encoding="utf-8", timeout=30,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout
+            logger.warning("textutil 未能提取 DOC 正文 | %s | %s", path, result.stderr[:200])
+        except Exception as e:
+            logger.warning("textutil 解析失败: %s", e)
 
-    try:
-        if olefile is None:
-            raise ImportError
-
-        with olefile.OleFileIO(str(path)) as ole:
-            if ole.exists("WordDocument"):
-                stream = ole.openstream("1Table")
-                data = stream.read()
-                text = data.decode("utf-8", errors="replace")
-                if text.strip():
-                    return text
-    except ImportError:
-        pass
-    except Exception as e:
-        logger.warning(f"olefile 解析失败: {e}")
-
-    return f"[DOC文件(旧格式): {path.name}，建议转换为docx格式，或安装: apt install antiword catdoc]"
+    return f"[DOC文件(旧格式): {path.name}，解析失败: {reason}；可检查文档是否加密或损坏，或另存为 DOCX 后重试]"
 
 
 def _parse_xlsx(path: Path) -> str:
