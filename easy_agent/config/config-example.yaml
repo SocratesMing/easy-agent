@@ -33,9 +33,13 @@ streaming:
 max_steps: ${MAX_STEPS:-100}                      # 单轮最大执行步数
 tool_progress_enabled: ${TOOL_PROGRESS_ENABLED:-true}  # 工具空结果终止提示 + 原地打转提醒（只改结果文本，不改工具行为）
 tool_progress_empty_limit: ${TOOL_PROGRESS_EMPTY_LIMIT:-3}      # MCP 同一目标连续空结果到几次要求停止（仅在从未取到过数据时生效）
-tool_progress_converge_limit: ${TOOL_PROGRESS_CONVERGE_LIMIT:-8}  # MCP 同工具连续「无进展」到几次提示收敛（分页取数不计入）
-tool_progress_stop_limit: ${TOOL_PROGRESS_STOP_LIMIT:-12}        # MCP 同工具连续「无进展」到几次要求停机并输出数据质量报告
-tool_progress_empty_hard_limit: ${TOOL_PROGRESS_EMPTY_HARD_LIMIT:-9}  # MCP 同工具连续空结果到几次无条件止损（兜「先查到 A 又反复查 B」的场景）
+tool_progress_converge_limit: ${TOOL_PROGRESS_CONVERGE_LIMIT:-8}  # MCP 连续「无进展」收敛提示（默认配置下熔断线先到，仅熔断线调大后生效）
+tool_progress_stop_limit: ${TOOL_PROGRESS_STOP_LIMIT:-12}        # MCP 连续无进展要求停机并输出质量报告（默认配置下熔断线先到）
+tool_progress_empty_hard_limit: ${TOOL_PROGRESS_EMPTY_HARD_LIMIT:-9}  # MCP 连续空结果硬顶止损（默认配置下熔断线先到，仅熔断线调大后生效）
+tool_progress_fuse_limit: ${TOOL_PROGRESS_FUSE_LIMIT:-3}          # 同一查询（工具名+参数）连续空结果到几次后熔断该查询（第 4 次起拦截不执行）
+tool_progress_tool_call_budget: ${TOOL_PROGRESS_TOOL_CALL_BUDGET:-20}  # 单工具本轮总调用预算：低价值占比过半时超出即熔断（健康分页不受预算限制）
+tool_progress_low_value_rows: ${TOOL_PROGRESS_LOW_VALUE_ROWS:-2}  # MCP/JSON 结果行数 <= 该值视为低价值数据（探测性少量脏数据不算有进展）
+tool_progress_low_value_limit: ${TOOL_PROGRESS_LOW_VALUE_LIMIT:-6}  # 同工具连续低价值结果（空/过少/重复）到几次后熔断（兜换参数试探循环）
 workspace_dir: "${WORKSPACE_DIR:-/qts/workspace}" # 工作区根目录，实际按用户/会话隔离
 memories_dir: "${MEMORIES_DIR:-/qts/memories}"    # 长期记忆根目录，实际 {memories_dir}/{username}/AGENTS.md
 memory_model: ""                                  # 整理记忆用的模型（models 里的键），留空 = 用会话的对话模型；建议配一个便宜、快的

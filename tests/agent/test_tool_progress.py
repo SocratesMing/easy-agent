@@ -288,20 +288,40 @@ def test_mcp_empty_after_data_is_normal_traversal():
 
 
 def test_mcp_empty_hard_limit_stops_even_after_data():
-    # 先查到 A 的数据，再对 B 连续空查：has_data_once 恒为 true，普通阈值不升级，
-    # 只能靠硬顶兜住（默认 3 × empty_limit = 9）。
+    # 先查到 A 的数据，再对 B 连续空查：has_data_once 恒为 true，普通阈值不升级。
+    # 注意默认配置下连空到 low_value_limit(6) 就被熔断线收口，硬顶(9)不可达——
+    # 只有把熔断线调大到 9 之后，硬顶软止损才会生效。
     history = _mcp_history([_mcp(_mcp_body(1))] + [_mcp("") for _ in range(8)])
-    result = _run_mcp(_mcp(""), history)
+    result = _run_mcp(_mcp(""), history, low_value_limit=20)
     assert "⛔" in result.content
     assert "超出" in result.content
     assert "completed" in result.content
 
 
+def test_mcp_empty_beyond_low_value_limit_fuses_instead_of_hard_stop():
+    # 默认配置：连空 9 次在第 7 次就被低价值熔断线收口（提示「下次将熔断」），
+    # 不会走到硬顶文案
+    history = _mcp_history([_mcp(_mcp_body(1))] + [_mcp("") for _ in range(8)])
+    result = _run_mcp(_mcp(""), history)
+    assert "下一次调用将被系统熔断拦截" in result.content
+    assert "超出「分页/分段遍历」" not in result.content
+
+
 def test_mcp_empty_below_hard_limit_still_normal_traversal():
-    history = _mcp_history([_mcp(_mcp_body(1))] + [_mcp("") for _ in range(7)])
+    # 取到过数据后连空几次（< 低价值熔断线 6）仍是正常遍历
+    history = _mcp_history([_mcp(_mcp_body(1))] + [_mcp("") for _ in range(4)])
     result = _run_mcp(_mcp(""), history)
     assert "正常遍历" in result.content
-    assert "⛔" not in result.content
+    assert "熔断" not in result.content
+
+
+def test_mcp_empty_after_data_escalates_to_fuse_warning():
+    # 先查到 A 的数据，再连续空查到熔断线（默认 6）：不再是「正常遍历」，
+    # 注入「下次调用将熔断」的升级提示（第 8 次调用会被 wrap_tool_call 拦截）
+    history = _mcp_history([_mcp(_mcp_body(1))] + [_mcp("") for _ in range(6)])
+    result = _run_mcp(_mcp(""), history)
+    assert "熔断拦截" in result.content
+    assert "连续 7 次" in result.content
 
 
 def test_mcp_pagination_is_never_flagged():
@@ -311,16 +331,41 @@ def test_mcp_pagination_is_never_flagged():
     assert result.content == _mcp(_mcp_body(29))
 
 
-def test_mcp_repeated_identical_result_converges():
-    history = _mcp_history([_mcp(_mcp_body(0)) for _ in range(8)])
+def test_mcp_repeated_identical_result_escalates_to_fuse_warning():
+    # 同一批数据被原样反复取回到熔断线（默认 6）：注入「下次调用将熔断」
+    history = _mcp_history([_mcp(_mcp_body(0)) for _ in range(6)])
     result = _run_mcp(_mcp(_mcp_body(0)), history)
+    assert "熔断拦截" in result.content
+
+
+def test_mcp_repeated_identical_result_converges_with_custom_limit():
+    # 低价值熔断线调大后，收敛/停机提示仍然可达（软提示未删除，只是被熔断线前置）
+    history = _mcp_history([_mcp(_mcp_body(0)) for _ in range(8)])
+    result = _run_mcp(_mcp(_mcp_body(0)), history, low_value_limit=20)
     assert "收敛" in result.content
 
 
-def test_mcp_repeated_identical_result_stops():
+def test_mcp_repeated_identical_result_stops_with_custom_limit():
     history = _mcp_history([_mcp(_mcp_body(0)) for _ in range(12)])
-    result = _run_mcp(_mcp(_mcp_body(0)), history)
+    result = _run_mcp(_mcp(_mcp_body(0)), history, low_value_limit=20)
     assert "数据质量报告" in result.content
+
+
+def test_mcp_low_value_rows_trigger_fuse_warning():
+    # 场景 2（ forex 267 步）：每次都换参数、每次只回 1–2 行脏数据——
+    # 不空、内容也不同，旧判定全不命中；低价值行数阈值把它抓出来
+    history = _mcp_history(
+        [_mcp(_mcp_body(page=i, rows=1)) for i in range(6)]
+    )
+    result = _run_mcp(_mcp(_mcp_body(page=99, rows=1)), history)
+    assert "熔断拦截" in result.content
+
+
+def test_mcp_substantial_rows_are_never_low_value():
+    # 行数充足的分页结果永远不算低价值
+    history = _mcp_history([_mcp(_mcp_body(page=i, rows=100)) for i in range(10)])
+    result = _run_mcp(_mcp(_mcp_body(page=99, rows=100)), history)
+    assert result.content == _mcp(_mcp_body(page=99, rows=100))
 
 
 def test_mcp_error_result_is_not_annotated():
@@ -427,3 +472,308 @@ def test_middleware_defaults_follow_config_models():
     assert mw.empty_hard_limit == DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT
     # 硬顶不得小于普通空阈值，否则「从未取到数据」的分支永远走不到
     assert mw.empty_hard_limit >= mw.empty_limit
+
+
+# ── 工具熔断（wrap_tool_call 硬拦截，2026-11-17）──────────────────────
+
+from types import SimpleNamespace as _NS
+
+from easy_agent.agent.tool_progress import _fuse_text  # noqa: E402 - 测试文件末尾追加段
+
+
+def _fuse_request(name: str, args: dict, history: list, thread_id: str | None = None):
+    """构造熔断检查用的 request：state 含历史 + 当前 AIMessage（生产形态）。
+
+    生产环境中工具执行时，带 tool_call 的 AIMessage 已经进了 state——
+    预算计数（tool_call_count_in_turn）据此天然包含本次调用。
+    """
+    current_call = {"name": name, "args": args, "id": "cur"}
+    request = _NS(tool_call=current_call, state={"messages": [*history, AIMessage(content="", tool_calls=[current_call])]})
+    if thread_id:
+        request.runtime = _NS(config={"configurable": {"thread_id": thread_id}})
+    return request
+
+
+def _pair(name: str, args: dict, content: str, index: int) -> list:
+    call_id = f"h{index}"
+    return [
+        AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": call_id}]),
+        ToolMessage(content=content, tool_call_id=call_id, name=name),
+    ]
+
+
+def test_fuse_blocks_fourth_same_args_empty_call():
+    # 情况 1：同一查询连续 3 次空结果，第 4 次必须被拦截，真实工具不执行
+    args = {"path": "/.agent/conversation_history/session_x.md", "pattern": "用户当前问题"}
+    history = []
+    for i in range(3):
+        history += _pair("grep", args, "No matches found", i)
+    mw = ToolProgressMiddleware()
+
+    def handler(_req):
+        raise AssertionError("熔断后不应执行真实工具")
+
+    result = mw.wrap_tool_call(_fuse_request("grep", args, history), handler)
+    assert isinstance(result, ToolMessage)
+    assert "熔断" in result.content
+    assert result.tool_call_id == "cur"
+
+
+def test_fuse_streak_resets_when_data_found():
+    # 中途查到过东西 → 连续计数清零，之后重新累计，不误伤
+    args = {"path": "/x", "pattern": "p"}
+    history = _pair("grep", args, "No matches found", 0)
+    history += _pair("grep", args, "some content", 1)
+    history += _pair("grep", args, "No matches found", 2)
+    history += _pair("grep", args, "No matches found", 3)
+    mw = ToolProgressMiddleware()
+    result = mw.wrap_tool_call(
+        _fuse_request("grep", args, history), lambda _req: _tool_message("No matches found", "grep")
+    )
+    assert "熔断" not in result.content
+
+
+def test_different_args_are_not_fused_by_same_args_rule():
+    # 每次换路径的合法探索，不落入「同参数连续空」熔断
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(3):
+        history += _pair("grep", {"path": f"/p{i}"}, "No matches found", i)
+    result = mw.wrap_tool_call(
+        _fuse_request("grep", {"path": "/p3"}, history),
+        lambda _req: _tool_message("No matches found", "grep"),
+    )
+    assert "熔断" not in result.content
+
+
+def test_budget_fuses_21st_call_when_mostly_low_value():
+    # 情况 2a：单工具预算 20 次，且低价值结果占比过半时，第 21 次起熔断。
+    # 4 次低价值 + 1 次大结果交替（低价值占比 80%）：预算兜底在低价值
+    # 连续计数（被大结果不断清零）永远够不到时接住。
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(20):
+        rows = 500 if i % 5 == 4 else 1
+        history += _pair("mcp__fx__bars", {"page": i}, _mcp(_mcp_body(page=i, rows=rows)), i)
+    result = mw.wrap_tool_call(
+        _fuse_request("mcp__fx__bars", {"page": 99}, history),
+        lambda _req: ToolMessage(content=_mcp(_mcp_body(99, rows=1)), tool_call_id="cur", name="mcp__fx__bars"),
+    )
+    assert "熔断" in result.content
+    assert "超出预算" in result.content
+
+
+def test_budget_never_fuses_healthy_pagination():
+    # 健康分页（每页都是足量新数据）哪怕超过预算也绝不能熔断——
+    # 预算只对「低价值占比过半」的试探性调用生效
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(25):
+        history += _pair("mcp__fx__bars", {"page": i}, _mcp(_mcp_body(page=i, rows=100)), i)
+    result = mw.wrap_tool_call(
+        _fuse_request("mcp__fx__bars", {"page": 99}, history),
+        lambda _req: ToolMessage(content=_mcp(_mcp_body(99, rows=100)), tool_call_id="cur", name="mcp__fx__bars"),
+    )
+    assert "熔断" not in result.content
+
+
+def test_budget_boundary_20th_call_still_executes():
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(19):
+        history += _pair("mcp__fx__bars", {"page": i}, _mcp(_mcp_body(page=i, rows=100)), i)
+    result = mw.wrap_tool_call(
+        _fuse_request("mcp__fx__bars", {"page": 99}, history),
+        lambda _req: ToolMessage(content=_mcp(_mcp_body(99)), tool_call_id="cur", name="mcp__fx__bars"),
+    )
+    assert "熔断" not in result.content
+
+
+def test_low_value_streak_fuses_seventh_call():
+    # 情况 2b：每次换参数、每次只回 1 行——第 7 次起熔断
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(6):
+        history += _pair("mcp__fx__bars", {"month": i}, _mcp(_mcp_body(page=i, rows=1)), i)
+    result = mw.wrap_tool_call(
+        _fuse_request("mcp__fx__bars", {"month": 99}, history),
+        lambda _req: ToolMessage(content=_mcp(_mcp_body(99, rows=1)), tool_call_id="cur", name="mcp__fx__bars"),
+    )
+    assert "熔断" in result.content
+
+
+def test_low_value_probes_below_limit_are_not_fused():
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(4):
+        history += _pair("mcp__fx__bars", {"month": i}, _mcp(_mcp_body(page=i, rows=1)), i)
+    result = mw.wrap_tool_call(
+        _fuse_request("mcp__fx__bars", {"month": 99}, history),
+        lambda _req: ToolMessage(content=_mcp(_mcp_body(99, rows=1)), tool_call_id="cur", name="mcp__fx__bars"),
+    )
+    assert "熔断" not in result.content
+
+
+def test_fuse_log_contains_thread_id(caplog):
+    # 日志观测要求：熔断日志必须带 thread_id 前缀，能定位到会话
+    import logging
+
+    args = {"path": "/x"}
+    history = []
+    for i in range(3):
+        history += _pair("grep", args, "No matches found", i)
+    mw = ToolProgressMiddleware()
+    with caplog.at_level(logging.WARNING, logger="easy_agent.agent"):
+        mw.wrap_tool_call(
+            _fuse_request("grep", args, history, thread_id="thread-abc"),
+            lambda _req: _tool_message("No matches found", "grep"),
+        )
+    assert any("[thread-abc]" in rec.message and "工具熔断" in rec.message for rec in caplog.records)
+
+
+def test_fuse_disabled_middleware_never_blocks():
+    mw = ToolProgressMiddleware(enabled=False)
+    args = {"path": "/x"}
+    history = []
+    for i in range(5):
+        history += _pair("grep", args, "No matches found", i)
+    result = mw.wrap_tool_call(
+        _fuse_request("grep", args, history), lambda _req: _tool_message("No matches found", "grep")
+    )
+    assert "熔断" not in result.content
+
+
+def test_fuse_check_failure_does_not_block_tool():
+    # state 结构异常时熔断检查必须静默放行，绝不阻断正常工具调用
+    mw = ToolProgressMiddleware()
+    request = _NS(tool_call={"name": "grep", "args": {"path": "/x"}, "id": "cur"}, state=None)
+    result = mw.wrap_tool_call(request, lambda _req: _tool_message("content", "grep"))
+    assert result.content == "content"
+
+
+def test_fuse_text_mentions_stop_and_conclusion():
+    text = _fuse_text("同一查询已连续 3 次返回空结果")
+    assert "同一查询已连续 3 次返回空结果" in text
+    assert "结论" in text
+    assert NOTE_MARK in text
+
+
+def test_write_like_tool_is_never_fused():
+    # 熔断只覆盖探索型四件套 + MCP 查询工具：写类工具在长任务里合法调用
+    # 几十次是常态，哪怕结果雷同也绝不能被预算/重复判定误熔断
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(25):
+        history += _pair("edit_file", {"path": f"/f{i}.md"}, "File created successfully", i)
+    result = mw.wrap_tool_call(
+        _fuse_request("edit_file", {"path": "/f99.md"}, history),
+        lambda _req: _tool_message("File created successfully", "edit_file"),
+    )
+    assert "熔断" not in result.content
+
+
+def test_mcp_tool_first_call_is_never_fused():
+    # MCP 工具首次调用时历史为空（无法识别类型），熔断必须放行
+    mw = ToolProgressMiddleware()
+    result = mw.wrap_tool_call(
+        _fuse_request("mcp__fx__bars", {"page": 0}, []),
+        lambda _req: ToolMessage(content=_mcp(_mcp_body(0)), tool_call_id="cur", name="mcp__fx__bars"),
+    )
+    assert "熔断" not in result.content
+
+
+def test_execute_mkdir_loop_is_never_fused():
+    # mkdir 这类静默成功的输出本就是空：创建多个目录的合法任务绝不能被
+    # 「空结果熔断」或「空正文重复」误伤（非查找类命令不判空）
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(8):
+        history += _pair("execute", {"command": f"mkdir -p /workspace/out{i}"}, "", i)
+    result = mw.wrap_tool_call(
+        _fuse_request("execute", {"command": "mkdir -p /workspace/out99"}, history),
+        lambda _req: _tool_message("", "execute"),
+    )
+    assert "熔断" not in result.content
+
+
+def test_execute_lookup_empty_loop_fuses_at_seventh_call():
+    # 换路径反复空查的探索型循环（execute 查找类命令）：第 7 次熔断
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(6):
+        history += _pair("execute", {"command": f"find /qts -name 'f{i}.md'"}, "", i)
+    result = mw.wrap_tool_call(
+        _fuse_request("execute", {"command": "find /qts -name 'f99.md'"}, history),
+        lambda _req: _tool_message("", "execute"),
+    )
+    assert "熔断" in result.content
+
+
+def test_execute_same_args_empty_lookup_fuses_at_fourth_call():
+    # 情况 1 对 execute 查找类命令同样生效：同命令连续 3 次空输出，第 4 次熔断
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(3):
+        history += _pair("execute", {"command": "find /qts -name 'x.md'"}, "", i)
+    result = mw.wrap_tool_call(
+        _fuse_request("execute", {"command": "find /qts -name 'x.md'"}, history),
+        lambda _req: _tool_message("", "execute"),
+    )
+    assert "熔断" in result.content
+
+
+def test_fuse_counts_annotated_history():
+    # 关键回归：生产环境历史结果都带本模块追加的尾注（含不带 NOTE_MARK 的
+    # 存量格式）。尾注剥不干净会让 is_empty 判 False，连续计数永远断掉，
+    # 熔断一次都不会触发——必须按「剥过尾注的正文」判空。
+    args = {"path": "/.agent/history.md", "pattern": "用户当前问题"}
+    annotated = "No matches found\n（此处为空。继续换同级路径不会有结果，请改用已知正确路径，或直接说明数据缺失。）"
+    history = []
+    for i in range(3):
+        history += _pair("grep", args, annotated, i)
+    mw = ToolProgressMiddleware()
+    result = mw.wrap_tool_call(
+        _fuse_request("grep", args, history),
+        lambda _req: _tool_message("No matches found", "grep"),
+    )
+    assert "熔断" in result.content
+
+
+def test_non_envelope_result_on_mcp_tool_still_gets_hint():
+    # 口径统一回归：工具历史里有信封结果（已识别为 MCP 工具），本次返回
+    # 裸结果（无信封）——熔断在按 MCP 计数，提示也必须照给，否则模型会在
+    # 收不到任何警告的情况下被熔断拦截。
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(5):
+        history += _pair(
+            "fx_bars", {"m": i}, _mcp(_mcp_body(page=i, rows=1)), i
+        )
+    result = mw.wrap_tool_call(
+        _fuse_request("fx_bars", {"m": 99}, history),
+        lambda _req: ToolMessage(  # 本次无信封
+            content=_mcp_body(99, rows=1), tool_call_id="cur", name="fx_bars"
+        ),
+    )
+    assert isinstance(result, ToolMessage)
+    assert "低价值" in result.content or "有效数据" in result.content
+
+
+def test_non_envelope_result_on_mcp_tool_still_gets_hint():
+    # 口径统一回归：工具历史里有信封结果（已识别为 MCP 工具），本次返回
+    # 裸结果（无信封）——熔断在按 MCP 计数，提示也必须照给，否则模型会在
+    # 收不到任何警告的情况下被熔断拦截。
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(5):
+        history += _pair(
+            "fx_bars", {"m": i}, _mcp(_mcp_body(page=i, rows=1)), i
+        )
+    result = mw.wrap_tool_call(
+        _fuse_request("fx_bars", {"m": 99}, history),
+        lambda _req: ToolMessage(  # 本次无信封
+            content=_mcp_body(99, rows=1), tool_call_id="cur", name="fx_bars"
+        ),
+    )
+    assert isinstance(result, ToolMessage)
+    assert "低价值" in result.content or "有效数据" in result.content
