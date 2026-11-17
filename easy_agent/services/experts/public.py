@@ -385,6 +385,53 @@ def discover_public_experts() -> list[dict]:
     return items
 
 
+def find_public_expert_by_name_cn(name_cn: str) -> Optional[dict]:
+    """按中文名查找预置专家中的重名项（创建/修改专家时的重名校验用）。
+
+    - 只读各目录 ``config.yaml`` 的 ``name_cn``，**不读提示词正文**，比
+      :func:`discover_public_experts` 便宜；预置专家数量固定（随发行包交付）。
+    - 比较口径与自定义专家一致（忽略全部空白 + 忽略大小写），复用
+      ``db.expert_store.normalize_name_cn``；在函数内导入以保持本模块
+      「只读文件系统、不碰数据库」的依赖边界（纯函数、无循环）。
+    - 函数内动态导入 db 纯函数不改变本模块职责；异常被吞掉时按「不冲突」处理，
+      避免一个坏目录把专家创建/修改整个拦下。
+
+    Returns:
+        命中的最小信息 ``{"export_agent_id", "export_name_cn", "scope"}``；
+        无冲突（或名称为空、目录缺失）返回 ``None``。
+    """
+    try:
+        from easy_agent.db.expert_store import normalize_name_cn
+    except Exception:  # noqa: BLE001 - 极端降级：拿不到比较函数则不拦，不阻断主流程
+        logger.debug("导入 normalize_name_cn 失败，跳过预置专家重名校验")
+        return None
+
+    target = normalize_name_cn(name_cn)
+    if not target:
+        return None
+
+    root = public_experts_root()
+    if not root.is_dir():
+        return None
+
+    for child in sorted(root.iterdir()):
+        if not child.is_dir() or child.name.startswith(_SKIP_PREFIXES):
+            continue
+        content_dir, _ = _resolve_content_dir(child)
+        cfg = _read_yaml(content_dir / "config.yaml") or _read_yaml(child / "config.yaml")
+        candidate = str(cfg.get("name_cn") or "").strip()
+        if not candidate:
+            # 与 read_public_expert 的兜底口径一致（目录名 → 去分隔符）
+            candidate = child.name.replace("_", " ").replace("-", " ").strip()
+        if normalize_name_cn(candidate) == target:
+            return {
+                "export_agent_id": str(cfg.get("expert_agent_id") or child.name).strip(),
+                "export_name_cn": candidate,
+                "scope": "public",
+            }
+    return None
+
+
 def find_public_expert(expert_id: str) -> Optional[dict]:
     """按 ``export_agent_id`` 查找公共专家；不存在返回 ``None``。
 
