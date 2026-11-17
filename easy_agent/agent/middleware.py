@@ -61,17 +61,21 @@ def build_agent_middleware(config, max_steps, *, approval_mode: str | None = Non
         DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT,
         DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT,
         DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT,
+        DEFAULT_TOOL_PROGRESS_FUSE_LIMIT,
+        DEFAULT_TOOL_PROGRESS_LOW_VALUE_LIMIT,
+        DEFAULT_TOOL_PROGRESS_LOW_VALUE_ROWS,
         DEFAULT_TOOL_PROGRESS_STOP_LIMIT,
+        DEFAULT_TOOL_PROGRESS_TOOL_CALL_BUDGET,
     )
 
     agent_cfg = getattr(config, "agent", None)
     middleware.append(
         ToolProgressMiddleware(
             enabled=bool(getattr(agent_cfg, "tool_progress_enabled", True)),
-            # 四个阈值都取自 config.yaml 的 agent 段（AgentConfig.tool_progress_*），
+            # 九个阈值都取自 config.yaml 的 agent 段（AgentConfig.tool_progress_*），
             # 这里 getattr 的第二个参数只是「配置对象没有该属性时」的兜底
             # （测试用 SimpleNamespace 构造配置），值来自 config_models 的常量。
-            # 四个键都进图缓存指纹（graph_cache.config_fingerprint），
+            # 全部键都进图缓存指纹（graph_cache.config_fingerprint），
             # 改配置会重建图，不会沿用旧中间件实例。
             empty_limit=int(
                 getattr(agent_cfg, "tool_progress_empty_limit", None)
@@ -89,6 +93,24 @@ def build_agent_middleware(config, max_steps, *, approval_mode: str | None = Non
                 getattr(agent_cfg, "tool_progress_empty_hard_limit", None)
                 or DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT
             ),
+            # 熔断三参数（2026-11-17）：同指纹空结果熔断线、单工具调用预算、
+            # 低价值行数阈值与连续线。改值必须进图缓存指纹（graph_cache）。
+            fuse_limit=int(
+                getattr(agent_cfg, "tool_progress_fuse_limit", None)
+                or DEFAULT_TOOL_PROGRESS_FUSE_LIMIT
+            ),
+            tool_call_budget=int(
+                getattr(agent_cfg, "tool_progress_tool_call_budget", None)
+                or DEFAULT_TOOL_PROGRESS_TOOL_CALL_BUDGET
+            ),
+            low_value_rows=int(
+                getattr(agent_cfg, "tool_progress_low_value_rows", None)
+                or DEFAULT_TOOL_PROGRESS_LOW_VALUE_ROWS
+            ),
+            low_value_limit=int(
+                getattr(agent_cfg, "tool_progress_low_value_limit", None)
+                or DEFAULT_TOOL_PROGRESS_LOW_VALUE_LIMIT
+            ),
         )
     )
     middleware.append(
@@ -98,9 +120,11 @@ def build_agent_middleware(config, max_steps, *, approval_mode: str | None = Non
             log_truncate=getattr(config.tools, "result_log_truncate", 500)
         )
     )
-    # 超限时显式报错，避免「模型步数用尽但前端以为正常结束」；
-    # 错误会经 streaming 的异常分支转成 SSE error。
-    middleware.extend(build_call_limit_middleware(max_steps, exit_behavior="error"))
+    # 步数/调用超限的处理（2026-11-17 由 "error" 改为 "end"）：循环类问题烧满
+    # 步数时，用户拿到的是框架注入的「已达上限」说明并正常收尾，前端不再卡
+    # 「正在思考」、不再报 SSE error，会话可继续发下一条消息。循环本身已由
+    # ToolProgressMiddleware 的熔断在远低于上限处拦截，这里是最后防线。
+    middleware.extend(build_call_limit_middleware(max_steps, exit_behavior="end"))
     # 审批审计：auto 模式下框架不装 HumanInTheLoopMiddleware，靠它补
     # 「用户已选择自动审批，跳过人工审批」日志。名单与 build_interrupt_config
     # 同源（config.hitl.tools），名单外的只读工具本来就不进审批，不该记日志。
@@ -119,9 +143,10 @@ def build_agent_middleware(config, max_steps, *, approval_mode: str | None = Non
 def build_call_limit_middleware(max_steps, *, exit_behavior: str) -> list:
     """模型 / 工具调用上限：模型 ``max_steps`` 次、工具 ``4 * max_steps`` 次（每次 run）。
 
-    主代理用 ``exit_behavior="error"``；子代理用 ``"end"``——超限时子代理以一条
-    「已达调用上限」的消息收尾，``task`` 工具把它作为结果交回主代理，而不是让异常
-    打断整轮对话（DA-10）。每次调用都返回新实例，各代理栈互不共享。
+    主代理与子代理都用 ``exit_behavior="end"``——超限时注入一条「已达调用上限」
+    的消息正常收尾，而不是让异常打断整轮对话；主代理的超限收尾经 SSE 正常 done，
+    子代理的超限结果经 ``task`` 工具交回主代理（DA-10）。每次调用都返回新实例，
+    各代理栈互不共享。
     """
     try:
         from langchain.agents.middleware import (
