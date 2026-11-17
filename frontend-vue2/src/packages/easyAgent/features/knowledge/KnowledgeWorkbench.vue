@@ -349,17 +349,12 @@
         <header>
           <div>
             <h3>权限管理</h3>
-            <p>为「{{ selectedBase ? selectedBase.name : '' }}」指定知识库管理员与可见人员。管理员可管理文档并调整查看权限，但不能创建或删除知识库。</p>
+            <p>为「{{ selectedBase ? selectedBase.name : '' }}」指定可见人员</p>
           </div>
           <button aria-label="关闭" @click="showPermissionModal = false"><IconX /></button>
         </header>
         <div v-if="permissionDirectoryLoading" class="ke-perm-loading"><span class="ke-spinner"></span><p>正在加载人员目录…</p></div>
         <template v-else>
-          <div class="ke-perm-section">
-            <div class="ke-perm-section-head"><strong>知识库管理员</strong><span>已选 {{ permAdminTotal }} 人；仅所有者或系统管理员可调整</span></div>
-            <KnowledgePermissionPicker v-if="canManageBaseAdmins" :users="permissionAdminDirectory" empty-text="暂无可选人员，请先在人员与部门中导入账号。" />
-            <p v-else class="ke-permission-note">为「{{ selectedBase ? selectedBase.name : '' }}」指定可见人员</p>
-          </div>
           <div class="ke-perm-section">
             <div class="ke-perm-section-head"><strong>查看人员</strong><span>已选 {{ permSelectedTotal }} / {{ permDirectoryTotal }} 人</span></div>
             <KnowledgePermissionPicker :users="permissionDirectory" empty-text="暂无可选人员，请先在人员与部门中导入账号。" />
@@ -685,7 +680,7 @@ const saving = ref(false)
 const baseForm = reactive({ name: '', description: '', visibility: 'personal', department_id: '' })
 const folderForm = reactive({ id: '', name: '', parentId: '' })
 const confirmation = reactive({ open: false, title: '', description: '', confirmLabel: '确认删除', tone: 'danger' })
-// 权限管理：查看者/知识库管理员两份勾选态与受限标记；四列筛选由 KnowledgePermissionPicker 负责
+// 权限管理：查看者勾选态与受限标记；管理员名单仅用于保存时保留既有知识库管理员，不在弹窗展示
 const permissionDirectory = ref([])
 const permissionAdminDirectory = ref([])
 const permissionDirectoryLoading = ref(false)
