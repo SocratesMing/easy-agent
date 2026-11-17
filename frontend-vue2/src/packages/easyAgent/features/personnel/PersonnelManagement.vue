@@ -366,8 +366,8 @@ export default {
     const departmentName = ref('')
     const page = ref(1)
     const pageSize = 50
-    // 与后端 is_super_admin 保持一致：liufengbao 是免密门户的总管理员
-    const SUPER_ADMIN_USERNAMES = ['admin', 'liufengbao']
+    // 与后端 is_super_admin 保持一致：shijiabao 是免密门户的总管理员
+    const SUPER_ADMIN_USERNAMES = ['admin', 'shijiabao']
     function isSuperAdmin(username) {
       return SUPER_ADMIN_USERNAMES.includes(String(username || ''))
     }

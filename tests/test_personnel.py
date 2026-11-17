@@ -101,10 +101,10 @@ def test_knowledge_manager_has_no_personnel_access(client, db):
     assert client.get("/agent/personnel/import-template").status_code == 403
 
 
-def test_liufengbao_has_personnel_access(client, db):
-    """免密门户总管理员 liufengbao 与 admin 同权。"""
-    db.register_user("liufengbao", "secret123")
-    _as_user("liufengbao")
+def test_shijiabao_has_personnel_access(client, db):
+    """免密门户总管理员 shijiabao 与 admin 同权。"""
+    db.register_user("shijiabao", "secret123")
+    _as_user("shijiabao")
 
     assert client.get("/agent/personnel/users").status_code == 200
 

@@ -95,11 +95,11 @@ def test_passwordless_login_rejects_admin(auth_client):
     assert resp.status_code == 403
 
 
-def test_passwordless_login_allows_super_admin_liufengbao(auth_client):
-    """免密门户部署的总管理员：liufengbao 允许免密直登。"""
-    resp = _passwordless_login(auth_client, "liufengbao", "0")
+def test_passwordless_login_allows_super_admin_shijiabao(auth_client):
+    """免密门户部署的总管理员：shijiabao 允许免密直登。"""
+    resp = _passwordless_login(auth_client, "shijiabao", "0")
     assert resp.status_code == 200
-    assert resp.json()["username"] == "liufengbao"
+    assert resp.json()["username"] == "shijiabao"
 
 
 def test_passwordless_login_creates_workspace_dirs(client):

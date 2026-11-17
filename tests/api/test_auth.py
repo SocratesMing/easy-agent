@@ -197,12 +197,12 @@ def test_department_manager_cannot_reset_user_password(db):
     assert db.verify_user_password("alice", "123456") is None
 
 
-def test_super_admin_liufengbao_can_reset_user_password(db):
-    """免密门户总管理员 liufengbao 与 admin 同权。"""
-    db.register_user("liufengbao", "secret123")
+def test_super_admin_shijiabao_can_reset_user_password(db):
+    """免密门户总管理员 shijiabao 与 admin 同权。"""
+    db.register_user("shijiabao", "secret123")
     db.register_user("alice", "secret123")
 
-    result = auth_mod.admin_reset_password("alice", "liufengbao", db)
+    result = auth_mod.admin_reset_password("alice", "shijiabao", db)
 
     assert result["status"] == "success"
     assert db.verify_user_password("alice", "123456") is not None

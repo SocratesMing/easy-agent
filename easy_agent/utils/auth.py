@@ -19,8 +19,8 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # 超级管理员账号（与内置 admin 同权）。
-# admin 禁止免密登录；启用免密登录的门户部署用 liufengbao 作为总管理员。
-SUPER_ADMIN_USERNAMES = frozenset({"admin", "liufengbao"})
+# admin 禁止免密登录；启用免密登录的门户部署用 shijiabao 作为总管理员。
+SUPER_ADMIN_USERNAMES = frozenset({"admin", "shijiabao"})
 
 
 def is_super_admin(username: str | None) -> bool:

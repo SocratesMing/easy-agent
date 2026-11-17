@@ -21,7 +21,7 @@ logger = logging.getLogger("easy_agent.prompts")
 
 prompts_router = APIRouter(prefix="/agent/prompts", tags=["Prompts"])
 
-# 提示词管理是全局配置，只放行超级管理员账号（admin / liufengbao）。
+# 提示词管理是全局配置，只放行超级管理员账号（admin / shijiabao）。
 
 
 def _require_admin(username: str) -> None:

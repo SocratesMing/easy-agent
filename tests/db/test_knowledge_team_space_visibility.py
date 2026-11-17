@@ -208,13 +208,13 @@ async def test_base_admin_manages_only_authorized_base(db, tmp_path):
         assert exc.code == "KNOWLEDGE_TEAM_SPACE_MANAGER_REQUIRED"
 
 
-async def test_liufengbao_is_super_admin_for_team_spaces(db, tmp_path):
-    """liufengbao 与 admin 同权：公共空间全量可见、MANAGER、可全局管理。"""
+async def test_shijiabao_is_super_admin_for_team_spaces(db, tmp_path):
+    """shijiabao 与 admin 同权：公共空间全量可见、MANAGER、可全局管理。"""
     _insert_user(db, "u-owner", "owner", "dept-a")
     _insert_team_base(db, "base-a", "dept-a", owner_user_id="u-owner")
 
     service = _service(db, tmp_path)
-    super_admin = KnowledgePrincipal(user_id="u-lfb", username="liufengbao", department_id=None)
+    super_admin = KnowledgePrincipal(user_id="u-sjb", username="shijiabao", department_id=None)
     base = KnowledgeRepository(db).get_base("base-a")
 
     assert await service._effective_role(base, super_admin, []) == KnowledgeBaseRole.MANAGER
@@ -328,13 +328,13 @@ async def test_create_team_base_with_initial_permission_list(db, tmp_path):
 
     from easy_agent.knowledges.core.models import KnowledgeBaseVisibility
 
-    _insert_user(db, "u-lfb", "liufengbao", "dept-a")
+    _insert_user(db, "u-sjb", "shijiabao", "dept-a")
     _insert_user(db, "u-picked", "picked", "dept-a")
     _insert_user(db, "u-same", "same", "dept-a")
 
     service = _service(db, tmp_path)
     service.config = SimpleNamespace(embedding=SimpleNamespace(model="test-model"))
-    owner = KnowledgePrincipal(user_id="u-lfb", username="liufengbao", department_id="dept-a")
+    owner = KnowledgePrincipal(user_id="u-sjb", username="shijiabao", department_id="dept-a")
 
     # 名单含重复与空白项：service 应去重去空并剔除 owner 本人
     created = await service.create_base(
@@ -343,7 +343,7 @@ async def test_create_team_base_with_initial_permission_list(db, tmp_path):
         description="",
         visibility=KnowledgeBaseVisibility.TEAM,
         request_id="req-test",
-        permission_user_ids=["u-picked", "u-picked", " u-picked ", "u-lfb", ""],
+        permission_user_ids=["u-picked", "u-picked", " u-picked ", "u-sjb", ""],
     )
     assert created.visibility == KnowledgeBaseVisibility.TEAM
 

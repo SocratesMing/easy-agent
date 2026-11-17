@@ -82,7 +82,7 @@ def require_personnel_editor(
     username: Annotated[str, Depends(get_current_username)],
     db: Annotated[Database, Depends(get_database)],
 ) -> str:
-    """人员管理守卫：仅超级管理员（admin / liufengbao）访问，其余 403。"""
+    """人员管理守卫：仅超级管理员（admin / shijiabao）访问，其余 403。"""
     user = db.get_user_by_username(username)
     if not user:
         raise HTTPException(status_code=403, detail="账号不存在或已被删除")
