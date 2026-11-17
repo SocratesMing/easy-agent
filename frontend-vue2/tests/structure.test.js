@@ -76,6 +76,8 @@ const MAX_NEW_FILE_LINES = 800
  *   提示条改为琥珀强调样式后按实测值更新：ChatInput 3874 → 3909。
  * 2026-11-17 合并 origin/feature/1128 后按实测值校正远端未同步的预算：
  *   ChatInput 3909 → 4420、AiSidebar 1726 → 1755、chatSession 1744 → 1745。
+ * 2026-11-17 知识库问答支持后台续流（离开页面不再取消后端任务，重进面板挂
+ *   /stream/live 回放）后按实测值更新：KnowledgeWorkbench 1782 → 1820。
  */
 const LINE_BUDGET = {
   // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
@@ -98,7 +100,7 @@ const LINE_BUDGET = {
   [`${MOD}features/chat/components/SessionList.vue`]: 1106,
   [`${MOD}features/tasks/components/ScheduledTasksPanel.vue`]: 967,
   [`${MOD}features/workspace/components/WorkspacePanel.vue`]: 954,
-  [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1782,
+  [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1820,
   [`${MOD}features/personnel/PersonnelManagement.vue`]: 1194,
   // 页面级深色覆盖（原 App.vue 非 scoped 样式块，只允许变短）
   [`${MOD}styles/theme-dark.css`]: 1195,
