@@ -23,7 +23,8 @@
 安全约束
 --------
 - 归属校验统一走 ``ExpertStore.get_owned(id, user_id)``：改不了、也删不了别人的专家；
-- 中文名唯一（忽略空白与大小写，软删除的专家不占名），与接口层同一口径；
+- 中文名唯一（忽略空白与大小写，软删除不占名）：本用户自定义专家 + 全局预置专家
+  均查重，与接口层同一口径；
 - 修改不会触碰 ``active`` 之外的历史版本，运行中的旧会话不会被半成品影响。
 """
 
@@ -41,6 +42,7 @@ from easy_agent.db.expert_store import (
 from easy_agent.db.providers import get_expert_repository
 from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.db.repositories.user_repository import UserRepository
+from easy_agent.services.experts.name_guard import find_name_conflict
 from easy_agent.services.experts.service import (
     MAX_DESCRIPTION_LEN,
     build_expert_ids,
@@ -420,11 +422,11 @@ class SaveExpertTool(BaseTool):
         store = expert_repo
         name_cn = args.name_cn.strip()
 
-        conflict = await run_blocking(store.find_by_name_cn, user_id, name_cn)
+        conflict = await run_blocking(find_name_conflict, store, user_id, name_cn)
         if conflict:
             return (
                 f"错误：已有同名的专家Agent「{conflict.get('export_name_cn') or name_cn}」，"
-                "请修改专家名称后重试（名称需在本账号内唯一）。"
+                "请修改专家名称后重试（名称不能与已有专家或预置专家重复）。"
             )
 
         expert_agent_id, name_en_placeholder = build_expert_ids(name_cn)
@@ -658,7 +660,7 @@ class SaveExpertTool(BaseTool):
             return error
 
         conflict = await run_blocking(
-            store.find_by_name_cn, user_id, name_cn, exclude_agent_id=expert_agent_id
+            find_name_conflict, store, user_id, name_cn, exclude_agent_id=expert_agent_id
         )
         if conflict:
             return (

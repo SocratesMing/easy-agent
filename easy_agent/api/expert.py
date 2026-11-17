@@ -174,7 +174,7 @@ async def add_expert(
     name_cn = request.name_cn.strip()
     store = repo
 
-    # 中文名唯一：同一用户下不允许出现同名专家（含已软删除的记录）
+    # 中文名唯一：本用户自定义专家 + 全局预置专家均不允许重名（软删除不占名）
     await asyncio.to_thread(_ensure_name_available, store, user_id, name_cn)
 
     expert_agent_id, name_en = build_expert_ids(request.name_cn)

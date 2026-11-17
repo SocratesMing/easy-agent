@@ -223,6 +223,50 @@ def test_create_missing_name_or_prompt_rejected(env):
     assert ExpertStore(env.db).list_by_user("testuser")[0] == 0
 
 
+@pytest.fixture()
+def preset_root(env, monkeypatch, tmp_path):
+    """把预置专家根目录指向临时目录，写入一个「预置插画师」。"""
+    import easy_agent.services.experts.public as public_mod
+
+    preset_dir = tmp_path / "presets" / "preset_illustrator" / "v1"
+    preset_dir.mkdir(parents=True)
+    (preset_dir.parent / "active").write_text("1", encoding="utf-8")
+    (preset_dir / "config.yaml").write_text(
+        "expert_agent_id: preset_illustrator\nname_cn: 预置插画师\n"
+        "name_en: preset-illustrator\nversion: 1\n",
+        encoding="utf-8",
+    )
+    (preset_dir / "illustrator.md").write_text("你是预置插画师。", encoding="utf-8")
+    monkeypatch.setattr(public_mod, "public_experts_root", lambda: tmp_path / "presets")
+
+
+def test_create_duplicate_preset_name_rejected(env, preset_root):
+    """对话创建撞上预置专家名：返回错误话术，不落库、不落目录。"""
+    out = _create(_make_tool(), name_cn=" 预置  插画师 ")
+    assert out.startswith("错误：")
+    assert "同名" in out
+    assert "预置插画师" in out
+    assert ExpertStore(env.db).list_by_user("testuser")[0] == 0
+
+
+def test_update_to_preset_name_rejected(env, preset_root):
+    """对话修改改名为预置专家名：返回错误话术，库记录不变。"""
+    tool = _make_tool()
+    first = _expert_id_from(_create(tool, name_cn="原创专家"))
+
+    out = _call(
+        tool,
+        action="update",
+        expert_agent_id=first,
+        name_cn="预置插画师",
+        prompt="想改成预置专家名",
+        **FAKE_CONFIG,
+    )
+    assert out.startswith("错误：")
+    assert "同名" in out
+    assert ExpertStore(env.db).get(first)["export_name_cn"] == "原创专家"
+
+
 def test_create_invalid_args_rejected(env):
     """缺 action（Literal 校验失败）时返回可读错误，不抛异常。"""
     out = _call(_make_tool(), action="delete", name_cn="x", prompt="y")
