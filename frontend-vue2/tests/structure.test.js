@@ -74,19 +74,21 @@ const MAX_NEW_FILE_LINES = 800
  *   并把图标/按钮描边收成主色点缀后按实测值更新：ChatInput 3806 → 3874。
  * 2026-11-16 长文本判断改为按模型窗口 token 预算（131072 扣除用量/输出/技能开销），
  *   提示条改为琥珀强调样式后按实测值更新：ChatInput 3874 → 3909。
+ * 2026-11-17 合并 origin/feature/1128 后按实测值校正远端未同步的预算：
+ *   ChatInput 3909 → 4420、AiSidebar 1726 → 1755、chatSession 1744 → 1745。
  */
 const LINE_BUDGET = {
   // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
   // 2026-11-05 合并 audit-improvements（注释停用 AiSidebar）后按实测值更新：2035 → 2036
   [`${MOD}EasyAgentPage.vue`]: 2057,
-  [`${MOD}features/chat/components/ChatInput.vue`]: 3909,
+  [`${MOD}features/chat/components/ChatInput.vue`]: 4420,
   // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2644 → 2616
   // 2026-11-16 HITL 批次审批面板（一个中断多项操作只给一个审批入口）后按实测值更新：2620 → 2647
   [`${MOD}features/chat/components/ChatMessage.vue`]: 2647,
-  [`${MOD}features/chat/components/AiSidebar.vue`]: 1726,
+  [`${MOD}features/chat/components/AiSidebar.vue`]: 1755,
   [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2253,
   // 2026-11-12 存量校正：mysql_saver / 跨 Pod 挂载修复后实为 1740 行，按实测值更新（本次改动未触及）
-  [`${MOD}features/chat/mixins/chatSession.js`]: 1744,
+  [`${MOD}features/chat/mixins/chatSession.js`]: 1745,
   [`${MOD}features/connectors/components/ConnectorListPanel.vue`]: 1504,
   [`${MOD}features/skills/components/SkillListPanel.vue`]: 1260,
   [`${MOD}shared/preview/FilePreview.vue`]: 1164,
