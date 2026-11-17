@@ -798,3 +798,125 @@ def test_install_missing_required_fields_header_is_latin1_safe(client, cn_field_
     # HTTP 头按 latin-1 编码传输：值必须可 latin-1 编码，且客户端仍能解析回中文
     header.encode("latin-1")
     assert json.loads(header) == ["数据库文件路径"]
+
+
+# ── 自家 mcp-server 连接器：留空自动签发 API Key（修复 Illegal header value）──
+
+OWN_MCP_CONNECTOR = {
+    "id": "own-mcp",
+    "name": "自家 MCP 业务",
+    "description": "由 mcp-server 子项目提供，留空 Key 时自动签发",
+    "icon": "mcp",
+    "fields": [
+        {
+            "key": "headers.Authorization",
+            "label": "MCP API Key",
+            "placeholder": "自家业务可留空，添加时自动签发",
+            "required": False,
+        },
+    ],
+    "config": {
+        "transport": "streamable_http",
+        "url": "http://127.0.0.1:8174/mcp/own-mcp/",
+        "headers": {"Authorization": "Bearer "},
+    },
+}
+
+
+@pytest.fixture()
+def own_mcp_catalog(monkeypatch):
+    """目录替换为一条自家 mcp-server 连接器，并跳过真实 MCP 校验。"""
+
+    async def _no_validate(names, username):
+        return []
+
+    monkeypatch.setattr(
+        connectors_service, "load_catalog", lambda path=None: [dict(OWN_MCP_CONNECTOR)]
+    )
+    monkeypatch.setattr(connectors_api, "_validate_servers", _no_validate)
+    return OWN_MCP_CONNECTOR
+
+
+def _issued_key_hash(business: str) -> str | None:
+    """直接查库取该业务的 key 哈希（repository 的列表接口不返回哈希）。"""
+    from easy_agent.db import get_database
+
+    db = get_database()
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        db._execute(
+            cursor,
+            "SELECT key_hash FROM mcp_api_keys WHERE username=? AND business=? AND revoked=0",
+            ("testuser", business),
+        )
+        row = cursor.fetchone()
+    if not row:
+        return None
+    return row["key_hash"] if not isinstance(row, dict) else row["key_hash"]
+
+
+def test_install_auto_issues_api_key_when_authorization_blank(client, own_mcp_catalog):
+    """Authorization 留空时自动签发：写入合法的 Bearer token，且哈希落库。"""
+    from easy_agent.services.mcp_api_keys import hash_api_key
+
+    resp = client.post(
+        "/agent/connectors/install", json={"id": "own-mcp", "validate": False}
+    )
+    assert resp.status_code == 200, resp.text
+
+    saved = json.loads(_user_mcp_path().read_text(encoding="utf-8"))
+    auth = saved["servers"]["own-mcp"]["headers"]["Authorization"]
+    assert auth.startswith("Bearer mcp_"), auth
+    # 头值不能带尾随空格（否则 httpx 抛 Illegal header value）
+    assert auth == auth.strip()
+
+    token = auth[len("Bearer "):]
+    assert _issued_key_hash("own-mcp") == hash_api_key(token)
+
+
+def test_install_keeps_user_supplied_key_and_adds_bearer_prefix(client, own_mcp_catalog):
+    """用户自己填了 Key：不重新签发，只补 Bearer 前缀。"""
+    resp = client.post(
+        "/agent/connectors/install",
+        json={
+            "id": "own-mcp",
+            "validate": False,
+            "values": {"headers.Authorization": "sk-user-123"},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    saved = json.loads(_user_mcp_path().read_text(encoding="utf-8"))
+    assert saved["servers"]["own-mcp"]["headers"]["Authorization"] == "Bearer sk-user-123"
+    assert _issued_key_hash("own-mcp") is None
+
+
+def test_external_connector_is_not_auto_issued(client, monkeypatch):
+    """第三方 URL 的连接器不签发自家 Key（避免把 Key 发给外部服务）。"""
+    external = {
+        "id": "external",
+        "name": "外部 MCP",
+        "description": "第三方服务",
+        "icon": "ext",
+        "fields": [
+            {"key": "headers.Authorization", "label": "MCP API Key", "required": False}
+        ],
+        "config": {
+            "transport": "streamable_http",
+            "url": "http://127.0.0.1:9/mcp",
+            "headers": {"Authorization": "Bearer "},
+        },
+    }
+
+    async def _no_validate(names, username):
+        return []
+
+    monkeypatch.setattr(connectors_service, "load_catalog", lambda path=None: [dict(external)])
+    monkeypatch.setattr(connectors_api, "_validate_servers", _no_validate)
+
+    resp = client.post("/agent/connectors/install", json={"id": "external", "validate": False})
+    assert resp.status_code == 200, resp.text
+
+    saved = json.loads(_user_mcp_path().read_text(encoding="utf-8"))
+    assert saved["servers"]["external"]["headers"]["Authorization"] == "Bearer "
+    assert _issued_key_hash("external") is None
