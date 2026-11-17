@@ -248,7 +248,7 @@ def login_passwordless(
     if not getattr(policy, "passwordless_login_enabled", False):
         raise HTTPException(status_code=403, detail="当前环境未开启门户免密登录，请使用账号密码登录")
     # 内置 admin 拥有用户管理权限，禁止免密登录，防止仅凭用户名冒充管理员；
-    # liufengbao 作为免密门户部署的总管理员，允许免密登录。
+    # shijiabao 作为免密门户部署的总管理员，允许免密登录。
     if request.username == "admin":
         raise HTTPException(status_code=403, detail="admin 用户不支持免密登录")
 

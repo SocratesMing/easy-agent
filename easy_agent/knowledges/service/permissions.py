@@ -115,7 +115,7 @@ class PermissionMixin:
         """在单库授权之上叠加超级管理员全局权限。
 
         规则统一由 ``core.permissions.resolve_role`` 提供，与 Agent 原文工具
-        共用同一口径：超级管理员（admin / liufengbao）对所有公共库直通
+        共用同一口径：超级管理员（admin / shijiabao）对所有公共库直通
         MANAGER；owner 由 effective_role 直接判 MANAGER（owner 权限不落
         knowledge_permissions）；其余账号维持本部门默认只读、勾选名单与
         单库授权逻辑。
