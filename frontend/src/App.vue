@@ -123,6 +123,7 @@
           :isStreaming="isStreaming"
           :visible="!isWorkspaceCollapsed"
           @toggle="isWorkspaceCollapsed = !isWorkspaceCollapsed"
+          @expand="isWorkspaceCollapsed = false"
         />
       </div>
 

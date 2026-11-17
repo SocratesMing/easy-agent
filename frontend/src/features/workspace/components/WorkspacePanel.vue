@@ -190,6 +190,7 @@ import {
 import FileTreeNode from '../../../shared/preview/FileTreeNode.vue'
 import FilePreview from '../../../shared/preview/FilePreview.vue'
 import { getWorkspaceTree } from '../../../api/files'
+import { createWorkspaceReveal } from '../../../shared/utils/workspaceReveal.js'
 import { getSessionExperts } from '../../../api/expert.js'
 import { getScheduledTaskWorkspace } from '../../../api/scheduledTasks'
 import { getStoredToken } from '../../../api/auth.js'
@@ -204,7 +205,7 @@ const props = defineProps({
   visible: { type: Boolean, default: true },
 })
 
-const emit = defineEmits(['toggle'])
+const emit = defineEmits(['toggle', 'expand'])
 
 // ── 面板宽度（可拖拽，宽度持久化到 localStorage）──────────────────
 const WIDTH_KEY = 'workspace_panel_width'
@@ -511,9 +512,24 @@ function refresh() {
   buildWorkspaceTree()
 }
 
+const workspaceReveal = createWorkspaceReveal(
+  (path, sessionId) => getWorkspaceTree(path, sessionId),
+)
+
 watch(() => props.isStreaming, (newVal, oldVal) => {
-  if (oldVal === true && newVal === false) {
-    setTimeout(() => refresh(), 300)
+  if (props.taskId) {
+    if (oldVal && !newVal) setTimeout(() => refresh(), 300)
+    return
+  }
+  if (newVal && !oldVal) workspaceReveal.remember(props.currentSessionId)
+  if (oldVal && !newVal) {
+    const sessionId = props.currentSessionId
+    workspaceReveal.reveal({
+      sessionId,
+      stillCurrent: () => Boolean(sessionId) && sessionId === props.currentSessionId && !props.isStreaming && !props.taskId,
+      refresh: () => buildWorkspaceTree(),
+      onExpand: () => { if (!props.visible) emit('expand') },
+    })
   }
 })
 

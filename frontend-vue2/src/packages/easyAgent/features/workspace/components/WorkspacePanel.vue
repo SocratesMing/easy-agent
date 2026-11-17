@@ -179,6 +179,7 @@
 import FileTreeNode from '../../../shared/preview/FileTreeNode.vue'
 import FilePreview from '../../../shared/preview/FilePreview.vue'
 import { getWorkspaceTree } from '../../../api/files'
+import { createWorkspaceReveal } from '../../../shared/utils/workspaceReveal.js'
 import { getSessionExperts } from '../../../api/expert.js'
 import { getStoredToken } from '../../../api/auth.js'
 import { resolveUrl } from '../../../utils/request.js'
@@ -289,8 +290,15 @@ export default {
       },
     ],
     isStreaming(newVal, oldVal) {
-      if (oldVal === true && newVal === false) {
-        setTimeout(() => this.refresh(), 300)
+      if (newVal && !oldVal) this.workspaceReveal().remember(this.currentSessionId)
+      if (oldVal && !newVal) {
+        const sessionId = this.currentSessionId
+        this.workspaceReveal().reveal({
+          sessionId,
+          stillCurrent: () => Boolean(sessionId) && sessionId === this.currentSessionId && !this.isStreaming,
+          refresh: () => this.buildWorkspaceTree(),
+          onExpand: () => { if (!this.visible) this.$emit('expand') },
+        })
       }
     },
     currentSessionId() {
@@ -493,6 +501,14 @@ export default {
     },
     refresh() {
       this.buildWorkspaceTree()
+    },
+    workspaceReveal() {
+      if (!this._workspaceReveal) {
+        this._workspaceReveal = createWorkspaceReveal(
+          (path, sessionId) => getWorkspaceTree(path, sessionId),
+        )
+      }
+      return this._workspaceReveal
     },
     // 会话切换时工作区视图必须整体重来：清空已打开的文件标签、选中态与预览，
     // 否则旧会话的预览/标签会残留在新会话下（其 file_path 在新会话中无效）。

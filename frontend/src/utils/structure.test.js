@@ -55,9 +55,11 @@ const MAX_NEW_FILE_LINES = 800
  *    ApprovalBatchPanel.vue 不计入存量预算。
  *  2026-11-16 合并 origin/feature/1128 后按实测值更新：FilePreview.vue 1130 → 1252
  *    （main 引入文本行号渲染，预算未随合并同步）。
+ *  2026-11-17 会话结束后若工作区有新文件则自动展开：
+ *    App.vue 3382 → 3383、WorkspacePanel 978 → 994。
  */
 const LINE_BUDGET = {
-  'App.vue': 3382,
+  'App.vue': 3383,
   'features/chat/components/ChatInput.vue': 5043,
   // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2523 → 2499
   'features/chat/components/ChatMessage.vue': 2524,
@@ -68,7 +70,7 @@ const LINE_BUDGET = {
   'shared/preview/FilePreview.vue': 1252,
   'features/chat/components/Chat.vue': 986,
   'features/chat/components/SessionList.vue': 1078,
-  'features/workspace/components/WorkspacePanel.vue': 978,
+  'features/workspace/components/WorkspacePanel.vue': 994,
   'features/tasks/components/ScheduledTasksPanel.vue': 842,
   'features/knowledge/KnowledgeWorkbench.vue': 1817,
 }
