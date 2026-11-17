@@ -24,6 +24,23 @@ DEFAULT_TOOL_PROGRESS_STOP_LIMIT = 12
 # 「按工具计数 + has_data_once」判不出来的场景。
 DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT = DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT * 3
 
+# ── 工具熔断（2026-11-17，防循环硬止损）────────────────────────────────
+# 背景：空结果/无进展此前只有「结果尾注」软提示，模型忽略提示后仍可无限
+# 续调（线上出现 200+ 步循环）。熔断在工具执行前拦截，直接返回合成结果。
+# 同一查询（工具名 + 参数指纹）连续空结果到这个次数后，下一次调用直接熔断
+# 不再执行：3 次执行 + 第 4 次起熔断，对应「空结果不能多于 3 次」的验收口径。
+DEFAULT_TOOL_PROGRESS_FUSE_LIMIT = 3
+# 单个工具在本轮的总调用预算（按模型发起的调用次数计，换参数也算）。
+# 防「参数组合爆炸」（渠道 × 频率 × 年份 × 时间窗）下换参数无限试探，
+# 是探索型循环的最终保险丝。超出后该工具本轮剩余调用全部熔断。
+DEFAULT_TOOL_PROGRESS_TOOL_CALL_BUDGET = 20
+# MCP/JSON 结果行数 <= 该值视为「低价值数据」（数据少）。
+# 探测性 limit=1/limit=2 取回的脏数据行算低价值，不再被当成「有进展」。
+DEFAULT_TOOL_PROGRESS_LOW_VALUE_ROWS = 2
+# 同一工具连续「低价值」结果（空 / 行数过少 / 与此前重复）到这个次数后，
+# 下一次调用熔断。分页取数每页行数充足且内容不同，不会触发。
+DEFAULT_TOOL_PROGRESS_LOW_VALUE_LIMIT = 6
+
 # 联网搜索默认地址（config.yaml 未显式配置 api_url 时按 provider 取用）：
 #   tavily   —— Tavily Search API（https://docs.tavily.com）
 #   internal —— 内网 WebSearch 接口文档中的测试环境地址，生产地址需自行覆盖
@@ -162,17 +179,47 @@ class AgentConfig(BaseModel):
     """同一 MCP 工具连续「无进展」到几次注入收敛提示（默认 8）。
 
     无进展 = 空结果，或结果与之前某次**逐字节相同**（同一批数据被反复取回）。
-    分页取数每页内容不同，永不触发。"""
+    分页取数每页内容不同，永不触发。
+
+    ⚠️ 熔断上线后此分支被前置：连续低价值到 ``tool_progress_low_value_limit``
+    （默认 6）就熔断，因此**默认配置下本提示不可达**——仅当熔断线被调大到
+    超过本值（或 ``tool_progress_enabled`` 场景下熔断层被绕过）时生效。"""
     tool_progress_stop_limit: int = DEFAULT_TOOL_PROGRESS_STOP_LIMIT
     """同一 MCP 工具连续无进展到几次要求停止并输出数据质量报告（默认 12）。
 
-    不得小于 ``tool_progress_converge_limit``，小了会被自动抬到该值。"""
+    不得小于 ``tool_progress_converge_limit``，小了会被自动抬到该值。
+    ⚠️ 与 ``converge_limit`` 同理：默认配置下熔断线（6）先到，本分支不可达。"""
     tool_progress_empty_hard_limit: int = DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT
     """同一 MCP 工具连续空结果到这个次数，无条件止损（默认 9 = 3 × 3）。
 
     兜住「按工具名计数」判不出来的场景：先查 A 拿到了数据，再对 B 反复空查时
     ``has_data_once`` 已经是 true，普通阈值不会升级。不得小于
-    ``tool_progress_empty_limit``，小了会被自动抬到该值。"""
+    ``tool_progress_empty_limit``，小了会被自动抬到该值。
+
+    ⚠️ 默认配置下不可达：连空到 ``tool_progress_low_value_limit``（6）就被
+    熔断收口，到不了 9。仅当熔断线被调大到超过本值时生效。"""
+    tool_progress_fuse_limit: int = DEFAULT_TOOL_PROGRESS_FUSE_LIMIT
+    """同一查询（工具名 + 参数指纹）连续空结果到几次后熔断该查询（默认 3）。
+
+    熔断 = 后续同指纹调用不再执行，直接返回「已熔断」的合成结果，要求模型
+    基于已有信息给结论。这是空结果循环（如 grep 反复查同一路径）的硬止损，
+    与 ``tool_progress_empty_limit`` 的软提示不同：软提示模型可以忽略，
+    熔断在工具层直接拦截。"""
+    tool_progress_tool_call_budget: int = DEFAULT_TOOL_PROGRESS_TOOL_CALL_BUDGET
+    """单个工具在本轮的总调用预算（默认 20，按模型发起的调用次数计）。
+
+    防换参数组合爆炸式试探。**必须叠加低进展信号才熔断**：低价值结果占比
+    过半、或末尾已连续无进展时，超出预算的调用被熔断——健康分页/遍历
+    （每页都是足量新数据）不受预算限制，超过 20 页也是合法工作。"""
+    tool_progress_low_value_rows: int = DEFAULT_TOOL_PROGRESS_LOW_VALUE_ROWS
+    """MCP/JSON 结果行数 <= 该值视为低价值数据（默认 2）。
+
+    探测性取回的 1–2 行脏数据不再被当成「有进展」，计入低价值连续计数。"""
+    tool_progress_low_value_limit: int = DEFAULT_TOOL_PROGRESS_LOW_VALUE_LIMIT
+    """同一工具连续低价值结果（空/行数过少/与此前重复）到几次后熔断（默认 6）。
+
+    兜住「每次都换参数、每次都只回一点脏数据」的探索型循环——这类循环
+    既不空、内容也不同，原有的空/无进展判定都不命中。"""
     workspace_dir: str = "./workspace"
     memories_dir: str = "./memories"
     memory_model: str = ""

@@ -51,7 +51,11 @@ from easy_agent.bootstrap.config_models import (
     DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT,
     DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT,
     DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT,
+    DEFAULT_TOOL_PROGRESS_FUSE_LIMIT,
+    DEFAULT_TOOL_PROGRESS_LOW_VALUE_LIMIT,
+    DEFAULT_TOOL_PROGRESS_LOW_VALUE_ROWS,
     DEFAULT_TOOL_PROGRESS_STOP_LIMIT,
+    DEFAULT_TOOL_PROGRESS_TOOL_CALL_BUDGET,
 )
 from easy_agent.bootstrap.env import env_str
 
@@ -310,6 +314,23 @@ def config_fingerprint(config: Any) -> dict[str, Any]:
         "tool_progress_empty_hard_limit": int(
             getattr(agent_cfg, "tool_progress_empty_hard_limit", None)
             or DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT
+        ),
+        # 熔断四参数（2026-11-17）同样进中间件构造参数，改值必须重建图。
+        "tool_progress_fuse_limit": int(
+            getattr(agent_cfg, "tool_progress_fuse_limit", None)
+            or DEFAULT_TOOL_PROGRESS_FUSE_LIMIT
+        ),
+        "tool_progress_tool_call_budget": int(
+            getattr(agent_cfg, "tool_progress_tool_call_budget", None)
+            or DEFAULT_TOOL_PROGRESS_TOOL_CALL_BUDGET
+        ),
+        "tool_progress_low_value_rows": int(
+            getattr(agent_cfg, "tool_progress_low_value_rows", None)
+            or DEFAULT_TOOL_PROGRESS_LOW_VALUE_ROWS
+        ),
+        "tool_progress_low_value_limit": int(
+            getattr(agent_cfg, "tool_progress_low_value_limit", None)
+            or DEFAULT_TOOL_PROGRESS_LOW_VALUE_LIMIT
         ),
         "result_log_truncate": int(
             getattr(tools_cfg, "result_log_truncate", 0) or 0
