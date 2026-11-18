@@ -110,6 +110,13 @@ easy-agent/
 
 可选：
 - Tesseract OCR（用于图片内容提取）
+- Office 文本解析依赖：`uv sync --extra docs`。旧版二进制 `.doc` 优先使用
+  antiword/catdoc，缺失时用 LibreOffice Writer 转成 DOCX 提取段落和表格；
+  macOS 还可使用系统自带的 `textutil` 兜底。
+- Windows 解析 `.doc` 时安装 LibreOffice（包含 Writer），程序会检查 PATH 及
+  `Program Files/LibreOffice/program/`、`Program Files (x86)/LibreOffice/program/`
+  等标准目录；自定义安装位置需将 `program` 目录加入后端进程的 PATH。
+  Linux 可安装 `libreoffice-writer`；Docker 镜像已包含此组件。
 
 ---
 

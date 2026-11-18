@@ -5,6 +5,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { stateFor } from './state.js'
+import { readContextResponse } from './response.js'
 
 // 注入传输层，直接验证两版前端共用的完整请求/恢复生命周期。
 const source = (await readFile(new URL('./mixin.js', import.meta.url), 'utf8'))
@@ -12,6 +13,7 @@ const source = (await readFile(new URL('./mixin.js', import.meta.url), 'utf8'))
     'const { compactContext, getContextStatus } = globalThis.__compactionTestApi')
   .replace("from '../sessionManagement/state.js'", `from '${new URL('../sessionManagement/state.js', import.meta.url).href}'`)
   .replace("from './state.js'", `from '${new URL('./state.js', import.meta.url).href}'`)
+  .replace("from '../utils/apiError.js'", `from '${new URL('../utils/apiError.js', import.meta.url).href}'`)
 
 async function setup(sid, compact, status) {
   const storage = new Map()
@@ -105,3 +107,39 @@ test('归档退出展示后，压缩断线保留请求 ID，迟到结果仅写�
   assert.equal(vm.sessionUsage.input_tokens, 0)
   assert.deepEqual(vm.messages, [])
 })
+
+for (const httpStatus of [200, 403, 502, 503, 504]) {
+  test(`HTML ${httpStatus} followed by malformed queries retains the original request and recovers once`, async () => {
+    const sid = `html-${httpStatus}`
+    let id, calls = 0, resultReady = false
+    const html = '<!DOCTYPE html><html><title>系统更新</title><body>请稍后再试</body></html>'
+    const record = () => ({ id, status: 'compacted', message: '上下文已压缩', anchor_message_count: 1,
+      after_tokens: 150, context_length: 1000 })
+    const { vm, state, storage } = await setup(sid, async (session, model, requestId) => {
+      calls++; id = requestId
+      return readContextResponse(html, httpStatus, session, requestId)
+    }, async session => readContextResponse(resultReady
+      ? { ...idle(), session_id: session, compactions: [record()] } : html, 200, session))
+    await vm.runCompact()
+    assert.equal(state.records[0].status, 'unknown')
+    assert.equal(vm.compactionNoticeText(state.records[0]), 'compact · 正在确认压缩结果...')
+    assert.doesNotMatch(state.records[0].message, /<!DOCTYPE|<html|系统更新/)
+    assert.equal(state.busy, true)
+    assert.equal(state.queryFailed, true)
+    assert.equal(JSON.parse(storage.get(`compact:${sid}`)).id, id)
+    // 刷新后仅凭保存的请求 ID 恢复；无效 GET 不能清除请求或误报未提交。
+    state.records = []; state.busy = false
+    await vm.refreshCompaction(sid)
+    assert.equal(state.records[0].status, 'unknown')
+    assert.equal(state.busy, true)
+    assert.ok(storage.has(`compact:${sid}`))
+    resultReady = true
+    await vm.refreshCompaction(sid)
+    assert.equal(vm.compactionNoticeText(state.records[0]), 'compact · 已压缩')
+    assert.equal(state.records.length, 1)
+    assert.equal(state.records[0].id, id)
+    assert.equal(state.busy, false)
+    assert.equal(storage.size, 0)
+    assert.equal(calls, 1)
+  })
+}

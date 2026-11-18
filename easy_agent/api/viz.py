@@ -99,6 +99,9 @@ def frame_page(
     html = (STATIC_DIR / "frame.html").read_text(encoding="utf-8")
     html = html.replace('data-enabled="0"', f'data-enabled="{int(visual.enabled)}"', 1)
     html = html.replace('data-widgets="0"', f'data-widgets="{int(widgets)}"', 1)
+    # frame.js / frame.css 本身缓存一天；框架页只缓存 60 秒，用文件 mtime 把新版本带出去
+    html = html.replace('href="frame.css"', f'href="frame.css?v={(STATIC_DIR / "frame.css").stat().st_mtime_ns}"', 1)
+    html = html.replace('src="frame.js"', f'src="frame.js?v={(STATIC_DIR / "frame.js").stat().st_mtime_ns}"', 1)
     preload = {
         "echarts": "vendor/echarts.min.js",
         "mermaid": "vendor/mermaid.min.js",

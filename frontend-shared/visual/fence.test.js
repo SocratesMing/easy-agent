@@ -8,11 +8,13 @@ const renderer = createMarkdownRenderer({
 })
 const html = (content, partial) => renderMarkdownBlocks(content, renderer, { partial }).map((b) => b.html).join('')
 
-test('只有 echarts / mermaid / widget 三种语言算可视化代码块', () => {
+test('只有 echarts / mermaid / widget / html 算可视化代码块', () => {
   assert.equal(visualKindOfLang('echarts'), 'echarts')
   assert.equal(visualKindOfLang('Mermaid'), 'mermaid')
   assert.equal(visualKindOfLang('widget title=x'), 'widget')
-  for (const lang of ['', 'html', 'json', 'js', 'chart', 'toString', 'constructor']) {
+  assert.equal(visualKindOfLang('html'), 'html')
+  assert.equal(visualKindOfLang('HTM'), 'html')
+  for (const lang of ['', 'json', 'js', 'chart', 'toString', 'constructor']) {
     assert.equal(visualKindOfLang(lang), null, lang)
   }
 })
@@ -41,6 +43,17 @@ test('流式中还没闭合时只出固定骨架，不露出半截 JSON', () => 
   assert.equal(html('```echarts\n{"series": [{"type": "bar", "data": [1', true), partial)
 })
 
+test('流式停顿后的最终帧仍不渲染未闭合的图表、流程图和 HTML', () => {
+  for (const sample of [
+    '```echarts\n{"series": [{"type": "ba"',
+    '```mermaid\nflowchart TD\n  A -->',
+    '```widget\n<div><script>broken',
+  ]) {
+    const settled = renderMarkdownBlocks(sample, renderer, { partial: false, streaming: true })
+    assert.equal(settled.map(block => block.html).join(''), visualPendingHtml(sample.slice(3, sample.indexOf('\n'))))
+  }
+})
+
 test('闭合后的占位块在流式中间帧与最终渲染时 HTML 相同（节点复用，iframe 不会重建）', () => {
   const text = '```mermaid\nflowchart TD\n  A --> B\n```\n\n后面还在写'
   const blocksPartial = renderMarkdownBlocks(text, renderer, { partial: true })
@@ -55,9 +68,11 @@ test('最终渲染时模型忘了闭合围栏，也按写完处理', () => {
   assert.match(out, /^<div class="ea-visual" data-visual-kind="widget">/)
 })
 
-test('html 代码块保持普通代码块，不会被当成交互组件运行', () => {
-  const out = html('```html\n<script>alert(1)</script>\n```')
-  assert.doesNotMatch(out, /ea-visual/)
+test('html 代码块按页面渲染，流式未闭合时只出骨架', () => {
+  const closed = html('```html\n<!DOCTYPE html>\n<html><body><h1>报告</h1></body></html>\n```')
+  assert.match(closed, /data-visual-kind="html"/)
+  assert.doesNotMatch(closed, /is-pending/)
+  assert.equal(html('```html\n<!DOCTYPE html>\n<html><body><h1>报', true), visualPendingHtml('html'))
 })
 
 test('占位与骨架的结构', () => {

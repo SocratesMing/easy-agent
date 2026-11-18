@@ -7,7 +7,10 @@ import {
   buildInteractionResumeDecisions,
   buildConfirmationMessage,
   interactionCommandItems,
+  interactionModeFromTokenMap,
+  modeTokenSkill,
   missingRequiredQuestionIds,
+  withoutInteractionSkills,
   normalizeInteractionMode,
   normalizeInteractionRequest,
   parseInteractionResponse,
@@ -187,6 +190,16 @@ test('invalid interaction modes fall back to normal', () => {
   assert.equal(normalizeInteractionMode('plan'), 'plan')
   assert.equal(normalizeInteractionMode('BRAINSTORM'), 'brainstorm')
   assert.equal(normalizeInteractionMode('unknown'), 'normal')
+})
+
+test('plan uses the same inline token shape as a skill and stays out of the skill list', () => {
+  const command = interactionCommandItems('plan')[0]
+  const skill = modeTokenSkill(command)
+  assert.equal(skill.dir_name, 'plan')
+  assert.equal(skill.name, '规划')
+  const map = new Map([[skill.dir_name, skill]])
+  assert.equal(interactionModeFromTokenMap(map, ['plan']), 'plan')
+  assert.deepEqual(withoutInteractionSkills(['xlsx', 'plan'], map), ['xlsx'])
 })
 
 test('slash commands expose the dedicated plan mode only', () => {

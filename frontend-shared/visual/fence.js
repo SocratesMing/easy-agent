@@ -1,5 +1,5 @@
 /**
- * 可视化代码块（Vue 2 / Vue 3 共用的纯函数）：```echarts / ```mermaid / ```widget。
+ * 可视化代码块（Vue 2 / Vue 3 共用的纯函数）：```echarts / ```mermaid / ```widget / ```html。
  *
  * markdown 渲染器遇到这三种代码块时，不直接输出普通代码块，而是包一层占位元素：
  *   <div class="ea-visual" data-visual-kind="echarts"> 普通代码块 </div>
@@ -14,12 +14,15 @@ const KINDS = {
   echarts: 'echarts',
   mermaid: 'mermaid',
   widget: 'widget',
+  html: 'html',
+  htm: 'html',
 }
 
 const LABELS = {
   echarts: '图表',
   mermaid: '流程图',
   widget: '交互组件',
+  html: 'HTML',
 }
 
 /** 框架页地址（相对 API 前缀）：由后端 api/viz.py 托管 */

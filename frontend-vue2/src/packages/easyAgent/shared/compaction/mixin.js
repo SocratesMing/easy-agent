@@ -4,6 +4,7 @@
 import { sessionGuard } from '../sessionManagement/state.js'
 import { compactContext, getContextStatus } from '../../api/chat.js'
 import { stateFor, subscribe, notify, mergeStatus, recordsAt, estimatedUsage } from './state.js'
+import { backendErrorMessage } from '../utils/apiError.js'
 
 function savedRequest(sid) {
   try {
@@ -51,6 +52,7 @@ export default {
       if (record.status === 'compacted') return 'compact · 已压缩'
       if (record.status === 'running') return 'compact · 正在压缩...'
       if (record.status === 'skipped') return 'compact · 无需压缩'
+      if (record.status === 'unknown') return 'compact · 正在确认压缩结果...'
       return record.message
     },
     disposeCompaction() {
@@ -63,7 +65,7 @@ export default {
       const request = savedRequest(sid)
       const previous = stateFor(sid)
       if (request && !previous.records.some(r => r.id === request.id)) {
-        previous.records.push({ ...request, status: 'unknown', message: 'compact · 正在查询压缩结果...' })
+        previous.records.push({ ...request, status: 'unknown', message: 'compact · 正在确认压缩结果...' })
         previous.busy = true
         notify()
       }
@@ -85,6 +87,10 @@ export default {
         const state = stateFor(sid)
         state.queryFailed = true
         state.reason = '无法查询压缩状态，请稍后重试'
+        if (request) {
+          const record = state.records.find(r => r.id === request.id)
+          if (record && record.status === 'unknown') record.message = '暂时无法获取压缩结果，将继续查询'
+        }
         if (!state.running && !savedRequest(sid)) state.supported = false
         notify()
       }
@@ -112,11 +118,11 @@ export default {
       } catch (error) {
         if (!valid()) return
         const status = error.status || error.response?.status
-        if (status >= 400 && status < 500 && status !== 408) {
-          Object.assign(record, { status: 'failed', message: error.message || '压缩请求被拒绝，请稍后重试' })
+        if (status >= 400 && status < 500 && status !== 408 && error.code !== 'INVALID_CONTEXT_RESPONSE') {
+          Object.assign(record, { status: 'failed', message: backendErrorMessage({ detail: error.message }, '压缩请求被拒绝，请稍后重试') })
           saveRequest(sid, null)
         } else {
-          Object.assign(record, { status: 'unknown', message: `${error.message || '请求中断'}；正在查询原请求结果` })
+          Object.assign(record, { status: 'unknown', message: 'compact · 正在确认压缩结果...' })
           state.busy = true // 查询成功前，不能把断线当作未提交。
         }
       } finally {

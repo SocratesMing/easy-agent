@@ -12,6 +12,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from easy_agent.agent.manual_compaction import compatibility_reason, estimate_context, prepare_compaction, terminal_update_node
+from easy_agent.agent.compaction_policy import usable_event
 from easy_agent.agent.run_config import build_run_config
 from easy_agent.db.providers import get_session_runtime_repository, get_agent_run_repository
 from easy_agent.persistence.checkpoints import get_session_checkpointer, shared_checkpointer_active
@@ -228,6 +229,9 @@ async def _prepare_and_commit(repo, runtime, agent, session, owner, request_id):
     }
     existing[request_id] = record
     update = {"context_compactions": existing}
+    if values.get("_summarization_event") is not None and usable_event(values["_summarization_event"]) is None:
+        # 历史很短而跳过新摘要时，仍恢复原文可见性；与结果记录一起提交。
+        update["_summarization_event"] = None
     if prepared:
         update.update({
             "messages": ([RemoveMessage(id=REMOVE_ALL_MESSAGES)] if plan.mode == "rehydrate" else []) + additions,

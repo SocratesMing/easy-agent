@@ -79,6 +79,36 @@ export function interactionModeMeta (mode) {
   return INTERACTION_MODES.find(item => item.value === value)
 }
 
+/** 规划等斜线指令在输入框里用和技能相同的内联标签，不单独占一行。 */
+export function modeTokenSkill (command) {
+  if (!command || !command.dir_name || !command.interactionMode) return null
+  const meta = interactionModeMeta(command.interactionMode)
+  return {
+    dir_name: command.dir_name,
+    name: (meta && meta.shortLabel) || command.dir_name,
+    interactionMode: command.interactionMode,
+    command: true,
+  }
+}
+
+export function interactionModeFromTokenMap (tokenMap, dirs) {
+  const skills = tokenMap instanceof Map ? [...tokenMap.values()] : []
+  for (const dir of dirs || []) {
+    const skill = skills.find(item => item && item.dir_name === dir)
+    const mode = normalizeInteractionMode(skill && skill.interactionMode)
+    if (mode !== 'normal') return mode
+  }
+  return 'normal'
+}
+
+export function withoutInteractionSkills (dirs, tokenMap) {
+  const skills = tokenMap instanceof Map ? [...tokenMap.values()] : []
+  return (dirs || []).filter(dir => {
+    const skill = skills.find(item => item && item.dir_name === dir)
+    return normalizeInteractionMode(skill && skill.interactionMode) === 'normal'
+  })
+}
+
 export function interactionCommandItems (query) {
   const q = String(query || '').trim().toLowerCase()
   if (!q) return [...INTERACTION_COMMANDS]

@@ -32,6 +32,25 @@ LONG_TERM_MEMORY_VIRTUAL_PATH = "/memories/AGENTS.md"
 UPLOADS_DIR_NAME = "uploads"
 MANIFEST_FILENAME = "index.md"
 
+# 「上传文件」运行时分段：按会话是否已有上传清单二选一注入（见 core._uploads_note）。
+# 取代旧系统提示词里"已解析到 uploads/ 目录、清单每轮自动加载"的无条件断言——
+# 那句断言在没上传过文件的会话里会把模型引去 ls /workspace/uploads（空目录 /
+# path_not_found），看起来像环境故障。有清单时注入检索与来源标注纪律；无清单时
+# 明确告知没有上传文件。分段在建 Agent 时注入一次；上传接口驱逐会话 Agent 缓存
+# （api/sessions.py），所以上传后下一轮自动切换文案。
+UPLOADED_FILES_NOTE = """## 上传文件与来源标注
+
+- 用户在本会话上传过文件，清单 `uploads/index.md` 作为会话记忆每轮自动加载；清单里出现过的文件，即使用户本轮没有重新上传，也要当作本会话可用资料。
+- `uploads/` 下的 `.txt` 是系统解析出的正文副本，不是用户给的文件；向用户说明信息来源时必须说"您上传的文件《原始文件名》"，**不要向用户提 uploads/*.txt 等内部解析文件路径**。
+- 原始文件保存在服务端 `uploadfiles/` 目录，**在工作区之外**，`grep`/`read_file` 读不到。当清单标注"解析失败/未解析"、或正文缺失/不完整时，调用 `read_uploaded_file(文件名)` 工具：它会重新解析原始文件、回填正文再返回，拿到正文后再回答。
+- 回答与文件有关的问题前先检索：用 `grep` 在工作区 `uploads/` 下定位关键词，再用 `read_file` 读取命中片段；不要凭记忆或猜测作答，也不要一次性读取整个大文件。
+- 文件里确实没有相关内容时，先明确告知用户"上传的文件中未找到相关内容"，再给出你自己的答案并说明依据；不要为了显得有帮助而编造文件内容。"""
+
+NO_UPLOADED_FILES_NOTE = """## 上传文件
+
+- 本会话没有上传过文件：不要检索工作区 `uploads/` 目录，也不要假设存在任何已上传的文件或解析正文。
+- 用户提到某个文件时，先确认该文件是否已上传（请用户补传），拿到文件前不要凭文件名臆测其内容；用户实际补传后，下一轮起系统会给出上传文件的检索说明。"""
+
 
 class AgentWorkspaceMixin:
     """workspace / skills / permissions 相关方法（``EasyAgent`` 的纯移动部分）。"""
@@ -97,6 +116,16 @@ class AgentWorkspaceMixin:
     def _uploads_manifest_enabled(self) -> bool:
         cfg = getattr(self.config, "file_context", None)
         return cfg is not None and bool(getattr(cfg, "enabled", True))
+
+    def _uploads_manifest_exists(self) -> bool:
+        """会话是否已有上传清单（``uploads/index.md``）。
+
+        只做本地存在性判断，不查库：清单由上传解析时写入（``store_parsed_content``
+        + ``append_manifest``），上传接口随后驱逐会话 Agent 缓存（``api/sessions.py``
+        的 ``remove_session_agent``），所以下一轮建 Agent 时该判定自然刷新，不需要
+        额外的缓存失效逻辑。``file_context.enabled=false`` 时清单永不落盘，恒为 False。
+        """
+        return (self.workspace_dir / UPLOADS_DIR_NAME / MANIFEST_FILENAME).exists()
 
     def _memory_sources(self) -> list[str]:
         """固定的记忆源列表（文件不存在时 MemoryMiddleware 自动跳过）。

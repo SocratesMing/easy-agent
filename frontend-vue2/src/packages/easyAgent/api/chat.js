@@ -1,5 +1,7 @@
 import { rememberSession, sessionRevision, sessionGuard, sessionDeleted, staleSessionError } from '../shared/sessionManagement/state.js'
+import { readContextResponse } from '../shared/compaction/response.js'
 import request, {
+  requestRaw,
   fetchWithAuth,
   handleStreamResponse,
   streamHeaders,
@@ -200,10 +202,20 @@ export function createNewChat(sessionId, onChunk) {
 }
 
 
+async function contextRequest(sessionId, config, requestId) {
+  let response
+  try {
+    response = await requestRaw(config)
+  } catch (error) {
+    if (error.response) return readContextResponse(error.response.data, error.response.status, sessionId, requestId)
+    throw error
+  }
+  return readContextResponse(response.data, response.status, sessionId, requestId)
+}
 export function getContextStatus(sessionId) {
-  return request({ url: `/agent/sessions/${encodeURIComponent(sessionId)}/context`, method: 'get' }, '查询压缩状态失败')
+  return contextRequest(sessionId, { url: `/agent/sessions/${encodeURIComponent(sessionId)}/context`, method: 'get' })
 }
 export function compactContext(sessionId, model, requestId) {
-  return request({ url: `/agent/sessions/${encodeURIComponent(sessionId)}/context/compact`, method: 'post',
-    timeout: 130000, data: { model, request_id: requestId } }, '压缩请求失败')
+  return contextRequest(sessionId, { url: `/agent/sessions/${encodeURIComponent(sessionId)}/context/compact`, method: 'post',
+    timeout: 130000, data: { model, request_id: requestId } }, requestId)
 }

@@ -25,7 +25,7 @@ models:
 def test_prompt_teaches_all_three_blocks_by_default():
     prompt = build_visual_prompt(VisualConfig())
 
-    for fence in ("```echarts", "```mermaid", "```widget"):
+    for fence in ("```echarts", "```mermaid", "```widget", "```html"):
         assert fence in prompt
     assert "合法 JSON" in prompt
     assert "不要编造" in prompt
@@ -38,6 +38,7 @@ def test_widgets_off_drops_only_the_widget_block():
     assert "```echarts" in prompt
     assert "```mermaid" in prompt
     assert "```widget" not in prompt
+    assert "```html" not in prompt
 
 
 def test_master_switch_off_returns_nothing():

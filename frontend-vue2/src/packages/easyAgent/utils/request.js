@@ -1,4 +1,5 @@
 import { resetSessions } from '../shared/sessionManagement/state.js'
+import { backendErrorMessage } from '../shared/utils/apiError.js'
 /**
  * 统一请求层（模块唯一的传输实现，axios + 原生 fetch）。
  *
@@ -48,6 +49,8 @@ export function configureRequest(options = {}) {
   if ('usernameKey' in options) auth.usernameKey = options.usernameKey
   if ('refreshAuth' in options) auth.refresh = options.refreshAuth || null
   if ('onAuthExpired' in options) auth.onExpired = options.onAuthExpired || null
+  if ('loginPage' in options) auth.loginPage = options.loginPage
+  if ('urlLogin' in options) auth.urlLogin = options.urlLogin
   configureEasyAgent({ api, auth })
 }
 
@@ -255,15 +258,7 @@ requestInstance.interceptors.response.use(
 
 /** 从错误中提取后端 detail，取不到时使用兜底提示 */
 function getErrorDetail(error, fallbackMessage) {
-  if (error.response && error.response.data) {
-    if (typeof error.response.data.detail === 'string') {
-      return error.response.data.detail
-    }
-    if (typeof error.response.data === 'string') {
-      return error.response.data
-    }
-  }
-  return fallbackMessage
+  return backendErrorMessage(error.response?.data, fallbackMessage)
 }
 
 /**

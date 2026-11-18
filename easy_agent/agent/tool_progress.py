@@ -28,6 +28,10 @@
       健康分页（每页都是足量新数据）不受预算限制；
    c. 同一工具连续「低价值」结果（空 / 行数过少 / 与此前重复）≥
       ``low_value_limit``（默认 6）。
+   d. 同一查询（工具名 + 参数指纹）本轮**累计**执行 ≥
+      ``same_args_total_limit``（默认 8）——不要求空、不要求连续、不比较
+      结果内容（2026-11-18 补：兜「同参数原样重跑 + 输出带时间戳等微变」
+      的循环，a/b/c 三类判定对它全部擦边漏过）。
 
 熔断覆盖探索型四件套与 MCP 查询工具；所有触发点都打带 ``thread_id`` 前缀的
 日志（warning/info），便于排查「谁熔断的、为什么熔断」。
@@ -60,6 +64,7 @@ from easy_agent.bootstrap.config_models import (
     DEFAULT_TOOL_PROGRESS_FUSE_LIMIT,
     DEFAULT_TOOL_PROGRESS_LOW_VALUE_LIMIT,
     DEFAULT_TOOL_PROGRESS_LOW_VALUE_ROWS,
+    DEFAULT_TOOL_PROGRESS_SAME_ARGS_TOTAL_LIMIT,
     DEFAULT_TOOL_PROGRESS_STOP_LIMIT,
     DEFAULT_TOOL_PROGRESS_TOOL_CALL_BUDGET,
 )
@@ -647,6 +652,7 @@ class ToolProgressMiddleware(AgentMiddleware):
         tool_call_budget: int | None = None,
         low_value_rows: int | None = None,
         low_value_limit: int | None = None,
+        same_args_total_limit: int | None = None,
     ) -> None:
         """阈值全部来自 ``config.yaml``（``AgentConfig.tool_progress_*``）。
 
@@ -682,6 +688,15 @@ class ToolProgressMiddleware(AgentMiddleware):
         )
         self.low_value_limit = max(
             1, int(low_value_limit or DEFAULT_TOOL_PROGRESS_LOW_VALUE_LIMIT)
+        )
+        # 情况 1b：同参数累计执行上限（不论结果内容）。
+        self.same_args_total_limit = max(
+            1,
+            int(
+                same_args_total_limit
+                if same_args_total_limit is not None
+                else DEFAULT_TOOL_PROGRESS_SAME_ARGS_TOTAL_LIMIT
+            ),
         )
 
     # ── 原四件套（行为未改） ──────────────────────────────────────────
@@ -841,6 +856,20 @@ class ToolProgressMiddleware(AgentMiddleware):
         empty_streak = trailing_args_empty_streak(entries, args_fp)
         if empty_streak >= self.fuse_limit:
             return f"同一查询已连续 {empty_streak} 次返回空结果"
+
+        # 情况 1b：同一查询本轮**累计**执行到上限，无论结果是否为空、是否与
+        # 此前重复——只看参数指纹不变的原样重跑次数。兜「同一条命令反复执行
+        # + 输出带时间戳等微变内容」的循环：空结果（非空）、重复指纹（每次
+        # 微变）、低价值行数（非 JSON 判不出）三类判定全部擦边漏过时，只有
+        # 参数指纹不变这一条稳定信号。合法重跑（修完问题验证同一命令）到不了
+        # 上限；分页遍历每次参数不同，不受影响。entries 不含本次，计数即已
+        # 执行次数：第 ``limit`` 次执行后，下一次起熔断。
+        same_args_total = sum(1 for entry in entries if entry.args_fp == args_fp)
+        if same_args_total >= self.same_args_total_limit:
+            return (
+                f"同一查询（工具名+参数完全相同）本轮已累计执行 {same_args_total} 次"
+                f"（上限 {self.same_args_total_limit}），结果无进展"
+            )
 
         # 情况 2a：单工具本轮调用预算。计数含本次（当前 AIMessage 已进 state），
         # count > budget 即第 budget+1 次起熔断。

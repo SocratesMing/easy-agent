@@ -37,12 +37,6 @@
         @remove="removeFile"
         @retry="retryUpload"
       />
-      <SelectedModeChip
-        v-if="interactionMode !== 'normal'"
-        :mode="interactionMode"
-        @clear="interactionMode = 'normal'"
-      />
-
       <div v-if="fileReferences.length" class="reference-tags">
         <FileReferenceTag
           v-for="ref in fileReferences"
@@ -1225,8 +1219,7 @@ import {
 } from "../../../api/settings.js";
 import { getUserSkills, importSkill } from "../../../api/skills.js";
 import { iconCategoryFor } from "../../../utils/skillCategories.js";
-import SelectedModeChip from "./SelectedModeChip.vue";
-import { interactionCommandItems } from "../../../shared/chat/planInteraction.js";
+import { interactionCommandItems, interactionModeFromTokenMap, modeTokenSkill, withoutInteractionSkills } from "../../../shared/chat/planInteraction.js";
 
 // 镜像层为画出技能芯片的外扩留白，把裁剪盒向外扩了这么多 px（见 .input-mirror 的 padding/margin）：
 // 补滚动条占位时要一起加上，否则镜像内容比 textarea 窄、换行位置对不上。
@@ -1385,7 +1378,6 @@ const {
   closeSkillPicker,
   updateSkillPickerPosition,
 });
-const interactionMode = ref("normal");
 const textareaRef = ref(null);
 const uploadedFiles = ref([]);
 // 长文本转附件：保存中禁止重复点击；用户可关闭提示，正文回落到安全范围时重新可提示
@@ -1418,10 +1410,10 @@ const longMessageUsagePercent = computed(() =>
 const longMessageHint = computed(
   () =>
     !longMessageDismissed.value &&
-    needsOffload(message.value, longMessageUsage.value),
+    needsOffload(message.value),
 );
 watch(longMessageChars, () => {
-  if (!needsOffload(message.value, longMessageUsage.value))
+  if (!needsOffload(message.value))
     longMessageDismissed.value = false;
 });
 // 新对话里勾选的知识库：只暂存在前端，首条消息发送时随请求提交，
@@ -1748,8 +1740,15 @@ const selectedSkillDirs = computed(() => {
   const dirs = new Set(preselectedSkillDirs.value);
   for (const dir of skillDirsInText(message.value, tokenMap.value))
     dirs.add(dir);
-  return Array.from(dirs);
+  return withoutInteractionSkills(Array.from(dirs), tokenMap.value);
 });
+
+const interactionMode = computed(() =>
+  interactionModeFromTokenMap(
+    tokenMap.value,
+    skillDirsInText(message.value, tokenMap.value),
+  ),
+);
 
 /**
  * 技能检索：优先按「目录名 / 技能名」匹配；仅当没有任何名称命中时，才回退到描述匹配。
@@ -1893,9 +1892,16 @@ async function selectSkill(skill) {
   if (skill.command) {
     if (skill.interactionMode) {
       if (isStreaming.value || props.disabled) return;
-      interactionMode.value = skill.interactionMode;
+      const modeSkill = modeTokenSkill(skill);
+      rememberSkills([modeSkill]);
+      const existing = skillSegments(cleared, tokenMap.value).find(
+        seg => seg.dirName === modeSkill.dir_name,
+      );
+      const next = existing
+        ? { text: cleared, caret: existing.end }
+        : insertSkillToken(cleared, start, tokenForSkill(modeSkill));
       closeSkillPicker();
-      replaceTextWithCaret({ text: cleared, caret: start });
+      await replaceTextWithCaret(next);
       return;
     }
     if (props.compactReason || skill.disabled) return;
@@ -3165,7 +3171,7 @@ async function handleSkillImportFile(event) {
 
 const canSend = computed(() => {
   return (
-    message.value.trim() ||
+    stripSkillTokens(message.value, tokenMap.value).trim() ||
     fileReferences.value.length > 0 ||
     uploadedFiles.value.length > 0 ||
     selectedSkillDirs.value.length > 0
@@ -3611,7 +3617,6 @@ async function send() {
     // 预选技能与待修改专家已随本条消息提交，清掉避免影响下一条
     preselectedSkillDirs.value = new Set();
     pendingExpertEditId.value = "";
-    interactionMode.value = "normal";
     dismissUploadNotice();
     closeSkillPicker();
     nextTick(() => autoResize());

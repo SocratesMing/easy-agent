@@ -1,8 +1,8 @@
 """Agent 自定义中间件装配。
 
 从 ``EasyAgent._build_middleware`` 抽出的纯函数：只依赖 ``config`` 与
-``max_steps``，不读 ``self``。顺序：TodoList → ToolProgress → ToolError →
-ModelCallLimit → ToolCallLimit → ApprovalAudit。
+``max_steps``，不读 ``self``。顺序：TodoList → ToolProgress → ThinkingLoop →
+ToolError → ModelCallLimit → ToolCallLimit → ApprovalAudit。
 摘要中间件不在这里：它要绑定建图时的 model / backend，由 ``EasyAgent._create_agent``
 按同名原位替换框架默认项（DA-06，见 ``agent/summarization.py``）。
 """
@@ -64,6 +64,7 @@ def build_agent_middleware(config, max_steps, *, approval_mode: str | None = Non
         DEFAULT_TOOL_PROGRESS_FUSE_LIMIT,
         DEFAULT_TOOL_PROGRESS_LOW_VALUE_LIMIT,
         DEFAULT_TOOL_PROGRESS_LOW_VALUE_ROWS,
+        DEFAULT_TOOL_PROGRESS_SAME_ARGS_TOTAL_LIMIT,
         DEFAULT_TOOL_PROGRESS_STOP_LIMIT,
         DEFAULT_TOOL_PROGRESS_TOOL_CALL_BUDGET,
     )
@@ -110,6 +111,37 @@ def build_agent_middleware(config, max_steps, *, approval_mode: str | None = Non
             low_value_limit=int(
                 getattr(agent_cfg, "tool_progress_low_value_limit", None)
                 or DEFAULT_TOOL_PROGRESS_LOW_VALUE_LIMIT
+            ),
+            # 情况 1b：同参数（工具名+参数指纹）本轮累计执行上限，
+            # 不论结果是否为空/是否重复。改值必须进图缓存指纹。
+            same_args_total_limit=int(
+                getattr(agent_cfg, "tool_progress_same_args_total_limit", None)
+                or DEFAULT_TOOL_PROGRESS_SAME_ARGS_TOTAL_LIMIT
+            ),
+        )
+    )
+    # 思考循环守卫（2026-11-18）：本轮末尾连续相同思考 ≥3 次 → 摘掉全部工具
+    # 强制收口（软着陆）。兜住读取型循环（反复重读同一 SKILL.md）——read_file
+    # 不在 ToolProgressMiddleware 的熔断覆盖范围（_SCOPE_TOOLS + MCP）。
+    # 从 EasyAgent._build_middleware 抽出的纯函数：只依赖 config 与 max_steps，
+    # 顺序：TodoList → ToolProgress → ThinkingLoop → ToolError →
+    # ModelCallLimit → ToolCallLimit → ApprovalAudit。
+    from easy_agent.agent.thinking_loop import ThinkingLoopMiddleware  # 延迟导入：导入期重依赖：避免加载 langchain/deepagents 等重依赖
+    from easy_agent.bootstrap.config_models import (  # 阈值默认值的唯一来源，不在本文件重写数字
+        DEFAULT_THINKING_LOOP_LIMIT,
+        DEFAULT_THINKING_LOOP_MIN_CHARS,
+    )
+
+    middleware.append(
+        ThinkingLoopMiddleware(
+            enabled=bool(getattr(agent_cfg, "thinking_loop_enabled", True)),
+            limit=int(
+                getattr(agent_cfg, "thinking_loop_limit", None)
+                or DEFAULT_THINKING_LOOP_LIMIT
+            ),
+            min_chars=int(
+                getattr(agent_cfg, "thinking_loop_min_chars", None)
+                or DEFAULT_THINKING_LOOP_MIN_CHARS
             ),
         )
     )

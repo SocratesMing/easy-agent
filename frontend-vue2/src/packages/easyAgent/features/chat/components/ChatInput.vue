@@ -37,12 +37,6 @@
         @remove="removeFile"
         @retry="retryUpload"
       />
-      <SelectedModeChip
-        v-if="interactionMode !== 'normal'"
-        :mode="interactionMode"
-        @clear="interactionMode = 'normal'"
-      />
-
       <div v-if="fileReferences.length" class="reference-tags">
         <FileReferenceTag
           v-for="ref in fileReferences"
@@ -681,8 +675,7 @@ import {
   parseSlashQuery,
   splitByQuery,
 } from "../../../utils/skillSlash.js";
-import SelectedModeChip from "./SelectedModeChip.vue";
-import { interactionCommandItems } from "../../../shared/chat/planInteraction.js";
+import { interactionCommandItems, interactionModeFromTokenMap, modeTokenSkill, withoutInteractionSkills } from "../../../shared/chat/planInteraction.js";
 // 内联技能标签：标签文字 = textarea 文本里的子串，选中/删除/发送前的剥离都走这套纯逻辑
 import {
   buildSegments,
@@ -772,7 +765,6 @@ const EXPERT_SEARCH_DEBOUNCE_MS = 300;
 export default {
   mixins: [promptEnhancementMixin, contextUsageMixin, fileReferenceInputMixin],
   components: {
-    SelectedModeChip,
     FileReferenceTag,
     FileReferencePicker,
     PromptEnhancementActions,
@@ -826,7 +818,6 @@ export default {
   data() {
     return {
       message: "",
-      interactionMode: "normal",
       // 长文本转附件：保存中禁止重复点击；用户可关闭提示，正文回到阈值以下时重新可提示
       offloadingLongMessage: false,
       longMessageDismissed: false,
@@ -969,7 +960,7 @@ export default {
     longMessageHint() {
       return (
         !this.longMessageDismissed &&
-        needsOffload(this.message, this.longMessageUsage)
+        needsOffload(this.message)
       );
     },
     webSearchUnavailable() {
@@ -1129,11 +1120,17 @@ export default {
       for (const dir of skillDirsInText(this.message, this.tokenMap)) {
         if (!dirs.includes(dir)) dirs.push(dir);
       }
-      return dirs;
+      return withoutInteractionSkills(dirs, this.tokenMap);
+    },
+    interactionMode() {
+      return interactionModeFromTokenMap(
+        this.tokenMap,
+        skillDirsInText(this.message, this.tokenMap),
+      );
     },
     canSend() {
       return (
-        this.message.trim() ||
+        stripSkillTokens(this.message, this.tokenMap).trim() ||
         this.fileReferences.length > 0 ||
         this.uploadedFiles.length > 0 ||
         this.selectedSkillDirs.length > 0
@@ -1197,7 +1194,7 @@ export default {
   watch: {
     // 正文回落到安全范围就把「已关闭」复位，下次再贴长文时提示照常出现
     longMessageChars() {
-      if (!needsOffload(this.message, this.longMessageUsage))
+      if (!needsOffload(this.message))
         this.longMessageDismissed = false;
     },
     // 联网开关的真身在本组件，但发送动作不止「输入框回车」一条：消息下方「重新发送」
@@ -2632,7 +2629,6 @@ export default {
         this.selectedSkills = [];
         this.preselectedSkillDirs = [];
         this.pendingExpertEditId = "";
-        this.interactionMode = "normal";
         this.dismissUploadNotice();
         this.closeSkillPicker();
         this.$nextTick(() => this.autoResize());
@@ -2866,9 +2862,16 @@ export default {
       if (skill.command) {
         if (skill.interactionMode) {
           if (this.isStreaming || this.disabled) return;
-          this.interactionMode = skill.interactionMode;
+          const modeSkill = modeTokenSkill(skill);
+          this.rememberSkills([modeSkill]);
+          const existing = skillSegments(cleared, this.tokenMap).find(
+            seg => seg.dirName === modeSkill.dir_name,
+          );
+          const next = existing
+            ? { text: cleared, caret: existing.end }
+            : insertSkillToken(cleared, start, tokenForSkill(modeSkill));
           this.closeSkillPicker();
-          this.replaceTextWithCaret({ text: cleared, caret: start });
+          await this.replaceTextWithCaret(next);
           return;
         }
         if (this.compactReason || skill.disabled) return;

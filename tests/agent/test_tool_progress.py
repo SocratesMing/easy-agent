@@ -546,11 +546,11 @@ def test_different_args_are_not_fused_by_same_args_rule():
     assert "熔断" not in result.content
 
 
-def test_budget_fuses_21st_call_when_mostly_low_value():
-    # 情况 2a：单工具预算 20 次，且低价值结果占比过半时，第 21 次起熔断。
-    # 4 次低价值 + 1 次大结果交替（低价值占比 80%）：预算兜底在低价值
-    # 连续计数（被大结果不断清零）永远够不到时接住。
-    mw = ToolProgressMiddleware()
+def test_budget_fuses_call_beyond_budget_when_mostly_low_value():
+    # 情况 2a：单工具预算（显式传 20 验证机制），且低价值结果占比过半时，
+    # 第 budget+1 次起熔断。4 次低价值 + 1 次大结果交替（低价值占比 80%）：
+    # 预算兜底在低价值连续计数（被大结果不断清零）永远够不到时接住。
+    mw = ToolProgressMiddleware(tool_call_budget=20)
     history = []
     for i in range(20):
         rows = 500 if i % 5 == 4 else 1
@@ -564,11 +564,11 @@ def test_budget_fuses_21st_call_when_mostly_low_value():
 
 
 def test_budget_never_fuses_healthy_pagination():
-    # 健康分页（每页都是足量新数据）哪怕超过预算也绝不能熔断——
+    # 健康分页（每页都是足量新数据）哪怕超过预算（默认 30）也绝不能熔断——
     # 预算只对「低价值占比过半」的试探性调用生效
     mw = ToolProgressMiddleware()
     history = []
-    for i in range(25):
+    for i in range(35):
         history += _pair("mcp__fx__bars", {"page": i}, _mcp(_mcp_body(page=i, rows=100)), i)
     result = mw.wrap_tool_call(
         _fuse_request("mcp__fx__bars", {"page": 99}, history),
@@ -577,10 +577,11 @@ def test_budget_never_fuses_healthy_pagination():
     assert "熔断" not in result.content
 
 
-def test_budget_boundary_20th_call_still_executes():
+def test_budget_boundary_call_at_budget_still_executes():
+    # 第 budget（默认 30）次本身仍执行：熔断从 budget+1 次起
     mw = ToolProgressMiddleware()
     history = []
-    for i in range(19):
+    for i in range(29):
         history += _pair("mcp__fx__bars", {"page": i}, _mcp(_mcp_body(page=i, rows=100)), i)
     result = mw.wrap_tool_call(
         _fuse_request("mcp__fx__bars", {"page": 99}, history),
@@ -777,3 +778,98 @@ def test_non_envelope_result_on_mcp_tool_still_gets_hint():
     )
     assert isinstance(result, ToolMessage)
     assert "低价值" in result.content or "有效数据" in result.content
+
+
+# ── 情况 1b：同参数累计执行上限（2026-11-18）────────────────────────
+
+
+def test_same_args_total_fuses_ninth_call_even_with_varying_output():
+    # 情况 1b：同一条命令原样重跑 8 次（输出每次带"时间戳"微变，空结果/
+    # 重复指纹/低价值行数判定全部擦边漏过），第 9 次必须被拦截。
+    args = {"command": "cd /workspace && python3 probe_with_params.py"}
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(8):
+        output = f"probe ok at 2026-11-18T14:{i:02d}:00 latency={i}ms\n"
+        history += _pair("execute", args, output, i)
+    result = mw.wrap_tool_call(
+        _fuse_request("execute", args, history),
+        lambda _req: ToolMessage(content="probe ok", tool_call_id="cur", name="execute"),
+    )
+    assert isinstance(result, ToolMessage)
+    assert "熔断" in result.content
+    assert "累计执行 8 次" in result.content
+
+
+def test_same_args_total_passes_below_limit():
+    # 7 次执行 + 第 8 次：未到上限（默认 8），放行
+    args = {"command": "cd /workspace && python3 probe_with_params.py"}
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(7):
+        output = f"probe ok at 2026-11-18T14:{i:02d}:00\n"
+        history += _pair("execute", args, output, i)
+    result = mw.wrap_tool_call(
+        _fuse_request("execute", args, history),
+        lambda _req: ToolMessage(content="probe ok", tool_call_id="cur", name="execute"),
+    )
+    assert "熔断" not in result.content
+
+
+def test_same_args_total_counts_across_interruptions():
+    # 不要求连续：中间穿插其它调用/其它参数，同参数的累计照样计入
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(8):
+        history += _pair("execute", {"command": "python3 probe.py"}, f"ok {i}", i)
+        history += _pair("execute", {"command": "ls /workspace"}, "a.txt\nb.txt", 100 + i)
+    result = mw.wrap_tool_call(
+        _fuse_request("execute", {"command": "python3 probe.py"}, history),
+        lambda _req: ToolMessage(content="ok", tool_call_id="cur", name="execute"),
+    )
+    assert "累计执行 8 次" in result.content
+
+
+def test_same_args_total_ignores_varying_args():
+    # 合法探索：参数每次都换（分页/换路径），累计规则绝不误伤
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(20):
+        history += _pair("execute", {"command": f"python3 probe.py --page {i}"}, f"ok {i}", i)
+    result = mw.wrap_tool_call(
+        _fuse_request("execute", {"command": "python3 probe.py --page 99"}, history),
+        lambda _req: ToolMessage(content="ok", tool_call_id="cur", name="execute"),
+    )
+    assert "熔断" not in result.content
+
+
+def test_same_args_total_fuses_mcp_tool_with_varying_output():
+    # MCP 工具同样受同参数累计上限保护：同参数重查 8 次（输出带 fetched_at
+    # 微变 → 重复指纹判不出），第 9 次拦截
+    mw = ToolProgressMiddleware()
+    history = []
+    for i in range(8):
+        fetched = f"2026-11-05T00:{i:02d}:00Z"
+        history += _pair(
+            MCP_TOOL, {"symbol": "XAU"}, _mcp(_mcp_body(page=0, rows=50), fetched_at=fetched), i
+        )
+    result = mw.wrap_tool_call(
+        _fuse_request(MCP_TOOL, {"symbol": "XAU"}, history),
+        lambda _req: ToolMessage(content=_mcp(_mcp_body(page=0, rows=50)), tool_call_id="cur", name=MCP_TOOL),
+    )
+    assert isinstance(result, ToolMessage)
+    assert "累计执行 8 次" in result.content
+
+
+def test_same_args_total_limit_respects_config():
+    # 阈值从配置传入：limit=3 时第 4 次起熔断
+    mw = ToolProgressMiddleware(same_args_total_limit=3)
+    args = {"command": "python3 probe.py"}
+    history = []
+    for i in range(3):
+        history += _pair("execute", args, f"ok {i}", i)
+    result = mw.wrap_tool_call(
+        _fuse_request("execute", args, history),
+        lambda _req: ToolMessage(content="ok", tool_call_id="cur", name="execute"),
+    )
+    assert "累计执行 3 次" in result.content

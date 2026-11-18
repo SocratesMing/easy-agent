@@ -104,6 +104,52 @@ def test_ensure_parsed_text_reuses_stored_body(tmp_path):
     assert parsed["reparsed"] is False
 
 
+def test_doc_failed_upload_recovers_body_and_manifest(tmp_path, monkeypatch):
+    import subprocess
+
+    from easy_agent.services import document_convert
+    from easy_agent.utils import file_parser
+
+    docx = pytest.importorskip("docx")
+    src = _upload(tmp_path, "abc12345_旧文档.doc", bytes.fromhex("d0cf11e0a1b11ae1"))
+    converted = tmp_path / "converted.docx"
+    document = docx.Document()
+    document.add_paragraph("可恢复的中文正文")
+    document.save(converted)
+    db = _FakeDB([{"filename": "旧文档.doc", "file_path": str(src)}])
+    monkeypatch.setattr(su, "get_file_repository", lambda: db)
+    monkeypatch.setattr(file_parser.sys, "platform", "linux")
+
+    def missing(command, **kwargs):
+        raise FileNotFoundError(command[0])
+
+    monkeypatch.setattr(subprocess, "run", missing)
+
+    def unavailable(*args):
+        raise RuntimeError("未找到 LibreOffice")
+
+    monkeypatch.setattr(document_convert, "convert_office_document", unavailable)
+    entry = su.store_parsed_content(
+        "s1", "testuser", str(src), "旧文档.doc", src.stat().st_size, "doc"
+    )
+    assert entry["status"].startswith("解析失败")
+    su.append_manifest("s1", "testuser", [entry], db)
+    assert "解析失败" in entry["line"]
+
+    monkeypatch.setattr(document_convert, "convert_office_document", lambda *_: converted)
+    parsed = su.ensure_parsed_text("s1", "testuser", "旧文档.doc", db)
+
+    assert parsed["text"] == "可恢复的中文正文"
+    assert parsed["status"].startswith("已解析")
+    assert parsed["reparsed"] is True
+    assert "可恢复的中文正文" in (_uploads_dir(tmp_path) / "旧文档.txt").read_text("utf-8")
+    rows = [line for line in su.read_manifest("s1", "testuser", db).splitlines()
+            if line.startswith("- 旧文档.doc")]
+    assert len(rows) == 1
+    assert "已解析" in rows[0] and "解析失败" not in rows[0]
+    assert su.ensure_parsed_text("s1", "testuser", "旧文档.doc", db)["reparsed"] is False
+
+
 def test_find_source_path_uses_db_record(tmp_path):
     src = _upload(tmp_path, "uploadfiles/abc12345_data.txt", b"local-source")
     db = _FakeDB([{"filename": "data.txt", "file_path": str(src)}])
