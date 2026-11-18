@@ -1,4 +1,5 @@
 import { rememberSession, sessionRevision, sessionGuard, sessionDeleted, staleSessionError } from '../shared/sessionManagement/state.js'
+import { readContextResponse } from '../shared/compaction/response.js'
 import { API_BASE_URL } from '../config.js'
 import { getAuthHeaders, authFetch } from './auth.js'
 import { readSSE } from './sse.js'
@@ -230,16 +231,15 @@ export function createNewChat(sessionId, onChunk) {
 }
 
 
-async function contextRequest(sessionId, suffix, init = {}) {
+async function contextRequest(sessionId, suffix, init = {}, requestId) {
   const response = await authFetch(`${API_BASE_URL}/agent/sessions/${encodeURIComponent(sessionId)}/context${suffix}`, {
     ...init, signal: AbortSignal.timeout(130000),
   })
-  const data = await response.json()
-  if (!response.ok) throw new Error(data.detail || '压缩请求失败')
-  return data
+  const data = await response.json().catch(() => null)
+  return readContextResponse(data, response.status, sessionId, requestId)
 }
 export function getContextStatus(sessionId) { return contextRequest(sessionId, '') }
 export function compactContext(sessionId, model, requestId) {
   return contextRequest(sessionId, '/compact', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, request_id: requestId }) })
+    body: JSON.stringify({ model, request_id: requestId }) }, requestId)
 }
