@@ -242,8 +242,7 @@
           <button v-if="asking" class="ke-icon-button subtle ke-stop-button" aria-label="停止回答" title="停止回答" @click="stopQuestion('user')"><IconSquare /></button>
           <button class="ke-icon-button subtle" aria-label="收起问答" title="收起问答" @click="closeAskPanel"><IconPanelRightClose /></button>
         </header>
-
-        <div class="ke-answer" ref="askBody">
+        <div class="ke-answer" ref="askBody" @mouseover="previewCitation" @mouseout="leaveCitation" @focusin="previewCitation" @focusout="leaveCitation">
           <div v-if="!agentMessage && !asking && !askHistory.length" class="ke-answer-welcome">
             <div class="ke-answer-orb"><IconSparkles /></div>
             <h3>{{ selectedBase ? '从资料里找答案' : '先选择一个知识库' }}</h3>
@@ -256,17 +255,16 @@
             <div v-if="entry.question" class="ke-question-bubble">{{ entry.question }}</div>
             <template v-if="entry.message">
               <div class="ke-answer-label"><span class="ke-ai-avatar small"><IconSparkles /></span><strong>EasyAgent 知识库回答</strong></div>
-              <div class="ke-agent-message"><ChatMessage :message="entry.message" /></div>
+              <div class="ke-agent-message" :data-message-index="index"><ChatMessage :message="entry.message" citation-presentation="popover" /></div>
             </template>
           </div>
           <template v-if="agentMessage">
             <div class="ke-question-bubble">{{ lastQuestion }}</div>
             <div class="ke-answer-label"><span class="ke-ai-avatar small"><IconSparkles /></span><strong>EasyAgent 知识库回答</strong></div>
-            <div class="ke-agent-message"><ChatMessage :message="agentMessage" /></div>
+            <div class="ke-agent-message" :data-message-index="askHistory.length"><ChatMessage :message="agentMessage" citation-presentation="popover" /></div>
           </template>
           <div v-if="askError && !asking" class="ke-ask-error"><IconCircleAlert /><p>{{ askError }}</p><button @click="retryQuestion"><IconRefreshCw />重试</button></div>
         </div>
-
         <form class="ke-ask-form" @submit.prevent="submitQuestion()">
           <KnowledgeAskFilter v-if="selectedBase" @change="askMetadataFilter = $event" />
           <div class="ke-composer" :class="{ disabled: !selectedBase }">
@@ -405,11 +403,10 @@
         <pre v-else>{{ preview.text }}</pre>
       </div>
     </div>
-
+    <CitationPopover v-if="citationPreview" ref="citationPopover" :item="citationPreview.item" :number="citationPreview.number" :popover-id="citationPopoverId" :position="citationStyle" @keep="keepCitation" @leave="deferCitationClose" @resize="positionCitation" />
     <Transition name="ke-toast"><div v-if="toast" class="ke-toast" :class="toast.type"><IconCircleCheck v-if="toast.type !== 'error'" /><IconCircleAlert v-else />{{ toast.message }}</div></Transition>
   </section>
 </template>
-
 <script>
 import { computed, getCurrentInstance, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 // 图标统一走 ./icons.js（vue2 构建栈为 unplugin-icons raw 编译 + 函数式组件包装），
@@ -460,10 +457,12 @@ import DocxPreview from '../../shared/preview/DocxPreview.vue'
 import ExcelPreview from '../../shared/preview/ExcelPreview.vue'
 import FileIcon from '../../shared/components/FileIcon.vue'
 import ChatMessage from '../chat/components/ChatMessage.vue'
+import CitationPopover from '../chat/components/CitationPopover.vue'
+import knowledgeCitationMixin from '../../shared/citations/knowledgeWorkbench.js'
 import KnowledgeAskFilter from './KnowledgeAskFilter.vue'
 import KnowledgeImportMenu from './KnowledgeImportMenu.vue'
 import KnowledgePermissionTree from './KnowledgePermissionTree.vue'
-import { attachStream, getChatHistory, sendMessage } from '../../api/chat.js'
+import { attachStream, getChatHistory, getStreamStatus, sendMessage } from '../../api/chat.js'
 import { cancelMessage } from './api.js'
 import { filterPermissionUsers } from './utils/permissions.js'
 import { processingElapsedText } from './utils/presentation.js'
@@ -484,9 +483,10 @@ import {
   moveDocument, pauseDocument, prepareKnowledgeChatSession, replacePermissions, resumeDocument, retryDocument, updateFolder,
   updateKnowledgeBase, uploadDocument,
 } from './api.js'
-
 export default {
+  mixins: [knowledgeCitationMixin],
   components: {
+    CitationPopover,
     ChatMessage,
     DocxPreview,
     ExcelPreview,
@@ -681,6 +681,20 @@ let askGeneration = 0
 let activeChatSessionId = ''
 let streamDone = false
 let blockOrder = 0
+function createAgentMessage() {
+  return {
+    id: `knowledge-assistant-${Date.now()}`,
+    role: 'assistant',
+    content: '',
+    thinking: '',
+    tool_calls: [],
+    blocks: [],
+    knowledge_evidence: [],
+    knowledge_warnings: [],
+    loading: true,
+    created_at: null,
+  }
+}
 const showBaseModal = ref(false)
 const baseModalMode = ref('create')
 const showFolderModal = ref(false)
@@ -1418,7 +1432,9 @@ async function stopQuestion(reason = 'user') {
   if (agentMessage.value) {
     agentMessage.value = { ...agentMessage.value, loading: false }
   }
-  if (sessionId) {
+  // 离开页面只断开本实例的连接，不取消后端任务：后台继续生成并落库，
+  // 重新进入面板时由 resumeActiveAskStream 回放续看（与主对话的后台流策略一致）。
+  if (sessionId && reason !== 'unmount') {
     try { await cancelMessage(sessionId) } catch (_) { /* 中止以本地状态为准 */ }
   }
   if (reason === 'user') {
@@ -1504,6 +1520,51 @@ function parseAskHistory(messages) {
   return entries
 }
 
+// 重新进入面板时，若该问答会话仍在后台生成，挂到实时流回放已产生的事件并继续接收：
+// 离开页面只断开本实例连接（见 stopQuestion），后端任务不中断，回到面板从这里续看。
+async function resumeActiveAskStream(baseId, sessionId, messages) {
+  if (asking.value || !sessionId) return
+  let status = null
+  try { status = await getStreamStatus(sessionId) } catch (_) { return }
+  // active：这一轮还在跑；replayable：没在跑但过程事件比落库消息新（中断/崩溃）
+  if (!status || (!status.active && !status.replayable)) return
+  if (selectedBaseId.value !== baseId || asking.value) return
+  const rawLast = (messages || [])[messages.length - 1]
+  // 已落库的半截回答会随回放完整重建：先从历史里摘掉末尾那条，避免出现两份
+  if (rawLast && rawLast.role === 'assistant' && String(rawLast.content || '').trim()) {
+    askHistory.value.pop()
+  }
+  const lastUser = [...(messages || [])].reverse().find(item => item.role === 'user')
+  const generation = ++askGeneration
+  const controller = new AbortController()
+  askController = controller
+  activeChatSessionId = sessionId
+  asking.value = true
+  askError.value = ''
+  streamDone = false
+  blockOrder = 0
+  lastQuestion.value = String(lastUser?.content || '').trim()
+  agentMessage.value = createAgentMessage()
+  nextTick(() => scrollAskToBottom())
+  const onChunk = event => applyAgentEvent(event, baseId, generation)
+  try {
+    await attachStream(sessionId, onChunk, controller.signal)
+  } catch (error) {
+    if (error?.name !== 'AbortError' && generation === askGeneration) {
+      askError.value = error?.message || '挂载知识库回答失败'
+      if (agentMessage.value) agentMessage.value = { ...agentMessage.value, loading: false, error: askError.value }
+    }
+  } finally {
+    if (generation === askGeneration) {
+      askController = null
+      activeChatSessionId = ''
+      asking.value = false
+      if (agentMessage.value) agentMessage.value = { ...agentMessage.value, loading: false }
+      emit('chat-session-prepared')
+    }
+  }
+}
+
 // 拉取指定知识库的问答历史（打开面板/切换库时预取；首次提问时复用兜底）。
 // preparedSessionId 由调用方传入时可跳过会话准备。预取走 peek 只读探测：
 // 会话不存在返回 404 且不创建记录——点击知识库不应自动生成
@@ -1529,6 +1590,8 @@ async function loadAskHistory(baseId, preparedSessionId = '') {
     // 仅会话确实存在时标记已拉取；peek 404 时不标记，下次打开重新探测
     askHistoryBaseId.value = baseId
     nextTick(() => scrollAskToBottom())
+    // 不 await：续流可能要持续到回答结束，不能占住 askHistoryFetching
+    resumeActiveAskStream(baseId, sessionId, history.messages)
   } catch { /* 历史拉取失败不阻塞提问，面板欢迎页兜底 */ }
   finally { askHistoryFetching = false }
 }
@@ -1552,18 +1615,7 @@ async function submitQuestion(suggested = '') {
   if (agentMessage.value && !agentMessage.value.error) {
     askHistory.value.push({ question: lastQuestion.value, message: agentMessage.value })
   }
-  agentMessage.value = {
-    id: `knowledge-assistant-${Date.now()}`,
-    role: 'assistant',
-    content: '',
-    thinking: '',
-    tool_calls: [],
-    blocks: [],
-    knowledge_evidence: [],
-    knowledge_warnings: [],
-    loading: true,
-    created_at: null,
-  }
+  agentMessage.value = createAgentMessage()
   lastQuestion.value = question.value.trim()
   // 发送即清空输入框（发送内容已存入 lastQuestion，不等回答完成）
   question.value = ''

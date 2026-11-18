@@ -969,7 +969,7 @@ export default {
     longMessageHint() {
       return (
         !this.longMessageDismissed &&
-        needsOffload(this.message, this.longMessageUsage)
+        needsOffload(this.message)
       );
     },
     webSearchUnavailable() {
@@ -1197,7 +1197,7 @@ export default {
   watch: {
     // 正文回落到安全范围就把「已关闭」复位，下次再贴长文时提示照常出现
     longMessageChars() {
-      if (!needsOffload(this.message, this.longMessageUsage))
+      if (!needsOffload(this.message))
         this.longMessageDismissed = false;
     },
     // 联网开关的真身在本组件，但发送动作不止「输入框回车」一条：消息下方「重新发送」

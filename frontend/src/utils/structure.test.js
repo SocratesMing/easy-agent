@@ -57,6 +57,8 @@ const MAX_NEW_FILE_LINES = 800
  *    （main 引入文本行号渲染，预算未随合并同步）。
  *  2026-11-17 会话结束后若工作区有新文件则自动展开：
  *    App.vue 3382 → 3383、WorkspacePanel 978 → 994。
+ *  2026-11-17 知识库问答支持后台续流（离开页面不再取消后端任务，重进面板挂
+ *    /stream/live 回放）后按实测值更新：KnowledgeWorkbench 1817 → 1869。
  */
 const LINE_BUDGET = {
   'App.vue': 3383,
@@ -72,7 +74,7 @@ const LINE_BUDGET = {
   'features/chat/components/SessionList.vue': 1078,
   'features/workspace/components/WorkspacePanel.vue': 994,
   'features/tasks/components/ScheduledTasksPanel.vue': 842,
-  'features/knowledge/KnowledgeWorkbench.vue': 1817,
+  'features/knowledge/KnowledgeWorkbench.vue': 1869,
 }
 
 /** 组件里已经存在的 api 直连（存量，只允许删） */
