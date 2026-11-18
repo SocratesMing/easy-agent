@@ -147,6 +147,47 @@ def test_mixin_memory_helpers_on_empty_workspace(lightweight_agent: EasyAgent):
     assert agent.load_long_term_memory() == ""
 
 
+# ── 上传文件提示词分段（按会话是否有清单二选一） ──────────────
+
+
+def test_uploads_note_constants_are_imported_from_workspace():
+    """core 里的分段常量与 workspace 定义是同一对象（不复制文案，防双份漂移）。"""
+    assert core_mod.UPLOADED_FILES_NOTE is workspace_mod.UPLOADED_FILES_NOTE
+    assert core_mod.NO_UPLOADED_FILES_NOTE is workspace_mod.NO_UPLOADED_FILES_NOTE
+
+
+def test_uploads_note_without_manifest(lightweight_agent: EasyAgent):
+    """无清单会话：注入「没有上传文件」分段，不再无条件断言 uploads/ 已有解析正文。
+
+    旧的静态断言会把模型引去 ``ls /workspace/uploads``（空目录 → path_not_found，
+    看起来像环境故障）；现在无上传会话明确告知"没有上传过文件"。
+    """
+    agent = lightweight_agent
+    assert "本会话没有上传过文件" in agent.system_prompt
+    # 旧的无条件断言文案必须从静态提示词里消失（system.md 与代码兜底双份都要删）
+    assert "已解析到工作区" not in agent.system_prompt
+    assert agent._uploads_note() is workspace_mod.NO_UPLOADED_FILES_NOTE
+
+
+def test_uploads_note_switches_after_manifest_appears(lightweight_agent: EasyAgent):
+    """上传清单出现后（上传接口驱逐缓存 → 重建 Agent）切换到检索纪律文案。"""
+    agent = lightweight_agent
+    manifest = (
+        agent.workspace_dir
+        / workspace_mod.UPLOADS_DIR_NAME
+        / workspace_mod.MANIFEST_FILENAME
+    )
+    manifest.parent.mkdir(parents=True, exist_ok=True)  # 目录由上传解析时创建
+    manifest.write_text("# 用户上传的文件（本会话）\n", encoding="utf-8")
+
+    assert agent._uploads_manifest_exists()
+    assert agent._uploads_note() is workspace_mod.UPLOADED_FILES_NOTE
+    rebuilt = agent._assemble_system_prompt("BASE PROMPT", "")
+    assert "上传过文件" in rebuilt
+    assert "grep" in rebuilt  # 检索纪律文案已就位
+    assert "本会话没有上传过文件" not in rebuilt
+
+
 # ── build_agent_middleware 纯函数 ────────────────────────────
 
 

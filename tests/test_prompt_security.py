@@ -165,6 +165,27 @@ def test_assemble_without_extra_has_no_subordination_block():
     assert prompt == "BASE\n\nUSER\n\nHITL\n"
 
 
+def test_uploads_note_sits_between_visual_and_expert():
+    """上传文件附加固定插在可视化说明之后、专家补充内容之前（默认不出现）。"""
+    prompt = assemble_system_prompt(
+        base_prompt="BASE",
+        visual_note="## 可视化说明",
+        uploads_note="## 上传文件\n- 本会话没有上传过文件",
+        extra="专家业务内容",
+        hitl_note="HITL",
+    )
+
+    assert prompt.index("## 可视化说明") < prompt.index("本会话没有上传过文件")
+    assert prompt.index("本会话没有上传过文件") < prompt.index(EXPERT_PROMPT_MARKER)
+    assert prompt.index(EXPERT_PROMPT_MARKER) < prompt.index("HITL")
+
+
+def test_uploads_note_absent_by_default():
+    """不传 uploads_note 时终稿不含该分段（默认值空，兼容既有调用方）。"""
+    prompt = assemble_system_prompt(base_prompt="BASE", hitl_note="HITL")
+    assert "上传文件" not in prompt
+
+
 # ── 4. 子 Agent 安全约束 ─────────────────────────────────────────────
 
 
