@@ -22,8 +22,10 @@ from __future__ import annotations
 
 from typing import Annotated, Any, NotRequired, TypedDict
 
-from deepagents.middleware.summarization import SummarizationMiddleware, SummarizationState
+from deepagents.middleware.summarization import SummarizationState
 from langchain.agents.middleware.types import OmitFromOutput
+
+from easy_agent.agent.safe_summarization import SafeSummarizationMiddleware
 
 TURN_CONTEXT_KEY = "turn_context"
 
@@ -96,8 +98,8 @@ def render_turn_request(request):
     return request if rendered is request.messages else request.override(messages=rendered)
 
 
-class TurnAwareSummarizationMiddleware(SummarizationMiddleware):
-    """主代理的摘要中间件：先渲染本轮上下文，再按渲染后的请求计 token、决定是否摘要。"""
+class TurnAwareSummarizationMiddleware(SafeSummarizationMiddleware):
+    """先渲染本轮上下文决定摘要，摘要覆盖原问题后仍向模型保留本轮原话。"""
 
     state_schema = TurnContextSummarizationState
 

@@ -1,11 +1,13 @@
-"""DeepAgents 0.7.28 手动摘要适配层。私有接口仅在此使用，不调用主模型 handler。"""
+"""DeepAgents 0.7.28 手动摘要编排；与 safe_summarization 共用摘要策略，不调用主模型。"""
 
 from importlib.metadata import PackageNotFoundError, version
 
 from deepagents.middleware.summarization import SummarizationMiddleware
-from langchain_core.messages import HumanMessage, SystemMessage, get_buffer_string, trim_messages
+from langchain_core.messages import SystemMessage
 
+from easy_agent.agent.compaction_policy import usable_event
 from easy_agent.agent.model import resolve_context_length
+from easy_agent.agent.safe_summarization import SafeSummarizationMiddleware
 from easy_agent.agent.summarization import summarization_settings
 from easy_agent.agent.token_counting import count_context_tokens
 
@@ -38,26 +40,10 @@ def _require_compatible() -> None:
         raise RuntimeError(reason)
 
 
-def _bounded_tool_history(messages: list, budget: int) -> list:
-    """工具循环内没有近期 human 时，按文本裁剪，保留目标和最新工具结果。
-
-    框架的 start_on='human' 会把超预算的连续工具链裁成空列表。这里只改变
-    摘要输入的文本视图；完整消息配对仍保留在 checkpoint 和归档中。
-    """
-    text = HumanMessage(content=get_buffer_string(messages, format="xml"))
-    # 工具结果可能整段没有换行；默认按行拆分仍会丢弃整个超长结果。
-    common = {"token_counter": count_context_tokens, "allow_partial": True, "text_splitter": list}
-    head = trim_messages([text], max_tokens=max(1, budget // 4), strategy="first", **common)
-    tail = trim_messages([text], max_tokens=max(1, budget * 3 // 4 - 100), strategy="last", **common)
-    return [HumanMessage(content=(head[0].text if head else "")
-                         + "\n[... middle of tool history omitted ...]\n"
-                         + (tail[0].text if tail else ""))]
-
-
 def _context_view(agent, messages: list, values: dict, *, backend=None):
     _require_compatible()
     settings = summarization_settings(agent.config, agent.model_name, manual=True)
-    middleware = SummarizationMiddleware(
+    middleware = SafeSummarizationMiddleware(
         agent.model, backend=backend if backend is not None else agent._build_backend([]), token_counter=count_context_tokens,
         **settings,
     )
@@ -85,8 +71,8 @@ def estimate_context(agent, messages: list, values: dict) -> dict:
 async def prepare_compaction(agent, messages: list, values: dict) -> dict | None:
     _require_compatible()
     backend = agent._build_backend([])
-    settings, middleware, effective = _context_view(agent, messages, values, backend=backend)
-    previous = values.get("_summarization_event")
+    _, middleware, effective = _context_view(agent, messages, values, backend=backend)
+    previous = usable_event(values.get("_summarization_event"))
     cutoff = middleware._determine_cutoff_index(effective)
     if cutoff <= (1 if previous else 0):
         return None
@@ -95,14 +81,6 @@ async def prepare_compaction(agent, messages: list, values: dict) -> dict | None
     if failed:
         raise RuntimeError("媒体归档失败，原上下文未修改")
     summary = await middleware._acreate_summary(media)
-    if summary == "Previous conversation was too long to summarize.":
-        summary = await middleware._acreate_summary(
-            _bounded_tool_history(media, settings["trim_tokens_to_summarize"])
-        )
-    if not summary.strip() or summary in (
-        "No previous conversation history.", "Previous conversation was too long to summarize."
-    ):
-        raise RuntimeError("摘要模型未返回有效摘要")
     # 每次操作写独立归档；允许提交前失败留下孤立文件，失败路径不回滚文件写入。
     archive_id = middleware._get_session_id({})
     path = await middleware._aoffload_to_backend(backend, media, archive_id)

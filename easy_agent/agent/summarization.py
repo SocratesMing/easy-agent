@@ -2,8 +2,8 @@
 
 deepagents 0.7 起，``middleware=`` 里 ``.name`` 与内置默认项相同的实例会**原位替换**
 该默认项（官方 changelog "Override a default middleware instance"），声明式子代理 spec
-的 ``middleware`` 同理。因此主代理与每个子代理 spec 各放一份按配置阈值构造的官方
-``SummarizationMiddleware``，不再在建图期间替换框架私有的
+的 ``middleware`` 同理。因此主代理与每个子代理 spec 各放一份按配置阈值构造的安全
+摘要适配层，沿用官方执行流程，不在建图期间替换框架私有的
 ``deepagents.graph.create_summarization_middleware``（模块全局替换还有线程安全隐患）。
 
 ``summarization.enabled=false`` 时不能"不传"——框架默认栈仍会挂一份；改为构造同名实例
@@ -70,13 +70,13 @@ def summarization_settings(config, model_key: str | None = None, *, manual: bool
 def build_summarization_middleware(
     config, model, backend, *, model_key: str | None = None, render_turn: bool = False
 ):
-    """按 config 阈值构造官方摘要中间件；每个代理（主代理 / 各子代理）各用一份。
+    """按 config 阈值构造安全摘要中间件；每个代理（主代理 / 各子代理）各用一份。
 
     ``model_key``：会话所用模型的配置键，阈值按它的窗口计算（见 :func:`summarization_settings`）。
     ``render_turn=True``（只给主代理）：先把本轮用户消息换成 ``turn_context`` 里的渲染
     内容再计 token / 摘要，见 ``agent/turn_context.py``（DA-03）。
     """
-    from deepagents.middleware.summarization import SummarizationMiddleware
+    from easy_agent.agent.safe_summarization import SafeSummarizationMiddleware
 
     from easy_agent.agent.turn_context import TurnAwareSummarizationMiddleware  # 延迟导入：导入期重依赖：避免加载 langchain/deepagents 等重依赖
     from easy_agent.agent.token_counting import count_context_tokens
@@ -90,5 +90,5 @@ def build_summarization_middleware(
         logger.info(
             "摘要阈值 | %s | trigger=%s keep=%s", label, settings["trigger"], settings["keep"]
         )
-    cls = TurnAwareSummarizationMiddleware if render_turn else SummarizationMiddleware
+    cls = TurnAwareSummarizationMiddleware if render_turn else SafeSummarizationMiddleware
     return cls(model, backend=backend, token_counter=count_context_tokens, **settings)

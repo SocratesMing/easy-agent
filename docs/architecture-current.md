@@ -56,6 +56,8 @@ Vue2 / Vue3 主页面和侧栏的四个入口仅适配响应式写入、refs 和
 
 手动压缩：`POST /agent/sessions/{id}/context/compact` 经 `services/sessions/compaction.py` 使用与聊天/resume 共用的业务租约和提交围栏，摘要事件及幂等结果原子写入 checkpoint；原聊天记录不变。需要开启会话 thread 并启用共享持久化 checkpoint（SQLite / MySQL saver）；部署合法性由启动校验负责，压缩不再额外限制单 worker。业务库和 checkpoint 均为 SQLite 时必须使用独立文件。适配层及安装声明共同限定 DeepAgents 0.7.28 / LangGraph 1.2.16；状态查询与执行共用版本/接口探测，不兼容环境在摘要前拒绝。官方工具对照及升级契约见 [手动压缩设计 §7](design/指令菜单于手动压缩设计.md)。
 
+自动与手动摘要共用 `agent/safe_summarization.py` / `compaction_policy.py`：摘要输入优先保留用户要求及已有摘要，预算不足明确失败；无效摘要、媒体/归档失败不提交事件。自动模型续跑额外保留 checkpoint 中的当前用户原话；旧失败占位事件从原消息恢复。供应商摘要溢出不再通过剪首尾丢弃目标，详见[设计 §9](design/指令菜单于手动压缩设计.md#9-2026-11-18-用户问题保留与失败恢复修复)。
+
 思考回传：每条 assistant 消息的思考都随请求回传给模型，本轮和历史轮次、带不带工具调用一视同仁（DeepSeek 文档要求请求带 tools 时回传历史各轮的 `reasoning_content`）。`ReasoningChatOpenAI` 把 `additional_kwargs` 里的思考写成请求里的 `reasoning_content` 字段（`agent/model.py` 的 `inject_reasoning_content`）；会话 thread 的历史原样发出，`agent/turn_context.py` 只渲染本轮用户消息。从 DB 重建历史时按 step 把思考块放回对应的 AIMessage（`services/streaming/messages.py`）。`/agent/completion/chat` 的 assistant 消息可带 `thinking` 回传。摘要的 token 计数包含 `additional_kwargs` 里的思考（`agent/summarization.py` 的 `count_tokens_with_reasoning`）。
 
 ### Agent 工具与沙箱
