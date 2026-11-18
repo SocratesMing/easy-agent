@@ -31,6 +31,7 @@ from easy_agent.knowledges.personnel.repository import (
     create_personnel,
     delete_personnel,
     list_personnel,
+    list_system_options,
     split_employee_id_conflicts,
     update_personnel,
     upsert_personnel,
@@ -102,6 +103,7 @@ def get_personnel_users(
     keyword: str = Query(default="", max_length=100),
     account_status: str = Query(default="", pattern="^(|active|disabled)$"),
     department_name: str = Query(default="", max_length=255),
+    system: str = Query(default="", max_length=100),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ):
@@ -110,6 +112,7 @@ def get_personnel_users(
         keyword=keyword.strip(),
         account_status=account_status,
         department_name=department_name.strip(),
+        system=system.strip(),
         limit=page_size,
         offset=(page - 1) * page_size,
     )
@@ -118,6 +121,7 @@ def get_personnel_users(
         items=[PersonnelRecord(**item) for item in items],
         page=page,
         page_size=page_size,
+        system_options=list_system_options(db),
     )
 
 
@@ -281,19 +285,19 @@ def download_import_template(_: Annotated[str, Depends(require_personnel_editor)
     headers = [
         "姓名*", "sso账号*", "员工编号", "账号状态*",
         "部门编号*", "部门名称*", "处室*", "团队*",
-        "岗位", "手机号", "邮箱",
+        "岗位", "系统", "手机号", "邮箱",
     ]
     sheet.append(headers)
     # 仅一行示例，姓名标注「示例」；导入时请删除本行或覆盖为真实数据。
     sheet.append([
         "张三（示例）", "zhangsan", "E0001", "启用",
         "dept-market", "金融市场部", "交易一处", "固收团队",
-        "分析师", "13800000000", "zhangsan@example.com",
+        "分析师", "核心/票据", "13800000000", "zhangsan@example.com",
     ])
     for cell in sheet[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="2563EB")
-    for column in "ABCDEFGHIJK":
+    for column in "ABCDEFGHIJKL":
         sheet.column_dimensions[column].width = 18
     output = BytesIO()
     workbook.save(output)

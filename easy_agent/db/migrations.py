@@ -50,6 +50,10 @@ CLEAR_LEGACY_BLOBS_VERSION = 6
 #: 会排到 2 日之前；补零后字典序与自然顺序一致。
 NORMALIZE_DATE_FOLDER_NAMES_VERSION = 7
 
+#: 迁移 8：人员“所属系统”多值列。旧库 schema_version 已是最新时不会走完整建表，
+#: 用迁移保证 systems 列一定补上（新库在建表时已包含该列，重复执行无副作用）。
+ENSURE_USERS_SYSTEMS_VERSION = 8
+
 # 只匹配「年 → 月 → 日」链路上的目录名，避免误改用户自建的其它同名目录。
 _YEAR_FOLDER_RE = re.compile(r"^\d{4}年$")
 _MONTH_FOLDER_RE = re.compile(r"^(\d{1,2})月$")
@@ -104,6 +108,15 @@ def normalize_date_folder_names(db, cursor) -> None:
         logger.info("日期目录补零完成 | renamed=%d", renamed)
 
 
+def ensure_users_systems_column(db, cursor) -> None:
+    """幂等补 users.systems 列（MySQL / SQLite 通用）。"""
+    if not table_exists(db, cursor, "users"):
+        return
+    from easy_agent.db.schema import _ensure_column
+
+    _ensure_column(db, cursor, "users", "systems", "VARCHAR(255) DEFAULT ''")
+
+
 # 版本号必须严格递增（接着 baseline 往后编，与 SCHEMA_VERSION 各自独立）；
 # 函数签名 (db, cursor) -> None。
 MIGRATIONS: list[Migration] = [
@@ -118,6 +131,11 @@ MIGRATIONS: list[Migration] = [
         version=NORMALIZE_DATE_FOLDER_NAMES_VERSION,
         description="zero-pad knowledge date folder names (2日 -> 02日)",
         fn=normalize_date_folder_names,
+    ),
+    Migration(
+        version=ENSURE_USERS_SYSTEMS_VERSION,
+        description="add users.systems for multi-system personnel filtering",
+        fn=ensure_users_systems_column,
     ),
 ]
 

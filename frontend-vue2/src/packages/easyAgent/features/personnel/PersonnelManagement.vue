@@ -83,6 +83,13 @@
         <div><strong>{{ total }}</strong><span>人员总数</span></div>
         <i></i>
         <div><strong>{{ activeCount }}</strong><span>当前列表已启用</span></div>
+        <label class="pm-filter pm-system-filter">
+          <span>人员系统</span>
+          <select v-model="systemFilter" aria-label="按人员系统筛选">
+            <option value="">全部</option>
+            <option v-for="option in systemOptions" :key="option" :value="option">{{ option }}</option>
+          </select>
+        </label>
       </div>
 
       <main class="pm-content">
@@ -94,7 +101,7 @@
                 <th>SSO账号</th>
                 <th>部门</th>
                 <th>处室</th>
-                <th>团队</th><th>角色</th>
+                <th>团队</th><th>系统</th><th>角色</th>
                 <th>信息来源</th>
                 <th>状态</th>
                 <th class="pm-actions-head">操作</th>
@@ -102,12 +109,12 @@
             </thead>
             <tbody>
               <tr v-if="loading">
-                <td colspan="9">
+                <td colspan="10">
                   <div class="pm-loading"><span></span>正在加载人员信息…</div>
                 </td>
               </tr>
               <tr v-else-if="users.length === 0">
-                <td colspan="9">
+                <td colspan="10">
                   <div class="pm-empty">
                     <span>
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
@@ -132,6 +139,7 @@
                   <td><span class="pm-cell-main">{{ user.department_name || '未填写部门名称' }}</span></td>
                   <td><span class="pm-cell-main">{{ user.division_name || '—' }}</span></td>
                   <td><span class="pm-cell-main">{{ user.team_name || '—' }}</span></td>
+                  <td><span class="pm-cell-main">{{ user.systems || '—' }}</span></td>
                   <td><span class="pm-cell-main">{{ user.position || '—' }}</span></td>
                   <td><span class="pm-source" :title="user.personnel_source || '未记录'">{{ user.personnel_source || '未记录' }}</span></td>
                   <td><span class="pm-status" :class="user.account_status"><i></i>{{ statusLabel(user.account_status) }}</span></td>
@@ -237,6 +245,10 @@
               <input v-model="form.position" autocomplete="off" placeholder="例：研究员" />
             </label>
             <label>
+              <span>系统</span>
+              <input v-model="form.systems" autocomplete="off" placeholder="多个系统用 / 分隔，例：核心/票据" />
+            </label>
+            <label>
               <span>手机号</span>
               <input v-model="form.mobile" autocomplete="off" placeholder="选填" />
             </label>
@@ -282,7 +294,7 @@
               </div>
               <div class="pm-column-group optional">
                 <b>选填列</b>
-                <span>员工编号</span><span>岗位</span><span>手机号</span><span>邮箱</span>
+                <span>员工编号</span><span>岗位</span><span>系统</span><span>手机号</span><span>邮箱</span>
               </div>
               <ul id="personnel-import-format-help">
                 <li>表头带 <code>*</code> 的列与人员管理界面必填项一致；部门编号留空时自动取部门名称。</li>
@@ -371,6 +383,8 @@ export default {
     const keyword = ref('')
     const accountStatus = ref('')
     const departmentName = ref('')
+    const systemFilter = ref('')
+    const systemOptions = ref([])
     const page = ref(1)
     const pageSize = 50
     // 与后端 is_super_admin 保持一致：账号列表由 config.yaml 的
@@ -403,7 +417,9 @@ export default {
     let noticeTimer = null
 
     const activeCount = computed(() => users.value.filter(user => user.account_status === 'active').length)
-    const hasFilters = computed(() => Boolean(keyword.value.trim() || accountStatus.value || departmentName.value.trim()))
+    const hasFilters = computed(() => Boolean(
+      keyword.value.trim() || accountStatus.value || departmentName.value.trim() || systemFilter.value
+    ))
     const canImport = computed(() => Boolean(importFile.value && importSource.value.trim()))
     const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
     const pageStart = computed(() => total.value ? (page.value - 1) * pageSize + 1 : 0)
@@ -436,6 +452,7 @@ export default {
           keyword: keyword.value,
           accountStatus: accountStatus.value,
           departmentName: departmentName.value,
+          system: systemFilter.value,
           page: page.value,
           pageSize,
         })
@@ -446,6 +463,7 @@ export default {
         const pageData = normalizePersonnelPage(payload)
         users.value = pageData.items
         total.value = pageData.total
+        systemOptions.value = pageData.systemOptions
       } catch (error) {
         if (sequence !== loadSequence) return
         notify(resolveError(error, '获取人员列表失败'), 'error')
@@ -471,6 +489,7 @@ export default {
       keyword.value = ''
       accountStatus.value = ''
       departmentName.value = ''
+      systemFilter.value = ''
     }
 
     function resetForm() {
@@ -498,6 +517,7 @@ export default {
         team_name: user.team_name || '',
         email: user.email,
         position: user.position,
+        systems: user.systems || '',
         mobile: user.mobile,
         account_status: isSuperAdmin(user.username) ? 'active' : user.account_status,
         personnel_source: user.personnel_source,
@@ -688,7 +708,7 @@ export default {
       return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
     }
 
-    watch([keyword, accountStatus, departmentName], scheduleLoad)
+    watch([keyword, accountStatus, departmentName, systemFilter], scheduleLoad)
     onMounted(loadUsers)
     onBeforeUnmount(() => {
       if (filterTimer) clearTimeout(filterTimer)
@@ -743,6 +763,8 @@ export default {
       submitImport,
       syncing,
       syncFromSource,
+      systemFilter,
+      systemOptions,
       isSuperAdmin,
       total,
       totalPages,
@@ -915,6 +937,7 @@ export default {
 .pm-summary strong { color: var(--text-primary); font-size: 19px; line-height: 1; }
 .pm-summary span { color: var(--text-secondary); font-size: 11px; }
 .pm-summary > i { width: 1px; height: 22px; background: var(--border-color); }
+.pm-system-filter { margin-left: auto; }
 
 .pm-content { flex: 1 1 auto; min-height: 0; padding: 14px 24px 0; }
 .pm-table-wrap { height: 100%; overflow: auto; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 12px; }

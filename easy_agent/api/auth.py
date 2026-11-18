@@ -480,6 +480,7 @@ def list_users(
             UserAccount(
                 username=user.username,
                 employee_id=user.employee_id,
+                systems=getattr(user, "systems", "") or "",
                 created_at=user.created_at,
                 updated_at=user.updated_at,
             )

@@ -42,7 +42,7 @@ logger = logging.getLogger("easy_agent.db.schema")
 # 18：删除 agent_checkpoints。HITL checkpoint 改由 persistence/mysql_saver.py 的
 #     4 张 cp_* 表承载（协议级 split-blob），旧的全量快照后端整体下线，表一并退役。
 # 19：会话 Token 累计查询增加 (user_id, session_id) 索引。
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 # utf8mb4 复合主键必须 ≤ 3072 字节：(512 + 191) * 4 = 2812。
 LANGGRAPH_STORE_NS_LEN = 512
 LANGGRAPH_STORE_KEY_LEN = 191
@@ -259,6 +259,7 @@ def _create_users_table(db, cursor):
         ("division_name", "VARCHAR(255) DEFAULT ''"),
         ("team_name", "VARCHAR(255) DEFAULT ''"),
         ("position", "VARCHAR(255) DEFAULT ''"),
+        ("systems", "VARCHAR(255) DEFAULT ''"),
         ("mobile", "VARCHAR(64) DEFAULT ''"),
         ("account_status", "VARCHAR(20) DEFAULT 'active'"),
         ("personnel_source", "VARCHAR(255) DEFAULT ''"),

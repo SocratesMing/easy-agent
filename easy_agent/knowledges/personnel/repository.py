@@ -20,14 +20,14 @@ _USER_INSERT_SQL = """
     INSERT INTO users (
         user_id, username, password_hash, organization_id, email, bound_ip,
         token_version, employee_id, display_name, department_id,
-        department_name, division_name, team_name, position, mobile,
+        department_name, division_name, team_name, position, systems, mobile,
         account_status, personnel_source, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, '', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, '', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 _USER_UPDATE_SQL = """
     UPDATE users SET organization_id=?, email=?, employee_id=?, display_name=?,
         department_id=?, department_name=?, division_name=?, team_name=?,
-        position=?, mobile=?, account_status=?,
+        position=?, systems=?, mobile=?, account_status=?,
         personnel_source=?, token_version=CASE WHEN ?='disabled'
             THEN token_version+1 ELSE token_version END,
         updated_at=? WHERE {key}=?
@@ -57,6 +57,7 @@ def _row_to_dict(row) -> dict:
         "team_name": value.get("team_name", "") or "",
         "email": value.get("email", "") or "",
         "position": value.get("position", "") or "",
+        "systems": value.get("systems", "") or "",
         "mobile": value.get("mobile", "") or "",
         "account_status": value.get("account_status", "active") or "active",
         "source": value.get("personnel_source", "") or "",
@@ -71,6 +72,7 @@ def list_personnel(
     keyword: str = "",
     account_status: str = "",
     department_name: str = "",
+    system: str = "",
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[int, list[dict]]:
@@ -89,6 +91,12 @@ def list_personnel(
     if department_name:
         clauses.append("department_name LIKE ?")
         params.append(f"%{department_name}%")
+    if system:
+        # systems 用 / 分隔存储：匹配开头、结尾和中间三种位置，避免子串误命中。
+        clauses.append(
+            "(systems=? OR systems LIKE ? OR systems LIKE ? OR systems LIKE ?)"
+        )
+        params.extend([system, f"{system}/%", f"%/{system}", f"%/{system}/%"])
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     with db.get_connection() as connection:
         cursor = connection.cursor()
@@ -103,6 +111,25 @@ def list_personnel(
         )
         rows = cursor.fetchall()
     return total, [_row_to_dict(row) for row in rows]
+
+
+def list_system_options(db: Database) -> list[str]:
+    """全量人员里出现过的系统名（按 / 拆分去重），供界面下拉筛选。"""
+
+    with db.get_connection() as connection:
+        cursor = connection.cursor()
+        db._execute(
+            cursor, "SELECT systems FROM users WHERE systems IS NOT NULL AND systems<>''"
+        )
+        rows = cursor.fetchall()
+    values: set[str] = set()
+    for row in rows:
+        raw = (dict(row) if not isinstance(row, dict) else row).get("systems", "")
+        for item in str(raw or "").split("/"):
+            name = item.strip()
+            if name:
+                values.add(name)
+    return sorted(values, key=lambda item: item.casefold())
 
 
 def _assert_employee_id_available(db: Database, employee_id: str, user_id: str = "") -> None:
@@ -142,7 +169,7 @@ def create_personnel(db: Database, item: PersonnelCreateRequest) -> dict:
                     item.department_id, item.email, item.employee_id or None,
                     item.display_name, item.department_id, item.department_name,
                     item.division_name, item.team_name,
-                    item.position, item.mobile, item.account_status, item.source,
+                    item.position, item.systems, item.mobile, item.account_status, item.source,
                     now, now,
                 ),
             )
@@ -170,7 +197,7 @@ def update_personnel(db: Database, user_id: str, item: PersonnelUpdateRequest) -
                     item.department_id, item.email, item.employee_id or None,
                     item.display_name, item.department_id, item.department_name,
                     item.division_name, item.team_name,
-                    item.position, item.mobile, item.account_status, item.source,
+                    item.position, item.systems, item.mobile, item.account_status, item.source,
                     item.account_status, now, user_id,
                 ),
             )
@@ -313,7 +340,7 @@ def _upsert_personnel_transaction(
                     (
                         item.department_id, item.email, item.employee_id or None, item.display_name,
                         item.department_id, item.department_name, item.division_name, item.team_name,
-                        item.position, item.mobile,
+                        item.position, item.systems, item.mobile,
                         item.account_status, item.source, item.account_status, now, item.username,
                     ),
                 )
@@ -326,7 +353,7 @@ def _upsert_personnel_transaction(
                         str(uuid.uuid4()), item.username, default_password_hash,
                         item.department_id, item.email, item.employee_id or None, item.display_name,
                         item.department_id, item.department_name, item.division_name, item.team_name,
-                        item.position, item.mobile,
+                        item.position, item.systems, item.mobile,
                         item.account_status, item.source, now, now,
                     ),
                 )

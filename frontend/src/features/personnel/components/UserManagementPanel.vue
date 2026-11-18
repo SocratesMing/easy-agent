@@ -6,12 +6,18 @@
           <h2>用户管理</h2>
           <p>当前共 {{ total }} 个用户，重置后的默认密码为 123456</p>
         </div>
-        <button class="close-btn" @click="$emit('close')" title="关闭">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>
+        <div class="header-actions">
+          <select v-model="systemFilter" class="system-filter" aria-label="按人员系统筛选">
+            <option value="">全部系统</option>
+            <option v-for="option in systemOptions" :key="option" :value="option">{{ option }}</option>
+          </select>
+          <button class="close-btn" @click="$emit('close')" title="关闭">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
       </div>
 
       <div class="panel-content">
@@ -24,14 +30,16 @@
 
         <template v-else>
           <div v-if="message" class="state-message success">{{ message }}</div>
-          <div v-if="users.length === 0" class="state-message empty">暂无用户</div>
+          <div v-if="filteredUsers.length === 0" class="state-message empty">暂无用户</div>
           <div v-else class="user-table">
             <div class="table-head">
               <span>账号</span>
+              <span>系统</span>
               <span>操作</span>
             </div>
-            <div v-for="user in users" :key="user.username" class="table-row">
+            <div v-for="user in filteredUsers" :key="user.username" class="table-row">
               <span class="username">{{ user.username }}</span>
+              <span class="systems" :title="user.systems || ''">{{ user.systems || '—' }}</span>
               <button
                 class="reset-btn"
                 :disabled="resettingUsername === user.username"
@@ -48,7 +56,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { listUsers, resetUserPassword } from '../../../api/auth.js'
 
 const users = ref([])
@@ -57,6 +65,25 @@ const loading = ref(true)
 const error = ref('')
 const message = ref('')
 const resettingUsername = ref('')
+const systemFilter = ref('')
+
+function splitSystems(value) {
+  return String(value || '')
+    .split('/')
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
+const systemOptions = computed(() => {
+  const values = new Set()
+  users.value.forEach(user => splitSystems(user.systems).forEach(item => values.add(item)))
+  return [...values].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+})
+
+const filteredUsers = computed(() => {
+  if (!systemFilter.value) return users.value
+  return users.value.filter(user => splitSystems(user.systems).includes(systemFilter.value))
+})
 
 async function loadUsers() {
   loading.value = true
@@ -227,7 +254,7 @@ onMounted(loadUsers)
 .table-head,
 .table-row {
   display: grid;
-  grid-template-columns: 1fr 110px;
+  grid-template-columns: 1fr 160px 110px;
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
@@ -248,6 +275,31 @@ onMounted(loadUsers)
 
 .username {
   overflow-wrap: anywhere;
+}
+
+.systems {
+  color: var(--text-secondary);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.system-filter {
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
 }
 
 .reset-btn {

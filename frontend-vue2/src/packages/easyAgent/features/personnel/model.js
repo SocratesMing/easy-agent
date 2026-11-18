@@ -26,6 +26,7 @@ export function normalizePersonnelUser(user = {}) {
     team_name: String(user.team_name || ''),
     email: String(user.email || ''),
     position: String(user.position || ''),
+    systems: String(user.systems || ''),
     mobile: String(user.mobile || user.phone || ''),
     account_status: normalizeAccountStatus(user.account_status || user.status),
     personnel_source: String(user.personnel_source || user.source || ''),
@@ -46,6 +47,9 @@ export function normalizePersonnelPage(payload) {
     total: Number.isFinite(total) ? total : items.length,
     page: Number(payload && payload.page) || 1,
     page_size: Number(payload && payload.page_size) || Math.max(items.length, 1),
+    systemOptions: Array.isArray(payload && payload.system_options)
+      ? payload.system_options.map(value => String(value))
+      : [],
   }
 }
 
@@ -59,6 +63,7 @@ export function emptyPersonnelForm() {
     division_name: '',
     team_name: '',
     position: '',
+    systems: '',
     email: '',
     position: '',
     mobile: '',
@@ -81,6 +86,7 @@ export function buildPersonnelPayload(form) {
     division_name: trimmed(form.division_name),
     team_name: trimmed(form.team_name),
     position: trimmed(form.position),
+    systems: trimmed(form.systems),
     email: trimmed(form.email),
     position: trimmed(form.position),
     mobile: trimmed(form.mobile),
@@ -115,6 +121,7 @@ export function buildPersonnelFilters({
   keyword = '',
   accountStatus = '',
   departmentName = '',
+  system = '',
   page = 1,
   pageSize = 50,
 } = {}) {
@@ -122,6 +129,7 @@ export function buildPersonnelFilters({
   if (trimmed(keyword)) filters.keyword = trimmed(keyword)
   if (trimmed(accountStatus)) filters.account_status = trimmed(accountStatus)
   if (trimmed(departmentName)) filters.department_name = trimmed(departmentName)
+  if (trimmed(system)) filters.system = trimmed(system)
   filters.page = Math.max(1, Number(page) || 1)
   filters.page_size = Math.min(200, Math.max(1, Number(pageSize) || 50))
   return filters

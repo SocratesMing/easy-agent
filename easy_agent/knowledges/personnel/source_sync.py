@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -29,6 +30,7 @@ _SYNC_FIELDS = (
     "employee_id",
     "email",
     "position",
+    "systems",
     "mobile",
     "account_status",
 )
@@ -72,7 +74,7 @@ def _clean_posts(posts: Any) -> str:
         if not text or text.isdigit() or text in cleaned:
             continue
         cleaned.append(text)
-    return "/".join(cleaned)[:127]
+    return "/".join(cleaned)[:255]
 
 
 def _relative_org_name(name: Any, root_name: str) -> str:
@@ -81,6 +83,67 @@ def _relative_org_name(name: Any, root_name: str) -> str:
     if root_name and text != root_name and text.startswith(root_name):
         text = text[len(root_name):].strip()
     return text
+
+
+# 上游“系统”字段名未完全固定，按常见命名兼容取值。
+_SYSTEM_KEYS = (
+    "systems",
+    "system",
+    "apps",
+    "app",
+    "systemList",
+    "systemNames",
+    "systemName",
+)
+_SYSTEM_SPLIT = re.compile(r"[/,，;；、|｜]")
+
+
+def _clean_roles(user: dict) -> str:
+    """角色取 roles[].roleName（多个用 / 分隔）；roles 为空时回退 posts。"""
+    roles = user.get("roles")
+    names: list[str] = []
+    if isinstance(roles, list):
+        for item in roles:
+            name = (
+                str(item.get("roleName") or "").strip()
+                if isinstance(item, dict)
+                else str(item or "").strip()
+            )
+            if name and name not in names:
+                names.append(name)
+    if names:
+        return "/".join(names)[:255]
+    return _clean_posts(user.get("posts"))
+
+
+def _clean_systems(user: dict) -> str:
+    """系统取 roles[].appCode（多个去重）；没有 roles 时兼容独立系统字段。"""
+    roles = user.get("roles")
+    codes: list[str] = []
+    if isinstance(roles, list):
+        for item in roles:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("appCode") or "").strip()
+            if code and code not in codes:
+                codes.append(code)
+    if codes:
+        return "/".join(codes)[:255]
+
+    raw: Any = None
+    for key in _SYSTEM_KEYS:
+        if key in user and user.get(key) not in (None, "", []):
+            raw = user.get(key)
+            break
+    if raw is None:
+        return ""
+    parts = raw if isinstance(raw, list) else _SYSTEM_SPLIT.split(str(raw))
+    cleaned: list[str] = []
+    for part in parts:
+        text = str(part or "").strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return "/".join(cleaned)[:255]
 
 
 def _map_tree_user(
@@ -99,7 +162,8 @@ def _map_tree_user(
         "department_name": root_name,
         "division_name": division,
         "team_name": team,
-        "position": _clean_posts(user.get("posts")),
+        "position": _clean_roles(user),
+        "systems": _clean_systems(user),
         "mobile": str(user.get("mobileNo") or "").strip(),
         "account_status": _map_account_status(user.get("status")),
     }

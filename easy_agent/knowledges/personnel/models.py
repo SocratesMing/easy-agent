@@ -44,7 +44,9 @@ class PersonnelBase(BaseModel):
     team_name: str = Field(default="", max_length=255)
     employee_id: str = Field(default="", max_length=64)
     email: str = Field(default="", max_length=255)
-    position: str = Field(default="", max_length=127)
+    position: str = Field(default="", max_length=255)
+    # 所属系统：多个系统用 / 分隔，筛选时任一命中即可。
+    systems: str = Field(default="", max_length=255)
     mobile: str = Field(default="", max_length=64)
     account_status: AccountStatus = "active"
     source: str = Field(
@@ -62,6 +64,7 @@ class PersonnelBase(BaseModel):
         "employee_id",
         "email",
         "position",
+        "systems",
         "mobile",
         "source",
         mode="before",
@@ -69,6 +72,20 @@ class PersonnelBase(BaseModel):
     @classmethod
     def strip_text(cls, value: object) -> str:
         return str(value or "").strip()
+
+    @field_validator("systems", mode="before")
+    @classmethod
+    def normalize_systems(cls, value: object) -> str:
+        """把常见的多值分隔符统一成 /，并去空去重。"""
+        text = str(value or "").strip()
+        for separator in ("、", "，", ",", "；", ";", "|", "｜"):
+            text = text.replace(separator, "/")
+        values: list[str] = []
+        for item in text.split("/"):
+            name = item.strip()
+            if name and name not in values:
+                values.append(name)
+        return "/".join(values)
 
     @field_validator("account_status", mode="before")
     @classmethod
@@ -111,6 +128,7 @@ class PersonnelRecord(BaseModel):
     team_name: str = ""
     email: str = ""
     position: str = ""
+    systems: str = ""
     mobile: str = ""
     account_status: AccountStatus = "active"
     source: str = ""
@@ -123,6 +141,8 @@ class PersonnelListResponse(BaseModel):
     items: list[PersonnelRecord]
     page: int = 1
     page_size: int = 50
+    # 全量可选系统（跨分页去重），供界面下拉筛选。
+    system_options: list[str] = Field(default_factory=list)
 
 
 class PersonnelImportResponse(BaseModel):

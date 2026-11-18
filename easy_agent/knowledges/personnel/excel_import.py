@@ -20,6 +20,7 @@ LEGACY_EXCEL_COLUMNS = {
     "员工编号": "employee_id",
     "邮箱": "email",
     "岗位": "position",
+    "系统": "systems",
     "手机号": "mobile",
     "状态": "account_status",
 }
@@ -44,6 +45,7 @@ STRUCTURE_EXCEL_COLUMNS = {
     "处室": "division_name",
     "团队": "team_name",
     "岗位": "position",
+    "系统": "systems",
     "手机号": "mobile",
     "邮箱": "email",
 }

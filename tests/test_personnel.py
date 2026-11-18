@@ -355,7 +355,7 @@ def test_template_is_admin_only_and_valid_xlsx(client):
     assert [cell.value for cell in sheet[1]] == [
         "姓名*", "sso账号*", "员工编号", "账号状态*",
         "部门编号*", "部门名称*", "处室*", "团队*",
-        "岗位", "手机号", "邮箱",
+        "岗位", "系统", "手机号", "邮箱",
     ]
 
 
@@ -662,6 +662,26 @@ def test_sync_endpoint_creates_updates_and_skips_admin(client, db, monkeypatch):
     assert user.organization_id == "dept-b"
 
 
+def test_admin_can_filter_personnel_by_any_system(client, db):
+    client = _as_admin(client)
+    for username, systems in (
+        ("sys_both", "核心/票据"),
+        ("sys_bill", "票据"),
+        ("sys_core", "核心"),
+    ):
+        created = client.post(
+            "/agent/personnel/users",
+            json=_payload(username=username, employee_id=f"E-{username}", systems=systems),
+        )
+        assert created.status_code == 201, created.text
+
+    response = client.get("/agent/personnel/users", params={"system": "票据"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert {item["username"] for item in body["items"]} == {"sys_both", "sys_bill"}
+    assert body["system_options"] == ["核心", "票据"]
+
+
 def test_source_sync_flattens_org_tree(monkeypatch):
     from easy_agent.bootstrap.config_models import PersonnelSyncConfig
     from easy_agent.knowledges.personnel import source_sync
@@ -682,6 +702,10 @@ def test_source_sync_flattens_org_tree(monkeypatch):
                         "ssoLoginNo": "zhangsan",
                         "iamEmpLoginNo": "P1",
                         "posts": ["22", "研究员", "研究员"],
+                        "roles": [
+                            {"roleName": "FMMS角色", "appCode": "FMMS"},
+                            {"roleName": "FMQT角色", "appCode": "FMQT"},
+                        ],
                         "status": 0,
                         "mobileNo": "",
                     }
@@ -741,7 +765,8 @@ def test_source_sync_flattens_org_tree(monkeypatch):
     assert errors == []
     assert skipped == 0
     zhangsan = next(item for item in items if item.username == "zhangsan")
-    assert zhangsan.position == "研究员"
+    assert zhangsan.position == "FMMS角色/FMQT角色"
+    assert zhangsan.systems == "FMMS/FMQT"
     assert zhangsan.employee_id == "P1"
     assert zhangsan.account_status == "active"
 
