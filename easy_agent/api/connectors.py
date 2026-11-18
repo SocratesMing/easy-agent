@@ -34,6 +34,7 @@ from easy_agent.models.api import (
 )
 
 from easy_agent.bootstrap.config import Config
+from easy_agent.bootstrap.env import env_str
 from easy_agent.middleware import get_current_username
 from easy_agent.services.agents.manager import (
     get_agent_config,
@@ -56,12 +57,16 @@ from easy_agent.services.mcp.policy import (
     normalize_workspace_paths,
     stdio_violation,
 )
+from easy_agent.services.mcp_api_keys import issue_api_key
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent/connectors", tags=["Connectors"])
 
 EMPTY_MCP_JSON = json.dumps({"servers": {}}, indent=2, ensure_ascii=False)
+
+#: 自家 mcp-server（mcp-server 子项目）默认地址，与目录 URL 的默认值保持一致
+DEFAULT_MCP_BASE_URL = "http://127.0.0.1:8174"
 
 
 def _runtime_config() -> Config | None:
@@ -146,6 +151,67 @@ def _prepare_servers(servers: dict[str, Any], username: str) -> dict[str, Any]:
         logger.warning(f"拒绝 MCP 配置 | 用户: {username} | {exc}")
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     return prepared
+
+
+def _own_mcp_business(
+    entry: dict[str, Any], cfg: dict[str, Any], connector_id: str
+) -> str:
+    """连接器若由自家 mcp-server 提供，返回其业务名（用于签发 Key），否则返回空串。
+
+    目录里的自家业务条目：新条目显式带 ``business`` 字段；旧条目只写了由
+    ``EASY_MCP_BASE_URL`` 派生的 URL。两者都算自家业务，第三方 URL 一律不碰。
+    """
+    business = str(entry.get("business") or "").strip()
+    if business:
+        return business
+    url = str(cfg.get("url") or "").strip()
+    base = env_str("EASY_MCP_BASE_URL", DEFAULT_MCP_BASE_URL).rstrip("/")
+    if url and base and url.startswith(f"{base}/"):
+        return connector_id
+    return ""
+
+
+def _authorization_token(cfg: dict[str, Any]) -> str:
+    """取 Authorization 头去掉首尾空白后的值（``"Bearer "`` -> ``"Bearer"``）。"""
+    headers = cfg.get("headers")
+    if not isinstance(headers, dict):
+        return ""
+    return str(headers.get("Authorization") or "").strip()
+
+
+def _ensure_authorization(
+    entry: dict[str, Any], connector_id: str, username: str, cfg: dict[str, Any]
+) -> None:
+    """自家 mcp-server 连接器缺 Key 时自动签发，并写成合法的 ``Bearer <key>``。
+
+    目录模板里的占位值是 ``"Bearer "``（尾随空格、没有 token）：留空直接落盘会让
+    httpx 在发送前抛 ``Illegal header value b'Bearer '``，连接器一直显示「异常」。
+    用户自己填了 Key 时只补 ``Bearer `` 前缀，不重新签发。
+    """
+    business = _own_mcp_business(entry, cfg, connector_id)
+    if not business:
+        return
+    token = _authorization_token(cfg)
+    if token and token.lower().startswith("bearer "):
+        return
+    if token and token.lower() != "bearer":
+        # 字段语义是「MCP API Key」，用户填的是 Key 本身：补上 Bearer 前缀
+        api_key = token
+    else:
+        try:
+            api_key = issue_api_key(username, business)
+        except Exception as e:
+            logger.warning(
+                f"自动签发 MCP API Key 失败 | 用户: {username} | 业务: {business} | {e}"
+            )
+            raise HTTPException(
+                status_code=503, detail="自动签发 MCP API Key 失败，请检查数据库配置"
+            ) from e
+    headers = cfg.get("headers")
+    if not isinstance(headers, dict):
+        headers = {}
+        cfg["headers"] = headers
+    headers["Authorization"] = f"Bearer {api_key}"
 
 
 async def _validate_servers(
@@ -287,6 +353,7 @@ async def install_connector(
         if str(request.values.get(f["key"], "")).strip():
             _set_config_field(server_cfg, f["key"], request.values[f["key"]].strip())
     server_cfg.setdefault("enabled", True)
+    _ensure_authorization(entry, request.id, username, server_cfg)
     server_cfg = _prepare_servers({request.id: server_cfg}, username)[request.id]
 
     raw = _read_user_mcp_raw(username, config)

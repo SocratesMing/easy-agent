@@ -242,6 +242,11 @@ const props = defineProps({
     type: String,
     default: ''
   },
+  // 超级管理员账号（后端 config.yaml 下发，admin 恒在其中）
+  superAdminUsernames: {
+    type: Array,
+    default: () => ['admin']
+  },
   organizationId: {
     type: String,
     default: ''
@@ -288,9 +293,9 @@ const showUserMenu = ref(false)
 const showDeleteConfirm = ref(false)
 const deleteTarget = ref(null)
 
-// 与后端 is_super_admin 保持一致：admin 与免密门户总管理员 liufengbao 同权
-const SUPER_ADMIN_USERNAMES = ['admin', 'liufengbao']
-const isSuperAdmin = computed(() => SUPER_ADMIN_USERNAMES.includes(String(props.username || '')))
+// 与后端 is_super_admin 保持一致：账号列表由 config.yaml 的
+// personnel.super_admin_usernames 下发（admin 恒为超级管理员）
+const isSuperAdmin = computed(() => props.superAdminUsernames.includes(String(props.username || '')))
 
 // 删除会话前必须二次确认（D3）：误点删除会同时清空当前聊天视图且不可恢复。
 const deleteTargetTitle = computed(() => sessionTitle(deleteTarget.value))

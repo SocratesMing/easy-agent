@@ -39,12 +39,13 @@ _MAINTAINER_ACTIONS = _VIEWER_ACTIONS | frozenset(
         AllowedAction.MOVE_DOCUMENT,
         AllowedAction.DELETE_DOCUMENT,
         AllowedAction.RETRY_DOCUMENT,
+        # 知识库管理员（单库授权）可维护文档并调整查看权限，但不能改/删知识库本身
+        AllowedAction.MANAGE_PERMISSIONS,
     }
 )
 _MANAGER_ACTIONS = _MAINTAINER_ACTIONS | frozenset(
     {
         AllowedAction.EDIT_BASE,
-        AllowedAction.MANAGE_PERMISSIONS,
         AllowedAction.DELETE_BASE,
     }
 )

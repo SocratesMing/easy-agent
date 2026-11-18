@@ -51,6 +51,8 @@ from easy_agent.agent.middleware import build_agent_middleware, build_call_limit
 from easy_agent.agent.workspace import (
     LONG_TERM_MEMORY_VIRTUAL_PATH,
     AgentWorkspaceMixin,
+    NO_UPLOADED_FILES_NOTE,
+    UPLOADED_FILES_NOTE,
 )
 from easy_agent.agent.subagents import DEFAULT_SUBAGENTS, apply_skill_gated_tools, resolve_subagent_tools
 from easy_agent.agent.summarization import build_summarization_middleware
@@ -326,10 +328,21 @@ class EasyAgent(AgentWorkspaceMixin):
             return ""
         return HITL_AUTO_SYSTEM_NOTE if is_auto_approval(self.approval_mode) else HITL_SYSTEM_NOTE
 
+    def _uploads_note(self) -> str:
+        """「上传文件」分段：按会话是否已有上传清单二选一（常量见 agent/workspace.py）。
+
+        - 有清单 → 检索与来源标注纪律（UPLOADED_FILES_NOTE）；
+        - 无清单 → 明确告知没有上传文件（NO_UPLOADED_FILES_NOTE），取代旧提示词里
+          "已解析到 uploads/ 目录、清单每轮自动加载"的无条件断言——那句断言在没
+          上传过文件的会话里会把模型引去 ls /workspace/uploads（path_not_found）。
+        """
+        return UPLOADED_FILES_NOTE if self._uploads_manifest_exists() else NO_UPLOADED_FILES_NOTE
+
     def _assemble_system_prompt(self, system_prompt: str, system_prompt_extra: str) -> str:
         """按 prompt_guard 的固定顺序组装终稿系统提示词，并记录可观测日志。"""
         # 组装顺序由 prompt_guard 统一保证：
-        # 基础规则 → 运行时上下文 → 联网附加 → 从属补充内容 → HITL 说明（最后）。
+        # 基础规则 → 运行时上下文 → 联网附加 → 上传文件附加 → 从属补充内容 → HITL 说明（最后）。
+        uploads_note = self._uploads_note()
         assembled = assemble_system_prompt(
             base_prompt=system_prompt,
             user_info=self._build_user_info(),
@@ -343,6 +356,9 @@ class EasyAgent(AgentWorkspaceMixin):
             else WEB_SEARCH_OFF_PROMPT_NOTE,
             # 图表 / 流程图 / 交互组件的写法，随 visual 配置开关（关闭的类型不教给模型）
             visual_note=build_visual_prompt(getattr(self.config, "visual", None)),
+            # 上传文件分段二选一：判定在建 Agent 时做一次；上传接口驱逐会话 Agent
+            # 缓存后，下一轮重建自动切换文案，同会话内不变（前缀缓存友好）
+            uploads_note=uploads_note,
             extra=system_prompt_extra,
             hitl_note=self._hitl_system_note(),
         )
@@ -357,6 +373,7 @@ class EasyAgent(AgentWorkspaceMixin):
             f"指纹={prompt_fingerprint(assembled)} | "
             f"基础={len(system_prompt.strip())} 字符 | "
             f"联网搜索附加={len((WEB_SEARCH_SYSTEM_PROMPT if self.enable_web_search else WEB_SEARCH_OFF_PROMPT_NOTE).strip())} 字符({'开启' if self.enable_web_search else '关闭纪律'}) | "
+            f"上传文件附加={len(uploads_note.strip())} 字符({'有上传清单' if uploads_note is UPLOADED_FILES_NOTE else '无上传清单'}) | "
             f"动态附加={len(system_prompt_extra.strip())} 字符"
         )
         if system_prompt_extra.strip():

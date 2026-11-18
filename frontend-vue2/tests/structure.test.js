@@ -74,19 +74,24 @@ const MAX_NEW_FILE_LINES = 800
  *   并把图标/按钮描边收成主色点缀后按实测值更新：ChatInput 3806 → 3874。
  * 2026-11-16 长文本判断改为按模型窗口 token 预算（131072 扣除用量/输出/技能开销），
  *   提示条改为琥珀强调样式后按实测值更新：ChatInput 3874 → 3909。
+ * 2026-11-17 合并 origin/feature/1128 后按实测值校正远端未同步的预算：
+ *   ChatInput 3909 → 4420、AiSidebar 1726 → 1755、chatSession 1744 → 1745。
+ * 2026-11-17 会话结束后若工作区有新文件则自动展开：WorkspacePanel 954 → 970。
+ * 2026-11-17 知识库问答支持后台续流（离开页面不再取消后端任务，重进面板挂
+ *   /stream/live 回放）后按实测值更新：KnowledgeWorkbench 1782 → 1820。
  */
 const LINE_BUDGET = {
   // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
   // 2026-11-05 合并 audit-improvements（注释停用 AiSidebar）后按实测值更新：2035 → 2036
   [`${MOD}EasyAgentPage.vue`]: 2057,
-  [`${MOD}features/chat/components/ChatInput.vue`]: 3909,
+  [`${MOD}features/chat/components/ChatInput.vue`]: 4420,
   // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2644 → 2616
   // 2026-11-16 HITL 批次审批面板（一个中断多项操作只给一个审批入口）后按实测值更新：2620 → 2647
   [`${MOD}features/chat/components/ChatMessage.vue`]: 2647,
-  [`${MOD}features/chat/components/AiSidebar.vue`]: 1726,
+  [`${MOD}features/chat/components/AiSidebar.vue`]: 1755,
   [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2253,
   // 2026-11-12 存量校正：mysql_saver / 跨 Pod 挂载修复后实为 1740 行，按实测值更新（本次改动未触及）
-  [`${MOD}features/chat/mixins/chatSession.js`]: 1744,
+  [`${MOD}features/chat/mixins/chatSession.js`]: 1745,
   [`${MOD}features/connectors/components/ConnectorListPanel.vue`]: 1504,
   [`${MOD}features/skills/components/SkillListPanel.vue`]: 1260,
   [`${MOD}shared/preview/FilePreview.vue`]: 1164,
@@ -95,8 +100,8 @@ const LINE_BUDGET = {
   [`${MOD}features/chat/components/Chat.vue`]: 1123,
   [`${MOD}features/chat/components/SessionList.vue`]: 1106,
   [`${MOD}features/tasks/components/ScheduledTasksPanel.vue`]: 967,
-  [`${MOD}features/workspace/components/WorkspacePanel.vue`]: 954,
-  [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1782,
+  [`${MOD}features/workspace/components/WorkspacePanel.vue`]: 970,
+  [`${MOD}features/knowledge/KnowledgeWorkbench.vue`]: 1820,
   [`${MOD}features/personnel/PersonnelManagement.vue`]: 1194,
   // 页面级深色覆盖（原 App.vue 非 scoped 样式块，只允许变短）
   [`${MOD}styles/theme-dark.css`]: 1195,

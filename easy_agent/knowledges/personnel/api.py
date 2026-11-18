@@ -1,6 +1,6 @@
 """Personnel management API: admin only; everyone else gets 403.
 
-知识库管理员只授予知识库侧的创建/管理能力，不涉及人员管理。
+人员管理只维护账号与部门；知识库管理员授权在对应知识库的「权限管理」中配置。
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ def require_personnel_editor(
     username: Annotated[str, Depends(get_current_username)],
     db: Annotated[Database, Depends(get_database)],
 ) -> str:
-    """人员管理守卫：仅超级管理员（admin / liufengbao）访问，其余 403。"""
+    """人员管理守卫：仅超级管理员（admin / shijiabao）访问，其余 403。"""
     user = db.get_user_by_username(username)
     if not user:
         raise HTTPException(status_code=403, detail="账号不存在或已被删除")

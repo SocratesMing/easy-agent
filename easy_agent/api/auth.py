@@ -34,7 +34,12 @@ from easy_agent.models.api import (
     AuthResponse,
 )
 from easy_agent.services.agents.manager import get_agent_config
-from easy_agent.utils.auth import create_access_token, hash_password, is_super_admin
+from easy_agent.utils.auth import (
+    create_access_token,
+    get_super_admin_usernames,
+    hash_password,
+    is_super_admin,
+)
 from easy_agent.utils.auth import decode_access_token
 from easy_agent.utils.auth import ACCESS_TOKEN_EXPIRE_MINUTES
 
@@ -248,7 +253,7 @@ def login_passwordless(
     if not getattr(policy, "passwordless_login_enabled", False):
         raise HTTPException(status_code=403, detail="当前环境未开启门户免密登录，请使用账号密码登录")
     # 内置 admin 拥有用户管理权限，禁止免密登录，防止仅凭用户名冒充管理员；
-    # liufengbao 作为免密门户部署的总管理员，允许免密登录。
+    # shijiabao 作为免密门户部署的总管理员，允许免密登录。
     if request.username == "admin":
         raise HTTPException(status_code=403, detail="admin 用户不支持免密登录")
 
@@ -548,4 +553,5 @@ async def get_auth_config(
         "agent_env": agent_env,
         "idle_logout_minutes": idle_logout_minutes,
         "app_welcome_title": app_welcome_title,
+        "super_admin_usernames": sorted(get_super_admin_usernames()),
     }

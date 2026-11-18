@@ -185,14 +185,15 @@ export function listPermissions(baseId) {
   return request(`/bases/${encodeURIComponent(baseId)}/permissions`)
 }
 
-// 权限管理：userIds 为勾选的可见人员；勾选名单非空时该库仅勾选人员可见
-export function replacePermissions(baseId, userIds) {
+// 权限管理：adminIds 为知识库管理员（maintainer），viewerIds 为可见人员
+export function replacePermissions(baseId, { adminIds = [], viewerIds = [] } = {}) {
+  const items = [
+    ...adminIds.map(id => ({ subject_type: 'user', subject_id: id, role: 'maintainer' })),
+    ...viewerIds.map(id => ({ subject_type: 'user', subject_id: id, role: 'viewer' })),
+  ]
   return request(`/bases/${encodeURIComponent(baseId)}/permissions`, {
     method: 'PUT',
-    json: {
-      items: userIds.map(id => ({ subject_type: 'user', subject_id: id, role: 'viewer' })),
-      restrict_access: userIds.length > 0,
-    },
+    json: { items, restrict_access: items.length > 0 },
   })
 }
 
@@ -200,30 +201,9 @@ export function listPermissionDirectory(baseId) {
   return request(`/bases/${encodeURIComponent(baseId)}/permission-directory`)
 }
 
-// 创建知识库时的可选人员目录（不依赖具体库，需公共空间管理白名单）
+// 创建知识库时的可选人员目录（不依赖具体库，仅超级管理员可用）
 export function listCreationPermissionDirectory() {
   return request('/bases/permission-directory')
-}
-
-// ---------------- 知识库管理员 ----------------
-
-export function listDepartmentManagers(departmentId = '') {
-  const qs = departmentId ? `?department_id=${encodeURIComponent(departmentId)}` : ''
-  return request(`/department-managers${qs}`)
-}
-
-export function grantDepartmentManager(userId, departmentId) {
-  return request(`/department-managers?department_id=${encodeURIComponent(departmentId)}`, {
-    method: 'POST',
-    json: { user_id: userId },
-  })
-}
-
-export function revokeDepartmentManager(userId, departmentId) {
-  return request(
-    `/department-managers/${encodeURIComponent(userId)}?department_id=${encodeURIComponent(departmentId)}`,
-    { method: 'DELETE' }
-  )
 }
 
 export function askKnowledgeBase(baseId, payload) {

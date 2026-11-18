@@ -12,7 +12,7 @@
           </span>
           <div>
             <h2 id="personnel-title">人员与部门</h2>
-            <p>统一维护账号、部门归属，并指定谁可创建和管理公共空间</p>
+            <p>统一维护账号与部门归属信息</p>
           </div>
         </div>
         <button class="pm-icon-btn" type="button" title="关闭" aria-label="关闭人员管理" @click="$emit('close')">
@@ -68,25 +68,6 @@
         </button>
       </div>
 
-      <section class="pm-team-access-guide" aria-label="知识库管理员权限说明">
-        <span aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
-            <path d="m9 12 2 2 4-4" />
-          </svg>
-        </span>
-        <div>
-          <strong>知识库管理员权限说明</strong>
-          <p>授予后，该成员即成为其所属部门的知识库管理员，拥有以下权限：</p>
-          <ul class="pm-team-access-list">
-            <li><strong>①</strong> 仅可在本部门内部创建公共空间知识库</li>
-            <li><strong>②</strong> 仅可管理自己创建的知识库，无权管理他人创建的库</li>
-            <li><strong>③</strong> 管理权限包括知识库增删改查、知识库查看权限授予与调整</li>
-          </ul>
-          <small>公共空间对本部门成员默认只读可见；单个知识库的可见人员范围，可在该知识库的「权限管理」中按部门、处室、团队勾选限定。admin 默认拥有全局权限，无需在此授权。</small>
-        </div>
-      </section>
-
       <div v-if="noticeText" class="pm-notice" :class="noticeType" role="status">
         <svg v-if="noticeType === 'success'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="m5 12 4 4L19 6" />
@@ -115,19 +96,18 @@
                 <th>处室</th>
                 <th>团队</th><th>角色</th>
                 <th>信息来源</th>
-                <th class="pm-nowrap">知识库管理员</th>
                 <th>状态</th>
                 <th class="pm-actions-head">操作</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="loading">
-                <td colspan="10">
+                <td colspan="9">
                   <div class="pm-loading"><span></span>正在加载人员信息…</div>
                 </td>
               </tr>
               <tr v-else-if="users.length === 0">
-                <td colspan="10">
+                <td colspan="9">
                   <div class="pm-empty">
                     <span>
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
@@ -154,24 +134,6 @@
                   <td><span class="pm-cell-main">{{ user.team_name || '—' }}</span></td>
                   <td><span class="pm-cell-main">{{ user.position || '—' }}</span></td>
                   <td><span class="pm-source" :title="user.personnel_source || '未记录'">{{ user.personnel_source || '未记录' }}</span></td>
-                  <td>
-                    <span v-if="isSuperAdmin(user.username)" class="pm-access-note global">系统管理员</span>
-                    <div v-else class="pm-permission-stack">
-                      <button
-                        class="pm-permission-switch"
-                        :class="{ active: isDeptManagerOf(user.user_id, user.department_id), pending: togglingDeptManagerUserId === user.user_id }"
-                        type="button"
-                        role="switch"
-                        :aria-checked="isDeptManagerOf(user.user_id, user.department_id) ? 'true' : 'false'"
-                        :disabled="togglingDeptManagerUserId === user.user_id || !canToggleDeptManager(user)"
-                        :title="deptManagerToggleTitle(user)"
-                        @click="toggleDeptManager(user)"
-                      >
-                        <i><span></span></i>
-                        <strong>{{ isDeptManagerOf(user.user_id, user.department_id) ? '知识库管理员' : '普通成员' }}</strong>
-                      </button>
-                    </div>
-                  </td>
                   <td><span class="pm-status" :class="user.account_status"><i></i>{{ statusLabel(user.account_status) }}</span></td>
                   <td>
                     <div class="pm-row-actions">
@@ -392,11 +354,17 @@ import {
   summarizeSyncResult,
   validatePersonnelForm,
 } from './model.js'
-import { grantDepartmentManager, listDepartmentManagers, revokeDepartmentManager } from '../knowledge/api.js'
 
 export default {
   name: 'PersonnelManagement',
-  setup() {
+  props: {
+    // 超级管理员账号（后端 config.yaml 下发，admin 恒在其中）
+    superAdminUsernames: {
+      type: Array,
+      default: () => ['admin'],
+    },
+  },
+  setup(props) {
     const users = ref([])
     const total = ref(0)
     const loading = ref(false)
@@ -405,17 +373,15 @@ export default {
     const departmentName = ref('')
     const page = ref(1)
     const pageSize = 50
-    // 与后端 is_super_admin 保持一致：liufengbao 是免密门户的总管理员
-    const SUPER_ADMIN_USERNAMES = ['admin', 'liufengbao']
+    // 与后端 is_super_admin 保持一致：账号列表由 config.yaml 的
+    // personnel.super_admin_usernames 下发（admin 恒为超级管理员）
     function isSuperAdmin(username) {
-      return SUPER_ADMIN_USERNAMES.includes(String(username || ''))
+      return props.superAdminUsernames.includes(String(username || ''))
     }
     const noticeText = ref('')
     const noticeType = ref('success')
     const resettingUsername = ref('')
     const deletingUserId = ref('')
-    const deptManagerMap = ref(new Map())  // Map<userId, Set<departmentId>> 谁在哪些部门是知识库管理员
-    const togglingDeptManagerUserId = ref('')  // 当前正在 toggle 的 user_id
     const downloadingTemplate = ref(false)
     const syncing = ref(false)
     const showEditor = ref(false)
@@ -491,78 +457,8 @@ export default {
     function scheduleLoad() {
       page.value = 1
       if (filterTimer) clearTimeout(filterTimer)
-      filterTimer = setTimeout(() => { loadUsers(); loadDeptManagers() }, 280)
+      filterTimer = setTimeout(loadUsers, 280)
     }
-
-    async function loadDeptManagers() {
-      try {
-        const payload = await listDepartmentManagers('')  // 全量
-        const map = new Map()
-        for (const item of (payload && Array.isArray(payload.items) ? payload.items : [])) {
-          const uid = String(item.user_id || '')
-          const did = String(item.department_id || '')
-          if (!uid || !did) continue
-          if (!map.has(uid)) map.set(uid, new Set())
-          map.get(uid).add(did)
-        }
-        deptManagerMap.value = map
-      } catch (error) {
-        notify(resolveError(error, '加载知识库管理员失败'), 'error')
-      }
-    }
-
-    function isDeptManagerOf(userId, departmentId) {
-      const set = deptManagerMap.value.get(String(userId || ''))
-      if (!set) return false
-      return set.has(String(departmentId || ''))
-    }
-
-    function canToggleDeptManager(user) {
-      if (isSuperAdmin(user.username)) return false
-      // 已授权的停用账号仍允许撤销（授权本身在停用期间不生效）
-      if (isDeptManagerOf(user.user_id, user.department_id)) return true
-      if (user.account_status !== 'active') return false
-      return Boolean(String(user.department_id || '').trim())
-    }
-
-    function deptManagerToggleTitle(user) {
-      if (isSuperAdmin(user.username)) return '系统管理员账号已自带全权限'
-      if (isDeptManagerOf(user.user_id, user.department_id)) {
-        return `点击撤销 ${user.department_name || user.department_id} 的知识库管理员权限`
-      }
-      if (user.account_status !== 'active') return '停用账号不能成为知识库管理员'
-      if (!String(user.department_id || '').trim()) return '该账号未关联部门，不能成为知识库管理员'
-      return `点击授予 ${user.department_name || user.department_id} 的知识库管理员权限`
-    }
-
-    async function toggleDeptManager(user) {
-      const userId = String(user.user_id || '')
-      const deptId = String(user.department_id || '')
-      if (!userId || !deptId) return
-      const enabled = !isDeptManagerOf(userId, deptId)
-      togglingDeptManagerUserId.value = userId
-      try {
-        if (enabled) {
-          await grantDepartmentManager(userId, deptId)
-        } else {
-          await revokeDepartmentManager(userId, deptId)
-        }
-        // 本地乐观更新：整体替换 Map，Vue 2.7 不会追踪 Map 的原地变更
-        const nextMap = new Map(deptManagerMap.value)
-        const set = new Set(nextMap.get(userId) || [])
-        if (enabled) set.add(deptId); else set.delete(deptId)
-        nextMap.set(userId, set)
-        deptManagerMap.value = nextMap
-        notify(enabled
-          ? `已授予 ${user.display_name || user.username} 在 ${user.department_name || deptId} 的知识库管理员权限`
-          : `已撤销 ${user.display_name || user.username} 在 ${user.department_name || deptId} 的权限`)
-      } catch (error) {
-        notify(resolveError(error, '设置知识库管理员失败'), 'error')
-      } finally {
-        togglingDeptManagerUserId.value = ''
-      }
-    }
-
 
     function changePage(nextPage) {
       const normalized = Math.min(totalPages.value, Math.max(1, Number(nextPage) || 1))
@@ -789,10 +685,7 @@ export default {
     }
 
     watch([keyword, accountStatus, departmentName], scheduleLoad)
-    onMounted(() => {
-      loadUsers()
-      loadDeptManagers()
-    })
+    onMounted(loadUsers)
     onBeforeUnmount(() => {
       if (filterTimer) clearTimeout(filterTimer)
       if (noticeTimer) clearTimeout(noticeTimer)
@@ -846,11 +739,6 @@ export default {
       submitImport,
       syncing,
       syncFromSource,
-      togglingDeptManagerUserId,
-      toggleDeptManager,
-      canToggleDeptManager,
-      deptManagerToggleTitle,
-      isDeptManagerOf,
       isSuperAdmin,
       total,
       totalPages,
@@ -992,37 +880,6 @@ export default {
 .pm-btn.pm-primary:hover:not(:disabled) { filter: brightness(.97); }
 .pm-btn.pm-quiet { background: var(--bg-primary); }
 
-.pm-team-access-guide {
-  display: flex;
-  align-items: flex-start;
-  gap: 11px;
-  margin: 14px 24px 0;
-  padding: 12px 14px;
-  color: var(--text-primary);
-  background: color-mix(in srgb, var(--accent-color, #0ea5e9) 7%, var(--bg-primary));
-  border: 1px solid color-mix(in srgb, var(--accent-color, #0ea5e9) 24%, var(--border-color));
-  border-radius: 11px;
-}
-.pm-team-access-guide > span {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  color: var(--accent-color, #0ea5e9);
-  background: var(--bg-secondary);
-  border-radius: 9px;
-}
-.pm-team-access-guide svg { width: 18px; height: 18px; }
-.pm-team-access-guide div { min-width: 0; }
-.pm-team-access-guide > div > strong { display: block; font-size: 12px; }
-.pm-team-access-guide p { margin: 3px 0 0; color: var(--text-secondary); font-size: 11px; line-height: 1.55; }
-.pm-team-access-guide small { display: block; margin-top: 3px; color: var(--text-secondary); font-size: 10px; line-height: 1.5; opacity: .86; }
-.pm-team-access-list { margin: 4px 0 0; padding: 0; list-style: none; }
-.pm-team-access-list li { display: block; margin: 2px 0 0; color: var(--text-secondary); font-size: 11px; line-height: 1.6; white-space: nowrap; }
-.pm-team-access-list li strong { display: inline; margin-right: 4px; font-weight: 600; }
-
 .pm-notice {
   display: flex;
   align-items: center;
@@ -1060,12 +917,12 @@ export default {
 .pm-table { width: 100%; min-width: 1280px; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
 .pm-table th { position: sticky; top: 0; z-index: 1; padding: 11px 13px; color: var(--text-secondary); background: var(--bg-tertiary); border-bottom: 1px solid var(--border-color); text-align: left; font-size: 11px; font-weight: 650; }
 /* 列宽按百分比分配，随容器均匀伸缩；操作列保留按钮所需空间 */
-.pm-table th:nth-child(1) { width: 11%; } .pm-table th:nth-child(2) { width: 8%; }
-.pm-table th:nth-child(3) { width: 11%; } .pm-table th:nth-child(4) { width: 9%; }
+.pm-table th:nth-child(1) { width: 12%; } .pm-table th:nth-child(2) { width: 9%; }
+.pm-table th:nth-child(3) { width: 12%; } .pm-table th:nth-child(4) { width: 9%; }
 .pm-table th:nth-child(5) { width: 9%; }
 .pm-table th:nth-child(6) { width: 8%; }
-.pm-table th:nth-child(7) { width: 10%; }
-.pm-table th:nth-child(8) { width: 13%; } .pm-table th:nth-child(9) { width: 7%; } .pm-table th:nth-child(10) { width: 14%; }
+.pm-table th:nth-child(7) { width: 11%; }
+.pm-table th:nth-child(8) { width: 8%; } .pm-table th:nth-child(9) { width: 22%; }
 .pm-table td { height: 64px; padding: 9px 13px; color: var(--text-primary); border-bottom: 1px solid var(--border-color); vertical-align: middle; font-size: 12px; }
 .pm-table tbody tr:last-child td { border-bottom: 0; }
 .pm-table tbody tr:hover td { background: color-mix(in srgb, var(--accent-color, #0ea5e9) 3%, transparent); }
@@ -1082,20 +939,6 @@ export default {
 .pm-status.active i { background: #10b981; }
 .pm-status.disabled { color: #64748b; background: rgba(100, 116, 139, .12); }
 .pm-status.disabled i { background: #94a3b8; }
-.pm-access-note { display: inline-flex; align-items: center; min-height: 25px; padding: 0 8px; color: var(--text-secondary); background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 999px; font-size: 10px; font-weight: 650; white-space: nowrap; }
-.pm-access-note.global { color: #0369a1; background: rgba(14, 165, 233, .1); border-color: rgba(14, 165, 233, .2); }
-.pm-permission-stack { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
-.pm-nowrap { white-space: nowrap; }
-.pm-permission-switch { display: inline-flex; align-items: center; gap: 7px; padding: 3px 0; color: var(--text-secondary); background: transparent; border: 0; cursor: pointer; white-space: nowrap; }
-.pm-permission-switch:disabled { opacity: .5; cursor: not-allowed; }
-.pm-permission-switch > i { position: relative; display: inline-block; flex: 0 0 auto; width: 29px; height: 17px; background: #cbd5e1; border-radius: 999px; transition: background .18s ease; }
-.pm-permission-switch > i > span { position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; background: #fff; border-radius: 50%; box-shadow: 0 1px 3px rgba(15, 23, 42, .25); transition: transform .18s ease; }
-.pm-permission-switch > strong { white-space: nowrap; font-size: 10px; font-weight: 650; }
-.pm-permission-switch.active { color: #047857; }
-.pm-permission-switch.active > i { background: #10b981; }
-.pm-permission-switch.active > i > span { transform: translateX(12px); }
-.pm-permission-switch.pending > i > span { animation: pm-switch-pulse .7s ease-in-out infinite alternate; }
-@keyframes pm-switch-pulse { to { opacity: .45; } }
 .pm-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 5px; }
 .pm-row-actions button { padding: 5px 7px; white-space: nowrap; color: var(--accent-color, #0284c7); background: transparent; border: 0; border-radius: 6px; font-size: 10px; cursor: pointer; }
 .pm-row-actions button:hover:not(:disabled) { background: rgba(14, 165, 233, .1); }
@@ -1182,8 +1025,7 @@ export default {
 @media (max-width: 620px) {
   .pm-heading p, .pm-footer span { display: none; }
   .pm-header, .pm-toolbar { padding-left: 14px; padding-right: 14px; }
-  .pm-team-access-guide { margin-left: 14px; margin-right: 14px; }
-  .pm-team-access-list li { white-space: normal; }
+  .pm-notice { margin-left: 14px; margin-right: 14px; }
   .pm-summary { margin-left: 14px; margin-right: 14px; }
   .pm-content { padding-left: 14px; padding-right: 14px; }
   .pm-form { grid-template-columns: 1fr; }

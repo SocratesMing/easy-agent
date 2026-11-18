@@ -14,7 +14,7 @@
         <button
           v-if="teamSpaceManagement.can_manage"
           class="ke-button admin-access"
-          title="配置人员、部门及公共空间创建与管理权限"
+          title="管理人员与部门信息"
           @click="$emit('manage-personnel')"
         ><IconUserRoundCog />人员管理</button>
         <span class="ke-health" :class="healthClass"><i></i>{{ healthLabel }}</span>
@@ -287,7 +287,7 @@
           <select v-model="baseForm.visibility"><option value="personal">个人空间</option><option value="team" :disabled="!teamSpaceManagement.can_create">公共空间{{ teamSpaceOptionSuffix(teamSpaceManagement) }}</option></select>
           <small v-if="!teamSpaceManagement.can_create && teamSpaceManagement.can_manage" class="ke-modal-shortcut">公共空间要先有可用部门。<button type="button" @click="showBaseModal = false; $emit('manage-personnel')">去配置人员与部门</button></small>
           <small v-if="baseForm.visibility === 'team' && teamSpaceManagement.is_admin">admin 无需授权；请选择公共空间所属部门。</small>
-          <small v-else-if="baseForm.visibility === 'team'">已授权管理员可创建和管理；本部门其他成员默认只读，可在权限管理中勾选限定可见人员。</small>
+          <small v-else-if="baseForm.visibility === 'team'">仅系统管理员可创建公共空间；本部门其他成员默认只读，可在权限管理中勾选限定可见人员。</small>
           <small v-else>空间决定知识库的默认可见范围，创建后可在权限管理中精细控制可见人员。</small>
         </label>
         <label v-if="baseModalMode === 'create' && baseForm.visibility === 'team' && teamSpaceManagement.is_admin">所属部门
@@ -311,8 +311,8 @@
               </div>
               <KnowledgePermissionTree class="ke-create-perm-tree" :tree="createPermTree" :collapsed="createPermCollapsed" :is-collapsed="isCreatePermCollapsed" empty-text="暂无可选人员，请先在人员与部门中导入账号。" @toggle-expand="toggleCreatePermExpand" @toggle-node="togglePermNode" />
               <p class="ke-permission-note">
-                <template v-if="createPermSelectedTotal > 0">创建后，该知识库仅勾选人员及所有者、空间管理员可见；未勾选人员（含本部门其他成员）不可见。</template>
-                <template v-else>未勾选任何人员，创建后仅所有者与空间管理员可见。</template>
+                <template v-if="createPermSelectedTotal > 0">创建后，该知识库仅勾选人员及所有者、知识库管理员可见；未勾选人员（含本部门其他成员）不可见。</template>
+                <template v-else>未勾选任何人员，创建后仅所有者与系统管理员可见。</template>
               </p>
             </template>
           </template>
@@ -347,21 +347,19 @@
         <header>
           <div>
             <h3>权限管理</h3>
-            <p>按部门、处室、团队、角色筛选并勾选可见人员，或直接搜索姓名/账号。保存后，仅勾选人员可查看「{{ selectedBase ? selectedBase.name : '' }}」。如需配置知识库管理员权限，请前往人员管理。</p>
+            <p>为「{{ selectedBase ? selectedBase.name : '' }}」指定可见人员</p>
           </div>
           <button aria-label="关闭" @click="showPermissionModal = false"><IconX /></button>
         </header>
         <div v-if="permissionDirectoryLoading" class="ke-perm-loading"><span class="ke-spinner"></span><p>正在加载人员目录…</p></div>
         <template v-else>
-          <div class="ke-perm-toolbar">
-            <span>已选 <strong>{{ permSelectedTotal }}</strong> / {{ permDirectoryTotal }} 人</span>
-            <span v-if="permissionRestricted">当前已限定：仅勾选人员可见</span>
-            <span v-else>当前：默认可见范围（公共空间对本部门成员可见）</span>
+          <div class="ke-perm-section">
+            <div class="ke-perm-section-head"><strong>查看人员</strong><span>已选 {{ permSelectedTotal }} / {{ permDirectoryTotal }} 人</span></div>
+            <KnowledgePermissionPicker :users="permissionDirectory" empty-text="暂无可选人员，请先在人员与部门中导入账号。" />
           </div>
-          <KnowledgePermissionPicker :users="permissionDirectory" empty-text="暂无可选人员，请先在人员与部门中导入账号。" />
           <p class="ke-permission-note">
-            <template v-if="permSelectedTotal > 0">保存后，该知识库仅勾选人员及所有者、空间管理员可见；未勾选人员（含本部门其他成员）不可见。</template>
-            <template v-else>未勾选任何人员，保存后恢复默认可见范围（公共空间对本部门成员可见）。</template>
+            <template v-if="permSelectedTotal > 0 || permAdminTotal > 0">保存后，该知识库仅勾选人员及所有者、知识库管理员可见；未勾选人员（含本部门其他成员）不可见。</template>
+            <template v-else>未勾选任何查看人员，保存后恢复默认可见范围（公共空间对本部门成员可见）。</template>
           </p>
         </template>
 
@@ -452,7 +450,7 @@ import KnowledgeAskFilter from './KnowledgeAskFilter.vue'
 import KnowledgeImportMenu from './KnowledgeImportMenu.vue'
 import KnowledgePermissionPicker from './KnowledgePermissionPicker.vue'
 import KnowledgePermissionTree from './KnowledgePermissionTree.vue'
-import { attachStream, getChatHistory, sendMessage } from '../../api/chat.js'
+import { attachStream, getChatHistory, getStreamStatus, sendMessage } from '../../api/chat.js'
 import { cancelMessage } from './api.js'
 import { processingElapsedText } from './utils/presentation.js'
 import {
@@ -671,6 +669,20 @@ let askGeneration = 0
 let activeChatSessionId = ''
 let streamDone = false
 let blockOrder = 0
+function createAgentMessage() {
+  return {
+    id: `knowledge-assistant-${Date.now()}`,
+    role: 'assistant',
+    content: '',
+    thinking: '',
+    tool_calls: [],
+    blocks: [],
+    knowledge_evidence: [],
+    knowledge_warnings: [],
+    loading: true,
+    created_at: null,
+  }
+}
 const showBaseModal = ref(false)
 const baseModalMode = ref('create')
 const showFolderModal = ref(false)
@@ -682,10 +694,10 @@ const saving = ref(false)
 const baseForm = reactive({ name: '', description: '', visibility: 'personal', department_id: '' })
 const folderForm = reactive({ id: '', name: '', parentId: '' })
 const confirmation = reactive({ open: false, title: '', description: '', confirmLabel: '确认删除', tone: 'danger' })
-// 权限管理：人员目录（含 checked 勾选态）与受限标记；四列筛选由 KnowledgePermissionPicker 负责
+// 权限管理：查看者勾选态与受限标记；管理员名单仅用于保存时保留既有知识库管理员，不在弹窗展示
 const permissionDirectory = ref([])
+const permissionAdminDirectory = ref([])
 const permissionDirectoryLoading = ref(false)
-const permissionRestricted = ref(false)
 let permissionLoadSeq = 0
 
 // 创建知识库时的可见人员配置（与权限管理同款三级树，独立状态避免串扰）
@@ -723,7 +735,9 @@ const hasActiveWork = computed(() => documents.value.some(
   item => !item.optimistic && ['pending', 'processing', 'cancel_requested', 'deleting'].includes(item.status),
 ))
 const permSelectedTotal = computed(() => permissionDirectory.value.filter(user => user.checked).length)
+const permAdminTotal = computed(() => permissionAdminDirectory.value.filter(user => user.checked).length)
 const permDirectoryTotal = computed(() => permissionDirectory.value.length)
+const canManageBaseAdmins = computed(() => selectedBase.value?.role === 'manager')
 const createPermSelectedTotal = computed(() => createPermDirectory.value.filter(user => user.checked).length)
 const createPermDirectoryTotal = computed(() => createPermDirectory.value.length)
 
@@ -1187,20 +1201,20 @@ async function openPermissions() {
       listPermissionDirectory(baseId),
     ])
     if (seq !== permissionLoadSeq) return
-    const checkedIds = new Set(
-      (permissionResponse.items || [])
-        .filter(item => item.subject_type === 'user')
+    const items = permissionResponse.items || []
+    const checkedIds = role => new Set(
+      items.filter(item => item.subject_type === 'user' && item.role === role)
         .map(item => item.subject_id),
     )
-    permissionRestricted.value = Boolean(permissionResponse.restrict_access)
-    const users = (directoryResponse.items || []).map(item => ({
-      ...item,
-      checked: checkedIds.has(item.user_id),
-    }))
-    permissionDirectory.value = users
+    const adminIds = checkedIds('maintainer')
+    const viewerIds = checkedIds('viewer')
+    const directory = directoryResponse.items || []
+    permissionAdminDirectory.value = directory.map(item => ({ ...item, checked: adminIds.has(item.user_id) }))
+    permissionDirectory.value = directory.map(item => ({ ...item, checked: viewerIds.has(item.user_id) }))
   } catch (error) {
     if (seq !== permissionLoadSeq) return
     handleError(error)
+    permissionAdminDirectory.value = []
     permissionDirectory.value = []
   } finally {
     if (seq === permissionLoadSeq) permissionDirectoryLoading.value = false
@@ -1210,11 +1224,14 @@ async function openPermissions() {
 async function savePermissions() {
   saving.value = true
   try {
-    const userIds = permissionDirectory.value
-      .filter(user => user.checked)
+    const adminIds = canManageBaseAdmins.value
+      ? permissionAdminDirectory.value.filter(user => user.checked).map(user => user.user_id)
+      : []
+    const adminSet = new Set(adminIds)
+    const viewerIds = permissionDirectory.value
+      .filter(user => user.checked && !adminSet.has(user.user_id))
       .map(user => user.user_id)
-    await replacePermissions(selectedBaseId.value, userIds)
-    permissionRestricted.value = userIds.length > 0
+    await replacePermissions(selectedBaseId.value, { adminIds, viewerIds })
     showPermissionModal.value = false
     notify('权限已保存')
   } catch (error) { handleError(error) } finally { saving.value = false }
@@ -1373,7 +1390,9 @@ async function stopQuestion(reason = 'user') {
   if (agentMessage.value) {
     agentMessage.value = { ...agentMessage.value, loading: false }
   }
-  if (sessionId) {
+  // 离开页面只断开本实例的连接，不取消后端任务：后台继续生成并落库，
+  // 重新进入面板时由 resumeActiveAskStream 回放续看（与主对话的后台流策略一致）。
+  if (sessionId && reason !== 'unmount') {
     try { await cancelMessage(sessionId) } catch (_) { /* 中止以本地状态为准 */ }
   }
   if (reason === 'user') {
@@ -1459,6 +1478,51 @@ function parseAskHistory(messages) {
   return entries
 }
 
+// 重新进入面板时，若该问答会话仍在后台生成，挂到实时流回放已产生的事件并继续接收：
+// 离开页面只断开本实例连接（见 stopQuestion），后端任务不中断，回到面板从这里续看。
+async function resumeActiveAskStream(baseId, sessionId, messages) {
+  if (asking.value || !sessionId) return
+  let status = null
+  try { status = await getStreamStatus(sessionId) } catch (_) { return }
+  // active：这一轮还在跑；replayable：没在跑但过程事件比落库消息新（中断/崩溃）
+  if (!status || (!status.active && !status.replayable)) return
+  if (selectedBaseId.value !== baseId || asking.value) return
+  const rawLast = (messages || [])[messages.length - 1]
+  // 已落库的半截回答会随回放完整重建：先从历史里摘掉末尾那条，避免出现两份
+  if (rawLast && rawLast.role === 'assistant' && String(rawLast.content || '').trim()) {
+    askHistory.value.pop()
+  }
+  const lastUser = [...(messages || [])].reverse().find(item => item.role === 'user')
+  const generation = ++askGeneration
+  const controller = new AbortController()
+  askController = controller
+  activeChatSessionId = sessionId
+  asking.value = true
+  askError.value = ''
+  streamDone = false
+  blockOrder = 0
+  lastQuestion.value = String(lastUser?.content || '').trim()
+  agentMessage.value = createAgentMessage()
+  nextTick(() => scrollAskToBottom())
+  const onChunk = event => applyAgentEvent(event, baseId, generation)
+  try {
+    await attachStream(sessionId, onChunk, controller.signal)
+  } catch (error) {
+    if (error?.name !== 'AbortError' && generation === askGeneration) {
+      askError.value = error?.message || '挂载知识库回答失败'
+      if (agentMessage.value) agentMessage.value = { ...agentMessage.value, loading: false, error: askError.value }
+    }
+  } finally {
+    if (generation === askGeneration) {
+      askController = null
+      activeChatSessionId = ''
+      asking.value = false
+      if (agentMessage.value) agentMessage.value = { ...agentMessage.value, loading: false }
+      emit('chat-session-prepared')
+    }
+  }
+}
+
 // 拉取指定知识库的问答历史（打开面板/切换库时预取；首次提问时复用兜底）。
 // preparedSessionId 由调用方传入时可跳过会话准备。预取走 peek 只读探测：
 // 会话不存在返回 404 且不创建记录——点击知识库不应自动生成
@@ -1484,6 +1548,8 @@ async function loadAskHistory(baseId, preparedSessionId = '') {
     // 仅会话确实存在时标记已拉取；peek 404 时不标记，下次打开重新探测
     askHistoryBaseId.value = baseId
     nextTick(() => scrollAskToBottom())
+    // 不 await：续流可能要持续到回答结束，不能占住 askHistoryFetching
+    resumeActiveAskStream(baseId, sessionId, history.messages)
   } catch { /* 历史拉取失败不阻塞提问，面板欢迎页兜底 */ }
   finally { askHistoryFetching = false }
 }
@@ -1507,18 +1573,7 @@ async function submitQuestion(suggested = '') {
   if (agentMessage.value && !agentMessage.value.error) {
     askHistory.value.push({ question: lastQuestion.value, message: agentMessage.value })
   }
-  agentMessage.value = {
-    id: `knowledge-assistant-${Date.now()}`,
-    role: 'assistant',
-    content: '',
-    thinking: '',
-    tool_calls: [],
-    blocks: [],
-    knowledge_evidence: [],
-    knowledge_warnings: [],
-    loading: true,
-    created_at: null,
-  }
+  agentMessage.value = createAgentMessage()
   lastQuestion.value = question.value.trim()
   // 发送即清空输入框（发送内容已存入 lastQuestion，不等回答完成）
   question.value = ''
@@ -1570,7 +1625,7 @@ function startPolling() {
   }, 3000)
 }
 function stopPolling() { clearInterval(pollTimer); pollTimer = null }
-function roleLabel(role) { return ({ viewer: '查看者', maintainer: '维护者', manager: '管理员' })[role] || role }
+function roleLabel(role) { return ({ viewer: '查看者', maintainer: '知识库管理员', manager: '管理员' })[role] || role }
 function spaceLabel(space) { return ({ personal: '个人空间', team: '公共空间' })[space] || space }
 function folderPath(folder) {
   const parts = [folder.name]
@@ -1664,8 +1719,10 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
       openMoveDocument,
       openPermissions,
       operations,
+      permissionAdminDirectory,
       permissionDirectory,
-      permissionDirectoryLoading, permissionRestricted,
+      permissionDirectoryLoading,
+      permAdminTotal, canManageBaseAdmins,
       permDirectoryTotal,
       permSelectedTotal,
       preview,
@@ -1756,7 +1813,7 @@ onUnmounted(() => { stopQuestion('unmount'); finishKnowledgeResize(); stopPollin
 .ke-folder-art{background:linear-gradient(180deg,#7dd3fc,#38bdf8)}.ke-folder-art:before{background:#0ea5e9}
 .ke-preview-loading{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text-secondary);font-size:11px}.ke-preview-loading p{margin:0}.ke-preview-loading .ke-spinner{flex:none}
 .ke-stop-button{color:#d14b4b!important}.ke-answer-text{min-height:18px}.ke-stream-cursor{display:inline-block;width:2px;height:1em;margin-left:3px;vertical-align:-2px;background:var(--accent-color);animation:ke-cursor-blink .8s steps(2,end) infinite}.ke-ask-error{margin-top:14px;padding:11px;border:1px solid color-mix(in srgb,#d14b4b 28%,var(--border-color));border-radius:10px;background:color-mix(in srgb,#d14b4b 7%,var(--bg-secondary));color:var(--text-secondary);font-size:10px;line-height:1.55;display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:7px;align-items:start}.ke-ask-error>svg{width:15px;height:15px;color:#d14b4b;margin-top:1px}.ke-ask-error p{margin:0}.ke-ask-error button{border:0;background:transparent;color:var(--accent-color);font-weight:600;display:flex;align-items:center;gap:4px;cursor:pointer}.ke-ask-error button svg{width:12px;height:12px}@keyframes ke-cursor-blink{50%{opacity:0}}
-.ke-agent-message{width:100%;min-width:0}.ke-agent-message ::v-deep .message.assistant{width:100%;max-width:none;margin:0;padding:0}.ke-agent-message ::v-deep .message-content{min-width:0}.ke-agent-message ::v-deep .process-group,.ke-agent-message ::v-deep .knowledge-citations{box-sizing:border-box}.ke-permission-note{margin:10px 0 0;color:var(--text-secondary);font-size:9px;line-height:1.5}.ke-create-perm{margin-top:16px;border:1px solid #e3e7e4;border-radius:10px;padding:12px;background:#fbfdfb}.ke-create-perm-toggle{display:grid;grid-template-columns:16px auto 1fr;gap:8px;align-items:start;cursor:pointer;color:#3d4640;font-size:12px}.ke-create-perm-toggle input{width:16px;height:16px;margin:1px 0 0;accent-color:var(--ke-accent);cursor:pointer}.ke-create-perm-toggle span{font-weight:600;white-space:nowrap}.ke-create-perm-toggle small{grid-column:2/4;color:#9ba19d;font-size:9px;line-height:1.5;white-space:normal}.ke-create-perm .ke-perm-toolbar{margin-top:12px}.ke-perm-search{width:100%;max-width:none;margin-top:8px;box-sizing:border-box}.ke-create-perm-tree{max-height:240px}
+.ke-agent-message{width:100%;min-width:0}.ke-agent-message ::v-deep .message.assistant{width:100%;max-width:none;margin:0;padding:0}.ke-agent-message ::v-deep .message-content{min-width:0}.ke-agent-message ::v-deep .process-group,.ke-agent-message ::v-deep .knowledge-citations{box-sizing:border-box}.ke-permission-note{margin:10px 0 0;color:var(--text-secondary);font-size:9px;line-height:1.5}.ke-perm-section{margin-top:14px}.ke-perm-section-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;color:var(--text-secondary);font-size:9px}.ke-perm-section-head strong{color:var(--text-primary);font-size:11px}.ke-create-perm{margin-top:16px;border:1px solid #e3e7e4;border-radius:10px;padding:12px;background:#fbfdfb}.ke-create-perm-toggle{display:grid;grid-template-columns:16px auto 1fr;gap:8px;align-items:start;cursor:pointer;color:#3d4640;font-size:12px}.ke-create-perm-toggle input{width:16px;height:16px;margin:1px 0 0;accent-color:var(--ke-accent);cursor:pointer}.ke-create-perm-toggle span{font-weight:600;white-space:nowrap}.ke-create-perm-toggle small{grid-column:2/4;color:#9ba19d;font-size:9px;line-height:1.5;white-space:normal}.ke-create-perm .ke-perm-toolbar{margin-top:12px}.ke-perm-search{width:100%;max-width:none;margin-top:8px;box-sizing:border-box}.ke-create-perm-tree{max-height:240px}
 /* 弹窗内的搜索框：.ke-modal input 会给嵌套 input 误加边框/内边距，形成框中框，这里显式还原 */
 .ke-modal .ke-search-box input{width:auto;min-width:0;flex:1;border:0;border-radius:0;box-shadow:none;outline:0;background:transparent;padding:0;color:var(--text-primary);font-size:12px}
 </style>

@@ -221,7 +221,7 @@ watch(draft, () => {
   persist(snapshot)
 }, { deep: true })
 function handleOutside(event) { if (open.value && rootRef.value && !rootRef.value.contains(eventTarget(event))) open.value = false }
-function roleLabel(role) { return ({ viewer: '查看者', maintainer: '维护者', manager: '管理员' })[role] || role }
+function roleLabel(role) { return ({ viewer: '查看者', maintainer: '知识库管理员', manager: '管理员' })[role] || role }
 function spaceLabel(space) { return ({ personal: '个人', team: '团队', shared: '共享' })[space] || space }
 
 // 宿主暂存的勾选变化（切换会话/开始新对话/发送后清理）时同步面板

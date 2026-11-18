@@ -1,13 +1,11 @@
-"""知识库与部门管理数据访问：库 CRUD、可见库查询、部门管理员台账。"""
+"""知识库与部门管理数据访问：库 CRUD、可见库查询、部门列表查询。"""
 
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
 from typing import Any
 
 from easy_agent.knowledges.repository.base import _now
-from easy_agent.utils.auth import is_super_admin
 
 _BASE_UPDATE_FIELDS = {
     "remote_dataset_id", "name", "description", "status",
@@ -42,37 +40,6 @@ _DOCUMENT_SELECT = """
     LEFT JOIN knowledge_document_objects o
       ON o.document_id=d.id AND o.object_version=1
 """
-
-_MANAGER_SELECT = """
-    SELECT m.id,
-           m.user_id,
-           m.department_id,
-           m.granted_by AS granted_by_user_id,
-           m.granted_at,
-           m.updated_at,
-           u.username,
-           u.display_name,
-           u.account_status,
-           u.department_name,
-           g.username     AS granted_by_username,
-           g.display_name AS granted_by_display_name
-      FROM knowledge_department_managers m
-      JOIN users u ON u.user_id = m.user_id
-      LEFT JOIN users g ON g.user_id = m.granted_by
-"""
-def _normalize_manager_row(row: Mapping[str, object]) -> dict[str, Any]:
-    """补前端展示字段：granted_by 优先姓名，department_name 兜底用 id。"""
-
-    d = dict(row)
-    d["granted_by"] = (
-        d.get("granted_by_display_name")
-        or d.get("granted_by_username")
-        or d.get("granted_by_user_id", "")
-    )
-    if not d.get("department_name"):
-        d["department_name"] = d.get("department_id", "")
-    return d
-
 
 class BaseRepositoryMixin:
     """知识库/部门相关查询与写入；由 KnowledgeRepository 组合。"""
@@ -174,7 +141,7 @@ class BaseRepositoryMixin:
             (base_id,),
         )
 
-    # ---------------- 部门 / 知识库管理员 ----------------
+    # ---------------- 部门 ----------------
 
     def list_active_departments(self) -> list[dict[str, Any]]:
         """列出至少有一名在职账号的部门（人员表为第一阶段的权威来源）。"""
@@ -189,102 +156,3 @@ class BaseRepositoryMixin:
             ORDER BY department_name, department_id
             """
         )
-
-    # ---------------- 知识库管理员 ----------------
-
-    def is_department_manager(self, user_id: str, department_id: str) -> bool:
-        """用户是否是指定部门（且账号仍在该部门）的知识库管理员。"""
-        row = self._fetch_one(
-            """
-            SELECT 1 FROM knowledge_department_managers m
-            JOIN users u ON u.user_id = m.user_id
-            WHERE m.user_id=? AND m.department_id=?
-              AND u.account_status='active'
-              AND COALESCE(u.department_id, u.organization_id, '') = m.department_id
-            """,
-            (user_id, department_id),
-        )
-        return row is not None
-
-    def grant_department_manager(
-        self, *, user_id: str, department_id: str, granted_by: str
-    ) -> dict[str, Any]:
-        """授予知识库管理员权限，返回包含用户信息的完整行（用于构造 API 响应）。"""
-        timestamp = _now()
-        department_id = department_id.strip()
-        if not department_id:
-            raise ValueError("department_id 不能为空")
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            self.db._execute(
-                cursor,
-                "SELECT user_id, username, account_status, "
-                "COALESCE(NULLIF(department_id, ''), organization_id) AS user_dept "
-                "FROM users WHERE user_id=?",
-                (user_id,),
-            )
-            user = cursor.fetchone()
-            if user is None:
-                raise LookupError("用户不存在")
-            user = dict(user)
-            if is_super_admin(user["username"]):
-                raise ValueError("超级管理员已具有全局管理权限")
-            if str(user.get("account_status") or "active") != "active":
-                raise ValueError("停用账号不能获得知识库管理员权限")
-            if str(user.get("user_dept") or "").strip() != department_id:
-                raise ValueError(
-                    f"账号所属部门与授权部门不一致（账号部门: {user.get('user_dept')}）"
-                )
-            self.db._execute(
-                cursor,
-                "SELECT id FROM knowledge_department_managers WHERE user_id=? AND department_id=?",
-                (user_id, department_id),
-            )
-            existing = cursor.fetchone()
-            if existing is None:
-                self.db._execute(
-                    cursor,
-                    """INSERT INTO knowledge_department_managers
-                        (id, user_id, department_id, granted_by, granted_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (str(uuid.uuid4()), user_id, department_id, granted_by, timestamp, timestamp),
-                )
-            else:
-                self.db._execute(
-                    cursor,
-                    "UPDATE knowledge_department_managers SET granted_by=?, updated_at=? "
-                    "WHERE user_id=? AND department_id=?",
-                    (granted_by, timestamp, user_id, department_id),
-                )
-            self.db._execute(
-                cursor,
-                f"""{_MANAGER_SELECT}
-                   WHERE m.user_id=? AND m.department_id=?""",
-                (user_id, department_id),
-            )
-            row = cursor.fetchone()
-            if row is None:
-                raise RuntimeError("知识库管理员权限保存失败")
-            return _normalize_manager_row(row)
-
-    def revoke_department_manager(self, user_id: str, department_id: str) -> bool:
-        return (
-            self._execute_write(
-                "DELETE FROM knowledge_department_managers WHERE user_id=? AND department_id=?",
-                (user_id, department_id),
-            )
-            > 0
-        )
-
-    def list_department_managers(
-        self, department_id: str | None = None
-    ) -> list[dict[str, Any]]:
-        """列出知识库管理员；不传 department_id 时返回全部。"""
-        base_sql = _MANAGER_SELECT
-        if department_id:
-            base_sql += " WHERE m.department_id=? ORDER BY u.display_name, u.username"
-            rows = self._fetch_all(base_sql, (department_id,))
-        else:
-            base_sql += " ORDER BY m.department_id, u.display_name, u.username"
-            rows = self._fetch_all(base_sql)
-        return [_normalize_manager_row(row) for row in rows]

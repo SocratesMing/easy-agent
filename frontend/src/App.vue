@@ -13,6 +13,7 @@
         :streamingSessionIds="streamingSessions"
         :pendingApprovalSessionIds="pendingApprovalSessions"
         :username="userProfile.username"
+        :superAdminUsernames="superAdminUsernames"
         :organizationId="userProfile.organization_id"
         :email="userProfile.email"
         :knowledgeEnabled="knowledgeEnabled"
@@ -122,6 +123,7 @@
           :isStreaming="isStreaming"
           :visible="!isWorkspaceCollapsed"
           @toggle="isWorkspaceCollapsed = !isWorkspaceCollapsed"
+          @expand="isWorkspaceCollapsed = false"
         />
       </div>
 
@@ -1015,6 +1017,8 @@ const userProfile = ref({
   organization_id: '',
   email: ''
 })
+// 超级管理员账号由后端 config.yaml 下发（admin 恒在其中），用于「用户管理」入口显隐。
+const superAdminUsernames = ref(['admin'])
 
 function toggleSidebar() {
   isSidebarCollapsed.value = !isSidebarCollapsed.value
@@ -1126,6 +1130,9 @@ function applyAgentConfig(configData) {
   }
   if (typeof configData.app_welcome_title === 'string' && configData.app_welcome_title.trim()) {
     welcomeTitle.value = configData.app_welcome_title
+  }
+  if (Array.isArray(configData.super_admin_usernames) && configData.super_admin_usernames.length) {
+    superAdminUsernames.value = configData.super_admin_usernames.map(String)
   }
 }
 

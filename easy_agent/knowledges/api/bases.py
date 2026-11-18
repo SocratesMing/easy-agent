@@ -44,7 +44,7 @@ async def create_base(
     service: Annotated[KnowledgeService, Depends(_service)],
     principal: Annotated[KnowledgePrincipal, Depends(get_knowledge_principal)],
 ) -> KnowledgeBaseSummary:
-    """创建知识库（个人空间/公共空间），公共空间需知识库管理员授权。"""
+    """创建知识库（个人空间/公共空间），公共空间仅超级管理员可创建。"""
 
     return await _call(
         service.create_base,

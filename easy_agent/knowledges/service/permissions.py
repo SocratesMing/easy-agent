@@ -1,4 +1,4 @@
-"""鉴权与授权：知识库角色判定、部门管理员门槛与权限名单管理。"""
+"""鉴权与授权：知识库角色判定、单库管理员授权与查看名单管理。"""
 
 from __future__ import annotations
 
@@ -56,31 +56,14 @@ class PermissionMixin:
             raise _not_found()
         return base, role
 
-    async def _has_department_management_grant(
-        self, principal: KnowledgePrincipal, department_id: str
-    ) -> bool:
-        """判断用户是否是指定部门的知识库管理员。"""
-
-        if not department_id:
-            return False
-        return await self._repo(
-            self.repository.is_department_manager, principal.user_id, department_id
-        )
-
     async def _can_create_team_base(self, principal: KnowledgePrincipal) -> bool:
         """判断用户是否可以创建公共空间（TEAM）知识库。
 
-        两种情况返回 True：
-        1. 超级管理员（admin / liufengbao，全局直通）
-        2. 知识库管理员（在自己所属部门）
+        知识库管理员改为「按库授权」后不再具备建库权限：公共空间只能由
+        超级管理员创建；被授权的管理员仅在指定知识库上维护文档与查看权限。
         """
-        if is_super_admin(principal.username):
-            return True
-        if principal.department_id and await self._has_department_management_grant(
-            principal, principal.department_id
-        ):
-            return True
-        return False
+
+        return is_super_admin(principal.username)
 
     async def _resolve_team_department_id(
         self, principal: KnowledgePrincipal, requested_department_id: str | None
@@ -132,7 +115,7 @@ class PermissionMixin:
         """在单库授权之上叠加超级管理员全局权限。
 
         规则统一由 ``core.permissions.resolve_role`` 提供，与 Agent 原文工具
-        共用同一口径：超级管理员（admin / liufengbao）对所有公共库直通
+        共用同一口径：超级管理员（admin / shijiabao）对所有公共库直通
         MANAGER；owner 由 effective_role 直接判 MANAGER（owner 权限不落
         knowledge_permissions）；其余账号维持本部门默认只读、勾选名单与
         单库授权逻辑。
@@ -183,14 +166,14 @@ class PermissionMixin:
         items: list[PermissionEntry],
         restrict_access: bool = False,
     ) -> PermissionListResponse:
-        """全量替换可见人员名单并更新勾选名单（受限）标记。
+        """全量替换单库授权名单并更新勾选名单（受限）标记。
 
-        权限管理新语义：仅支持按人员授权，角色一律为查看者（viewer）；
-        restrict_access=True 时该库进入勾选名单模式，公共空间默认的
-        同部门可见让位于勾选人员（owner、admin 不受影响）。
+        知识库管理员改为按库授权（role=maintainer），由所有者或超级管理员在
+        该库的「权限管理」中指定；被授权的管理员只能维护文档与查看者名单，
+        不能创建/删除知识库，也不能再授权其他管理员。
         """
 
-        base, _ = await self._authorized_base(
+        base, role = await self._authorized_base(
             base_id, principal, AllowedAction.MANAGE_PERMISSIONS
         )
         if str(base["space_type"]) == KnowledgeBaseVisibility.PERSONAL.value and items:
@@ -199,6 +182,7 @@ class PermissionMixin:
                 "个人空间知识库不可授权",
                 status_code=409,
             )
+        is_manager = role == KnowledgeBaseRole.MANAGER
         seen: set[str] = set()
         payload: list[dict[str, str]] = []
         for item in items:
@@ -207,6 +191,21 @@ class PermissionMixin:
                     "KNOWLEDGE_PERMISSION_SUBJECT_UNSUPPORTED",
                     "权限管理仅支持按人员授权",
                     status_code=409,
+                )
+            if item.role not in (
+                KnowledgeBaseRole.VIEWER,
+                KnowledgeBaseRole.MAINTAINER,
+            ):
+                raise KnowledgeServiceError(
+                    "KNOWLEDGE_PERMISSION_ROLE_UNSUPPORTED",
+                    "权限管理仅支持查看者或知识库管理员",
+                    status_code=409,
+                )
+            if item.role == KnowledgeBaseRole.MAINTAINER and not is_manager:
+                raise KnowledgeServiceError(
+                    "KNOWLEDGE_PERMISSION_MANAGER_REQUIRED",
+                    "只有知识库所有者或系统管理员可以配置知识库管理员",
+                    status_code=403,
                 )
             subject_id = item.subject_id.strip()
             if subject_id in seen:
@@ -226,15 +225,34 @@ class PermissionMixin:
                 {
                     "subject_type": "user",
                     "subject_id": subject_id,
-                    "role": KnowledgeBaseRole.VIEWER.value,
+                    "role": item.role.value,
                 }
             )
+        # 知识库管理员保存查看名单时保留既有管理员行，避免越权撤销管理员。
+        if not is_manager:
+            existing = await self._repo(self.repository.list_permissions, base_id)
+            preserved = [
+                {
+                    "subject_type": "user",
+                    "subject_id": str(row["subject_id"]),
+                    "role": KnowledgeBaseRole.MAINTAINER.value,
+                }
+                for row in existing
+                if row["subject_type"] == "user"
+                and row["role"] == KnowledgeBaseRole.MAINTAINER.value
+            ]
+            preserved_ids = {row["subject_id"] for row in preserved}
+            payload = preserved + [
+                row for row in payload if row["subject_id"] not in preserved_ids
+            ]
+        # 勾选了管理员/查看者即进入受限模式（与创建时的名单语义一致）。
+        effective_restricted = bool(restrict_access or payload)
         # 先落受限标记再替换名单（fail-closed）：名单替换失败时最多是
         # 「可见面更窄」，不会出现已声明受限但仍对同部门开放的窗口。
         await self._repo(
             self.repository.update_base,
             base_id,
-            access_restricted=1 if restrict_access else 0,
+            access_restricted=1 if effective_restricted else 0,
         )
         rows = await self._repo(
             self.repository.replace_permissions,
@@ -243,7 +261,7 @@ class PermissionMixin:
             created_by=principal.user_id,
         )
         return self._permission_list_response(
-            rows, restrict_access=restrict_access
+            rows, restrict_access=effective_restricted
         )
 
     @staticmethod
@@ -273,14 +291,14 @@ class PermissionMixin:
     ) -> PermissionDirectoryListResponse:
         """创建知识库时的可选人员目录（在职账号，剔除本人与 admin）。
 
-        与库权限管理目录同一数据源；门槛对齐公共空间创建：需知识库管理员授权，
+        与库权限管理目录同一数据源；仅超级管理员可创建公共空间知识库，
         避免任意账号拉取全员通讯目录。
         """
 
         if not await self._can_create_team_base(principal):
             raise KnowledgeServiceError(
                 "KNOWLEDGE_TEAM_SPACE_MANAGER_REQUIRED",
-                "当前账号未获得公共空间创建与管理权限，请联系 admin 或部门管理员配置",
+                "当前账号无权创建公共空间知识库，请联系系统管理员",
                 status_code=403,
             )
         rows = await self._repo(

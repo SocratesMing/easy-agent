@@ -601,22 +601,27 @@ def _log_connector_scope(session_id: str, only_connectors: list[str] | None) -> 
 
 
 async def _load_mcp_tools(session_id: str, username: str, config, only_connectors: list[str] | None) -> list:
-    """MCP 工具：用户专属 mcp.json 优先，无则按需加载全局 mcp.json。"""
-    # server_names=only_connectors 时只加载这些连接器的工具（None = 全部启用项，[] = 不加载）。
+    """MCP 工具：用户专属 mcp.json 优先，无则按需加载全局 mcp.json。
+
+    三条路径**统一**先走 filter_server_names（SEC-04 stdio 策略 + 违规 server 过滤）：
+    不管配置来源是用户专属还是全局，普通用户都不能拉自定义 stdio、不能绕过策略。
+    """
+    # SEC-04：先算好过滤后的 server_names，三条路径共用同一份结果
+    server_names = filter_server_names(username, only_connectors)
+
     user_mcp_path = Config.get_user_mcp_path(username, config)
     if user_mcp_path.exists():
         logger.info(f"[{session_id[-5:]}] 加载用户专属 MCP | {user_mcp_path}")
         try:
-            # SEC-04：不为普通用户的自定义 stdio 连接器拉起进程
             return await load_mcp_tools_for_user(
-                username, server_names=filter_server_names(username, only_connectors)
+                username, server_names=server_names
             )
         except Exception as e:
             logger.warning(
                 f"[{session_id[-5:]}] 加载用户 MCP 失败，尝试全局: {e}"
             )
             return await load_mcp_tools_for_user(
-                None, server_names=only_connectors
+                None, server_names=server_names
             )
     # 无用户专属 mcp.json，按需加载全局 mcp.json（缓存命中时零开销）
     logger.info(
@@ -624,7 +629,7 @@ async def _load_mcp_tools(session_id: str, username: str, config, only_connector
     )
     try:
         return await load_mcp_tools_for_user(
-            None, server_names=only_connectors
+            None, server_names=server_names
         )
     except Exception as e:
         logger.warning(

@@ -121,7 +121,7 @@ function withQueryParam(url, key, value) {
  * @param {Object} options 见 docs/AI侧边栏SDK集成指南.md「配置项」
  * @returns {Object} 实例 API：open / close / toggle / send / setPageContext / setToken / destroy …
  */
-export function init(options = {}) {
+export async function init(options = {}) {
   if (typeof window === "undefined" || typeof document === "undefined") {
     throw new Error("[EasyAgentSidebar] 仅支持在浏览器中运行");
   }
@@ -419,12 +419,13 @@ export function init(options = {}) {
     state.ready = true;
     await Vue.nextTick();
     await sidebar().loadSessions();
+    return Promise.resolve(api);
   }
 
   const ready = bootstrap().then(
     () => {
       if (typeof options.onReady === "function") options.onReady(api);
-      return api;
+      return Promise.resolve(api);
     },
     err => {
       console.error("[EasyAgentSidebar] 初始化失败：", err);
@@ -432,8 +433,11 @@ export function init(options = {}) {
       throw err;
     },
   );
-  // 避免宿主未处理 ready 时出现 unhandledrejection（错误已经由 onError / console 报告）
-  ready.catch(() => {});
+
+  try {
+    await ready
+  } catch (err) {
+  }
 
   const whenReady = fn =>
     ready.then(() => (destroyed ? undefined : fn(sidebar())));

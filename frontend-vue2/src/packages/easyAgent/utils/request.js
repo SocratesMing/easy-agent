@@ -48,6 +48,8 @@ export function configureRequest(options = {}) {
   if ('usernameKey' in options) auth.usernameKey = options.usernameKey
   if ('refreshAuth' in options) auth.refresh = options.refreshAuth || null
   if ('onAuthExpired' in options) auth.onExpired = options.onAuthExpired || null
+  if ('loginPage' in options) auth.loginPage = options.loginPage
+  if ('urlLogin' in options) auth.urlLogin = options.urlLogin
   configureEasyAgent({ api, auth })
 }
 

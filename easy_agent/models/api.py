@@ -524,6 +524,8 @@ class AuthConfigResponse(BaseModel):
     agent_env: str
     idle_logout_minutes: int
     app_welcome_title: str
+    super_admin_usernames: list[str] = []
+    """超级管理员账号（含内置 admin），供前端同步「用户管理」等入口的显隐。"""
 
 
 class SessionTitleUpdateResponse(BaseModel):

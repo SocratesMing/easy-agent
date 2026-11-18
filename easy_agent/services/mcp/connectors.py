@@ -22,7 +22,8 @@ import logging
 import re
 from pathlib import Path
 from typing import Any
-from easy_agent.bootstrap.config import Config
+from easy_agent.bootstrap.config import Config, _expand_env_recursive
+from easy_agent.bootstrap.config_validation import _ensure_project_env_loaded
 
 logger = logging.getLogger("easy-agent")
 
@@ -61,7 +62,9 @@ def load_catalog(path: str | Path | None = None) -> list[dict[str, Any]]:
         )
         return []
     try:
-        data = json.loads(catalog_file.read_text(encoding="utf-8"))
+        raw = catalog_file.read_text(encoding="utf-8")
+        _ensure_project_env_loaded()
+        data = _expand_env_recursive(json.loads(raw))
     except FileNotFoundError:
         logger.warning(f"公共 MCP 配置文件不存在: {catalog_file}（按空目录处理）")
         return []
