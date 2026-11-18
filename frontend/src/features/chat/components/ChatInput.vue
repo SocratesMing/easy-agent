@@ -1418,10 +1418,10 @@ const longMessageUsagePercent = computed(() =>
 const longMessageHint = computed(
   () =>
     !longMessageDismissed.value &&
-    needsOffload(message.value, longMessageUsage.value),
+    needsOffload(message.value),
 );
 watch(longMessageChars, () => {
-  if (!needsOffload(message.value, longMessageUsage.value))
+  if (!needsOffload(message.value))
     longMessageDismissed.value = false;
 });
 // 新对话里勾选的知识库：只暂存在前端，首条消息发送时随请求提交，
