@@ -33,13 +33,30 @@ DEFAULT_TOOL_PROGRESS_FUSE_LIMIT = 3
 # 单个工具在本轮的总调用预算（按模型发起的调用次数计，换参数也算）。
 # 防「参数组合爆炸」（渠道 × 频率 × 年份 × 时间窗）下换参数无限试探，
 # 是探索型循环的最终保险丝。超出后该工具本轮剩余调用全部熔断。
-DEFAULT_TOOL_PROGRESS_TOOL_CALL_BUDGET = 20
+DEFAULT_TOOL_PROGRESS_TOOL_CALL_BUDGET = 30
 # MCP/JSON 结果行数 <= 该值视为「低价值数据」（数据少）。
 # 探测性 limit=1/limit=2 取回的脏数据行算低价值，不再被当成「有进展」。
 DEFAULT_TOOL_PROGRESS_LOW_VALUE_ROWS = 2
 # 同一工具连续「低价值」结果（空 / 行数过少 / 与此前重复）到这个次数后，
 # 下一次调用熔断。分页取数每页行数充足且内容不同，不会触发。
 DEFAULT_TOOL_PROGRESS_LOW_VALUE_LIMIT = 6
+# 同一查询（工具名 + 参数指纹）本轮累计执行到这个次数后熔断，**不论结果
+# 是否为空、是否与此前重复**。兜「同参数原样重跑 + 输出带时间戳等微变
+# 内容」的循环：空结果/重复指纹/低价值行数三类判定全部擦边漏过时，
+# 只有参数指纹不变这一条稳定信号。合法场景（修完 bug 重跑同一验证命令、
+# 分页遍历换参数）到达不了 8 次。
+DEFAULT_TOOL_PROGRESS_SAME_ARGS_TOTAL_LIMIT = 8
+
+# ── 思考循环守卫（2026-11-18，防「反复读 SKILL.md」类循环）──────────────
+# 背景：熔断只覆盖查询型工具，read_file 等读取型工具完全裸奔——模型反复
+# 「先加载技能」并以相同参数重读同一 SKILL.md，思考逐字重复，一直跑到
+# max_steps。思考逐字重复是比「熔断后仍续调」更早、更广的失控信号。
+# 末尾连续 N 条 AIMessage 的思考归一化后完全相同（且长度达到下限）即判定
+# 循环，下一次模型调用强制收口（摘掉全部工具 + 注入终态指令）。
+DEFAULT_THINKING_LOOP_LIMIT = 3
+# 思考文本低于该长度不参与循环判定：todo 驱动的长任务里模型可能连续多步
+# 用一模一样的短思考（「继续执行下一项」）+ 每次调不同工具，属于正常工作。
+DEFAULT_THINKING_LOOP_MIN_CHARS = 100
 
 # 联网搜索默认地址（config.yaml 未显式配置 api_url 时按 provider 取用）：
 #   tavily   —— Tavily Search API（https://docs.tavily.com）
@@ -206,7 +223,7 @@ class AgentConfig(BaseModel):
     与 ``tool_progress_empty_limit`` 的软提示不同：软提示模型可以忽略，
     熔断在工具层直接拦截。"""
     tool_progress_tool_call_budget: int = DEFAULT_TOOL_PROGRESS_TOOL_CALL_BUDGET
-    """单个工具在本轮的总调用预算（默认 20，按模型发起的调用次数计）。
+    """单个工具在本轮的总调用预算（默认 30，按模型发起的调用次数计）。
 
     防换参数组合爆炸式试探。**必须叠加低进展信号才熔断**：低价值结果占比
     过半、或末尾已连续无进展时，超出预算的调用被熔断——健康分页/遍历
@@ -220,6 +237,34 @@ class AgentConfig(BaseModel):
 
     兜住「每次都换参数、每次都只回一点脏数据」的探索型循环——这类循环
     既不空、内容也不同，原有的空/无进展判定都不命中。"""
+    tool_progress_same_args_total_limit: int = DEFAULT_TOOL_PROGRESS_SAME_ARGS_TOTAL_LIMIT
+    """同一查询（工具名 + 参数指纹）本轮**累计**执行到几次后熔断（默认 8）。
+
+    与 ``tool_progress_fuse_limit`` 的区别：不要求结果为空、不要求连续、
+    不比较结果内容——只看参数指纹不变的原样重跑次数。兜住「同一条命令
+    反复执行 + 输出带时间戳等微变内容」的循环（空结果、重复指纹、低价值
+    行数三类判定都擦边漏过，只有参数指纹稳定）。合法的重跑（修完问题
+    后验证同一命令）到不了 8 次；分页遍历每次参数不同，不受影响。"""
+    thinking_loop_enabled: bool = True
+    """思考循环守卫（2026-11-18）：本轮末尾连续 N 条 AIMessage 的思考文本
+    归一化后完全相同（且长度达到 ``thinking_loop_min_chars``）即判定失控，
+    下一次模型调用强制收口——摘掉全部工具并注入终态指令，让模型输出
+    最终答复后自然结束（软着陆，不走 jump_to 硬退）。
+
+    兜住读取型循环（反复重读同一 SKILL.md）：``read_file`` 不在工具熔断的
+    覆盖范围（_SCOPE_TOOLS + MCP），这类循环此前一直裸奔到 max_steps。
+    只在本轮内计数（最后一条 HumanMessage 之后），跨轮不累加；
+    无思考/短思考的消息不参与计数并打断连续序列。"""
+    thinking_loop_limit: int = DEFAULT_THINKING_LOOP_LIMIT
+    """思考连续重复到几次判定为循环（默认 3）。
+
+    3 = 模型已逐字重复同一思考 3 次，第 4 次模型调用前强制收口。
+    合法流程里长思考（>100 字符）逐字重复 3 次基本不存在，误伤面极小。"""
+    thinking_loop_min_chars: int = DEFAULT_THINKING_LOOP_MIN_CHARS
+    """参与循环判定的思考文本最小长度（默认 100）。
+
+    兜住 todo 驱动长任务的合法「继续」模式：模型可能连续多步用一模一样的
+    短思考 + 每次调不同工具，短思考不参与判定。"""
     workspace_dir: str = "./workspace"
     memories_dir: str = "./memories"
     memory_model: str = ""

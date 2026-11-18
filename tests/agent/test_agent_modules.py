@@ -199,6 +199,9 @@ def test_build_agent_middleware_type_and_order():
         # ToolProgress 必须在 ToolError 之前：先定义=最外层，才能看到
         # ToolError 转换后的 ToolMessage（否则改不到空结果）。
         "ToolProgressMiddleware",
+        # 思考循环守卫（2026-11-18）：兜住读取型循环（反复重读同一 SKILL.md），
+        # read_file 不在 ToolProgress 的熔断覆盖范围。
+        "ThinkingLoopMiddleware",
         "ToolErrorMiddleware",
         "ModelCallLimitMiddleware",
         "ToolCallLimitMiddleware",

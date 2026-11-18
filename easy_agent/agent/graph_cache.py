@@ -48,12 +48,15 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, StructuredTool
 
 from easy_agent.bootstrap.config_models import (
+    DEFAULT_THINKING_LOOP_LIMIT,
+    DEFAULT_THINKING_LOOP_MIN_CHARS,
     DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT,
     DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT,
     DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT,
     DEFAULT_TOOL_PROGRESS_FUSE_LIMIT,
     DEFAULT_TOOL_PROGRESS_LOW_VALUE_LIMIT,
     DEFAULT_TOOL_PROGRESS_LOW_VALUE_ROWS,
+    DEFAULT_TOOL_PROGRESS_SAME_ARGS_TOTAL_LIMIT,
     DEFAULT_TOOL_PROGRESS_STOP_LIMIT,
     DEFAULT_TOOL_PROGRESS_TOOL_CALL_BUDGET,
 )
@@ -331,6 +334,22 @@ def config_fingerprint(config: Any) -> dict[str, Any]:
         "tool_progress_low_value_limit": int(
             getattr(agent_cfg, "tool_progress_low_value_limit", None)
             or DEFAULT_TOOL_PROGRESS_LOW_VALUE_LIMIT
+        ),
+        "tool_progress_same_args_total_limit": int(
+            getattr(agent_cfg, "tool_progress_same_args_total_limit", None)
+            or DEFAULT_TOOL_PROGRESS_SAME_ARGS_TOTAL_LIMIT
+        ),
+        # 思考循环守卫三参数（2026-11-18）同样进中间件构造参数，改值必须重建图。
+        "thinking_loop_enabled": bool(
+            getattr(agent_cfg, "thinking_loop_enabled", True)
+        ),
+        "thinking_loop_limit": int(
+            getattr(agent_cfg, "thinking_loop_limit", None)
+            or DEFAULT_THINKING_LOOP_LIMIT
+        ),
+        "thinking_loop_min_chars": int(
+            getattr(agent_cfg, "thinking_loop_min_chars", None)
+            or DEFAULT_THINKING_LOOP_MIN_CHARS
         ),
         "result_log_truncate": int(
             getattr(tools_cfg, "result_log_truncate", 0) or 0
