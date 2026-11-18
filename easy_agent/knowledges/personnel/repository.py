@@ -223,6 +223,45 @@ def delete_personnel(db: Database, user_id: str) -> dict:
     return record
 
 
+def split_employee_id_conflicts(
+    db: Database, items: list[PersonnelCreateRequest]
+) -> tuple[list[PersonnelCreateRequest], list[str]]:
+    """员工编号已被其他账号占用或本批重复的条目跳过并给出提示。
+
+    同步语义为「按账号 upsert」，员工编号冲突只跳过冲突本人，不阻断其余人员。
+    """
+
+    with db.get_connection() as connection:
+        cursor = connection.cursor()
+        db._execute(cursor, "SELECT username, employee_id FROM users")
+        rows = [dict(row) if not isinstance(row, dict) else row for row in cursor.fetchall()]
+    owner_by_employee = {
+        row.get("employee_id"): row.get("username")
+        for row in rows
+        if row.get("employee_id")
+    }
+    kept: list[PersonnelCreateRequest] = []
+    errors: list[str] = []
+    batch_owner: dict[str, str] = {}
+    for item in items:
+        if item.employee_id:
+            owner = owner_by_employee.get(item.employee_id)
+            if owner and owner != item.username:
+                errors.append(
+                    f"账号 {item.username}：员工编号 {item.employee_id} 已被账号 {owner} 使用，已跳过"
+                )
+                continue
+            first = batch_owner.get(item.employee_id)
+            if first and first != item.username:
+                errors.append(
+                    f"账号 {item.username}：员工编号 {item.employee_id} 与账号 {first} 重复，已跳过"
+                )
+                continue
+            batch_owner[item.employee_id] = item.username
+        kept.append(item)
+    return kept, errors
+
+
 def _upsert_personnel_transaction(
     db: Database, items: list[PersonnelCreateRequest]
 ) -> tuple[int, int]:

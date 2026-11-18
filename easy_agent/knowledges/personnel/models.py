@@ -134,6 +134,7 @@ class PersonnelImportResponse(BaseModel):
 
 
 class PersonnelSyncResponse(PersonnelImportResponse):
-    """接口同步结果；skipped 为源数据中被规则跳过（如 admin）的条数。"""
+    """接口同步结果；skipped 含 admin 与员工编号冲突等被跳过的人员。"""
 
     skipped: int = 0
+    errors: list[str] = Field(default_factory=list)

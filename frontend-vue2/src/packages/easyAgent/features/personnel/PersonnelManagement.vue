@@ -632,7 +632,11 @@ export default {
       syncing.value = true
       try {
         const result = await syncPersonnelUsers()
-        notify(summarizeSyncResult(result))
+        const conflicts = Array.isArray(result && result.errors) ? result.errors : []
+        const detail = conflicts.length
+          ? `；冲突：${conflicts.slice(0, 3).join('；')}${conflicts.length > 3 ? ' 等' : ''}`
+          : ''
+        notify(`${summarizeSyncResult(result)}${detail}`, conflicts.length ? 'error' : 'success')
         page.value = 1
         await loadUsers()
       } catch (error) {
