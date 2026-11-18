@@ -50,15 +50,10 @@
         </label>
         <small>{{ filteredUsers.length }} 人</small>
       </div>
-      <div class="ke-perm-columns">
-        <span></span><span></span><span>账号</span><span>系统</span><span>角色</span>
-      </div>
       <label v-for="user in filteredUsers" :key="user.user_id" class="ke-perm-user">
         <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
         <span>{{ user.display_name }}</span>
         <small>{{ user.username }}</small>
-        <small class="ke-perm-systems" :title="user.systems || ''">{{ user.systems || '—' }}</small>
-        <small class="ke-perm-role">{{ user.position || '—' }}</small>
       </label>
       <p v-if="!filteredUsers.length" class="ke-perm-empty">{{ listEmptyText }}</p>
     </div>
@@ -206,9 +201,7 @@ export default {
 .ke-perm-list{margin-top:8px;border:1px solid var(--border-color);border-radius:10px;max-height:320px;overflow:auto;padding:6px 10px;background:var(--bg-secondary)}
 .ke-perm-list-head{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 4px;background:var(--bg-secondary);border-bottom:1px solid var(--border-color);color:var(--text-secondary);font-size:10px}
 .ke-perm-select-all{display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:var(--text-secondary);font-size:10px}
-.ke-perm-columns{display:grid;grid-template-columns:18px minmax(0,1fr) auto auto auto;gap:8px;align-items:center;padding:2px 4px 4px;color:var(--text-tertiary,#8a948c);font-size:9px;text-align:right}
-.ke-perm-columns span:last-child,.ke-perm-columns span:nth-last-child(2){text-align:right}
-.ke-perm-user{display:grid;grid-template-columns:18px minmax(0,1fr) auto auto auto;gap:8px;align-items:center;padding:5px 4px;border-radius:8px;cursor:pointer;color:var(--text-primary);font-size:11px}
+.ke-perm-user{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:8px;align-items:center;padding:5px 4px;border-radius:8px;cursor:pointer;color:var(--text-primary);font-size:11px}
 .ke-perm-user:hover{background:var(--bg-tertiary)}
 .ke-perm-user span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ke-perm-user small{color:var(--text-secondary);font-size:9px}

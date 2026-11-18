@@ -21,7 +21,6 @@
           <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
           <span>{{ user.display_name }}</span>
           <small>{{ user.username }}</small>
-          <small class="ke-perm-systems" :title="user.systems || ''">系统：{{ user.systems || '—' }}</small>
         </label>
         <section v-for="division in dept.divisions" :key="division.key" class="ke-perm-branch">
           <div class="ke-perm-row level-division">
@@ -35,7 +34,6 @@
               <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
               <span>{{ user.display_name }}</span>
               <small>{{ user.username }}</small>
-              <small class="ke-perm-systems" :title="user.systems || ''">系统：{{ user.systems || '—' }}</small>
             </label>
             <section v-for="team in division.teams" :key="team.key" class="ke-perm-branch">
               <div class="ke-perm-row level-team">
@@ -49,7 +47,6 @@
                   <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
                   <span>{{ user.display_name }}</span>
                   <small>{{ user.username }}</small>
-                  <small class="ke-perm-systems" :title="user.systems || ''">系统：{{ user.systems || '—' }}</small>
                 </label>
               </div>
             </section>
@@ -162,11 +159,10 @@ export default {
 .ke-perm-caret svg{width:13px;height:13px;transition:transform .15s ease}
 .ke-perm-caret svg.rotated{transform:rotate(-90deg)}
 .ke-perm-children{margin-left:24px;border-left:1px dashed #dfe4e0;padding-left:8px}
-.ke-perm-user{display:grid;grid-template-columns:18px minmax(0,1fr) auto auto;gap:8px;align-items:center;padding:5px 4px;border-radius:8px;cursor:pointer;color:#3d4640;font-size:11px}
+.ke-perm-user{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:8px;align-items:center;padding:5px 4px;border-radius:8px;cursor:pointer;color:#3d4640;font-size:11px}
 .ke-perm-user:hover{background:#f7faf8}
 .ke-perm-user span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ke-perm-user small{color:#9aa19c;font-size:9px}
-.ke-perm-systems{max-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right}
 .ke-perm-empty{margin:0;padding:22px 10px;color:#9aa19c;text-align:center;font-size:10px}
 .ke-perm-tree input[type=checkbox]{width:15px;height:15px;flex:none;box-sizing:border-box;margin:0;padding:0;border:0;background:transparent;accent-color:var(--ke-accent);cursor:pointer}
 </style>
