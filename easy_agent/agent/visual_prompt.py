@@ -32,6 +32,12 @@ _WIDGET = (
     "可以在按钮里调用 sendPrompt(文字)，它会把文字填进对话输入框。"
 )
 
+_HTML = (
+    "- 完整页面、报告或看板：```html 代码块，内容是自包含的 HTML 文档"
+    "（可含 <!DOCTYPE html>、<style>、<script>）。界面会在同一个沙箱里直接渲染，"
+    "不要写成普通代码块，也不要让用户自己保存成文件再打开。"
+)
+
 _FOOTER = "一个代码块只放一张图；文字就能说清楚时不要硬加图。"
 
 
@@ -43,4 +49,5 @@ def build_visual_prompt(visual: VisualConfig | None) -> str:
     bullets = [_ECHARTS, _MERMAID]
     if visual.html_widgets:
         bullets.append(_WIDGET)
+        bullets.append(_HTML)
     return "\n\n".join([_HEADER, "\n".join(bullets), _FOOTER])

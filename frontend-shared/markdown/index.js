@@ -502,6 +502,7 @@ function renderState(renderer, options) {
     RENDER_STATE.set(renderer, state)
   }
   state.partial = !!options.partial
+  state.streaming = !!options.streaming
   state.rawHtml = options.rawHtml === 'allow' ? 'allow' : 'escape'
   return state
 }
@@ -530,7 +531,9 @@ export function createMarkdownRenderer({ highlight, externalLinks = true }) {
     // 可视化代码块（```echarts / ```mermaid / ```widget）：流式中还没闭合时先出骨架，
     // 闭合后在普通代码块外包一层占位元素，由 MarkdownBody 挂成沙箱 iframe 卡片（见 ../visual/）
     const visualKind = visualKindOfLang(rawLang)
-    if (visualKind && state.partial && !isFenceClosed(raw)) return visualPendingHtml(visualKind)
+    // 回答还在流式输出时，围栏没闭合就保持骨架。停顿后的最终帧也不能拿半截
+    // JSON / Mermaid / HTML 去渲染，否则图表库会直接报错。
+    if (visualKind && !isFenceClosed(raw) && (state.partial || state.streaming)) return visualPendingHtml(visualKind)
     const langLabel = escapeHtml(rawLang || 'text')
     // 可视化源码最终会被卡片隐藏，只在“查看源码”时展示；不值得再做逐 token 高亮。
     const highlighted = visualKind
@@ -608,6 +611,7 @@ function tokensToHtml(tokens, renderer, options) {
 function modeOf(options) {
   return (options.rawHtml === 'allow' ? 'A' : 'E') +
     (options.partial ? 'P' : 'F') +
+    (options.streaming ? 'Y' : 'N') +
     (options.remoteImages === 'inline' ? 'I' : 'L') +
     (options.sourceCards === false ? 'D' : 'S')
 }
