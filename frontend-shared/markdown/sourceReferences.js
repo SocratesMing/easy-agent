@@ -5,15 +5,48 @@ import { sourceUrl } from '../citations/sources.js'
 const CODE = /\u0000EAI(\d+)\u0000/g
 const TOOL = /^(?:[\w.-]+\/)*[\w.-]+$/
 const REFERENCE = new RegExp([
-  /\[知识(?:库)?依据\s*(?<knowledge>\d+)\]/.source,
-  /\[连接器依据\s+(?<connector>[^\]\n]+)\]/.source,
-  /(?:（|\()\s*来源\s*[:：]\s*外部连接器\s*[（(]\s*(?<wrapped>[^）)\n]+?)\s*[）)]\s*(?:）|\))?/.source,
-  /来源\s*[:：]\s*外部连接器\s*[（(]\s*(?<plain>[^）)\n]+?)\s*[）)]/.source,
-  /来源\s*[:：]\s*外部连接器\s*(?<bare>(?:[\w.-]+\/)*[\w.-]+|\u0000EAI\d+\u0000)(?=[\s，,；;）)。]|$)/.source,
-  /[（(]\s*来源\s*[:：]\s*知识库\s*《(?<knowledgeTitle>[^》\n]+)》\s*[）)]/.source,
+  /\[知识(?:库)?依据\s*(\d+)\]/.source,
+  /\[连接器依据\s+([^\]\n]+)\]/.source,
+  /([（(]\s*来源\s*[:：]\s*(?:外部连接器|知识库)|来源\s*[:：]\s*外部连接器)/.source,
   /\[模型知识\]/.source,
   CODE.source,
 ].join('|'), 'g')
+
+/** 匹配完整括注，允许中英文嵌套；流式未闭合时不提前吃掉半条说明。 */
+function parenthesisEnd(text, start) {
+  const stack = []
+  for (let i = start; i < text.length && text[i] !== '\n'; i++) {
+    const char = text[i]
+    if (char === '(' || char === '（') stack.push(char === '(' ? ')' : '）')
+    else if (char === ')' || char === '）') {
+      if (stack.pop() !== char) return -1
+      if (!stack.length) return i + 1
+    }
+  }
+  return -1
+}
+
+function sourceAnnotation(text, start, prefix) {
+  const outer = /^[（(]/.test(prefix)
+  const rest = text.slice(start + prefix.length)
+  const inner = !outer && rest.match(/^\s*[（(]/)
+  let end
+  if (outer || inner) {
+    end = parenthesisEnd(text, outer ? start : start + prefix.length + inner[0].length - 1)
+    if (end < 0) {
+      const newline = text.indexOf('\n', start)
+      return { end: newline < 0 ? text.length : newline }
+    }
+  } else {
+    const bare = rest.match(/^\s*(?:(?:[\w.-]+\/)*[\w.-]+|\u0000EAI\d+\u0000)(?:[，,][^\n。；;（）()\[\]]*)?/)
+    end = start + prefix.length + (bare ? bare[0].trimEnd().length : 0)
+  }
+  const raw = text.slice(start, end)
+  const note = (outer ? raw.slice(1, -1) : raw).trim()
+  const connector = note.match(/^来源\s*[:：]\s*外部连接器\s*[（(]?\s*((?:[\w.-]+\/)*[\w.-]+|\u0000EAI\d+\u0000)(?=[\s，,）)]|$)/)
+  const knowledge = note.match(/^来源\s*[:：]\s*知识库\s*《([^》\n]+)》/)
+  return { end, note, connector: connector?.[1], knowledge: knowledge?.[1] }
+}
 
 /** 同一遍扫描用于分配编号与渲染；围栏/缩进代码仍整体保护。 */
 export function rewriteReferences(content, reference, webLink) {
@@ -33,28 +66,41 @@ export function rewriteReferences(content, reference, webLink) {
         const text = code.text.trim()
         return TOOL.test(text) ? text : code.raw
       }).trim()
-      return rawText.replace(REFERENCE, (...args) => {
-        const match = args[0]
-        const groups = args.at(-1)
+      let cursor = 0
+      let output = ''
+      const convert = (match, groups) => {
         const raw = restore(match)
         if (groups.knowledge) return reference(String(Number(groups.knowledge)), raw)
-        if (groups.knowledgeTitle) return reference(`knowledge:${groups.knowledgeTitle.trim()}`, raw)
         if (groups.connector) return reference(`mcp:${toolName(groups.connector)}`, raw)
-        const legacy = groups.wrapped || groups.plain || groups.bare
-        if (legacy) {
-          const [name, ...details] = legacy.split(/[,，]/)
-          const replacement = reference(`mcp:${toolName(name)}`, raw)
-          // 只有来源被成功转换才重组说明；业务口径保留，未知/歧义来源逐字保留。
-          return replacement !== raw && details.length
-            ? `${replacement}（${restore(details.join('，')).trim()}）` : replacement
-        }
         if (match === '[模型知识]') return ''
         const code = codes[Number(match.match(/\d+/)[0])]
         if (!code) return match
         const marker = code.text.trim().match(/^\[连接器依据\s+([^\]\n]+)\]$/)
         return marker && TOOL.test(marker[1].trim())
           ? reference(`mcp:${marker[1].trim()}`, code.raw) : code.raw
-      })
+      }
+      // 分配编号和转换共用扫描结果，跳过完整括注中已消费的 token。
+      // 组合正则使用位置捕获，避免 Vue2 Babel 转译 .source 时丢失命名捕获映射。
+      REFERENCE.lastIndex = 0
+      let match
+      while ((match = REFERENCE.exec(rawText)) !== null) {
+        if (match.index < cursor) continue
+        output += rawText.slice(cursor, match.index)
+        const groups = { knowledge: match[1], connector: match[2], sourceStart: match[3] }
+        if (groups.sourceStart) {
+          const source = sourceAnnotation(rawText, match.index, match[0])
+          const raw = restore(rawText.slice(match.index, source.end))
+          const key = source.connector ? `mcp:${toolName(source.connector)}`
+            : source.knowledge ? `knowledge:${source.knowledge.trim()}` : null
+          const note = source.note?.replace(CODE, (_, index) => codes[index]?.text ?? _)
+          output += key ? reference(key, raw, note) : raw
+          cursor = source.end
+        } else {
+          output += convert(match[0], groups)
+          cursor = match.index + match[0].length
+        }
+      }
+      return output + rawText.slice(cursor)
     }
     const walk = tokens => {
       const out = []

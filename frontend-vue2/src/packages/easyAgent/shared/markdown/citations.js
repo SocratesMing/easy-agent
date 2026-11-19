@@ -19,10 +19,15 @@ export function relatedEvidence(message) {
   evidence.forEach((item, index) => sources.set(String(index + 1), item))
   const numbers = new Set()
   const aliases = new Map()
-  const collect = (key, raw) => {
+  const notes = new Map()
+  const collect = (key, raw, note) => {
     const resolved = resolveReferenceKey(key, [...sources.keys()], sources)
     if (sources.has(resolved)) {
       numbers.add(resolved)
+      if (note) {
+        if (!notes.has(resolved)) notes.set(resolved, new Set())
+        notes.get(resolved).add(note)
+      }
       if (key.startsWith('knowledge:') && key !== resolved) aliases.set(key, resolved)
     }
     return raw
@@ -32,7 +37,8 @@ export function relatedEvidence(message) {
   for (const [alias, key] of aliases) numberMap[alias] = numberMap[key]
   return {
     numberMap,
-    items: numbers.size ? [...numbers].map(key => sources.get(key)) : evidence,
+    items: numbers.size ? [...numbers].map(key => notes.has(key)
+      ? { ...sources.get(key), citation_notes: [...notes.get(key)] } : sources.get(key)) : evidence,
   }
 }
 

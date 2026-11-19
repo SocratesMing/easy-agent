@@ -3,7 +3,7 @@
 // 同步：npm run sync:shared（frontend-vue2 / frontend 各自目录下执行）
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { externalSources, sourceUrl, toolResultText } from './sources.js'
+import { citationPreviewText, externalSources, sourceUrl, toolResultText } from './sources.js'
 import { relatedEvidence, linkKnowledgeCitations } from '../markdown/citations.js'
 import { createMarkdownRenderer, renderMarkdown } from '../markdown/index.js'
 
@@ -161,12 +161,13 @@ test('MCP 来源文字兼容无内层括号、代码工具名及业务口径说�
     '来源：外部连接器（`forex_kline_qa`，FXALL 渠道 MID 价，北京时间）',
   ]
   for (const content of cases) {
-    const { numberMap } = relatedEvidence({ content, blocks: [call] })
+    const { numberMap, items } = relatedEvidence({ content, blocks: [call] })
     assert.deepEqual(numberMap, { 'mcp:fx/forex_kline_qa': 1 }, content)
+    assert.match(items[0].citation_notes.join('\n'), /FXALL 渠道 MID 价，北京时间/)
+    assert.match(items[0].snippet, /营业收入/)
     const html = renderMarkdown(linkKnowledgeCitations(content, numberMap, true), createMarkdownRenderer({}))
     assert.match(html, /data-cite="1"/)
-    assert.match(html, /FXALL 渠道 MID 价，北京时间/)
-    assert.doesNotMatch(html, /来源[:：]|forex_kline_qa/)
+    assert.doesNotMatch(html, /来源[:：]|forex_kline_qa|FXALL|北京时间|[（）()]/)
   }
 })
 
@@ -204,7 +205,7 @@ test('知识库正文中的书名来源转为数字引用，末尾来源说明�
   const evidence = [{ document_id: 'guide', document_name: 'DeepAgents_Guide.md', snippet: 'DeepAgents 指南内容', metadata: { base_name: '测试' } }]
   const { items, numberMap } = relatedEvidence({ content, knowledge_evidence: evidence })
   assert.equal(numberMap['knowledge:DeepAgents_Guide.md'], 1)
-  assert.deepEqual(items, evidence)
+  assert.deepEqual(items, [{ ...evidence[0], citation_notes: ['来源：知识库《DeepAgents_Guide.md》'] }])
   const html = renderMarkdown(linkKnowledgeCitations(content, numberMap, true), createMarkdownRenderer({}))
   assert.equal([...html.matchAll(/data-cite="1"/g)].length, 1)
   assert.doesNotMatch(html, /来源：知识库《/)
@@ -237,7 +238,7 @@ test('知识库缺失或同名不同文档时不转换，带库名时须精确�
   const content = '文档结构（来源：知识库《知识库甲/Guide.md》）'
   const { items, numberMap } = relatedEvidence({ content, knowledge_evidence: [a, b] })
   assert.equal(numberMap['knowledge:知识库甲/Guide.md'], 1)
-  assert.deepEqual(items, [a])
+  assert.deepEqual(items, [{ ...a, citation_notes: ['来源：知识库《知识库甲/Guide.md》'] }])
   const wrongBase = relatedEvidence({ content, knowledge_evidence: [b] })
   assert.deepEqual(wrongBase.numberMap, {})
   const chunks = relatedEvidence({ content, knowledge_evidence: [a, { ...a, snippet: '另一片段' }] })
@@ -257,4 +258,70 @@ test('知识库末尾来源文字、代码与链接中的来源示例保持原�
     assert.deepEqual(numberMap, {}, content)
     assert.equal(linkKnowledgeCitations(content, numberMap, true), content)
   }
+})
+
+
+test('完整来源括注收进浮层：中英文嵌套括号、反引号和知识库口径不残留在正文', () => {
+  const call = { ...mcp, result: mcp.result.replace('finance/query', 'fx/forex_kline_qa') }
+  const evidence = [{ document_id: 'guide', document_name: 'Guide.md', snippet: '指南正文' }]
+  const cases = [
+    ['行情要点（来源：外部连接器 `forex_kline_qa`，FXALL 渠道 MID 价（北京时间））：后续正文', '来源：外部连接器 forex_kline_qa，FXALL 渠道 MID 价（北京时间）'],
+    ['行情要点(来源: 外部连接器 (forex_kline_qa), FXALL MID (UTC+8))：后续正文', '来源: 外部连接器 (forex_kline_qa), FXALL MID (UTC+8)'],
+    ['**行情要点（来源：外部连接器 forex_kline_qa，FXALL MID，北京时间）**：后续正文', '来源：外部连接器 forex_kline_qa，FXALL MID，北京时间'],
+    ['文档结构（来源：知识库《Guide.md》，第二章（修订版））：后续正文', '来源：知识库《Guide.md》，第二章（修订版）'],
+  ]
+  for (const [content, note] of cases) {
+    const message = { content, blocks: [call], knowledge_evidence: evidence }
+    const { numberMap, items } = relatedEvidence(message)
+    assert.deepEqual(items[0].citation_notes, [note], content)
+    const html = renderMarkdown(linkKnowledgeCitations(content, numberMap, true), createMarkdownRenderer({}))
+    assert.match(html, /data-cite="1"/)
+    assert.match(html, /：后续正文/)
+    assert.doesNotMatch(html, /来源[:：]|FXALL|北京时间|Guide\.md|修订版|[（）()]/)
+    assert.equal(message.knowledge_evidence[0].citation_notes, undefined)
+  }
+})
+
+test('重复来源说明去重，流式闭合后收起完整括注并保持编号和工具结果', () => {
+  const note = '来源：外部连接器 finance/query，统计口径（北京时间）'
+  const first = { type: 'content', order: 1, content: `收入（${note}）` }
+  const second = { type: 'content', order: 2, content: `利润（${note}）及成本（来源：外部连接器 finance/query，另一口径）` }
+  const result = relatedEvidence({ blocks: [mcp, second, first] })
+  assert.deepEqual(result.numberMap, { 'mcp:finance/query': 1 })
+  assert.deepEqual(result.items[0].citation_notes, [note, '来源：外部连接器 finance/query，另一口径'])
+  assert.equal(result.items[0].snippet, '营业收入：100万元。')
+  const partial = '收入（来源：外部连接器 finance/query，统计口径（北京时间）'
+  const pending = relatedEvidence({ content: partial, blocks: [mcp] })
+  assert.deepEqual(pending.numberMap, {})
+  assert.equal(linkKnowledgeCitations(partial, pending.numberMap, true), partial)
+  const complete = relatedEvidence({ content: partial + '）', blocks: [mcp] })
+  assert.equal(complete.numberMap['mcp:finance/query'], 1)
+})
+
+test('未知来源、普通业务括号与未闭合来源括注逐字保留', () => {
+  for (const content of [
+    '行情（北京时间）[连接器依据 finance/query]（非来源备注）',
+    '行情（来源：外部连接器 unknown/query，FXALL MID（北京时间））',
+    '结构（来源：知识库《Missing.md》，修订版）',
+    '行情（来源：外部连接器 finance/query，尚未闭合',
+  ]) {
+    const result = relatedEvidence({ content, blocks: [mcp] })
+    const converted = linkKnowledgeCitations(content, result.numberMap, true)
+    if (content.includes('[连接器依据')) {
+      assert.ok(converted.startsWith('行情（北京时间）'))
+      assert.ok(converted.endsWith('（非来源备注）'))
+    } else assert.equal(converted, content)
+  }
+})
+
+
+test('浮层内容包含完整来源说明与原始证据，且不修改已保存的消息', () => {
+  const content = '行情要点（来源：外部连接器 finance/query，FXALL MID，北京时间）'
+  const message = { blocks: [mcp, { type: 'content', content }], content }
+  const saved = JSON.stringify(message)
+  const result = relatedEvidence(message)
+  assert.equal(citationPreviewText(result.items[0]), '来源：外部连接器 finance/query，FXALL MID，北京时间\n\n营业收入：100万元。')
+  assert.equal(citationPreviewText({ snippet: '只有证据' }), '只有证据')
+  assert.equal(citationPreviewText({ citation_notes: ['只有说明'] }), '只有说明')
+  assert.equal(JSON.stringify(message), saved)
 })

@@ -5,14 +5,14 @@
       <span>{{ sourceType }}<template v-if="metadata.base_name"> · {{ metadata.base_name }}</template></span>
     </header>
     <h3 :title="metadata.report_title || item.document_name">{{ metadata.report_title || item.document_name }}</h3>
-    <p v-if="item.snippet" class="citation-preview-snippet" tabindex="0" aria-label="来源内容">{{ item.snippet }}</p>
+    <p v-if="previewText" class="citation-preview-snippet" tabindex="0" aria-label="来源内容">{{ previewText }}</p>
     <a v-if="sourceLink" class="citation-preview-link" :href="sourceLink" target="_blank" rel="noopener noreferrer">打开原始来源 ↗</a>
     <footer v-if="sourceLine" class="citation-preview-source">{{ sourceLine }}</footer>
   </section>
 </template>
 
 <script>
-import { sourceLabel, sourceUrl } from '../../../shared/citations/sources.js'
+import { citationPreviewText, sourceLabel, sourceUrl } from '../../../shared/citations/sources.js'
 
 export default {
   name: 'CitationPopover',
@@ -32,6 +32,7 @@ export default {
     if (this.citationResizeObserver) this.citationResizeObserver.disconnect()
   },
   computed: {
+    previewText() { return citationPreviewText(this.item) },
     metadata() { return this.item.metadata || {} },
     sourceType() { return sourceLabel(this.item) },
     sourceLink() { return sourceUrl(this.item.url) },

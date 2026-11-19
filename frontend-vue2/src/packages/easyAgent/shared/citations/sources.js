@@ -82,3 +82,8 @@ export function externalSources(message) {
 export function sourceLabel(item) {
   return ({ web: '互联网', mcp: 'MCP' })[item.source_type] || '知识库'
 }
+
+/** 来源说明与原始片段放在同一滚动区，完整保留口径且不修改工具结果。 */
+export function citationPreviewText(item) {
+  return [...(item.citation_notes || []), item.snippet].filter(Boolean).join('\n\n')
+}
