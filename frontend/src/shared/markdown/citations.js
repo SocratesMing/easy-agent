@@ -18,13 +18,18 @@ export function relatedEvidence(message) {
   const sources = externalSources(message)
   evidence.forEach((item, index) => sources.set(String(index + 1), item))
   const numbers = new Set()
+  const aliases = new Map()
   const collect = (key, raw) => {
-    const resolved = resolveReferenceKey(key, [...sources.keys()])
-    if (sources.has(resolved)) numbers.add(resolved)
+    const resolved = resolveReferenceKey(key, [...sources.keys()], sources)
+    if (sources.has(resolved)) {
+      numbers.add(resolved)
+      if (key.startsWith('knowledge:') && key !== resolved) aliases.set(key, resolved)
+    }
     return raw
   }
   rewriteReferences(text, collect, collect)
   const numberMap = Object.fromEntries([...numbers].map((key, index) => [key, index + 1]))
+  for (const [alias, key] of aliases) numberMap[alias] = numberMap[key]
   return {
     numberMap,
     items: numbers.size ? [...numbers].map(key => sources.get(key)) : evidence,

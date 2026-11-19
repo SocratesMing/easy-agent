@@ -17,7 +17,7 @@ const LIST_FENCE_RE = /^[ \t]*(`{3,}|~{3,})/
 export const CODE_HOLDER_PREFIX = '\u0000EAC'
 
 /** 把一行里的成对行内代码换成占位符；未闭合时保护到行尾（流式场景） */
-function protectInlineCode(line, hold) {
+function protectInlineCode(line, hold, protectClosed = true) {
   const runs = []
   const re = /`+/g
   let m
@@ -40,7 +40,8 @@ function protectInlineCode(line, hold) {
       return out + line.slice(cursor, open.start) + hold(line.slice(open.start))
     }
     const close = runs[closeAt]
-    out += line.slice(cursor, open.start) + hold(line.slice(open.start, close.start + close.len))
+    const code = line.slice(open.start, close.start + close.len)
+    out += line.slice(cursor, open.start) + (protectClosed ? hold(code) : code)
     cursor = close.start + close.len
     i = closeAt + 1
   }
@@ -52,9 +53,10 @@ function protectInlineCode(line, hold) {
  *
  * @param {string} content markdown 源文本
  * @param {(text: string) => string} transform 只作用于非代码文本的改写函数
+ * @param {{protectInline?: boolean}} options 引用解析可自行处理行内 token；默认保护全部代码。
  * @returns {string} 改写后、代码已原样还原的文本
  */
-export function protectCodeRegions(content, transform) {
+export function protectCodeRegions(content, transform, { protectInline = true } = {}) {
   if (typeof content !== 'string' || !content) return content
   const chunks = []
   const hold = (text) => {
@@ -102,7 +104,7 @@ export function protectCodeRegions(content, transform) {
     }
     if (LIST_ITEM_RE.test(line)) inList = true
     else if (!blank && prevBlank && !/^[ \t]/.test(line)) inList = false // 空行后顶格的正文：列表结束
-    out.push(protectInlineCode(line, hold))
+    out.push(protectInlineCode(line, hold, protectInline))
     prevBlank = blank
   }
 

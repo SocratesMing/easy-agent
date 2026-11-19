@@ -95,14 +95,14 @@ test('来源提取兼容真实 SSE 文本块、JSON 和 Python repr，保留引�
 })
 
 test('代码、图片、转义与未知来源保持原文；流式追加正文仍与最终编号对应', () => {
-  const content = `\`[连接器依据 finance/query]\`\n\n\`\`\`text\n[模型知识]\n[网站](${url})\n\`\`\`\n\n![图片](${url})\n\n\\[模型知识]\n\n[网站](${url}) [连接器依据 finance/query] [模型知识]`
+  const content = `\`示例：[连接器依据 finance/query]\`\n\n\`\`\`text\n[模型知识]\n[网站](${url})\n\`\`\`\n\n![图片](${url})\n\n\\[模型知识]\n\n[网站](${url}) [连接器依据 finance/query] [模型知识]`
   const message = { blocks: [web, mcp, { type: 'content', order: 4, content }] }
   const result = relatedEvidence(message)
   assert.deepEqual(result.numberMap, { [`web:${url}`]: 1, 'mcp:finance/query': 2 })
   const converted = linkKnowledgeCitations(content, result.numberMap, true)
   assert.ok(converted.includes(`![图片](${url})`))
   assert.ok(converted.includes('\\[模型知识]'))
-  assert.ok(converted.includes('`[连接器依据 finance/query]`'))
+  assert.ok(converted.includes('`示例：[连接器依据 finance/query]`'))
   assert.ok(converted.includes('```text\n[模型知识]'))
   const incremental = relatedEvidence({ ...message, blocks: [web, mcp, { type: 'content', content: `[网站](${url})` }] })
   assert.equal(incremental.numberMap[`web:${url}`], result.numberMap[`web:${url}`])
@@ -129,4 +129,132 @@ test('模型知识保留纯文字说明，历史模型标记不再生成编号�
   const html = renderMarkdown(linkKnowledgeCitations(content, numberMap, true), createMarkdownRenderer({}))
   assert.match(html, /来源：模型自身知识/)
   assert.doesNotMatch(html, /ke-cite-number|\[模型知识\]/)
+})
+
+test('MCP 行内引用兼容完整标记和路径的反引号，按出现顺序编号', () => {
+  const cases = [
+    '`[连接器依据 finance/query]`',
+    '``[连接器依据 finance/query]``',
+    '[连接器依据 `finance/query`]',
+    '**[连接器依据 `finance/query`]**',
+    '[连接器依据\nfinance/query]',
+  ]
+  for (const marker of cases) {
+    const content = `正文${marker}。[网站](${url})`
+    const { numberMap, items } = relatedEvidence({ content, blocks: [mcp, web] })
+    assert.equal(numberMap['mcp:finance/query'], 1, marker)
+    assert.equal(numberMap[`web:${url}`], 2, marker)
+    assert.equal(items[0].snippet, '营业收入：100万元。')
+    const html = renderMarkdown(linkKnowledgeCitations(content, numberMap, true), createMarkdownRenderer({}))
+    assert.match(html, /data-cite="1"/)
+    assert.doesNotMatch(html, /连接器依据|<code>/)
+  }
+})
+
+test('MCP 来源文字兼容无内层括号、代码工具名及业务口径说明', () => {
+  const call = { ...mcp, result: mcp.result.replace('finance/query', 'fx/forex_kline_qa') }
+  const cases = [
+    '行情要点（来源：外部连接器 forex_kline_qa，FXALL 渠道 MID 价，北京时间）',
+    '行情要点(来源: 外部连接器 forex_kline_qa, FXALL 渠道 MID 价，北京时间)',
+    '来源：外部连接器 `forex_kline_qa`，FXALL 渠道 MID 价，北京时间',
+    '行情要点（来源：外部连接器（forex_kline_qa，FXALL 渠道 MID 价，北京时间））',
+    '来源：外部连接器（`forex_kline_qa`，FXALL 渠道 MID 价，北京时间）',
+  ]
+  for (const content of cases) {
+    const { numberMap } = relatedEvidence({ content, blocks: [call] })
+    assert.deepEqual(numberMap, { 'mcp:fx/forex_kline_qa': 1 }, content)
+    const html = renderMarkdown(linkKnowledgeCitations(content, numberMap, true), createMarkdownRenderer({}))
+    assert.match(html, /data-cite="1"/)
+    assert.match(html, /FXALL 渠道 MID 价，北京时间/)
+    assert.doesNotMatch(html, /来源[:：]|forex_kline_qa/)
+  }
+})
+
+test('MCP 兼容范围限定在有效来源，代码块、普通代码、转义和链接中的示例保留', () => {
+  const examples = [
+    '```text\n[连接器依据 finance/query]\n```',
+    '    `[连接器依据 finance/query]`',
+    '`示例：[连接器依据 finance/query]`',
+    '`finance/query`',
+    '`未闭合代码：[连接器依据 finance/query]',
+    '``示例：[连接器依据 finance/query]``',
+    '![示例 `[连接器依据 finance/query]`](https://unknown.example.com/image.png)',
+    '\\[连接器依据 `finance/query`]',
+    '[示例 `[连接器依据 finance/query]`](https://unknown.example.com)',
+  ]
+  for (const content of examples) {
+    const { numberMap } = relatedEvidence({ content, blocks: [mcp] })
+    assert.deepEqual(numberMap, {}, content)
+    assert.equal(linkKnowledgeCitations(content, numberMap, true), content)
+  }
+  for (const content of ['`[连接器依据 finance/query]`', '[连接器依据 `finance/query`]',
+    '来源：外部连接器 query，业务口径']) {
+    for (const calls of [[], [{ ...mcp, success: false }], [mcp, { ...mcp, tool_call_id: 'other', result: mcp.result.replace('finance/query', 'other/query') }]]) {
+      // 完整 server/tool 在两个服务同名时仍可精确引用；短工具名才需要唯一性。
+      if (calls.length === 2 && !content.includes('外部连接器')) continue
+      const { numberMap } = relatedEvidence({ content, blocks: calls })
+      assert.deepEqual(numberMap, {})
+      assert.equal(linkKnowledgeCitations(content, numberMap, true), content)
+    }
+  }
+})
+
+test('知识库正文中的书名来源转为数字引用，末尾来源说明和文档描述保留', () => {
+  const content = '已根据知识库文档《DeepAgents_Guide.md》生成 Word 文档。\n\n**文档结构**（来源：知识库《DeepAgents_Guide.md》）：章节列表。\n\n来源：知识库（测试/DeepAgents_Guide.md）'
+  const evidence = [{ document_id: 'guide', document_name: 'DeepAgents_Guide.md', snippet: 'DeepAgents 指南内容', metadata: { base_name: '测试' } }]
+  const { items, numberMap } = relatedEvidence({ content, knowledge_evidence: evidence })
+  assert.equal(numberMap['knowledge:DeepAgents_Guide.md'], 1)
+  assert.deepEqual(items, evidence)
+  const html = renderMarkdown(linkKnowledgeCitations(content, numberMap, true), createMarkdownRenderer({}))
+  assert.equal([...html.matchAll(/data-cite="1"/g)].length, 1)
+  assert.doesNotMatch(html, /来源：知识库《/)
+  assert.match(html, /已根据知识库文档《DeepAgents_Guide.md》/)
+  assert.match(html, /来源：知识库（测试\/DeepAgents_Guide.md）/)
+  assert.equal(linkKnowledgeCitations(content, numberMap), content)
+})
+
+test('知识库文档名与现有编号共用来源，混合 MCP 按正文顺序编号', () => {
+  const content = '收入[连接器依据 finance/query]。文档结构（来源：知识库《Guide.md》）：说明。[知识依据2]'
+  const evidence = [{ document_name: 'other.md' }, { document_id: 'guide', document_name: 'Guide.md', snippet: '指南' }]
+  const { items, numberMap } = relatedEvidence({ content, blocks: [mcp], knowledge_evidence: evidence })
+  assert.equal(numberMap['mcp:finance/query'], 1)
+  assert.equal(numberMap['knowledge:Guide.md'], 2)
+  assert.equal(numberMap[2], 2)
+  assert.equal(items.length, 2)
+  const html = renderMarkdown(linkKnowledgeCitations(content, numberMap, true), createMarkdownRenderer({}))
+  assert.equal([...html.matchAll(/data-cite="2"/g)].length, 2)
+})
+
+test('知识库缺失或同名不同文档时不转换，带库名时须精确匹配', () => {
+  const a = { document_id: 'a', document_name: 'Guide.md', snippet: '甲', metadata: { base_name: '知识库甲' } }
+  const b = { document_id: 'b', document_name: 'Guide.md', snippet: '乙', metadata: { base_name: '知识库乙' } }
+  for (const evidence of [[], [a, b]]) {
+    const content = '文档结构（来源：知识库《Guide.md》）：章节'
+    const { numberMap } = relatedEvidence({ content, knowledge_evidence: evidence })
+    assert.deepEqual(numberMap, {})
+    assert.equal(linkKnowledgeCitations(content, numberMap, true), content)
+  }
+  const content = '文档结构（来源：知识库《知识库甲/Guide.md》）'
+  const { items, numberMap } = relatedEvidence({ content, knowledge_evidence: [a, b] })
+  assert.equal(numberMap['knowledge:知识库甲/Guide.md'], 1)
+  assert.deepEqual(items, [a])
+  const wrongBase = relatedEvidence({ content, knowledge_evidence: [b] })
+  assert.deepEqual(wrongBase.numberMap, {})
+  const chunks = relatedEvidence({ content, knowledge_evidence: [a, { ...a, snippet: '另一片段' }] })
+  assert.equal(chunks.items.length, 1)
+  assert.equal(chunks.numberMap['knowledge:知识库甲/Guide.md'], 1)
+})
+
+test('知识库末尾来源文字、代码与链接中的来源示例保持原文', () => {
+  for (const content of [
+    '来源：知识库《Guide.md》',
+    '来源：知识库（测试/Guide.md）',
+    '`（来源：知识库《Guide.md》）`',
+    '```text\n正文（来源：知识库《Guide.md》）\n```',
+    '[（来源：知识库《Guide.md》）](https://example.com)',
+  ]) {
+    const { numberMap } = relatedEvidence({ content, knowledge_evidence: [{ document_name: 'Guide.md' }] })
+    assert.deepEqual(numberMap, {}, content)
+    assert.equal(linkKnowledgeCitations(content, numberMap, true), content)
+  }
 })
