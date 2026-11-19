@@ -173,24 +173,10 @@ personnel:
   self_registration_enabled: false   # 自助注册：true 时登录页显示注册入口
   passwordless_login_enabled: false  # 门户免密登录：true 时支持 URL 直登与 /login-passwordless（admin 不支持）
   # 超级管理员（与内置 admin 同权）：可写多个用户名，用于门户部署的总管理员；
-  # admin 恒为超级管理员，不受本列表影响。
   super_admin_usernames: ["shijiabao"]
-  # 人员接口同步：等外部接口信息确定后再取消注释并填写；未配置时「更新人员信息」按钮返回 422。
-  # sync:
-  #   enabled: ${PERSONNEL_SYNC_ENABLED:-false}
-  #   source_name: "${PERSONNEL_SYNC_SOURCE:-接口同步}"   # 写入人员信息来源，便于追溯
-  #   url: ${PERSONNEL_SYNC_URL:-}                        # 外部人员接口地址
-  #   token: ${PERSONNEL_SYNC_TOKEN:-}                    # 访问令牌；留空则不带鉴权头
-  #   token_header: Authorization
-  #   token_prefix: "Bearer "
-  #   timeout_seconds: 20
-  #   items_path: "data.items"          # 响应中人员数组的点号路径
-  #   field_mapping: {}                 # 本地字段 -> 外部字段名；未列出的字段按同名读取
-  #   page:
-  #     enabled: false                  # 外部接口分页时开启，按 items 数量判断是否继续翻页
-  #     param: page
-  #     size_param: page_size
-  #     size: 500
+  # 人员接口同步：只需一个组织树接口地址；留空时「更新人员信息」返回 422。
+  sync:
+    url: ${PERSONNEL_SYNC_URL:-}
 
 # ===== 分布式锁（多实例部署）=====
 distributed_lock:
@@ -302,7 +288,7 @@ knowledge:
   source_sync:
     enabled: ${KNOWLEDGE_SOURCE_SYNC_ENABLED:-false}
     owner_username: "${KNOWLEDGE_SOURCE_SYNC_OWNER_USERNAME:-admin}"  # 入库归属用户（需已存在，以该用户身份上传并授权）
-    file_root: "${SOURCE_SYNC_FILE_ROOT:-}"  # 源目录（绝对路径，必填）：按文档 SQL 的 batchid 在此目录下匹配同名文件
+    file_root: "${SOURCE_SYNC_FILE_ROOT:-}"  # 源目录（必填；绝对路径或相对路径均可，相对路径按项目根解析）：按文档 SQL 的 batchid 在此目录下匹配同名文件
     staging_dir: "${SOURCE_SYNC_STAGING_DIR:-}"  # 暂存目录（绝对路径，可选）：先把本批文件拷贝到这里（同名文件直接覆盖），READY 后删除暂存副本；留空=直接读源目录
     staging_retention_hours: ${KNOWLEDGE_SOURCE_SYNC_STAGING_RETENTION_HOURS:-24}  # 暂存残留清理阈值（小时）：每轮同步开始时清理超过该时长的残留文件
     base_id: "${KNOWLEDGE_SOURCE_SYNC_BASE_ID:-}"  # 精确指定入库的知识库 ID（同名库有多个时用它锁定）；留空则按 base_name 查找/新建

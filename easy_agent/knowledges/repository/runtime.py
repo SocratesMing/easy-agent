@@ -84,7 +84,9 @@ class RuntimeRepositoryMixin:
                    COALESCE(NULLIF(department_name, ''), {department_expr}, '') AS department_name,
                    COALESCE(division_name, '') AS division_name,
                    COALESCE(team_name, '') AS team_name,
-                   COALESCE(position, '') AS position
+                   COALESCE(position, '') AS position,
+                   COALESCE(systems, '') AS systems,
+                   COALESCE(role_systems, '') AS role_systems
             FROM users
             WHERE account_status='active' AND username<>'admin'
               AND (?='' OR user_id<>?)

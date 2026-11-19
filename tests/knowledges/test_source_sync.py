@@ -178,10 +178,14 @@ def test_resolve_batchid_file_matches_disk_name(tmp_path):
     assert resolve_batchid_file(SourceSyncConfig(), "batch-001") is None
 
 
-def test_resolve_batchid_file_rejects_relative_root(tmp_path):
-    config = SourceSyncConfig(file_root="relative/root")
-    with pytest.raises(RuntimeError):
-        resolve_batchid_file(config, "batch-001")
+def test_resolve_batchid_file_accepts_relative_root(tmp_path, monkeypatch):
+    """相对 file_root 按项目根解析（与启动 cwd 无关）。"""
+    monkeypatch.setattr("easy_agent.knowledges.core.config.PROJECT_ROOT", tmp_path)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    (reports / "batch-001.pdf").write_bytes(b"x")
+    config = SourceSyncConfig(file_root="reports")
+    assert resolve_batchid_file(config, "batch-001") == reports / "batch-001.pdf"
 
 
 # ---------------------------------------------------------------------------

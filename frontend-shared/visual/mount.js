@@ -17,7 +17,10 @@ const HOST = 'ea-visual-host'
 const FRAME = 'ea-visual-frame'
 const READY_TIMEOUT_MS = 10000
 const MIN_HEIGHT = 40
-const MAX_HEIGHT = 2000
+// 只拦住失控的脚本把页面撑到无限高；正常的长报告和流程图要完整露出来
+const MAX_HEIGHT = 12000
+// 高度为 0 时，流程图的文字测量和 HTML 的百分比高度都会塌掉，只剩底部一截
+const INITIAL_HEIGHT = 480
 const VISUAL_SELECTOR = '.ea-visual:not(.is-pending):not([data-visual-state])'
 const VIEW_ROOT_MARGIN = '600px 0px'
 
@@ -124,7 +127,13 @@ function openLink(url) {
 }
 
 function widgetDocument(source) {
-  return `<!doctype html>\n<html lang="zh-CN">\n<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>\n<body>\n${source}\n</body>\n</html>\n`
+  const text = String(source || '')
+  if (/<!doctype\s+html|<html[\s>]/i.test(text)) return text
+  return `<!doctype html>\n<html lang="zh-CN">\n<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>\n<body>\n${text}\n</body>\n</html>\n`
+}
+
+function isHtmlKind(kind) {
+  return kind === 'widget' || kind === 'html'
 }
 
 function createController(el, options) {
@@ -163,7 +172,7 @@ function createController(el, options) {
       frame.setAttribute('sandbox', 'allow-scripts')
       frame.setAttribute('referrerpolicy', 'no-referrer')
       frame.setAttribute('title', label)
-      frame.style.height = '0px'
+      frame.style.height = `${INITIAL_HEIGHT}px`
       // iframe 元素与框架页的 color-scheme 不一致时浏览器会给它垫一层不透明底色（深色下是白块）
       frame.style.colorScheme = ctl.theme
       stage.appendChild(frame)
@@ -232,7 +241,7 @@ function createController(el, options) {
       el.classList.add('show-source')
     },
     download() {
-      if (kind === 'widget') {
+      if (isHtmlKind(kind)) {
         const url = URL.createObjectURL(new Blob([widgetDocument(text)], { type: 'text/html;charset=utf-8' }))
         saveAs(el, url, `${label}-${timestamp()}.html`)
         setTimeout(() => URL.revokeObjectURL(url), 1000)
@@ -243,7 +252,7 @@ function createController(el, options) {
   }
 
   actions.appendChild(makeButton('源码', '查看 / 收起源码', () => el.classList.toggle('show-source')))
-  actions.appendChild(makeButton('下载', kind === 'widget' ? '下载为 HTML 文件' : '下载图片', () => ctl.download()))
+  actions.appendChild(makeButton('下载', isHtmlKind(kind) ? '下载为 HTML 文件' : '下载图片', () => ctl.download()))
   header.appendChild(title)
   header.appendChild(actions)
   card.appendChild(header)

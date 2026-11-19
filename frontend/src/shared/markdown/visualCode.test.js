@@ -12,7 +12,7 @@ import {
 
 setupMarkedExtensions()
 
-test('echarts / mermaid / widget 源码不进入高亮器，普通代码块仍正常高亮', () => {
+test('echarts / mermaid / widget / html 源码不进入高亮器，普通代码块仍正常高亮', () => {
   const highlighted = []
   const renderer = createMarkdownRenderer({
     highlight: (code, lang) => {
@@ -21,7 +21,7 @@ test('echarts / mermaid / widget 源码不进入高亮器，普通代码块仍�
     },
   })
 
-  for (const kind of ['echarts', 'mermaid', 'widget']) {
+  for (const kind of ['echarts', 'mermaid', 'widget', 'html']) {
     const html = renderMarkdown(`\`\`\`${kind}\nA < B\n\`\`\``, renderer)
     assert.ok(html.includes(`data-visual-kind="${kind}"`), html)
     assert.ok(html.includes('A &lt; B'), html)

@@ -14,7 +14,7 @@
 |---|---|---|
 | 图表 | 正文里的 ` ```echarts ` 代码块（JSON 格式的 ECharts option，可包一层 `{"height", "option"}`）；数据类工具结果里的 `chart` 字段（`jmfx_mcp_server` 的信封） | 框架页 `echarts.init` |
 | 流程图 | ` ```mermaid ` 代码块 | Mermaid，`securityLevel: 'strict'` |
-| 交互组件 | ` ```widget ` 代码块（HTML，可含 `<style>` / `<svg>` / `<script>`） | 在沙箱里执行；` ```html ` 仍是普通代码块，不会被运行 |
+| 交互组件 | ` ```widget ` 代码块（HTML 片段，可含 `<style>` / `<svg>` / `<script>`）；` ```html ` 代码块（自包含 HTML 文档） | 在沙箱里执行。`html_widgets` 关闭时两类都退回源码 |
 
 链路：
 

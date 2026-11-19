@@ -1,6 +1,15 @@
 <template>
   <div class="ke-perm-tree">
-    <section v-for="dept in tree" :key="dept.key" class="ke-perm-branch">
+    <div class="ke-perm-filter-row">
+      <label>
+        <span>系统</span>
+        <select v-model="systemFilter" aria-label="按人员系统筛选">
+          <option value="">全部系统</option>
+          <option v-for="option in systemOptions" :key="option" :value="option">{{ option }}</option>
+        </select>
+      </label>
+    </div>
+    <section v-for="dept in visibleTree" :key="dept.key" class="ke-perm-branch">
       <div class="ke-perm-row level-dept">
         <button type="button" class="ke-perm-caret" title="展开/收起" @click="$emit('toggle-expand', dept.key)"><IconChevronDown :class="{ rotated: isCollapsed(dept.key) }" /></button>
         <input type="checkbox" v-indeterminate="indeterminate(dept)" :checked="checked(dept)" @change="$emit('toggle-node', dept, $event.target.checked)" />
@@ -45,7 +54,7 @@
         </section>
       </div>
     </section>
-    <p v-if="!tree.length" class="ke-perm-empty">{{ emptyText }}</p>
+    <p v-if="!visibleTree.length" class="ke-perm-empty">{{ systemFilter ? '没有符合筛选的人员' : emptyText }}</p>
   </div>
 </template>
 
@@ -62,6 +71,52 @@ export default {
     emptyText: { type: String, default: '' },
   },
   emits: ['toggle-expand', 'toggle-node'],
+  data() {
+    return { systemFilter: '' }
+  },
+  computed: {
+    systemOptions() {
+      const values = new Set()
+      for (const dept of this.tree) {
+        for (const user of dept.allUsers || []) {
+          for (const item of this.splitSystems(user.systems)) values.add(item)
+        }
+      }
+      return [...values].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+    },
+    visibleTree() {
+      if (!this.systemFilter) return this.tree
+      const keep = user => this.splitSystems(user.systems).includes(this.systemFilter)
+      return this.tree
+        .map(dept => {
+          const divisions = (dept.divisions || [])
+            .map(division => {
+              const teams = (division.teams || [])
+                .map(team => {
+                  const users = (team.users || []).filter(keep)
+                  return { ...team, users, allUsers: users }
+                })
+                .filter(team => team.users.length)
+              const users = (division.users || []).filter(keep)
+              return {
+                ...division,
+                users,
+                teams,
+                allUsers: [...users, ...teams.flatMap(team => team.users)],
+              }
+            })
+            .filter(division => division.allUsers.length)
+          const users = (dept.users || []).filter(keep)
+          return {
+            ...dept,
+            users,
+            divisions,
+            allUsers: [...users, ...divisions.flatMap(division => division.allUsers)],
+          }
+        })
+        .filter(dept => dept.allUsers.length)
+    },
+  },
   // Vue 3 模板无法直接绑定 checkbox 的 indeterminate 属性，用指令补齐
   directives: {
     indeterminate: {
@@ -70,6 +125,12 @@ export default {
     },
   },
   methods: {
+    splitSystems(value) {
+      return String(value || '')
+        .split(/[/、,，;；|｜]/)
+        .map(item => item.trim())
+        .filter(Boolean)
+    },
     selectedCount(node) { return node.allUsers.reduce((count, user) => count + (user.checked ? 1 : 0), 0) },
     checked(node) { return node.allUsers.length > 0 && node.allUsers.every(user => user.checked) },
     indeterminate(node) {
@@ -82,6 +143,9 @@ export default {
 
 <style scoped>
 .ke-perm-tree{margin-top:7px;border:1px solid #e3e7e4;border-radius:10px;max-height:340px;overflow:auto;padding:6px 10px;background:#fff}
+.ke-perm-filter-row{display:flex;justify-content:flex-end;padding:2px 2px 6px}
+.ke-perm-filter-row label{display:flex;align-items:center;gap:6px;color:#7b857d;font-size:10px}
+.ke-perm-filter-row select{height:28px;padding:0 6px;border:1px solid #e3e7e4;border-radius:7px;background:#fff;color:#3d4640;font:inherit;font-size:11px}
 .ke-perm-branch+.ke-perm-branch{margin-top:4px}
 .ke-perm-row{display:grid;grid-template-columns:24px 18px 1fr auto;gap:7px;align-items:center;padding:7px 4px;border-radius:8px}
 .ke-perm-row:hover{background:#f7faf8}
@@ -95,7 +159,7 @@ export default {
 .ke-perm-caret svg{width:13px;height:13px;transition:transform .15s ease}
 .ke-perm-caret svg.rotated{transform:rotate(-90deg)}
 .ke-perm-children{margin-left:24px;border-left:1px dashed #dfe4e0;padding-left:8px}
-.ke-perm-user{display:grid;grid-template-columns:18px 1fr auto;gap:8px;align-items:center;padding:5px 4px;border-radius:8px;cursor:pointer;color:#3d4640;font-size:11px}
+.ke-perm-user{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:8px;align-items:center;padding:5px 4px;border-radius:8px;cursor:pointer;color:#3d4640;font-size:11px}
 .ke-perm-user:hover{background:#f7faf8}
 .ke-perm-user span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ke-perm-user small{color:#9aa19c;font-size:9px}

@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field, SecretStr, ValidationError, model_validat
 
 from easy_agent.bootstrap.config import Config
 from easy_agent.bootstrap.env import is_unset_placeholder
+from easy_agent.utils.paths import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +148,8 @@ class SourceSyncConfig(BaseModel):
 
     enabled: bool = False
     owner_username: str = "admin"
-    # 磁盘文件根目录（绝对路径，必填）：按文档 SQL 的 batchid 在该目录下匹配同名文件
+    # 磁盘文件根目录（必填；绝对路径或相对路径均可，相对路径按项目根解析）：
+    # 按文档 SQL 的 batchid 在该目录下匹配同名文件
     file_root: str = ""
     # 暂存目录（绝对路径，可选）：设置后先把本批要入库的文件拷贝到这里，
     # 解析 READY 后删除暂存副本；留空则维持直接读取 file_root 的旧行为。
@@ -165,6 +167,15 @@ class SourceSyncConfig(BaseModel):
     max_inflight: int = Field(default=10, ge=1, le=100)
     mysql: SourceSyncMySQLConfig = Field(default_factory=SourceSyncMySQLConfig)
 
+    @property
+    def resolved_file_root(self) -> Path | None:
+        """源目录的实际路径：绝对路径原样返回，相对路径按项目根解析（与启动 cwd 无关）。"""
+        raw = self.file_root.strip()
+        if not raw:
+            return None
+        path = Path(raw).expanduser()
+        return path if path.is_absolute() else PROJECT_ROOT / path
+
     @model_validator(mode="after")
     def _validate_sync(self) -> "SourceSyncConfig":
         if self.start_time:
@@ -180,9 +191,8 @@ class SourceSyncConfig(BaseModel):
                 raise ValueError("source_sync.staging_dir 必须为绝对路径")
             # 暂存目录与源目录相同会导致 READY 后误删业务原件，直接拒绝。
             try:
-                if self.file_root.strip() and Path(staging).resolve() == Path(
-                    self.file_root.strip()
-                ).resolve():
+                file_root = self.resolved_file_root
+                if file_root is not None and Path(staging).resolve() == file_root.resolve():
                     raise ValueError(
                         "source_sync.staging_dir 不能与 file_root 相同"
                     )

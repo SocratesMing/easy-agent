@@ -23,6 +23,13 @@
         </select>
       </label>
       <label class="ke-perm-filter">
+        <span>系统</span>
+        <select v-model="filters.system" @change="onSystemChange">
+          <option value="">全部系统</option>
+          <option v-for="option in systemOptions" :key="option" :value="option">{{ option }}</option>
+        </select>
+      </label>
+      <label class="ke-perm-filter">
         <span>角色</span>
         <select v-model="filters.role">
           <option value="">全部角色</option>
@@ -47,7 +54,6 @@
         <input type="checkbox" :checked="user.checked" @change="user.checked = $event.target.checked" />
         <span>{{ user.display_name }}</span>
         <small>{{ user.username }}</small>
-        <small class="ke-perm-role">{{ user.position || '—' }}</small>
       </label>
       <p v-if="!filteredUsers.length" class="ke-perm-empty">{{ listEmptyText }}</p>
     </div>
@@ -69,7 +75,7 @@ export default {
   data() {
     return {
       query: '',
-      filters: { department: '', division: '', team: '', role: '' },
+      filters: { department: '', division: '', team: '', role: '', system: '' },
     }
   },
   computed: {
@@ -85,16 +91,21 @@ export default {
       if (!this.filters.team) return this.divisionScope
       return this.divisionScope.filter(user => this.text(user.team_name) === this.filters.team)
     },
+    systemScope() {
+      if (!this.filters.system) return this.teamScope
+      return this.teamScope.filter(user => this.systemsOf(user).includes(this.filters.system))
+    },
     filteredUsers() {
       const base = this.query.trim()
         ? filterPermissionUsers(this.users, this.query)
         : this.users
-      const { department, division, team, role } = this.filters
+      const { department, division, team, role, system } = this.filters
       return base.filter(user => (
         (!department || this.departmentKey(user) === department)
         && (!division || this.text(user.division_name) === division)
         && (!team || this.text(user.team_name) === team)
-        && (!role || this.text(user.position) === role)
+        && (!role || this.matchRole(user, role))
+        && (!system || this.systemsOf(user).includes(system))
       ))
     },
     departmentOptions() {
@@ -114,7 +125,16 @@ export default {
       return this.uniqueValues(this.divisionScope.map(user => user.team_name))
     },
     roleOptions() {
-      return this.uniqueValues(this.teamScope.map(user => user.position))
+      const roles = this.systemScope.flatMap(user => (
+        this.rolePairsOf(user)
+          .filter(pair => !this.filters.system || pair.system === this.filters.system)
+          .map(pair => pair.role)
+      ))
+      return this.uniqueValues(roles)
+    },
+    systemOptions() {
+      const systems = this.teamScope.flatMap(user => this.systemsOf(user))
+      return this.uniqueValues(systems)
     },
     allChecked() {
       return this.filteredUsers.length > 0 && this.filteredUsers.every(user => user.checked)
@@ -131,6 +151,44 @@ export default {
     text(value) {
       return String(value == null ? '' : value).trim()
     },
+    rolesOf(user) {
+      return this.text(user.position)
+        .split(/[/、,，;；|｜]/)
+        .map(value => value.trim())
+        .filter(Boolean)
+    },
+    systemsOf(user) {
+      return this.text(user.systems)
+        .split(/[/、,，;；|｜]/)
+        .map(value => value.trim())
+        .filter(Boolean)
+    },
+    rolePairsOf(user) {
+      // role_systems 存的是 [{system, role}]：选择系统后角色只从该系统下取。
+      const raw = this.text(user.role_systems)
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw)
+          if (Array.isArray(parsed)) {
+            return parsed
+              .map(pair => ({
+                system: this.text(pair && pair.system),
+                role: this.text(pair && pair.role),
+              }))
+              .filter(pair => pair.role)
+          }
+        } catch (e) {
+          // 非 JSON 的历史数据按“角色不绑定系统”处理
+        }
+      }
+      return this.rolesOf(user).map(role => ({ system: '', role }))
+    },
+    matchRole(user, role) {
+      const system = this.filters.system
+      return this.rolePairsOf(user).some(pair => (
+        pair.role === role && (!system || pair.system === system)
+      ))
+    },
     departmentKey(user) {
       return this.text(user.department_id) || `name:${this.text(user.department_name)}`
     },
@@ -146,12 +204,19 @@ export default {
       this.filters.division = ''
       this.filters.team = ''
       this.filters.role = ''
+      this.filters.system = ''
     },
     onDivisionChange() {
       this.filters.team = ''
       this.filters.role = ''
+      this.filters.system = ''
     },
     onTeamChange() {
+      this.filters.role = ''
+      this.filters.system = ''
+    },
+    onSystemChange() {
+      // 系统变了，已选角色可能不属于新系统：清空重新选
       this.filters.role = ''
     },
     toggleAll(checked) {
@@ -162,7 +227,7 @@ export default {
 </script>
 
 <style scoped>
-.ke-perm-filters{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px}
+.ke-perm-filters{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:10px}
 .ke-perm-filter{display:flex;flex-direction:column;gap:5px;color:var(--text-secondary);font-size:10px}
 .ke-perm-filter select{width:100%;box-sizing:border-box;height:32px;border:1px solid var(--border-color);border-radius:9px;background:var(--bg-secondary);color:var(--text-primary);padding:0 7px;font:inherit;font-size:11px;outline:0}
 .ke-perm-filter select:focus{border-color:var(--accent-color);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent-color) 14%,transparent)}
@@ -174,11 +239,10 @@ export default {
 .ke-perm-list{margin-top:8px;border:1px solid var(--border-color);border-radius:10px;max-height:320px;overflow:auto;padding:6px 10px;background:var(--bg-secondary)}
 .ke-perm-list-head{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 4px;background:var(--bg-secondary);border-bottom:1px solid var(--border-color);color:var(--text-secondary);font-size:10px}
 .ke-perm-select-all{display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:var(--text-secondary);font-size:10px}
-.ke-perm-user{display:grid;grid-template-columns:18px minmax(0,1fr) auto auto;gap:8px;align-items:center;padding:5px 4px;border-radius:8px;cursor:pointer;color:var(--text-primary);font-size:11px}
+.ke-perm-user{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:8px;align-items:center;padding:5px 4px;border-radius:8px;cursor:pointer;color:var(--text-primary);font-size:11px}
 .ke-perm-user:hover{background:var(--bg-tertiary)}
 .ke-perm-user span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ke-perm-user small{color:var(--text-secondary);font-size:9px}
-.ke-perm-role{max-width:90px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right}
 .ke-perm-empty{margin:0;padding:22px 10px;color:var(--text-secondary);text-align:center;font-size:10px}
 .ke-perm-list input[type=checkbox]{width:15px;height:15px;flex:none;box-sizing:border-box;margin:0;padding:0;border:0;background:transparent;accent-color:var(--accent-color);cursor:pointer}
 @media (max-width:560px){.ke-perm-filters{grid-template-columns:repeat(2,minmax(0,1fr))}}

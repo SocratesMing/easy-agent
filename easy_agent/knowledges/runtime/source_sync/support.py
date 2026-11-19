@@ -264,15 +264,12 @@ def resolve_batchid_file(
         file_root/研报_abc123_终稿.pdf    ← 命中（文件名里“包含”abc123，次优先）
         file_root/其他文件.pdf            ← 不命中
 
-    找不到时返回 None。
+    找不到时返回 None。``file_root`` 支持绝对路径和相对路径（相对路径按项目根解析）。
     """
     raw = str(batch_id or "").strip()
-    root = sync_config.file_root.strip()
-    if not raw or not root:
+    base = sync_config.resolved_file_root
+    if not raw or base is None:
         return None
-    base = Path(root)
-    if not base.is_absolute():
-        raise RuntimeError("source_sync.file_root 必须是绝对路径")
 
     target = raw.casefold()  # casefold() 是更“彻底”的小写化，用于忽略大小写比较
     contains_hit: Path | None = None  # 暂存“文件名包含 batchid”的第一个命中
@@ -308,8 +305,8 @@ def resolve_staging_dir(sync_config: SourceSyncConfig) -> Path | None:
     path = Path(raw)
     if not path.is_absolute():
         raise RuntimeError("source_sync.staging_dir 必须是绝对路径")
-    source_root = sync_config.file_root.strip()
-    if source_root and path.resolve() == Path(source_root).resolve():
+    source_root = sync_config.resolved_file_root
+    if source_root is not None and path.resolve() == source_root.resolve():
         raise RuntimeError("source_sync.staging_dir 不能与 file_root 相同")
     return path
 

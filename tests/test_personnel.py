@@ -1,6 +1,7 @@
 """Personnel administration: authorization, validation and atomic import."""
 
 from io import BytesIO
+import json
 
 import pytest
 from openpyxl import Workbook, load_workbook
@@ -355,7 +356,7 @@ def test_template_is_admin_only_and_valid_xlsx(client):
     assert [cell.value for cell in sheet[1]] == [
         "姓名*", "sso账号*", "员工编号", "账号状态*",
         "部门编号*", "部门名称*", "处室*", "团队*",
-        "岗位", "手机号", "邮箱",
+        "岗位", "系统", "手机号", "邮箱",
     ]
 
 
@@ -554,13 +555,13 @@ def test_delete_personnel_blocked_while_owning_bases_and_cleans_grants(client, d
 
 
 def _use_sync_config(monkeypatch, **overrides):
-    """把运行时配置替换为 personnel.sync（默认启用并指向本地假接口）。"""
+    """把运行时配置替换为 personnel.sync（默认指向本地假接口）。"""
     from types import SimpleNamespace
 
     from easy_agent.bootstrap.config_models import PersonnelConfig
     from easy_agent.services.agents import manager as agent_manager
 
-    sync = {"enabled": True, "url": "http://hr.local/api/users", "source_name": "HR接口"}
+    sync = {"url": "http://hr.local/api/users"}
     sync.update(overrides)
     config = SimpleNamespace(personnel=PersonnelConfig(sync=sync))
     monkeypatch.setattr(agent_manager, "get_agent_config", lambda: {"config": config})
@@ -598,59 +599,22 @@ def test_sync_endpoint_requires_admin(client):
     assert client.post("/agent/personnel/sync").status_code == 403
 
 
-def test_sync_rejects_when_disabled(client, monkeypatch):
-    _use_sync_config(monkeypatch, enabled=False)
+def test_sync_rejects_when_url_missing(client, monkeypatch):
+    _use_sync_config(monkeypatch, url="")
     client = _as_admin(client)
     response = client.post("/agent/personnel/sync")
     assert response.status_code == 422
-    assert "未启用" in str(response.json()["detail"])
-
-
-def test_source_sync_maps_fields_and_paginates(monkeypatch):
-    from easy_agent.bootstrap.config_models import PersonnelSyncConfig
-    from easy_agent.knowledges.personnel import source_sync
-
-    cfg = PersonnelSyncConfig(
-        enabled=True,
-        url="http://hr.local/api/users",
-        token="secret",
-        items_path="data.items",
-        field_mapping={"username": "account", "display_name": "name"},
-        page={"enabled": True, "param": "pageNo", "size_param": "pageSize", "size": 2},
-    )
-    client = _FakeHttpClient([
-        {"data": {"items": [
-            {"account": "alice", "name": "爱丽丝", "department_name": "部门A"},
-            {"account": "admin", "name": "管理员", "department_name": "部门A"},
-        ]}},
-        {"data": {"items": [{"account": "bob", "name": "鲍勃", "department_name": "部门B"}]}},
-    ])
-    monkeypatch.setattr(source_sync.httpx, "Client", lambda timeout=None: client)
-
-    records = source_sync.fetch_source_records(cfg)
-    assert len(records) == 3
-    assert client.calls[0]["params"] == {"pageNo": 1, "pageSize": 2}
-    assert client.calls[0]["headers"] == {"Authorization": "Bearer secret"}
-
-    items, skipped, errors = source_sync.build_personnel_items(records, cfg)
-    assert errors == []
-    assert skipped == 1  # admin 不计入同步
-    assert [item.username for item in items] == ["alice", "bob"]
-    assert items[0].display_name == "爱丽丝"
-    assert items[0].source == "接口同步"
+    assert "未配置" in str(response.json()["detail"])
 
 
 def test_source_sync_collects_validation_errors():
-    from easy_agent.bootstrap.config_models import PersonnelSyncConfig
     from easy_agent.knowledges.personnel.source_sync import build_personnel_items
 
-    cfg = PersonnelSyncConfig(enabled=True, url="http://hr.local/api/users")
     items, skipped, errors = build_personnel_items(
         [
             {"username": "valid_user", "display_name": "有效用户", "department_name": "部门A"},
             {"username": "bad user", "display_name": "无效用户", "department_name": "部门A"},
         ],
-        cfg,
     )
     assert len(items) == 1
     assert skipped == 0
@@ -681,11 +645,12 @@ def test_sync_endpoint_creates_updates_and_skips_admin(client, db, monkeypatch):
         "total": 2,
         "created": 1,
         "updated": 0,
-        "source": "HR接口",
+        "source": "接口同步",
         "default_password": "123456",
         "skipped": 1,
+        "errors": [],
     }
-    assert db.get_user_by_username("sync_alice").personnel_source == "HR接口"
+    assert db.get_user_by_username("sync_alice").personnel_source == "接口同步"
 
     # 全量覆盖：同名账号的字段以接口数据为准
     records[0].update({"display_name": "Alice", "department_id": "dept-b", "department_name": "部门B"})
@@ -696,3 +661,200 @@ def test_sync_endpoint_creates_updates_and_skips_admin(client, db, monkeypatch):
     assert user.display_name == "Alice"
     assert user.department_id == "dept-b"
     assert user.organization_id == "dept-b"
+
+
+def test_admin_can_filter_personnel_by_any_system(client, db):
+    client = _as_admin(client)
+    for username, systems in (
+        ("sys_both", "核心/票据"),
+        ("sys_bill", "票据"),
+        ("sys_core", "核心"),
+    ):
+        created = client.post(
+            "/agent/personnel/users",
+            json=_payload(username=username, employee_id=f"E-{username}", systems=systems),
+        )
+        assert created.status_code == 201, created.text
+
+    response = client.get("/agent/personnel/users", params={"system": "票据"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert {item["username"] for item in body["items"]} == {"sys_both", "sys_bill"}
+    assert body["system_options"] == ["核心", "票据"]
+
+
+def test_source_sync_flattens_org_tree(monkeypatch):
+    from easy_agent.bootstrap.config_models import PersonnelSyncConfig
+    from easy_agent.knowledges.personnel import source_sync
+
+    cfg = PersonnelSyncConfig(url="http://hr.local/api/protected/hr/orgTree")
+    payload = {
+        "code": "0",
+        "msg": "success",
+        "success": True,
+        "data": {
+            "rootOrg": {
+                "orgId": 2704,
+                "orgName": "金融市场部",
+                "users": [
+                    {
+                        "userId": 1,
+                        "name": "张三",
+                        "ssoLoginNo": "zhangsan",
+                        "iamEmpLoginNo": "P1",
+                        "posts": ["22", "研究员", "研究员"],
+                        "roles": [
+                            {"roleName": "FMMS角色", "appCode": "FMMS"},
+                            {"roleName": "FMQT角色", "appCode": "FMQT"},
+                        ],
+                        "status": 0,
+                        "mobileNo": "",
+                    }
+                ],
+                "children": [
+                    {
+                        "orgId": 2708,
+                        "orgName": "金融市场部投资管理中心",
+                        "users": [],
+                        "children": [
+                            {
+                                "orgId": 2800,
+                                "orgName": "金融市场部投资管理中心组合投资团队",
+                                "users": [
+                                    {
+                                        "userId": 2,
+                                        "name": "李四",
+                                        "loginNo": "lisi",
+                                        "iamEmpLoginNo": "P2",
+                                        "posts": ["研究员"],
+                                        "status": 0,
+                                    }
+                                ],
+                                "children": [],
+                            }
+                        ],
+                    },
+                    {
+                        "orgId": 2709,
+                        "orgName": "金融市场部银行保险客户团队",
+                        "users": [
+                            {"userId": 3, "name": "王五", "ssoLoginNo": "wangwu", "status": 0}
+                        ],
+                        "children": [],
+                    },
+                ],
+            }
+        },
+    }
+    monkeypatch.setattr(
+        source_sync.httpx, "Client", lambda timeout=None: _FakeHttpClient([payload])
+    )
+
+    records = source_sync.fetch_source_records(cfg)
+    assert len(records) == 3
+    by_username = {record["username"]: record for record in records}
+    assert by_username["zhangsan"]["department_id"] == "2704"
+    assert by_username["zhangsan"]["department_name"] == "金融市场部"
+    assert by_username["zhangsan"]["division_name"] == ""
+    assert by_username["lisi"]["division_name"] == "投资管理中心"
+    assert by_username["lisi"]["team_name"] == "组合投资团队"
+    # 角色只取 roles[].roleName：没有 roles 就是空，不再回退 posts
+    assert by_username["lisi"]["position"] == ""
+    assert by_username["lisi"]["role_systems"] == ""
+    # 系统↔角色配对：选择系统后角色筛选只取该系统下的角色
+    assert json.loads(by_username["zhangsan"]["role_systems"]) == [
+        {"system": "FMMS", "role": "FMMS角色"},
+        {"system": "FMQT", "role": "FMQT角色"},
+    ]
+    # 第 2 层的“团队”仍归处室（按树层级）
+    assert by_username["wangwu"]["division_name"] == "银行保险客户团队"
+    assert by_username["wangwu"]["team_name"] == ""
+
+    items, skipped, errors = source_sync.build_personnel_items(records)
+    assert errors == []
+    assert skipped == 0
+    zhangsan = next(item for item in items if item.username == "zhangsan")
+    assert zhangsan.position == "FMMS角色/FMQT角色"
+    assert zhangsan.systems == "FMMS/FMQT"
+    assert zhangsan.employee_id == "P1"
+    assert zhangsan.account_status == "active"
+
+
+def test_source_sync_rejects_tree_without_root(monkeypatch):
+    from easy_agent.bootstrap.config_models import PersonnelSyncConfig
+    from easy_agent.knowledges.personnel import source_sync
+
+    cfg = PersonnelSyncConfig(url="http://hr.local/api/protected/hr/orgTree")
+    monkeypatch.setattr(
+        source_sync.httpx,
+        "Client",
+        lambda timeout=None: _FakeHttpClient([{"code": "500", "msg": "上游异常"}]),
+    )
+
+    with pytest.raises(source_sync.PersonnelSyncError) as excinfo:
+        source_sync.fetch_source_records(cfg)
+    assert "上游异常" in str(excinfo.value)
+
+
+def test_source_sync_reports_timeout(monkeypatch):
+    from easy_agent.bootstrap.config_models import PersonnelSyncConfig
+    from easy_agent.knowledges.personnel import source_sync
+
+    class _TimeoutClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url):
+            raise source_sync.httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(source_sync.httpx, "Client", lambda *args, **kwargs: _TimeoutClient())
+    cfg = PersonnelSyncConfig(url="http://slow.local/api/protected/hr/orgTree")
+
+    with pytest.raises(source_sync.PersonnelSyncError) as excinfo:
+        source_sync.fetch_source_records(cfg)
+    assert excinfo.value.status_code == 504
+    assert "超时" in str(excinfo.value)
+    assert "slow.local" in str(excinfo.value)
+
+
+def test_sync_skips_employee_id_conflicts(client, db, monkeypatch):
+    from easy_agent.knowledges.personnel import api as personnel_api
+
+    _use_sync_config(monkeypatch)
+    assert db.register_user("occupied_user", "secret123", employee_id="P900")
+    records = [
+        {
+            "username": "sync_bob",
+            "display_name": "鲍勃",
+            "department_id": "dept-a",
+            "department_name": "部门A",
+            "employee_id": "P900",
+            "account_status": "active",
+        },
+        {
+            "username": "sync_carol",
+            "display_name": "卡罗尔",
+            "department_id": "dept-a",
+            "department_name": "部门A",
+            "employee_id": "P901",
+            "account_status": "active",
+        },
+    ]
+    monkeypatch.setattr(personnel_api, "fetch_source_records", lambda cfg: records)
+    client = _as_admin(client)
+
+    response = client.post("/agent/personnel/sync")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["created"] == 1
+    assert body["skipped"] == 1
+    assert len(body["errors"]) == 1
+    assert "P900" in body["errors"][0]
+    assert db.get_user_by_username("sync_bob") is None
+    assert db.get_user_by_username("sync_carol") is not None

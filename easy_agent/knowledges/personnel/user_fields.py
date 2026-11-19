@@ -7,6 +7,7 @@ USER_FIELDS = {
     "division_name": "",
     "team_name": "",
     "position": "",
+    "systems": "",
     "mobile": "",
     "account_status": "active",
     "personnel_source": "",

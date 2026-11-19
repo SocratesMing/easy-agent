@@ -26,6 +26,8 @@ const props = defineProps({
     type: Object,
     default: () => ({}),
   },
+  /** 回答仍在流式输出。未闭合的图表 / 流程图 / HTML 保持骨架，不交给渲染器。 */
+  streaming: { type: Boolean, default: false },
 })
 
 // 流式期间最多每 80ms 出一次中间帧；分片停止 150ms 后按原文做一次最终渲染
@@ -60,7 +62,10 @@ function flush() {
 }
 
 function render(partial) {
-  blocks = renderMarkdownBlocks(linkKnowledgeCitations(pending, props.citeMap, props.compactCitations), { partial })
+  blocks = renderMarkdownBlocks(linkKnowledgeCitations(pending, props.citeMap, props.compactCitations), {
+    partial,
+    streaming: props.streaming,
+  })
   flush()
 }
 
@@ -96,6 +101,11 @@ watch(highlighterVersion, () => {
     scheduler.cancel()
     render(false)
   }
+})
+watch(() => props.streaming, (value) => {
+  if (!started || value) return
+  scheduler.cancel()
+  render(false)
 })
 onMounted(flush)
 onBeforeUnmount(() => scheduler.dispose())

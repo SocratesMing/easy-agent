@@ -319,6 +319,7 @@ class UserProfile(BaseModel):
 class UserAccount(BaseModel):
     username: str = Field(..., description="用户名")
     employee_id: str = Field(default="", description="工号")
+    systems: str = Field(default="", description="所属系统（多个用 / 分隔）")
     created_at: str = Field(default="", description="创建时间")
     updated_at: str = Field(default="", description="更新时间")
 

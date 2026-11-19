@@ -58,8 +58,10 @@ body {
 }
 
 .ea-mermaid svg {
+  display: block;
   max-width: 100%;
   height: auto;
+  overflow: visible;
 }
 
 .ea-error {

@@ -44,7 +44,11 @@ class PersonnelBase(BaseModel):
     team_name: str = Field(default="", max_length=255)
     employee_id: str = Field(default="", max_length=64)
     email: str = Field(default="", max_length=255)
-    position: str = Field(default="", max_length=127)
+    position: str = Field(default="", max_length=255)
+    # 所属系统：多个系统用 / 分隔，筛选时任一命中即可。
+    systems: str = Field(default="", max_length=255)
+    # 系统↔角色配对（JSON，接口同步写入）：选择系统后角色下拉只展示该系统下的角色。
+    role_systems: str = Field(default="", max_length=1000)
     mobile: str = Field(default="", max_length=64)
     account_status: AccountStatus = "active"
     source: str = Field(
@@ -62,6 +66,8 @@ class PersonnelBase(BaseModel):
         "employee_id",
         "email",
         "position",
+        "systems",
+        "role_systems",
         "mobile",
         "source",
         mode="before",
@@ -69,6 +75,20 @@ class PersonnelBase(BaseModel):
     @classmethod
     def strip_text(cls, value: object) -> str:
         return str(value or "").strip()
+
+    @field_validator("systems", mode="before")
+    @classmethod
+    def normalize_systems(cls, value: object) -> str:
+        """把常见的多值分隔符统一成 /，并去空去重。"""
+        text = str(value or "").strip()
+        for separator in ("、", "，", ",", "；", ";", "|", "｜"):
+            text = text.replace(separator, "/")
+        values: list[str] = []
+        for item in text.split("/"):
+            name = item.strip()
+            if name and name not in values:
+                values.append(name)
+        return "/".join(values)
 
     @field_validator("account_status", mode="before")
     @classmethod
@@ -111,6 +131,8 @@ class PersonnelRecord(BaseModel):
     team_name: str = ""
     email: str = ""
     position: str = ""
+    systems: str = ""
+    role_systems: str = ""
     mobile: str = ""
     account_status: AccountStatus = "active"
     source: str = ""
@@ -123,6 +145,8 @@ class PersonnelListResponse(BaseModel):
     items: list[PersonnelRecord]
     page: int = 1
     page_size: int = 50
+    # 全量可选系统（跨分页去重），供界面下拉筛选。
+    system_options: list[str] = Field(default_factory=list)
 
 
 class PersonnelImportResponse(BaseModel):
@@ -134,6 +158,7 @@ class PersonnelImportResponse(BaseModel):
 
 
 class PersonnelSyncResponse(PersonnelImportResponse):
-    """接口同步结果；skipped 为源数据中被规则跳过（如 admin）的条数。"""
+    """接口同步结果；skipped 含 admin 与员工编号冲突等被跳过的人员。"""
 
     skipped: int = 0
+    errors: list[str] = Field(default_factory=list)

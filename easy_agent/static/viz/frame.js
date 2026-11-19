@@ -8,7 +8,7 @@
  *                {source: 'ea-visual-host', type: 'export'}
  *   本页 → 外层：ready{kinds} / size{height} / rendered / error{message} / unsupported{kind}
  *                export{format, dataUrl} / prompt{text} / link{url}
- * kind：echarts（JSON 格式的 ECharts option）、mermaid（Mermaid 源码）、widget（HTML 交互组件）。
+ * kind：echarts（JSON 格式的 ECharts option）、mermaid（Mermaid 源码）、widget（HTML 片段）、html（完整 HTML 文档）。
  * ECharts / Mermaid 由同目录的 vendor/ 托管，用到时才加载；CSP 禁止一切网络请求。
  */
 (function () {
@@ -19,7 +19,7 @@
   var html = document.documentElement
   var ENABLED = html.getAttribute('data-enabled') === '1'
   var WIDGETS = ENABLED && html.getAttribute('data-widgets') === '1'
-  var KINDS = ENABLED ? (WIDGETS ? ['echarts', 'mermaid', 'widget'] : ['echarts', 'mermaid']) : []
+  var KINDS = ENABLED ? (WIDGETS ? ['echarts', 'mermaid', 'widget', 'html'] : ['echarts', 'mermaid']) : []
   var LIBS = { echarts: 'vendor/echarts.min.js', mermaid: 'vendor/mermaid.min.js' }
 
   var root = document.getElementById('root')
@@ -53,8 +53,28 @@
   // ── 高度：内容一变就回报，外层据此设置 iframe 高度（框架内不滚动） ──
   var lastHeight = -1
   var sizeQueued = false
+  function edgeBelow(style) {
+    return (parseFloat(style.paddingBottom) || 0) +
+      (parseFloat(style.borderBottomWidth) || 0) +
+      (parseFloat(style.marginBottom) || 0)
+  }
+
+  // 底边用视口坐标：文档写在 body 上的 padding 在 #root 外面，只量根节点会把最后一行裁掉。
+  // 同时也要盖住超出根节点的绝对定位和 viewBox。
+  function contentHeight() {
+    var bottom = root.getBoundingClientRect().bottom
+    var nodes = root.querySelectorAll('*')
+    for (var i = 0; i < nodes.length; i++) {
+      var rect = nodes[i].getBoundingClientRect()
+      if (!rect.height && !rect.width) continue
+      if (rect.bottom > bottom) bottom = rect.bottom
+    }
+    bottom += edgeBelow(getComputedStyle(document.body))
+    bottom += edgeBelow(getComputedStyle(document.documentElement))
+    return Math.ceil(bottom)
+  }
   function postSize() {
-    var height = Math.ceil(root.getBoundingClientRect().height)
+    var height = contentHeight()
     if (height !== lastHeight) {
       lastHeight = height
       post({ type: 'size', height: height })
@@ -134,6 +154,21 @@
   }
 
   // ── Mermaid：strict 安全级别（不执行图里的点击回调、标签按纯文本处理） ──
+  // max-width 把宽度压进卡片后，height 属性仍是原始像素，viewBox 会被裁成底部一截
+  function fitMermaidSvg(svg) {
+    if (!svg || !svg.viewBox || !svg.viewBox.baseVal) return
+    var box = svg.viewBox.baseVal
+    if (!box.width || !box.height) return
+    svg.removeAttribute('width')
+    svg.removeAttribute('height')
+    svg.style.width = '100%'
+    svg.style.maxWidth = box.width + 'px'
+    svg.style.height = 'auto'
+    svg.style.aspectRatio = box.width + ' / ' + box.height
+    svg.style.display = 'block'
+    svg.style.overflow = 'visible'
+  }
+
   function renderMermaid(text) {
     return loadScript(LIBS.mermaid).then(function () {
       var mermaid = window.mermaid
@@ -150,6 +185,7 @@
         var box = document.createElement('div')
         box.className = 'ea-mermaid'
         box.innerHTML = result.svg
+        fitMermaidSvg(box.querySelector('svg'))
         root.appendChild(box)
         state.svg = result.svg
       }, function (err) {
@@ -189,10 +225,41 @@
     })
   }
 
+  function runScripts(scripts, host) {
+    return scripts.reduce(function (chain, original) {
+      return chain.then(function () { return runScript(original, host) })
+    }, Promise.resolve())
+  }
+
+  function isHtmlDocument(source) {
+    return /<!doctype\s+html|<html[\s>]/i.test(source)
+  }
+
+  // 完整文档的 head 在片段解析里会被丢掉，样式和脚本要按文档结构搬进沙箱。
+  function mountHtmlDocument(source) {
+    var doc = new DOMParser().parseFromString(source, 'text/html')
+    var scripts = Array.prototype.slice.call(doc.querySelectorAll('script'))
+    scripts.forEach(function (node) { if (node.parentNode) node.parentNode.removeChild(node) })
+    root.innerHTML = ''
+    var box = document.createElement('div')
+    box.className = 'ea-widget'
+    Array.prototype.forEach.call(doc.head.childNodes, function (node) {
+      if (node.nodeType === 1 && (node.nodeName === 'STYLE' || node.nodeName === 'LINK')) {
+        box.appendChild(document.importNode(node, true))
+      }
+    })
+    Array.prototype.forEach.call(doc.body.childNodes, function (node) {
+      box.appendChild(document.importNode(node, true))
+    })
+    root.appendChild(box)
+    return runScripts(scripts, box)
+  }
+
   function renderWidget(text) {
     var source = String(text || '')
     var preload = /\becharts\b/.test(source) ? loadScript(LIBS.echarts) : Promise.resolve()
     return preload.then(function () {
+      if (isHtmlDocument(source)) return mountHtmlDocument(source)
       root.innerHTML = ''
       var box = document.createElement('div')
       box.className = 'ea-widget'
@@ -202,9 +269,7 @@
       scripts.forEach(function (s) { s.parentNode.removeChild(s) })
       box.appendChild(template.content)
       root.appendChild(box)
-      return scripts.reduce(function (chain, original) {
-        return chain.then(function () { return runScript(original, box) })
-      }, Promise.resolve())
+      return runScripts(scripts, box)
     })
   }
 
@@ -224,7 +289,7 @@
     if (/^https?:\/\//i.test(href)) window.openLink(href)
   })
   window.addEventListener('error', function (event) {
-    if (state.kind === 'widget') post({ type: 'widget-error', message: String(event.message || '脚本错误') })
+    if (state.kind === 'widget' || state.kind === 'html') post({ type: 'widget-error', message: String(event.message || '脚本错误') })
   })
 
   function render(kind, text) {
@@ -242,9 +307,12 @@
         return renderWidget(text)
       })
       .then(function () {
-        // 先同步报一次高度再报完成：外层收到 rendered 时 iframe 已是内容高度，不会闪一下最小高度
+        // 先同步报一次高度再报完成：外层收到 rendered 时 iframe 已是内容高度，不会闪一下最小高度。
+        // 字体和脚本可能在下一帧才把内容撑高，再补两次测量。
         postSize()
         post({ type: 'rendered', kind: kind })
+        setTimeout(reportSize, 50)
+        setTimeout(reportSize, 300)
       }, showError)
   }
 

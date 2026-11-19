@@ -89,7 +89,7 @@ Vue2 / Vue3 主页面和侧栏的四个入口仅适配响应式写入、refs 和
   同步该目录（`npm run check:easy-agent` / `export:easy-agent`，见 `frontend-vue2/integration/README.md`）。
 - `frontend/`：Vue 3.5 + Vite（并行维护的第二基线）。
 - 两套设置页均提供“Token统计”：四卡、7/30日原生 SVG 趋势、可切换图例及键盘/触屏可访问的逐日精确明细。共享坐标和格式化源为 `frontend-shared/utils/tokenUsage.js`，由同步脚本分发；组件不引入图表运行时依赖。
-- 对话内可视化：` ```echarts ` / ` ```mermaid ` / ` ```widget ` 代码块与数据工具的 `chart` 信封，由 `frontend-shared/visual/` 挂成 `sandbox="allow-scripts"` 的 iframe 卡片，加载后端 `/agent/viz/frame.html`；图表库只在后端托管，不进前端包。ECharts、Mermaid 与 HTML 交互组件 `html_widgets` 默认开启；安全要求更高的部署可通过 config 的 `visual` 段关闭 HTML 组件（设计见 `docs/design/2026-11-12-chat-visuals.md`）。
+- 对话内可视化：` ```echarts ` / ` ```mermaid ` / ` ```widget ` / ` ```html ` 代码块与数据工具的 `chart` 信封，由 `frontend-shared/visual/` 挂成 `sandbox="allow-scripts"` 的 iframe 卡片，加载后端 `/agent/viz/frame.html`；图表库只在后端托管，不进前端包。ECharts、Mermaid 与 HTML（`widget` 片段和 `html` 完整文档）`html_widgets` 默认开启；安全要求更高的部署可通过 config 的 `visual` 段关闭 HTML 组件（设计见 `docs/design/2026-11-12-chat-visuals.md`）。
 - 两者都**不是** `npm run dev` 自动代理到 8080 的旧 CLI 结构（已改为 Vite 脚本）；构建命令见各自 `package.json`。
 - 无路由/状态库（Vue2 侧）：视图由 `App.vue` 布尔开关切换；**SSE 解析已统一**为各基线的 `src/api/sse.js`（唯一 `readSSE`），chat/expert/knowledge 只注册回调（审计项 ARCH-05 第一步完成）。
 

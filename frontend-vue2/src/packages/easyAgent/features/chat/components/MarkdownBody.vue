@@ -31,6 +31,8 @@ export default {
       type: Object,
       default: () => ({}),
     },
+    /** 回答仍在流式输出。未闭合的图表 / 流程图 / HTML 保持骨架，不交给渲染器。 */
+    streaming: { type: Boolean, default: false },
   },
   watch: {
     content: {
@@ -51,6 +53,11 @@ export default {
         if (this.md.scheduler) this.md.scheduler.cancel()
         this.render(false)
       },
+    },
+    streaming(value) {
+      if (!this.md.started || value) return
+      if (this.md.scheduler) this.md.scheduler.cancel()
+      this.render(false)
     },
   },
   beforeCreate() {
@@ -86,7 +93,7 @@ export default {
       if (md.scheduler) md.scheduler.queue()
     },
     render(partial) {
-      this.md.blocks = renderMarkdownBlocks(linkKnowledgeCitations(this.md.pending, this.citeMap, this.compactCitations), { partial })
+      this.md.blocks = renderMarkdownBlocks(linkKnowledgeCitations(this.md.pending, this.citeMap, this.compactCitations), { partial, streaming: this.streaming })
       this.flush()
     },
     flush() {
