@@ -39,6 +39,7 @@ class UserModel:
     team_name: str = ""                  # 团队名称
     position: str = ""                   # 岗位/职位
     systems: str = ""                    # 所属系统（多个用 / 分隔）
+    role_systems: str = ""               # 系统↔角色配对（JSON，接口同步写入）
     mobile: str = ""                     # 手机号
     account_status: str = "active"       # 账号状态（active=正常 / disabled=禁用）
     personnel_source: str = ""           # 人员数据来源（Excel 导入/手动录入等）

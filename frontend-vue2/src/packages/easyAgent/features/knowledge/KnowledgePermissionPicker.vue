@@ -24,7 +24,7 @@
       </label>
       <label class="ke-perm-filter">
         <span>系统</span>
-        <select v-model="filters.system">
+        <select v-model="filters.system" @change="onSystemChange">
           <option value="">全部系统</option>
           <option v-for="option in systemOptions" :key="option" :value="option">{{ option }}</option>
         </select>
@@ -91,6 +91,10 @@ export default {
       if (!this.filters.team) return this.divisionScope
       return this.divisionScope.filter(user => this.text(user.team_name) === this.filters.team)
     },
+    systemScope() {
+      if (!this.filters.system) return this.teamScope
+      return this.teamScope.filter(user => this.systemsOf(user).includes(this.filters.system))
+    },
     filteredUsers() {
       const base = this.query.trim()
         ? filterPermissionUsers(this.users, this.query)
@@ -100,7 +104,7 @@ export default {
         (!department || this.departmentKey(user) === department)
         && (!division || this.text(user.division_name) === division)
         && (!team || this.text(user.team_name) === team)
-        && (!role || this.rolesOf(user).includes(role))
+        && (!role || this.matchRole(user, role))
         && (!system || this.systemsOf(user).includes(system))
       ))
     },
@@ -121,7 +125,11 @@ export default {
       return this.uniqueValues(this.divisionScope.map(user => user.team_name))
     },
     roleOptions() {
-      const roles = this.teamScope.flatMap(user => this.rolesOf(user))
+      const roles = this.systemScope.flatMap(user => (
+        this.rolePairsOf(user)
+          .filter(pair => !this.filters.system || pair.system === this.filters.system)
+          .map(pair => pair.role)
+      ))
       return this.uniqueValues(roles)
     },
     systemOptions() {
@@ -155,6 +163,32 @@ export default {
         .map(value => value.trim())
         .filter(Boolean)
     },
+    rolePairsOf(user) {
+      // role_systems 存的是 [{system, role}]：选择系统后角色只从该系统下取。
+      const raw = this.text(user.role_systems)
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw)
+          if (Array.isArray(parsed)) {
+            return parsed
+              .map(pair => ({
+                system: this.text(pair && pair.system),
+                role: this.text(pair && pair.role),
+              }))
+              .filter(pair => pair.role)
+          }
+        } catch (e) {
+          // 非 JSON 的历史数据按“角色不绑定系统”处理
+        }
+      }
+      return this.rolesOf(user).map(role => ({ system: '', role }))
+    },
+    matchRole(user, role) {
+      const system = this.filters.system
+      return this.rolePairsOf(user).some(pair => (
+        pair.role === role && (!system || pair.system === system)
+      ))
+    },
     departmentKey(user) {
       return this.text(user.department_id) || `name:${this.text(user.department_name)}`
     },
@@ -180,6 +214,10 @@ export default {
     onTeamChange() {
       this.filters.role = ''
       this.filters.system = ''
+    },
+    onSystemChange() {
+      // 系统变了，已选角色可能不属于新系统：清空重新选
+      this.filters.role = ''
     },
     toggleAll(checked) {
       this.filteredUsers.forEach(user => { user.checked = checked })

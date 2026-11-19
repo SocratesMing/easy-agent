@@ -139,7 +139,7 @@
                   <td><span class="pm-cell-main">{{ user.department_name || '未填写部门名称' }}</span></td>
                   <td><span class="pm-cell-main">{{ user.division_name || '—' }}</span></td>
                   <td><span class="pm-cell-main">{{ user.team_name || '—' }}</span></td>
-                  <td><span class="pm-cell-main">{{ user.systems || '—' }}</span></td>
+                  <td><span class="pm-cell-main">{{ systemsText(user) }}</span></td>
                   <td><span class="pm-cell-main">{{ user.position || '—' }}</span></td>
                   <td><span class="pm-source" :title="user.personnel_source || '未记录'">{{ user.personnel_source || '未记录' }}</span></td>
                   <td><span class="pm-status" :class="user.account_status"><i></i>{{ statusLabel(user.account_status) }}</span></td>
@@ -701,6 +701,11 @@ export default {
       return user.email || user.mobile || '未填写联系方式'
     }
 
+    function systemsText(user) {
+      // 按系统筛选时只展示当前系统，不把该人员的其它系统一并列出
+      return systemFilter.value || user.systems || '—'
+    }
+
     function formatBytes(value) {
       const bytes = Number(value || 0)
       if (bytes < 1024) return `${bytes} B`
@@ -765,6 +770,7 @@ export default {
       syncFromSource,
       systemFilter,
       systemOptions,
+      systemsText,
       isSuperAdmin,
       total,
       totalPages,

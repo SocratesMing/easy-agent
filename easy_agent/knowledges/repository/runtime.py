@@ -85,7 +85,8 @@ class RuntimeRepositoryMixin:
                    COALESCE(division_name, '') AS division_name,
                    COALESCE(team_name, '') AS team_name,
                    COALESCE(position, '') AS position,
-                   COALESCE(systems, '') AS systems
+                   COALESCE(systems, '') AS systems,
+                   COALESCE(role_systems, '') AS role_systems
             FROM users
             WHERE account_status='active' AND username<>'admin'
               AND (?='' OR user_id<>?)

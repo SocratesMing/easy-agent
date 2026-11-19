@@ -399,6 +399,7 @@ class PermissionDirectoryUser(ContractModel):
     team_name: str = ""
     position: str = ""
     systems: str = ""
+    role_systems: str = ""
 
 
 class PermissionDirectoryListResponse(ContractModel):

@@ -20,14 +20,14 @@ _USER_INSERT_SQL = """
     INSERT INTO users (
         user_id, username, password_hash, organization_id, email, bound_ip,
         token_version, employee_id, display_name, department_id,
-        department_name, division_name, team_name, position, systems, mobile,
+        department_name, division_name, team_name, position, systems, role_systems, mobile,
         account_status, personnel_source, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, '', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, '', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 _USER_UPDATE_SQL = """
     UPDATE users SET organization_id=?, email=?, employee_id=?, display_name=?,
         department_id=?, department_name=?, division_name=?, team_name=?,
-        position=?, systems=?, mobile=?, account_status=?,
+        position=?, systems=?, role_systems=?, mobile=?, account_status=?,
         personnel_source=?, token_version=CASE WHEN ?='disabled'
             THEN token_version+1 ELSE token_version END,
         updated_at=? WHERE {key}=?
@@ -58,6 +58,7 @@ def _row_to_dict(row) -> dict:
         "email": value.get("email", "") or "",
         "position": value.get("position", "") or "",
         "systems": value.get("systems", "") or "",
+        "role_systems": value.get("role_systems", "") or "",
         "mobile": value.get("mobile", "") or "",
         "account_status": value.get("account_status", "active") or "active",
         "source": value.get("personnel_source", "") or "",
@@ -169,7 +170,8 @@ def create_personnel(db: Database, item: PersonnelCreateRequest) -> dict:
                     item.department_id, item.email, item.employee_id or None,
                     item.display_name, item.department_id, item.department_name,
                     item.division_name, item.team_name,
-                    item.position, item.systems, item.mobile, item.account_status, item.source,
+                    item.position, item.systems, item.role_systems, item.mobile,
+                    item.account_status, item.source,
                     now, now,
                 ),
             )
@@ -197,8 +199,8 @@ def update_personnel(db: Database, user_id: str, item: PersonnelUpdateRequest) -
                     item.department_id, item.email, item.employee_id or None,
                     item.display_name, item.department_id, item.department_name,
                     item.division_name, item.team_name,
-                    item.position, item.systems, item.mobile, item.account_status, item.source,
-                    item.account_status, now, user_id,
+                    item.position, item.systems, item.role_systems, item.mobile,
+                    item.account_status, item.source, item.account_status, now, user_id,
                 ),
             )
     except (sqlite3.IntegrityError, pymysql.IntegrityError) as exc:
@@ -340,7 +342,7 @@ def _upsert_personnel_transaction(
                     (
                         item.department_id, item.email, item.employee_id or None, item.display_name,
                         item.department_id, item.department_name, item.division_name, item.team_name,
-                        item.position, item.systems, item.mobile,
+                        item.position, item.systems, item.role_systems, item.mobile,
                         item.account_status, item.source, item.account_status, now, item.username,
                     ),
                 )
@@ -353,7 +355,7 @@ def _upsert_personnel_transaction(
                         str(uuid.uuid4()), item.username, default_password_hash,
                         item.department_id, item.email, item.employee_id or None, item.display_name,
                         item.department_id, item.department_name, item.division_name, item.team_name,
-                        item.position, item.systems, item.mobile,
+                        item.position, item.systems, item.role_systems, item.mobile,
                         item.account_status, item.source, now, now,
                     ),
                 )

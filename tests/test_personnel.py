@@ -1,6 +1,7 @@
 """Personnel administration: authorization, validation and atomic import."""
 
 from io import BytesIO
+import json
 
 import pytest
 from openpyxl import Workbook, load_workbook
@@ -725,7 +726,7 @@ def test_source_sync_flattens_org_tree(monkeypatch):
                                         "name": "李四",
                                         "loginNo": "lisi",
                                         "iamEmpLoginNo": "P2",
-                                        "posts": [],
+                                        "posts": ["研究员"],
                                         "status": 0,
                                     }
                                 ],
@@ -757,6 +758,14 @@ def test_source_sync_flattens_org_tree(monkeypatch):
     assert by_username["zhangsan"]["division_name"] == ""
     assert by_username["lisi"]["division_name"] == "投资管理中心"
     assert by_username["lisi"]["team_name"] == "组合投资团队"
+    # 角色只取 roles[].roleName：没有 roles 就是空，不再回退 posts
+    assert by_username["lisi"]["position"] == ""
+    assert by_username["lisi"]["role_systems"] == ""
+    # 系统↔角色配对：选择系统后角色筛选只取该系统下的角色
+    assert json.loads(by_username["zhangsan"]["role_systems"]) == [
+        {"system": "FMMS", "role": "FMMS角色"},
+        {"system": "FMQT", "role": "FMQT角色"},
+    ]
     # 第 2 层的“团队”仍归处室（按树层级）
     assert by_username["wangwu"]["division_name"] == "银行保险客户团队"
     assert by_username["wangwu"]["team_name"] == ""

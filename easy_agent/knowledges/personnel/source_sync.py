@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any
@@ -31,6 +32,7 @@ _SYNC_FIELDS = (
     "email",
     "position",
     "systems",
+    "role_systems",
     "mobile",
     "account_status",
 )
@@ -64,19 +66,6 @@ def _map_account_status(value: Any) -> str:
     return "disabled" if text in _DISABLED_STATUS else "active"
 
 
-def _clean_posts(posts: Any) -> str:
-    """岗位数组：剔除纯数字 ID 与重复项，多岗位以 / 连接并限制长度。"""
-    if not isinstance(posts, list):
-        return ""
-    cleaned: list[str] = []
-    for post in posts:
-        text = str(post or "").strip()
-        if not text or text.isdigit() or text in cleaned:
-            continue
-        cleaned.append(text)
-    return "/".join(cleaned)[:255]
-
-
 def _relative_org_name(name: Any, root_name: str) -> str:
     """去掉组织名中的部门前缀，处室/团队只保留相对名称。"""
     text = str(name or "").strip()
@@ -99,7 +88,7 @@ _SYSTEM_SPLIT = re.compile(r"[/,，;；、|｜]")
 
 
 def _clean_roles(user: dict) -> str:
-    """角色取 roles[].roleName（多个用 / 分隔）；roles 为空时回退 posts。"""
+    """角色只取 roles[].roleName（多个用 / 分隔）；roles 为空就是空，不回退 posts。"""
     roles = user.get("roles")
     names: list[str] = []
     if isinstance(roles, list):
@@ -111,9 +100,7 @@ def _clean_roles(user: dict) -> str:
             )
             if name and name not in names:
                 names.append(name)
-    if names:
-        return "/".join(names)[:255]
-    return _clean_posts(user.get("posts"))
+    return "/".join(names)[:255]
 
 
 def _clean_systems(user: dict) -> str:
@@ -146,6 +133,33 @@ def _clean_systems(user: dict) -> str:
     return "/".join(cleaned)[:255]
 
 
+def _clean_role_systems(user: dict) -> str:
+    """系统↔角色配对（roles[].appCode + roleName）存成 JSON，供按系统收窄角色筛选。
+
+    上游一个角色挂在某个系统下，一个人可能有多个系统；只存配对、不改变
+    ``position`` / ``systems`` 两列的展示语义。
+    """
+    roles = user.get("roles")
+    pairs: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    if isinstance(roles, list):
+        for item in roles:
+            if not isinstance(item, dict):
+                continue
+            system = str(item.get("appCode") or "").strip()
+            role = str(item.get("roleName") or "").strip()
+            if not role or (system, role) in seen:
+                continue
+            seen.add((system, role))
+            pairs.append({"system": system, "role": role})
+    text = json.dumps(pairs, ensure_ascii=False)
+    # 列宽 1000：超出时逐个丢弃末尾配对，保证始终是合法 JSON。
+    while pairs and len(text) > 1000:
+        pairs.pop()
+        text = json.dumps(pairs, ensure_ascii=False)
+    return text if pairs else ""
+
+
 def _map_tree_user(
     user: dict, root_org_id: str, root_name: str, division: str, team: str
 ) -> dict:
@@ -164,6 +178,7 @@ def _map_tree_user(
         "team_name": team,
         "position": _clean_roles(user),
         "systems": _clean_systems(user),
+        "role_systems": _clean_role_systems(user),
         "mobile": str(user.get("mobileNo") or "").strip(),
         "account_status": _map_account_status(user.get("status")),
     }

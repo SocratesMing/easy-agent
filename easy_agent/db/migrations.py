@@ -54,6 +54,10 @@ NORMALIZE_DATE_FOLDER_NAMES_VERSION = 7
 #: 用迁移保证 systems 列一定补上（新库在建表时已包含该列，重复执行无副作用）。
 ENSURE_USERS_SYSTEMS_VERSION = 8
 
+#: 迁移 9：人员“系统↔角色配对”列（JSON）。角色挂在系统下，权限管理按系统
+#: 筛选角色时只展示该系统的角色；同样需要兼容 schema_version 已是最新的旧库。
+ENSURE_USERS_ROLE_SYSTEMS_VERSION = 9
+
 # 只匹配「年 → 月 → 日」链路上的目录名，避免误改用户自建的其它同名目录。
 _YEAR_FOLDER_RE = re.compile(r"^\d{4}年$")
 _MONTH_FOLDER_RE = re.compile(r"^(\d{1,2})月$")
@@ -117,6 +121,15 @@ def ensure_users_systems_column(db, cursor) -> None:
     _ensure_column(db, cursor, "users", "systems", "VARCHAR(255) DEFAULT ''")
 
 
+def ensure_users_role_systems_column(db, cursor) -> None:
+    """幂等补 users.role_systems 列（MySQL / SQLite 通用）。"""
+    if not table_exists(db, cursor, "users"):
+        return
+    from easy_agent.db.schema import _ensure_column
+
+    _ensure_column(db, cursor, "users", "role_systems", "VARCHAR(1000) DEFAULT ''")
+
+
 # 版本号必须严格递增（接着 baseline 往后编，与 SCHEMA_VERSION 各自独立）；
 # 函数签名 (db, cursor) -> None。
 MIGRATIONS: list[Migration] = [
@@ -136,6 +149,11 @@ MIGRATIONS: list[Migration] = [
         version=ENSURE_USERS_SYSTEMS_VERSION,
         description="add users.systems for multi-system personnel filtering",
         fn=ensure_users_systems_column,
+    ),
+    Migration(
+        version=ENSURE_USERS_ROLE_SYSTEMS_VERSION,
+        description="add users.role_systems for per-system role filtering",
+        fn=ensure_users_role_systems_column,
     ),
 ]
 

@@ -79,6 +79,7 @@ def row_to_user(row) -> UserModel:
         team_name=row.get("team_name") or "",
         position=row.get("position") or "",
         systems=row.get("systems") or "",
+        role_systems=row.get("role_systems") or "",
         mobile=row.get("mobile") or "",
         account_status=row.get("account_status") or "active",
         personnel_source=row.get("personnel_source") or "",

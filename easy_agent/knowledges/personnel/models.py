@@ -47,6 +47,8 @@ class PersonnelBase(BaseModel):
     position: str = Field(default="", max_length=255)
     # 所属系统：多个系统用 / 分隔，筛选时任一命中即可。
     systems: str = Field(default="", max_length=255)
+    # 系统↔角色配对（JSON，接口同步写入）：选择系统后角色下拉只展示该系统下的角色。
+    role_systems: str = Field(default="", max_length=1000)
     mobile: str = Field(default="", max_length=64)
     account_status: AccountStatus = "active"
     source: str = Field(
@@ -65,6 +67,7 @@ class PersonnelBase(BaseModel):
         "email",
         "position",
         "systems",
+        "role_systems",
         "mobile",
         "source",
         mode="before",
@@ -129,6 +132,7 @@ class PersonnelRecord(BaseModel):
     email: str = ""
     position: str = ""
     systems: str = ""
+    role_systems: str = ""
     mobile: str = ""
     account_status: AccountStatus = "active"
     source: str = ""
