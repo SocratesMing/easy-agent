@@ -84,8 +84,8 @@
         <i></i>
         <div><strong>{{ activeCount }}</strong><span>当前列表已启用</span></div>
         <label class="pm-filter pm-system-filter">
-          <span>人员系统</span>
-          <select v-model="systemFilter" aria-label="按人员系统筛选">
+          <span>系统</span>
+          <select v-model="systemFilter" aria-label="按系统筛选">
             <option value="">全部</option>
             <option v-for="option in systemOptions" :key="option" :value="option">{{ option }}</option>
           </select>

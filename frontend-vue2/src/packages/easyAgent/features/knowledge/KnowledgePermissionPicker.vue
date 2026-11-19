@@ -205,8 +205,6 @@ export default {
 .ke-perm-user:hover{background:var(--bg-tertiary)}
 .ke-perm-user span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ke-perm-user small{color:var(--text-secondary);font-size:9px}
-.ke-perm-role{max-width:90px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right}
-.ke-perm-systems{max-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right;color:var(--text-tertiary,#7b857d)}
 .ke-perm-empty{margin:0;padding:22px 10px;color:var(--text-secondary);text-align:center;font-size:10px}
 .ke-perm-list input[type=checkbox]{width:15px;height:15px;flex:none;box-sizing:border-box;margin:0;padding:0;border:0;background:transparent;accent-color:var(--accent-color);cursor:pointer}
 @media (max-width:560px){.ke-perm-filters{grid-template-columns:repeat(2,minmax(0,1fr))}}
