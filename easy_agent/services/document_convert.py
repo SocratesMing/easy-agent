@@ -55,13 +55,13 @@ def _find_soffice() -> str | None:
 
 
 def convert_office_document(src: str | Path, target: str = "pdf") -> Path:
-    """转换为 PDF 或 DOCX，返回完整生成并缓存的文件路径。
+    """转换为 PDF、DOCX 或 HTML，返回完整生成并缓存的文件路径。
 
     Raises:
         ValueError: 文件类型不支持。
         RuntimeError: 未安装 LibreOffice 或转换执行失败。
     """
-    if target not in {"pdf", "docx"}:
+    if target not in {"pdf", "docx", "html"}:
         raise ValueError(f"不支持的转换目标格式: {target}")
     src = Path(src).resolve()
     ext = src.suffix.lower()
@@ -93,7 +93,11 @@ def convert_office_document(src: str | Path, target: str = "pdf") -> Path:
         with TemporaryDirectory(prefix=".convert-", dir=out_dir) as temp_dir:
             work_dir = Path(temp_dir).resolve()
             profile_uri = (work_dir / "lo_profile").as_uri()
-            output_format = "docx:Office Open XML Text" if target == "docx" else "pdf"
+            output_format = {
+                "docx": "docx:Office Open XML Text",
+                "html": "html:XHTML Writer File",
+                "pdf": "pdf",
+            }[target]
             result = subprocess.run(
                 [
                     soffice,

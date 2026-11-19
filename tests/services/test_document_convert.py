@@ -44,6 +44,14 @@ def test_pdf_wrapper_and_docx_have_separate_caches(conversion):
     assert len(calls) == 2
 
 
+def test_word_html_conversion_uses_separate_cache(conversion):
+    source, calls, _ = conversion
+    html = dc.convert_office_document(source, "html")
+    assert html.read_bytes() == b"complete html"
+    assert "html:XHTML Writer File" in calls[0]
+    assert dc.convert_to_pdf(source).parent != html.parent
+
+
 def test_valid_cache_does_not_require_installed_converter(conversion, monkeypatch):
     source, calls, _ = conversion
     cached = dc.convert_to_pdf(source)

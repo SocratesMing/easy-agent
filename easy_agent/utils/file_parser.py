@@ -4,7 +4,7 @@ import csv
 import logging
 import os
 import subprocess
-import sys
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,11 +22,6 @@ try:
     import pdfplumber
 except ImportError:
     pdfplumber = None
-
-try:
-    from docx import Document
-except ImportError:
-    Document = None
 
 try:
     import openpyxl
@@ -292,82 +287,53 @@ def _parse_pdf(path: Path) -> str:
     return f"[PDF文件: {path.name}，未安装PDF解析库，请安装: uv pip install pymupdf pdfminer.six pdfplumber]"
 
 
-def _read_docx_text(path: Path) -> str:
-    """提取正文；失败时抛错，供 DOC 转换链路区分正文与失败占位。"""
-    if Document is None:
-        raise ImportError("未安装 python-docx，请安装: uv pip install python-docx")
-
-    doc = Document(str(path))
-    text_parts = []
-
-    for p in doc.paragraphs:
-        if p.text.strip():
-            text_parts.append(p.text)
-
-    for table in doc.tables:
-        rows = []
-        for row in table.rows:
-            if any(cell.text.strip() for cell in row.cells):
-                rows.append(" | ".join(cell.text for cell in row.cells))
-        if rows:
-            text_parts.append("--- [表格] ---")
-            text_parts.extend(rows)
-
-    text = "\n".join(text_parts)
-    if not text.strip():
-        raise ValueError("未能提取正文（文档为空或仅包含图片）")
-    return text
-
-
 def _parse_docx(path: Path) -> str:
-    try:
-        return _read_docx_text(path)
-    except Exception as e:
-        logger.warning(f"python-docx 解析失败: {e}")
-        return f"[DOCX文件: {path.name}，解析失败: {e}]"
+    return _parse_word(path)
 
 
 def _parse_doc(path: Path) -> str:
-    # 保留已有轻量工具路径；显式指定 UTF-8，避免中文受服务器 locale 影响。
-    for command in (
-        ["antiword", "-m", "UTF-8.txt", str(path)],
-        ["catdoc", "-d", "utf-8", str(path)],
-    ):
-        try:
-            result = subprocess.run(
-                command, capture_output=True, text=True, encoding="utf-8", timeout=30
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            logger.warning("%s 解析失败: %s", command[0], e)
+    return _parse_word(path)
 
-    # DOC 的 OLE 表流含格式/索引等二进制数据，不能直接 decode 当正文。
-    # 复用服务端 LibreOffice 转换能力，再用与 DOCX 相同的段落和表格提取逻辑。
+
+class _WordHTMLText(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.hidden = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"head", "script", "style"}:
+            self.hidden += 1
+        elif not self.hidden and tag in {"p", "div", "tr", "br", "li", "h1", "h2", "h3", "h4", "h5", "h6"}:
+            self.parts.append("\n")
+        elif not self.hidden and tag in {"td", "th"}:
+            self.parts.append("\t")
+
+    def handle_endtag(self, tag):
+        if tag in {"head", "script", "style"} and self.hidden:
+            self.hidden -= 1
+        elif not self.hidden and tag in {"p", "div", "tr", "li"}:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self.hidden:
+            self.parts.append(data)
+
+
+def _parse_word(path: Path) -> str:
     try:
         from easy_agent.services.document_convert import convert_office_document
 
-        return _read_docx_text(convert_office_document(path, "docx"))
+        converted = convert_office_document(path, "html")
+        parser = _WordHTMLText()
+        parser.feed(converted.read_text(encoding="utf-8-sig"))
+        text = "\n".join(line.strip() for line in "".join(parser.parts).splitlines() if line.strip())
+        if not text.strip():
+            raise ValueError("未能提取正文（文档为空或仅包含图片）")
+        return text
     except Exception as e:
-        reason = str(e)
-        logger.warning("DOC 转换解析失败 | %s | %s", path, e)
-
-    # macOS 自带 textutil，无需另外安装 LibreOffice 也可提取旧版 Word 文本。
-    if sys.platform == "darwin":
-        try:
-            result = subprocess.run(
-                ["/usr/bin/textutil", "-convert", "txt", "-stdout", "-encoding", "UTF-8", str(path)],
-                capture_output=True, text=True, encoding="utf-8", timeout=30,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout
-            logger.warning("textutil 未能提取 DOC 正文 | %s | %s", path, result.stderr[:200])
-        except Exception as e:
-            logger.warning("textutil 解析失败: %s", e)
-
-    return f"[DOC文件(旧格式): {path.name}，解析失败: {reason}；可检查文档是否加密或损坏，或另存为 DOCX 后重试]"
+        logger.warning("Word 文档解析失败 | %s | %s", path, e)
+        return f"[{path.suffix[1:].upper()}文件: {path.name}，解析失败: {e}]"
 
 
 def _parse_xlsx(path: Path) -> str:
