@@ -233,8 +233,70 @@ def persist_todos(db, session_id: str, todos: list, sid: str) -> None:
         logger.warning(f"[{sid}] 持久化 Todo list 失败: {e}")
 
 
+#: 答复里不该出现的**内部机制词**（2026-11-19）：收口/熔断的提示语一旦进了
+#: 最终答复，用户看到的就是"工具被系统移除"这种解释，既暴露实现又把业务结论
+#: 挤掉。这里只做检测与告警，**不改写**正文——正文已经流式下发过，事后改写会让
+#: 「实时看到的」与「刷新后看到的」不一致。真正治本的是提示词源头禁写
+#: （``agent/thinking_loop.py::LOOP_BREAK_NOTE``）。
+_MECHANISM_PHRASES = (
+    # 收口/熔断的提示语被照抄进答复
+    "工具已被系统移除",
+    "工具被系统移除",
+    "已移除全部工具",
+    "工具熔断",
+    "系统已拦截",
+    "被系统拦截",
+    "重复读取已拦截",
+    "检测到循环",
+    "思考循环",
+    "系统判定",
+    "强制收口",
+    "中间件",
+    # 技能预检的提示语被照抄（业务口径应说"数据服务未接入"）
+    "数据通道未接入",
+)
+
+
+def _message_text(message: dict) -> str:
+    """答复正文的纯文本形态（兼容 str 与 content blocks）。"""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(block.get("text") or "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
+
+def _warn_mechanism_leak(session_id: str, message: dict) -> None:
+    """答复命中内部机制词时打 warning（只观测，不改写）。
+
+    日志只记命中词与正文长度，**不打印正文**：答复开头通常就是业务结论
+    （金额、中心、期次），落进集中日志没有必要。定位靠 session_id + 命中词即可。
+    """
+    try:
+        text = _message_text(message)
+        if not text:
+            return
+        hits = [phrase for phrase in _MECHANISM_PHRASES if phrase in text]
+        if not hits:
+            return
+        logger.warning(
+            "[%s] ⚠️ 最终答复含内部机制词 | 命中: %s | 正文长度: %d",
+            session_id,
+            "、".join(hits),
+            len(text),
+        )
+    except Exception:  # noqa: BLE001 - 观测失败绝不阻断落库
+        logger.info("[%s] 机制词检测执行失败（不影响落库）", session_id, exc_info=True)
+
+
 def persist_final_message(db, session_id: str, message: dict) -> None:
     """写入最终 assistant 消息（异常向上抛，由生成器统一转 error 事件）。"""
+    _warn_mechanism_leak(session_id, message)
     _message_port(db).update_last_assistant_message(session_id, message)
 
 
