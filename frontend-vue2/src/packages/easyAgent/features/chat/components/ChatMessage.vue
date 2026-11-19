@@ -117,13 +117,13 @@
                 <!-- 只有思考的组：展开直接看思考内容，不再套一层折叠 -->
                 <template v-if="seg.view.thinkingOnly">
                   <div v-for="row in seg.view.rows" :key="row.key" class="thinking-content">
-                    <MarkdownBody class="thinking-text" :content="row.item.content" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" :streaming="!!message.loading" />
+                    <MarkdownBody class="thinking-text" :content="row.item.content" :citation-footer-start="citationFooterFor(row.item)" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" :streaming="!!message.loading" />
                   </div>
                 </template>
                 <template v-else>
                   <template v-for="row in seg.view.rows">
                     <!-- 并入组的短叙述：作为下一步的说明 -->
-                    <MarkdownBody v-if="row.type === 'narration'" :key="row.key" class="message-text process-narration" :content="row.item.content" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" :streaming="!!message.loading" />
+                    <MarkdownBody v-if="row.type === 'narration'" :key="row.key" class="message-text process-narration" :content="row.item.content" :citation-footer-start="citationFooterFor(row.item)" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" :streaming="!!message.loading" />
                     <div v-else-if="row.type === 'thinking'" :key="row.key" class="thinking-block" :class="{ 'thinking-active': isThinkingActive(row.item) }">
                       <div class="thinking-header" @click="toggleThinkingItem(row.item)">
                         <div v-if="isThinkingActive(row.item)" class="thinking-spinner">
@@ -141,7 +141,7 @@
                         </svg>
                       </div>
                       <div v-if="isThinkingOpen(row.item)" class="thinking-content">
-                        <MarkdownBody class="thinking-text" :content="row.item.content" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" :streaming="!!message.loading" />
+                        <MarkdownBody class="thinking-text" :content="row.item.content" :citation-footer-start="citationFooterFor(row.item)" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" :streaming="!!message.loading" />
                       </div>
                     </div>
                     <!-- 连续的读取 / 搜索合并成一行，点开再看每一条 -->
@@ -166,7 +166,7 @@
                 <ToolCallCard v-for="item in seg.view.pinned.concat(seg.view.visuals)" :key="'i' + item.origIndex" v-bind="toolCardProps(item)" v-on="toolCardListeners(item)" />
               </div>
             </div>
-            <MarkdownBody v-else :key="seg.key" class="message-text" :content="seg.block.content" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" :streaming="!!message.loading" />
+            <MarkdownBody v-else :key="seg.key" class="message-text" :content="seg.block.content" :citation-footer-start="citationFooterFor(seg.block)" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" :streaming="!!message.loading" />
           </template>
           <!-- 一个中断挂了多项操作（同一条 AIMessage 的多个工具调用被框架打包成一次中断）：
                只给一个审批入口 + 操作清单，避免「点一次静默批了整批」（DA-28） -->
@@ -216,7 +216,7 @@
             </svg>
           </div>
           <div v-if="showThinking" class="thinking-content">
-            <MarkdownBody class="thinking-text" :content="message.thinking" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" :streaming="!!message.loading" />
+            <MarkdownBody class="thinking-text" :content="message.thinking" :citation-footer-start="-1" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" :streaming="!!message.loading" />
           </div>
         </div>
 
@@ -232,7 +232,7 @@
           />
         </div>
 
-        <MarkdownBody v-if="displayContent" class="message-text" :content="displayContent" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" :streaming="!!message.loading" />
+        <MarkdownBody v-if="displayContent" class="message-text" :content="displayContent" :citation-footer-start="citationFooterLayout.whole" :cite-map="citeNumberMap" :compact-citations="citationPresentation === 'popover'" :streaming="!!message.loading" />
 
         <!-- 生成的文件按钮 -->
         <div v-if="message.role === 'assistant' && message.generated_files && message.generated_files.length > 0" class="generated-files-btn-container">
@@ -299,6 +299,7 @@ import MarkdownBody from './MarkdownBody.vue'
 import UserMessageText from './UserMessageText.vue'
 import FileReferenceTag from './FileReferenceTag.vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
+import { citationFooterOffsets } from '../../../shared/markdown/sourceFooter.js'
 import { relatedEvidence, inlineCitationMap } from '../../../shared/markdown/citations.js'
 import KnowledgeEvidence from '../../knowledge/KnowledgeEvidence.vue'
 import SkillIcon from '../../../shared/components/SkillIcon.vue'
@@ -420,6 +421,7 @@ export default {
       return false
     },
     // 供证据面板解析实际引用的完整正文（兼容 content 直存与 blocks 分块两种消息形态）
+    citationFooterLayout() { return citationFooterOffsets(this.sortedBlocks, this.message.content || '') },
     citationSourceText() {
       const blocks = Array.isArray(this.message.blocks) ? this.message.blocks : []
       const blockText = blocks
@@ -597,6 +599,9 @@ export default {
     },
   },
   methods: {
+    citationFooterFor(block) {
+      return block.type === 'content' ? this.citationFooterLayout.blocks[block.origIndex] ?? -1 : -1
+    },
     /** 暴露给模板：类别 id → SkillIcon 配色 key */
     iconCategoryFor(categoryId) {
       return iconCategoryFor(categoryId)

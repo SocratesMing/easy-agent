@@ -4,13 +4,14 @@
 import { tokenizeInlineMarkdown } from './index.js'
 import { protectCodeRegions } from './codeRegions.js'
 import { sourceUrl } from '../citations/sources.js'
+import { sourceFooterStart } from './sourceFooter.js'
 
 const CODE = /\u0000EAI(\d+)\u0000/g
-const TOOL = /^(?:[\w.-]+\/)*[\w.-]+$/
+const TOOL = /^[^\s\[\]（）()，,；;`]+(?:\s*\/\s*[^\s\[\]（）()，,；;`]+)*$/
 const REFERENCE = new RegExp([
   /\[知识(?:库)?依据\s*(\d+)\]/.source,
-  /\[连接器依据\s+([^\]\n]+)\]/.source,
-  /([（(]\s*来源\s*[:：]\s*(?:外部连接器|知识库)|来源\s*[:：]\s*外部连接器)/.source,
+  /\[连接器依据\s*[:：]?\s*([^\]\n]+)\]/.source,
+  /([（(]\s*(?:来源\s*[:：]\s*(?:外部连接器|知识库)|外部连接器|连接器依据)|(?:来源\s*[:：]\s*)?外部连接器|连接器依据(?=\s|[:：（(]))/.source,
   /\[模型知识\]/.source,
   CODE.source,
 ].join('|'), 'g')
@@ -41,20 +42,22 @@ function sourceAnnotation(text, start, prefix) {
       return { end: newline < 0 ? text.length : newline }
     }
   } else {
-    const bare = rest.match(/^\s*(?:(?:[\w.-]+\/)*[\w.-]+|\u0000EAI\d+\u0000)(?:[，,][^\n。；;（）()\[\]]*)?/)
+    const bare = rest.match(/^[^\n。；;（）()\[\]]*/)
     end = start + prefix.length + (bare ? bare[0].trimEnd().length : 0)
   }
   const raw = text.slice(start, end)
   const note = (outer ? raw.slice(1, -1) : raw).trim()
-  const connector = note.match(/^来源\s*[:：]\s*外部连接器\s*[（(]?\s*((?:[\w.-]+\/)*[\w.-]+|\u0000EAI\d+\u0000)(?=[\s，,）)]|$)/)
+  const connector = note.match(/^(?:来源\s*[:：]\s*)?(?:外部连接器|连接器依据)\s*[:：]?\s*([\s\S]+)/)
   const knowledge = note.match(/^来源\s*[:：]\s*知识库\s*《([^》\n]+)》/)
   return { end, note, connector: connector?.[1], knowledge: knowledge?.[1] }
 }
 
 /** 同一遍扫描用于分配编号与渲染；围栏/缩进代码仍整体保护。 */
-export function rewriteReferences(content, reference, webLink) {
-  return protectCodeRegions(content, text => {
-    const rewriteText = tokens => {
+export function rewriteReferences(content, reference, webLink, { footerStart = sourceFooterStart(content) } = {}) {
+  const body = footerStart >= 0 ? content.slice(0, footerStart) : content
+  const footer = footerStart >= 0 ? content.slice(footerStart) : ''
+  return protectCodeRegions(body, text => {
+    const rewriteText = (tokens, escapedBracket = false) => {
       const codes = []
       // 只把相邻文本与行内代码一起扫描，链接、图片和转义 token 不参与。
       const rawText = tokens.map(token => {
@@ -74,12 +77,13 @@ export function rewriteReferences(content, reference, webLink) {
       const convert = (match, groups) => {
         const raw = restore(match)
         if (groups.knowledge) return reference(String(Number(groups.knowledge)), raw)
-        if (groups.connector) return reference(`mcp:${toolName(groups.connector)}`, raw)
+        if (groups.connector) return reference(`mcp:${toolName(groups.connector)}`, raw,
+          TOOL.test(toolName(groups.connector)) ? undefined : raw.slice(1, -1).replace(/`+/g, ''))
         if (match === '[模型知识]') return ''
         const code = codes[Number(match.match(/\d+/)[0])]
         if (!code) return match
         const marker = code.text.trim().match(/^\[连接器依据\s+([^\]\n]+)\]$/)
-        return marker && TOOL.test(marker[1].trim())
+        return marker
           ? reference(`mcp:${marker[1].trim()}`, code.raw) : code.raw
       }
       // 分配编号和转换共用扫描结果，跳过完整括注中已消费的 token。
@@ -87,7 +91,7 @@ export function rewriteReferences(content, reference, webLink) {
       REFERENCE.lastIndex = 0
       let match
       while ((match = REFERENCE.exec(rawText)) !== null) {
-        if (match.index < cursor) continue
+        if (match.index < cursor || (escapedBracket && match.index < rawText.indexOf(']') + 1)) continue
         output += rawText.slice(cursor, match.index)
         const groups = { knowledge: match[1], connector: match[2], sourceStart: match[3] }
         if (groups.sourceStart) {
@@ -103,16 +107,17 @@ export function rewriteReferences(content, reference, webLink) {
           cursor = match.index + match[0].length
         }
       }
-      return output + rawText.slice(cursor)
+      return restore(output + rawText.slice(cursor))
     }
     const walk = tokens => {
       const out = []
       for (let i = 0; i < tokens.length; i++) {
         const token = tokens[i]
         if (token.type === 'text' || token.type === 'codespan') {
+          const escapedBracket = tokens[i - 1]?.type === 'escape' && tokens[i - 1].raw === '\\['
           const group = [token]
           while (['text', 'codespan'].includes(tokens[i + 1]?.type)) group.push(tokens[++i])
-          out.push(rewriteText(group))
+          out.push(rewriteText(group, escapedBracket))
         } else if (token.type === 'link') {
           const key = sourceUrl(token.href)
           out.push(key ? webLink(`web:${key}`, token.raw) : token.raw)
@@ -124,7 +129,7 @@ export function rewriteReferences(content, reference, webLink) {
       return out.join('')
     }
     return walk(tokenizeInlineMarkdown(text))
-  }, { protectInline: false })
+  }, { protectInline: false }) + footer
 }
 
 /** 按本轮证据解析旧来源说明；同名不同文档或工具不做猜测。 */
@@ -148,7 +153,22 @@ export function resolveReferenceKey(key, candidateKeys, sources = null) {
     return identities.size === 1 ? matches[0] : key
   }
   if (!key.startsWith('mcp:')) return key
-  const name = key.slice(4).trim()
-  const matches = candidateKeys.filter(candidate => candidate.startsWith('mcp:') && candidate.slice(4).split('/').at(-1) === name)
-  return matches.length === 1 ? matches[0] : key
+  const name = normalizeMcpReference(key.slice(4))
+  const candidates = candidateKeys.filter(candidate => candidate.startsWith('mcp:'))
+  const contains = (text, value) => {
+    const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return new RegExp(`(^|[^\\p{L}\\p{N}_.\\/-])${escaped}($|[^\\p{L}\\p{N}_.\\/-])`, 'u').test(text)
+  }
+  // 完整路径优先，名称说明可在路径前后；未知完整路径不能退化成同名工具。
+  const exact = candidates.filter(candidate => contains(name, normalizeMcpReference(candidate.slice(4))))
+  if (exact.length) return exact.length === 1 ? exact[0] : key
+  if (name.includes('/')) return key
+  const matches = candidates.filter(candidate => contains(name, normalizeMcpReference(candidate.slice(4).split('/').at(-1))))
+  if (matches.length) return matches.length === 1 ? matches[0] : key
+  const servers = candidates.filter(candidate => contains(name, normalizeMcpReference(candidate.slice(4).split('/')[0])))
+  return servers.length === 1 ? servers[0] : key
+}
+
+function normalizeMcpReference(value) {
+  return value.replace(/`+/g, '').replace(/\s*\/\s*/g, '/').replace(/\s+/g, ' ').trim()
 }

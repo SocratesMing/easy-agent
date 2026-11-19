@@ -41,6 +41,11 @@ export { citationMarker, sourceCardMarker } from './markers.js'
 export { protectCodeRegions } from './codeRegions.js'
 export { bufferStreamingTail } from './streamingTail.js'
 
+/** 来源尾注分析复用块级解析，不扫描围栏代码中的伪来源。 */
+export function tokenizeMarkdown(text) {
+  return marked.lexer(text)
+}
+
 /** 引用预处理复用同一解析器，避免另建 Markdown 链接识别规则。 */
 export function tokenizeInlineMarkdown(text) {
   return marked.Lexer.lexInline(text)

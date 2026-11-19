@@ -42,7 +42,7 @@ export function relatedEvidence(message) {
   }
 }
 
-export function linkKnowledgeCitations(content, citeMap, compact = false) {
+export function linkKnowledgeCitations(content, citeMap, compact = false, options = {}) {
   if (typeof content !== 'string') return content
   const map = citeMap || {}
   if (compact) {
@@ -50,7 +50,7 @@ export function linkKnowledgeCitations(content, citeMap, compact = false) {
       const resolved = resolveReferenceKey(key, Object.keys(map))
       return map[resolved] ? citationMarker(map[resolved], true) : raw
     }
-    return rewriteReferences(content, replace, replace)
+    return rewriteReferences(content, replace, replace, options)
   }
   return protectCodeRegions(content, text =>
     text.replace(CITATION, (match, digits) => {

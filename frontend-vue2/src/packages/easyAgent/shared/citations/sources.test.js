@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { citationPreviewText, externalSources, sourceUrl, toolResultText } from './sources.js'
 import { relatedEvidence, linkKnowledgeCitations } from '../markdown/citations.js'
+import { citationFooterOffsets, sourceFooterStart } from '../markdown/sourceFooter.js'
 import { createMarkdownRenderer, renderMarkdown } from '../markdown/index.js'
 
 const url = 'https://example.com/report_(2026)?a=1&b=2'
@@ -128,7 +129,8 @@ test('模型知识保留纯文字说明，历史模型标记不再生成编号�
   assert.deepEqual(items, [])
   const html = renderMarkdown(linkKnowledgeCitations(content, numberMap, true), createMarkdownRenderer({}))
   assert.match(html, /来源：模型自身知识/)
-  assert.doesNotMatch(html, /ke-cite-number|\[模型知识\]/)
+  assert.doesNotMatch(html, /ke-cite-number/)
+  assert.match(html, /\[模型知识\]/) // 尾部说明整体保留。
 })
 
 test('MCP 行内引用兼容完整标记和路径的反引号，按出现顺序编号', () => {
@@ -156,9 +158,9 @@ test('MCP 来源文字兼容无内层括号、代码工具名及业务口径说�
   const cases = [
     '行情要点（来源：外部连接器 forex_kline_qa，FXALL 渠道 MID 价，北京时间）',
     '行情要点(来源: 外部连接器 forex_kline_qa, FXALL 渠道 MID 价，北京时间)',
-    '来源：外部连接器 `forex_kline_qa`，FXALL 渠道 MID 价，北京时间',
+    '行情要点 来源：外部连接器 `forex_kline_qa`，FXALL 渠道 MID 价，北京时间',
     '行情要点（来源：外部连接器（forex_kline_qa，FXALL 渠道 MID 价，北京时间））',
-    '来源：外部连接器（`forex_kline_qa`，FXALL 渠道 MID 价，北京时间）',
+    '行情要点 来源：外部连接器（`forex_kline_qa`，FXALL 渠道 MID 价，北京时间）',
   ]
   for (const content of cases) {
     const { numberMap, items } = relatedEvidence({ content, blocks: [call] })
@@ -324,4 +326,59 @@ test('浮层内容包含完整来源说明与原始证据，且不修改已保�
   assert.equal(citationPreviewText({ snippet: '只有证据' }), '只有证据')
   assert.equal(citationPreviewText({ citation_notes: ['只有说明'] }), '只有说明')
   assert.equal(JSON.stringify(message), saved)
+})
+
+
+test('尾部独立来源保持原文，不参与编号；正文来源兼容名称、空格、连接器依据和反引号', () => {
+  const call = { ...mcp, result: mcp.result.replace('finance/query', 'my-coffee/queryShopList') }
+  const footer = '统计完成，共 8 家门店。\n\n来源：外部连接器（瑞幸咖啡 my-coffee / queryShopList）'
+  const footerResult = relatedEvidence({ content: footer, blocks: [call] })
+  assert.deepEqual(footerResult.numberMap, {})
+  assert.equal(linkKnowledgeCitations(footer, footerResult.numberMap, true), footer)
+  assert.equal(sourceFooterStart(footer), footer.indexOf('来源：'))
+
+  const cases = [
+    '统计结果（来源：外部连接器（瑞幸咖啡 my-coffee / queryShopList））：共 8 家。',
+    '统计结果（外部连接器 my-coffee / queryShopList）：共 8 家。',
+    '统计结果（连接器依据：`my-coffee/queryShopList`）：共 8 家。',
+    '统计结果（来源：外部连接器（my-coffee/queryShopList），北京时间）：共 8 家。',
+  ]
+  for (const content of cases) {
+    const result = relatedEvidence({ content, blocks: [call] })
+    assert.deepEqual(result.numberMap, { 'mcp:my-coffee/queryShopList': 1 }, content)
+    const html = renderMarkdown(linkKnowledgeCitations(content, result.numberMap, true), createMarkdownRenderer({}))
+    assert.match(html, /data-cite="1"/)
+    assert.doesNotMatch(html, /外部连接器|连接器依据|queryShopList/)
+  }
+})
+
+test('尾部来源位于最后正文分块时才排除，正文中的来源仍进入统一编号表', () => {
+  const call = { ...mcp, result: mcp.result.replace('finance/query', 'my-coffee/queryShopList') }
+  const blocks = [
+    { type: 'content', order: 1, content: '门店数量[连接器依据 my-coffee/queryShopList]。' },
+    { type: 'content', order: 2, content: '来源：外部连接器（my-coffee/queryShopList）' },
+  ]
+  const result = relatedEvidence({ blocks: [call, ...blocks] })
+  assert.deepEqual(result.numberMap, { 'mcp:my-coffee/queryShopList': 1 })
+  const layout = citationFooterOffsets(blocks)
+  assert.equal(layout.whole, blocks[0].content.length + 1)
+  assert.equal(layout.blocks[0], -1)
+  assert.equal(layout.blocks[1], 0)
+})
+
+test('MCP、知识库和联网来源共享一套连续编号，同一来源重复使用同一编号', () => {
+  const mcpCall = { ...mcp, result: mcp.result.replace('finance/query', 'my-coffee/queryShopList') }
+  const message = {
+    content: '门店[连接器依据 my-coffee/queryShopList]，知识[知识依据1]，新闻[报道](https://example.com/report_(2026)?a=1&b=2)，再次门店[连接器依据 my-coffee/queryShopList]。',
+    knowledge_evidence: [{ document_name: 'Guide.md', snippet: '知识库片段' }],
+    blocks: [mcpCall, web],
+  }
+  const result = relatedEvidence(message)
+  assert.deepEqual(result.numberMap, {
+    'mcp:my-coffee/queryShopList': 1,
+    1: 2,
+    [`web:${url}`]: 3,
+  })
+  const html = renderMarkdown(linkKnowledgeCitations(message.content, result.numberMap, true), createMarkdownRenderer({}))
+  assert.deepEqual([...html.matchAll(/data-cite="(\d+)"/g)].map(match => Number(match[1])), [1, 2, 3, 1])
 })

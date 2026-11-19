@@ -22,6 +22,7 @@ export default {
   name: 'MarkdownBody',
   props: {
     compactCitations: { type: Boolean, default: false },
+    citationFooterStart: { type: Number, default: null },
     content: {
       type: String,
       default: '',
@@ -40,6 +41,11 @@ export default {
       handler(value) {
         this.queue(value)
       },
+    },
+    citationFooterStart() {
+      if (!this.md.started) return
+      if (this.md.scheduler) this.md.scheduler.cancel()
+      this.render(false)
     },
     compactCitations() {
       if (!this.md.started) return
@@ -93,7 +99,7 @@ export default {
       if (md.scheduler) md.scheduler.queue()
     },
     render(partial) {
-      this.md.blocks = renderMarkdownBlocks(linkKnowledgeCitations(this.md.pending, this.citeMap, this.compactCitations), { partial, streaming: this.streaming })
+      this.md.blocks = renderMarkdownBlocks(linkKnowledgeCitations(this.md.pending, this.citeMap, this.compactCitations, this.citationFooterStart === null ? {} : { footerStart: this.citationFooterStart }), { partial, streaming: this.streaming })
       this.flush()
     },
     flush() {

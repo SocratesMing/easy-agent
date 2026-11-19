@@ -17,6 +17,7 @@ import { mountVisuals } from '../../../shared/visual/mount.js'
 
 const props = defineProps({
   compactCitations: { type: Boolean, default: false },
+  citationFooterStart: { type: Number, default: null },
   content: {
     type: String,
     default: '',
@@ -62,7 +63,7 @@ function flush() {
 }
 
 function render(partial) {
-  blocks = renderMarkdownBlocks(linkKnowledgeCitations(pending, props.citeMap, props.compactCitations), {
+  blocks = renderMarkdownBlocks(linkKnowledgeCitations(pending, props.citeMap, props.compactCitations, props.citationFooterStart === null ? {} : { footerStart: props.citationFooterStart }), {
     partial,
     streaming: props.streaming,
   })
@@ -90,7 +91,7 @@ watch(() => props.citeMap, () => {
 }, { deep: true })
 // shiki 异步就绪后重渲一次：首屏 / 历史消息在高亮器就绪前渲染的代码块补上高亮
 // （以前用 computed 渲染会自动追踪高亮器，改成命令式渲染后要显式监听）
-watch(() => props.compactCitations, () => {
+watch(() => [props.compactCitations, props.citationFooterStart], () => {
   if (started) {
     scheduler.cancel()
     render(false)
