@@ -32,9 +32,15 @@
       ``same_args_total_limit``（默认 8）——不要求空、不要求连续、不比较
       结果内容（2026-11-18 补：兜「同参数原样重跑 + 输出带时间戳等微变」
       的循环，a/b/c 三类判定对它全部擦边漏过）。
+   e. **同一文件同参数重复读 ≥ ``fuse_limit``（默认 3）**（2026-11-19 补）：
+      ``read_file`` 故意不进第 1–3 类判定（空结果 / 低价值行数 / 预算占比的
+      语义是为查询设计的，套到文件读取会误伤"连续读多个小文件"），只认
+      "同路径 + 同 file_path/offset/limit"这一个零风险信号——内容必然一致，
+      正常工作流没有这种用法。兜「反复读同一份 SKILL.md」的循环（思考逐字
+      相同只是它的症状；思考一旦换措辞，只有这条判定还能拦住）。
 
-熔断覆盖探索型四件套与 MCP 查询工具；所有触发点都打带 ``thread_id`` 前缀的
-日志（warning/info），便于排查「谁熔断的、为什么熔断」。
+熔断覆盖探索型四件套、MCP 查询工具与 ``read_file``；所有触发点都打带
+``thread_id`` 前缀的日志（warning/info），便于排查「谁熔断的、为什么熔断」。
 
 为什么熔断放 ``wrap_tool_call`` 而不是 ``before_model`` 的 ``jump_to="end"``：
 多任务轮次真实存在（todo 列表里「继续下一项任务」），整轮终止会误伤
@@ -50,6 +56,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import posixpath
 import re
 from collections.abc import Mapping
 from typing import Any, NamedTuple
@@ -78,6 +85,15 @@ _EMPTY_MARKERS = frozenset({"no files found", "no matches found", "[]", "{}"})
 
 #: 只对这些探索型工具加提示：读文件、写文件、todo、task 一律不动。
 _SCOPE_TOOLS = frozenset({"ls", "glob", "grep", "execute"})
+
+#: 读取型工具（2026-11-19 补）：**不进 ``_SCOPE_TOOLS``**——空结果 / 低价值行数 /
+#: 预算占比那套语义是为"查询"设计的，套到文件读取上会误伤（连续读多个 1 行小
+#: 文件会被判成"连续低价值"）。这里只认一个零风险信号：同一路径 + 完全相同
+#: 参数（file_path/offset/limit）的重复读，内容必然一致，正常工作流没有这种用法。
+_READ_TOOLS = frozenset({"read_file", "read_uploaded_file"})
+
+#: 第几次相同参数读取开始注入软提示（0 基：第二次读到的结果上就会出现）。
+_READ_REPEAT_WARN_AFTER = 1
 
 #: ``execute`` 只有查找类命令才判空，避免 ``mkdir`` 这类静默成功被误判成空。
 _LOOKUP_COMMAND_RE = re.compile(
@@ -186,9 +202,26 @@ _FUSE_MESSAGE = (
     "继续下一项任务。"
 )
 
+#: 读取型工具（``read_file``）重复读的合成消息：语义与查询熔断不同——不是"查不到"，
+#: 是"内容已经拿到了"。所以不能说"改用其它数据来源"，要指向"用已读内容推进"，
+#: 并顺带点出最可能的真实原因（技能要的工具不在会话里）。
+_READ_FUSE_MESSAGE = (
+    f"{NOTE_MARK}⛔ 重复读取已拦截（{{reason}}）。系统未执行本次读取。"
+    "该文件内容你已经拿到，再读一次不会有新信息：请直接用已读内容推进；"
+    "若需要文件后半段，改用 `offset` 从已读行号继续读；"
+    "若技能点名的工具不在你的工具列表里，说明该数据服务未接入——"
+    "直接告知用户「数据未就位」并说明缺少哪类服务，不要靠重读文档或换参数重试来验证。"
+)
 
-def _fuse_text(reason: str) -> str:
-    return _FUSE_MESSAGE.format(reason=reason)
+#: 读取型工具重复读的软提示（第二次相同参数读取时注入，第三次起熔断）。
+_READ_REPEAT_HINT = (
+    f"{NOTE_MARK}该文件已用完全相同的参数读过 {{n}} 次，内容一致。"
+    "读取一次即视为已加载：需要后半段用 `offset` 续读，不要从头重读。"
+)
+
+
+def _fuse_text(reason: str, *, read: bool = False) -> str:
+    return (_READ_FUSE_MESSAGE if read else _FUSE_MESSAGE).format(reason=reason)
 
 
 def _content_text(message: Any) -> str:
@@ -207,11 +240,54 @@ def _content_text(message: Any) -> str:
     return "" if content is None else str(content)
 
 
+#: 需要做路径归一化的参数名。模型在多轮里会换写法（``C:\a\b`` / ``c:/a/b`` /
+#: 末尾带斜杠），不归一化就会被当成"不同参数"，绕开同参数重复判定
+#: （2026-11-19 审查发现的边界）。
+_PATH_ARG_KEYS = frozenset({"file_path", "path", "dir_path", "root"})
+
+
+def _normalize_args(args: Any) -> Any:
+    """把路径类参数归一成可比较的形态（分隔符、重复斜杠、大小写盘符、末尾斜杠）。
+
+    用 ``posixpath.normpath`` 而不是手写 replace：它顺带折叠 ``a//b``、
+    去掉末尾斜杠、把 ``..`` 解析掉，同时**保留** POSIX 允许的 UNC 前导 ``//``。
+    """
+    if not isinstance(args, dict):
+        return args
+    normalized: dict[Any, Any] = {}
+    for key, value in args.items():
+        if key in _PATH_ARG_KEYS and isinstance(value, str) and value:
+            text = posixpath.normpath(value.replace("\\", "/"))
+            if text == ".":  # normpath("") / normpath(".") 的退化形态
+                text = value
+            elif len(text) > 1 and text[1] == ":":  # Windows 盘符不区分大小写
+                text = text[0].lower() + text[1:]
+            normalized[key] = text
+        else:
+            normalized[key] = value
+    return normalized
+
+
+#: 读取型工具里不参与指纹的参数。``limit`` 只决定从同一 offset 起读多少行，
+#: 内容前缀是同一段：把 limit 从 1000 调成 500 再调成 2000 属于"同一份文件读了
+#: 三遍"，若不剔除就能以"参数不同"绕过重复读熔断（offset 仍然参与，分页照常区分）。
+_READ_IGNORED_ARGS = frozenset({"limit"})
+
+
 def _fingerprint(name: str, args: Any) -> str:
-    """工具调用指纹：工具名 + 规范化参数（键序无关，不可序列化时回退 str）。"""
+    """工具调用指纹：工具名 + 规范化参数（键序无关，不可序列化时回退 str）。
+
+    读取型工具额外剔除 ``limit``（见 ``_READ_IGNORED_ARGS``）；历史条目与本次
+    调用共用本函数，剔除规则必须只有这一处，否则两侧口径不同会永远数不中。
+    """
+    normalized = _normalize_args(args)
+    if name in _READ_TOOLS and isinstance(normalized, dict):
+        normalized = {
+            key: value for key, value in normalized.items() if key not in _READ_IGNORED_ARGS
+        }
     try:
         serialized = json.dumps(
-            args or {}, ensure_ascii=False, sort_keys=True, default=str
+            normalized or {}, ensure_ascii=False, sort_keys=True, default=str
         )
     except (TypeError, ValueError):
         serialized = str(args)
@@ -297,6 +373,35 @@ def strip_mcp_envelope(text: str) -> str:
 #: 「被注解过的历史结果」判不出空（正文混入了提示文本），同参数空结果
 #: 的连续计数每轮都被自己的提示打断，熔断永远不会触发。
 _SCOPE_HINT_MARKERS = ("（此处为空。", "（本工具同样参数的调用已连续")
+
+
+#: 本模块「整条替换」工具结果的合成消息标识。这类结果**没有真实执行**，
+#: 必须完全排除在所有统计之外——否则每续调一次熔断，就有一条「非空、非重复」
+#: 的合成结果被当成「有进展」，把无进展计数清零，熔断等于给自己发免死金牌
+#: （2026-11-18 外汇事故：熔断后模型又续调上百次，正是这个原因）。
+#: 只认本模块自己的固定文案，且限定在最前面若干字符：真实业务数据里几乎不可能
+#: 出现，同时避免大结果体里偶然命中。
+_SYNTHETIC_MARKERS = ("⛔ 工具熔断", "⛔ 重复读取已拦截")
+_SYNTHETIC_SCAN_CHARS = 200
+
+
+def is_synthetic_result(text: str) -> bool:
+    """工具结果是否为平台合成（熔断拦截），而非真实执行产物。
+
+    注意区分三件事，统计口径完全不同：
+
+    - **平台合成**（本条）：调用根本没执行，应视为「不存在」，不进任何统计；
+    - **工具真实报错**（``looks_like_error`` / ``is_mcp_error``）：执行了但失败，
+      是「无进展」，应照常计入；
+    - **真实空结果**：执行了、确实没有数据，也是「无进展」。
+
+    把前两者混为一谈，会出现「报错越多越容易触发」或「熔断越多越不触发」
+    两种畸形，所以这里必须只认本模块的熔断文案。
+    """
+    if not text:
+        return False
+    head = text.lstrip()[: _SYNTHETIC_SCAN_CHARS]
+    return any(marker in head for marker in _SYNTHETIC_MARKERS)
 
 
 def strip_progress_notes(text: str) -> str:
@@ -451,6 +556,10 @@ class ToolResultEntry(NamedTuple):
     #: 正文是否为空串。空串的「重复」不能计入无进展：``mkdir`` 这类静默成功
     #: 的输出本来就是空，多次 mkdir 的空输出互为 dup 会把合法建目录任务熔断。
     is_blank: bool = False
+    #: 是否为平台合成的熔断消息（调用未执行）。这类条目**保留在序列里**（范围
+    #: 判定 ``is_mcp`` 还要用它），但所有「有进展 / 低价值 / 连续计数」都必须
+    #: 跳过它——合成消息既不构成进展，也不构成执行。
+    is_synthetic: bool = False
 
 
 def tool_result_entries(state: Any, name: str) -> list[ToolResultEntry]:
@@ -506,13 +615,15 @@ def tool_result_entries(state: Any, name: str) -> list[ToolResultEntry]:
                 rows=body_row_count(body),
                 is_mcp=is_mcp_result(raw_text),
                 is_blank=not body.strip(),
+                is_synthetic=is_synthetic_result(raw_text),
             )
         )
     return entries
 
 
 def trailing_empty_streak(entries: list[ToolResultEntry]) -> int:
-    """末尾连续空结果的次数（含最后一条）。"""
+    """末尾连续空结果的次数（含最后一条）。合成熔断消息不算一次执行。"""
+    entries = [entry for entry in entries if not entry.is_synthetic]
     streak = 0
     for entry in reversed(entries):
         if not entry.is_empty:
@@ -528,7 +639,11 @@ def trailing_args_empty_streak(entries: list[ToolResultEntry], args_fp: str) -> 
     就算同一次尝试；中间插入该工具的其它调用、或某次查到了东西，都算中断。
     （其它工具的调用不进入该工具的 entries，不影响这里的计数——
     与 MCP 按「工具名」统计的口径一致。）
+
+    合成熔断消息先剔除：它不代表一次执行，否则续调时会被算成「又空了一次」，
+    看似加速触发，实际会让「已拦截」与「已执行」在日志里无法区分。
     """
+    entries = [entry for entry in entries if not entry.is_synthetic]
     streak = 0
     for entry in reversed(entries):
         if entry.args_fp != args_fp or not entry.is_empty:
@@ -562,7 +677,8 @@ def _entry_is_low_value(
 def low_value_count(
     entries: list[ToolResultEntry], *, low_value_rows: int | None = None
 ) -> int:
-    """低价值条目总数（预算熔断的「低价值占比」用）。"""
+    """低价值条目总数（预算熔断的「低价值占比」用）。合成消息不计。"""
+    entries = [entry for entry in entries if not entry.is_synthetic]
     seen: set[str] = set()
     count = 0
     for entry in entries:
@@ -580,7 +696,12 @@ def no_progress_streak(
     无进展 = 空结果，或结果指纹与**此前**某次相同（同一批数据被原样再取一遍）；
     传入 ``low_value_rows`` 后，行数 <= 该值的结果也算（探测性取回的少量脏数据
     不再被当成「有进展」）。分页取数每页行集合不同 → 每页都算有进展 → 计数清零。
+
+    合成熔断消息必须剔除：它正文非空、指纹唯一（原因文本不同），若不剔除会被
+    判成「有进展」把 streak 清零——这正是 2026-11-18 外汇事故里熔断无法收口的
+    直接原因（熔断消息给熔断机制自己发了免死金牌）。
     """
+    entries = [entry for entry in entries if not entry.is_synthetic]
     seen: set[str] = set()
     flags: list[bool] = []
     for entry in entries:
@@ -700,6 +821,30 @@ class ToolProgressMiddleware(AgentMiddleware):
         )
 
     # ── 原四件套（行为未改） ──────────────────────────────────────────
+
+    def _read_note(self, request: Any, name: str, args: Any) -> str:
+        """读取型工具的重复读软提示（第二次同参数读取就出现，第 4 次起熔断）。
+
+        与 ``_scope_note`` 分开实现：读取没有"空结果 / 行数过少"的语义，
+        唯一有意义的信息就是"这份文件你已经读过几遍、内容没变"。
+        """
+        args_fp = _fingerprint(name, args)
+        real = [
+            entry
+            for entry in tool_result_entries(getattr(request, "state", None), name)
+            if not entry.is_synthetic
+        ]
+        same = sum(1 for entry in real if entry.args_fp == args_fp)
+        if same < _READ_REPEAT_WARN_AFTER:
+            return ""
+        logger.warning(
+            "%s🔁 重复读取同一文件 | 工具: %s | 已读: %d 次 | 参数: %s",
+            _log_prefix(request),
+            name,
+            same,
+            str(args)[:200],
+        )
+        return _READ_REPEAT_HINT.format(n=same)
 
     def _scope_note(self, request: Any, name: str, args: Any, text: str) -> str:
         notes: list[str] = []
@@ -844,16 +989,53 @@ class ToolProgressMiddleware(AgentMiddleware):
         state = getattr(request, "state", None)
         entries = tool_result_entries(state, name)
 
+        # 合成熔断消息只用于「范围判定」，不构成一次执行：下面所有「读了几次 /
+        # 执行了几次 / 空了几次 / 低价值占比」都必须只在真实结果上算，否则每续调
+        # 一次熔断就多一条「非空非重复」的合成结果，把计数全部洗白（P0-A）。
+        real_entries = [entry for entry in entries if not entry.is_synthetic]
+        has_synthetic = len(real_entries) != len(entries)
+
+        # 情况 0（读取型，2026-11-19）：同一文件 + 完全相同参数重复读。
+        # 必须放在下面的范围门控**之前**：read_file 故意不在 ``_SCOPE_TOOLS`` 里，
+        # 走门控会直接 return None——这正是金市营收那轮"同一 SKILL.md 读 3 次
+        # 无人管"的原因。这里阈值复用 fuse_limit（默认 3），与"同查询连续空"
+        # 同一口径：读满 3 次，第 4 次起拦截；参数变了（分页用 offset）不计数。
+        if name in _READ_TOOLS:
+            if entries and not real_entries:
+                # 与查询工具同款防振荡：真实读取结果被窗口挤出、只剩熔断消息时，
+                # 若按 same_reads=0 放行，会退化成「熔断—放行—执行」交替。
+                return "本轮对该文件的读取持续被系统拦截，历史结果已超出判定窗口"
+            args_fp = _fingerprint(name, args)
+            same_reads = sum(1 for entry in real_entries if entry.args_fp == args_fp)
+            if same_reads >= self.fuse_limit:
+                return f"同一文件已用完全相同的参数读取 {same_reads} 次，内容没有变化"
+            return None
+
         # 熔断只覆盖查询型工具：探索型四件套 + MCP 查询工具（历史结果里出现过
         # 证据信封即认定）。写类工具（write_file/edit_file/write_todos 等）在
         # 长任务里合法调用几十次是常态，绝不能被预算误熔断。
-        if name not in _SCOPE_TOOLS and not any(e.is_mcp for e in entries):
+        #
+        # ``has_synthetic`` 也是"曾在范围内"的证据：合成熔断消息的正文不带 MCP
+        # 信封（``is_mcp`` 恒为 False），一旦真实结果被 200 条窗口挤出，只看
+        # is_mcp 会直接放行——2026-11-18 外汇事故"熔断后又跑上百步"正是这个形态。
+        if (
+            name not in _SCOPE_TOOLS
+            and not any(e.is_mcp for e in entries)
+            and not has_synthetic
+        ):
             return None
 
         # 情况 1：同一查询（工具名 + 参数指纹）连续空结果——3 次执行后，
         # 第 4 次起熔断。entries 不含本次（结果还没产生），streak 即已执行次数。
         args_fp = _fingerprint(name, args)
-        empty_streak = trailing_args_empty_streak(entries, args_fp)
+
+        if entries and not real_entries:
+            # 边界：该工具在窗口内的历史结果已全是熔断消息（真实结果被挤出）。
+            # 剔除合成消息后若就此放行，会退化成「熔断—放行—执行」交替，所以
+            # 持续拦截本身就是要继续拦的证据。
+            return "本轮对该工具的调用持续被系统拦截，历史执行结果已超出判定窗口"
+
+        empty_streak = trailing_args_empty_streak(real_entries, args_fp)
         if empty_streak >= self.fuse_limit:
             return f"同一查询已连续 {empty_streak} 次返回空结果"
 
@@ -864,7 +1046,7 @@ class ToolProgressMiddleware(AgentMiddleware):
         # 参数指纹不变这一条稳定信号。合法重跑（修完问题验证同一命令）到不了
         # 上限；分页遍历每次参数不同，不受影响。entries 不含本次，计数即已
         # 执行次数：第 ``limit`` 次执行后，下一次起熔断。
-        same_args_total = sum(1 for entry in entries if entry.args_fp == args_fp)
+        same_args_total = sum(1 for entry in real_entries if entry.args_fp == args_fp)
         if same_args_total >= self.same_args_total_limit:
             return (
                 f"同一查询（工具名+参数完全相同）本轮已累计执行 {same_args_total} 次"
@@ -881,13 +1063,16 @@ class ToolProgressMiddleware(AgentMiddleware):
             # 预算必须叠加「低进展信号」才熔断：健康分页（每页都是足量新数据）
             # 超过 20 页是合法工作，绝不能拦；只拦「参数组合爆炸式试探」——
             # 其特征是低价值结果占比过半，或末尾已连续无进展。
+            # 分母同样只用真实条目：合成消息进分母会把占比稀释，让预算永远不触发。
             ratio = (
-                low_value_count(entries, low_value_rows=self.low_value_rows)
-                / len(entries)
-                if entries
+                low_value_count(real_entries, low_value_rows=self.low_value_rows)
+                / len(real_entries)
+                if real_entries
                 else 0.0
             )
-            trailing_lv = no_progress_streak(entries, low_value_rows=self.low_value_rows)
+            trailing_lv = no_progress_streak(
+                real_entries, low_value_rows=self.low_value_rows
+            )
             if trailing_lv >= 2 or ratio >= 0.5:
                 return (
                     f"本工具本轮已调用 {call_count} 次（超出预算 {self.tool_call_budget}），"
@@ -897,7 +1082,7 @@ class ToolProgressMiddleware(AgentMiddleware):
         # 情况 2b：连续低价值结果（空 / 行数过少 / 与此前重复）——
         # 每次「都换参数、都只回一点脏数据」的探索型循环，
         # 空结果与逐字节重复判定都不命中，只有这条能兜住。
-        low_value = no_progress_streak(entries, low_value_rows=self.low_value_rows)
+        low_value = no_progress_streak(real_entries, low_value_rows=self.low_value_rows)
         if low_value >= self.low_value_limit:
             return f"本工具已连续 {low_value} 次查询未取得有效数据（空/过少/重复）"
 
@@ -911,7 +1096,11 @@ class ToolProgressMiddleware(AgentMiddleware):
         """
         call = getattr(request, "tool_call", None) or {}
         call_id = str(call.get("id") or "")
-        return ToolMessage(content=_fuse_text(reason), tool_call_id=call_id, name=name)
+        return ToolMessage(
+            content=_fuse_text(reason, read=name in _READ_TOOLS),
+            tool_call_id=call_id,
+            name=name,
+        )
 
     def _maybe_fuse(self, request: Any) -> ToolMessage | None:
         """工具执行前的熔断检查；命中返回合成结果，未命中返回 ``None`` 放行。
@@ -930,8 +1119,9 @@ class ToolProgressMiddleware(AgentMiddleware):
             if reason is None:
                 return None
             logger.warning(
-                "%s⛔ 工具熔断，本次调用已拦截 | 工具: %s | 原因: %s | 参数: %s",
+                "%s⛔ %s，本次调用已拦截 | 工具: %s | 原因: %s | 参数: %s",
                 _log_prefix(request),
+                "重复读取" if name in _READ_TOOLS else "工具熔断",
                 name,
                 reason,
                 str(args)[:200],
@@ -973,6 +1163,8 @@ class ToolProgressMiddleware(AgentMiddleware):
             note = self._mcp_note(request, name, text)
         elif name in _SCOPE_TOOLS:
             note = self._scope_note(request, name, args, text)
+        elif name in _READ_TOOLS:
+            note = self._read_note(request, name, args)
         else:
             return result
 

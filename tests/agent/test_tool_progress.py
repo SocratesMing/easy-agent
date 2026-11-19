@@ -11,15 +11,21 @@ from easy_agent.agent.tool_progress import (
     NOTE_MARK,
     REPEAT_WARN_AFTER,
     ToolProgressMiddleware,
+    _fuse_text,
     body_fingerprint,
     consecutive_repeats,
     is_empty_mcp_body,
     is_empty_result,
     is_mcp_result,
+    is_synthetic_result,
     json_is_empty,
     looks_like_error,
+    low_value_count,
+    no_progress_streak,
     strip_mcp_envelope,
     strip_progress_notes,
+    tool_result_entries,
+    trailing_empty_streak,
 )
 
 
@@ -873,3 +879,348 @@ def test_same_args_total_limit_respects_config():
         lambda _req: ToolMessage(content="ok", tool_call_id="cur", name="execute"),
     )
     assert "累计执行 3 次" in result.content
+
+
+# ── P0-A：合成熔断消息不得参与统计（2026-11-18）─────────────────────
+
+
+def test_synthetic_result_detection():
+    # 只认本模块「整条替换」的熔断文案；真实报错、真实数据都不能被误判成合成
+    assert is_synthetic_result(f"{NOTE_MARK}⛔ 工具熔断（同一查询已连续 3 次返回空结果）。") is True
+    assert is_synthetic_result("Error: file not found") is False
+    assert is_synthetic_result("No matches found") is False
+    assert is_synthetic_result("") is False
+    assert is_synthetic_result(None) is False
+
+
+def test_fuse_message_excluded_from_streaks():
+    # 2 次真实空结果 + 3 条合成熔断消息交错：连续计数必须只数真实执行（=2）
+    args = {"path": "/x.md", "pattern": "y"}
+    history = []
+    for i in range(2):
+        history += _pair("grep", args, "No matches found", i)
+    for i in range(3):
+        call_id = f"fuse{i}"
+        history.append(
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "grep", "args": args, "id": call_id}],
+            )
+        )
+        history.append(
+            ToolMessage(
+                content=f"{NOTE_MARK}⛔ 工具熔断（同一查询已连续 2 次返回空结果）。",
+                tool_call_id=call_id,
+                name="grep",
+            )
+        )
+    entries = tool_result_entries({"messages": history}, "grep")
+    assert len(entries) == 5
+    assert sum(1 for entry in entries if entry.is_synthetic) == 3
+    assert trailing_empty_streak(entries) == 2
+    assert no_progress_streak(entries) == 2
+    assert low_value_count(entries) == 2
+
+
+def test_fuse_message_does_not_reset_no_progress_streak():
+    # 修复前：熔断消息非空且指纹唯一 → 被判「有进展」→ streak 清零 → 第 5 次放行。
+    # 修复后：回灌熔断消息，第 5 次必须继续熔断。
+    args = {"path": "/x.md", "pattern": "y"}
+    history = []
+    for i in range(3):
+        history += _pair("grep", args, "No matches found", i)
+    mw = ToolProgressMiddleware()
+
+    def _boom(_req):
+        raise AssertionError("熔断后不得执行真实工具")
+
+    fused = mw.wrap_tool_call(_fuse_request("grep", args, history), _boom)
+    assert "熔断" in fused.content
+
+    # 按生产形态回灌：合成结果与带同参数的 AIMessage 配对
+    history.append(
+        AIMessage(content="", tool_calls=[{"name": "grep", "args": args, "id": "fuse1"}])
+    )
+    history.append(ToolMessage(content=fused.content, tool_call_id="fuse1", name="grep"))
+
+    again = mw.wrap_tool_call(_fuse_request("grep", args, history), _boom)
+    assert "熔断" in again.content
+
+
+def test_fuse_message_not_counted_as_execution():
+    # 合成消息不代表执行：同参数累计执行次数只数真实条目，
+    # 所以「执行 3 次 + 回灌 3 条熔断消息」不能凑到上限 6
+    args = {"command": "python3 probe.py"}
+    history = []
+    for i in range(3):
+        history += _pair("execute", args, f"ok {i}", i)
+    for i in range(3):
+        call_id = f"fuse{i}"
+        history.append(
+            AIMessage(content="", tool_calls=[{"name": "execute", "args": args, "id": call_id}])
+        )
+        history.append(
+            ToolMessage(
+                content=f"{NOTE_MARK}⛔ 工具熔断（同一查询本轮已累计执行 3 次）。",
+                tool_call_id=call_id,
+                name="execute",
+            )
+        )
+    mw = ToolProgressMiddleware(same_args_total_limit=6)
+    result = mw.wrap_tool_call(
+        _fuse_request("execute", args, history),
+        lambda _req: ToolMessage(content="ok", tool_call_id="cur", name="execute"),
+    )
+    assert "累计执行" not in result.content
+
+
+def test_all_history_synthetic_keeps_fusing():
+    # 边界：真实结果已被判定窗口挤出、历史全是熔断消息时，不能因此放行
+    args = {"path": "/x.md", "pattern": "y"}
+    history = []
+    for i in range(3):
+        call_id = f"fuse{i}"
+        history.append(
+            AIMessage(content="", tool_calls=[{"name": "grep", "args": args, "id": call_id}])
+        )
+        history.append(
+            ToolMessage(
+                content=f"{NOTE_MARK}⛔ 工具熔断（持续拦截）",
+                tool_call_id=call_id,
+                name="grep",
+            )
+        )
+    mw = ToolProgressMiddleware()
+    result = mw.wrap_tool_call(
+        _fuse_request("grep", args, history),
+        lambda _req: (_ for _ in ()).throw(AssertionError("不得执行")),
+    )
+    assert "持续被系统拦截" in result.content
+
+
+# ── 情况 0：read_file 同路径同参数重复读（2026-11-19）──────────────────
+
+
+def test_read_file_fuses_fourth_identical_read():
+    # 同一份 SKILL.md 用完全相同参数读了 3 次，第 4 次必须拦截且不执行
+    args = {"file_path": "/skills/builtin/fpp-income-analysis/SKILL.md", "limit": 1000}
+    history = []
+    for i in range(3):
+        history += _pair("read_file", args, "lines 1-274 of 274\n# 金市营收", i)
+    mw = ToolProgressMiddleware()
+
+    def handler(_req):
+        raise AssertionError("重复读取熔断后不应执行真实读取")
+
+    result = mw.wrap_tool_call(_fuse_request("read_file", args, history), handler)
+    assert isinstance(result, ToolMessage)
+    assert "重复读取已拦截" in result.content
+    assert "已用完全相同的参数读取 3 次" in result.content
+
+
+def test_read_file_three_reads_still_allowed():
+    # 3 次以内放行（阈值复用 fuse_limit=3：读满 3 次，第 4 次起拦）
+    args = {"file_path": "/skills/builtin/demo/SKILL.md", "limit": 1000}
+    history = []
+    for i in range(2):
+        history += _pair("read_file", args, "content", i)
+    mw = ToolProgressMiddleware()
+    result = mw.wrap_tool_call(
+        _fuse_request("read_file", args, history),
+        lambda _req: ToolMessage(content="content", tool_call_id="cur", name="read_file"),
+    )
+    assert "熔断" not in result.content
+
+
+def test_read_file_paging_not_counted():
+    # 分页续读（offset 递增）是合法用法，绝不计数
+    history = []
+    for i in range(10):
+        history += _pair(
+            "read_file",
+            {"file_path": "/skills/builtin/big/SKILL.md", "offset": i * 100, "limit": 100},
+            f"lines {i * 100}-{i * 100 + 99}",
+            i,
+        )
+    mw = ToolProgressMiddleware()
+    result = mw.wrap_tool_call(
+        _fuse_request(
+            "read_file",
+            {"file_path": "/skills/builtin/big/SKILL.md", "offset": 1000, "limit": 100},
+            history,
+        ),
+        lambda _req: ToolMessage(content="tail", tool_call_id="cur", name="read_file"),
+    )
+    assert "熔断" not in result.content
+
+
+def test_read_file_different_files_not_counted():
+    # 连续读不同文件（技能 references/ 里逐个读）是正常工作流
+    history = []
+    for i in range(10):
+        history += _pair(
+            "read_file", {"file_path": f"/skills/builtin/demo/ref{i}.md"}, f"doc {i}", i
+        )
+    mw = ToolProgressMiddleware()
+    result = mw.wrap_tool_call(
+        _fuse_request("read_file", {"file_path": "/skills/builtin/demo/ref99.md"}, history),
+        lambda _req: ToolMessage(content="doc 99", tool_call_id="cur", name="read_file"),
+    )
+    assert "熔断" not in result.content
+
+
+def test_read_file_repeat_hint_on_second_read():
+    # 第二次相同参数读取时给软提示（告诉模型"读一次即已加载"）
+    args = {"file_path": "/skills/builtin/demo/SKILL.md", "limit": 1000}
+    history = _pair("read_file", args, "content", 0)
+    mw = ToolProgressMiddleware()
+    request = _fuse_request("read_file", args, history)
+    out = mw.annotate(request, ToolMessage(content="content", tool_call_id="cur", name="read_file"))
+    assert "已用完全相同的参数读过 1 次" in out.content
+    assert "offset" in out.content
+
+
+def test_read_file_first_read_no_hint():
+    args = {"file_path": "/skills/builtin/demo/SKILL.md", "limit": 1000}
+    mw = ToolProgressMiddleware()
+    request = _fuse_request("read_file", args, [])
+    out = mw.annotate(request, ToolMessage(content="content", tool_call_id="cur", name="read_file"))
+    assert out.content == "content"
+
+
+def test_read_file_not_affected_by_scope_rules():
+    # read_file 不进四件套判定：1 行的小文件连读 6 次不同路径不能被判「低价值」
+    history = []
+    for i in range(8):
+        history += _pair("read_file", {"file_path": f"/x/{i}.json"}, "{}\n", i)
+    mw = ToolProgressMiddleware()
+    result = mw.wrap_tool_call(
+        _fuse_request("read_file", {"file_path": "/x/final.json"}, history),
+        lambda _req: ToolMessage(content="{}", tool_call_id="cur", name="read_file"),
+    )
+    assert "熔断" not in result.content
+
+
+# ── 审查修复回归（2026-11-19 独立审查发现的三个逻辑缺陷）────────────
+
+
+def test_read_fuse_message_is_synthetic():
+    # 缺陷 1：读取熔断文案曾不被识别为合成消息 → 被拦截的调用照样计入读取次数
+    assert is_synthetic_result(_fuse_text("同一文件已读取 3 次", read=True)) is True
+    assert is_synthetic_result(_fuse_text("同一查询已连续 3 次返回空结果")) is True
+
+
+def test_blocked_read_is_not_counted_as_execution():
+    # 3 次真实读 → 第 4 次熔断 → 把熔断消息回灌 → 第 5 次仍应报「读取 3 次」
+    args = {"file_path": "/skills/builtin/demo/SKILL.md", "limit": 1000}
+    history = []
+    for i in range(3):
+        history += _pair("read_file", args, "lines 1-274 of 274", i)
+    mw = ToolProgressMiddleware()
+    blocked = mw.wrap_tool_call(
+        _fuse_request("read_file", args, history),
+        lambda _req: (_ for _ in ()).throw(AssertionError("不得执行")),
+    )
+    assert "已用完全相同的参数读取 3 次" in blocked.content
+
+    history.append(
+        AIMessage(content="", tool_calls=[{"name": "read_file", "args": args, "id": "fuse1"}])
+    )
+    history.append(ToolMessage(content=blocked.content, tool_call_id="fuse1", name="read_file"))
+
+    again = mw.wrap_tool_call(
+        _fuse_request("read_file", args, history),
+        lambda _req: (_ for _ in ()).throw(AssertionError("不得执行")),
+    )
+    assert "读取 3 次" in again.content
+    assert "读取 4 次" not in again.content
+
+
+def test_mcp_all_synthetic_history_still_fused():
+    # 缺陷 2：合成熔断消息不带 MCP 信封，真实结果被窗口挤出后曾直接放行
+    history = []
+    for i in range(60):
+        call_id = f"f{i}"
+        history.append(
+            AIMessage(content="", tool_calls=[{"name": MCP_TOOL, "args": {"symbol": "XAU"}, "id": call_id}])
+        )
+        history.append(
+            ToolMessage(
+                content=_fuse_text("同一查询本轮已累计执行 8 次"),
+                tool_call_id=call_id,
+                name=MCP_TOOL,
+            )
+        )
+    mw = ToolProgressMiddleware()
+    result = mw.wrap_tool_call(
+        _fuse_request(MCP_TOOL, {"symbol": "XAU"}, history),
+        lambda _req: (_ for _ in ()).throw(AssertionError("不得执行")),
+    )
+    assert "持续被系统拦截" in result.content
+
+
+def test_read_file_path_variants_share_fingerprint():
+    # Windows 路径大小写/分隔符/末尾斜杠不同，必须视为同一文件
+    history = []
+    variants = ["C://skills//demo//SKILL.md", "c:/skills/demo/SKILL.md", "C:/skills/demo/SKILL.md/"]
+    for i, path in enumerate(variants):
+        history += _pair("read_file", {"file_path": path, "limit": 1000}, "same", i)
+    mw = ToolProgressMiddleware()
+    result = mw.wrap_tool_call(
+        _fuse_request("read_file", {"file_path": "c://skills//demo//SKILL.md", "limit": 1000}, history),
+        lambda _req: (_ for _ in ()).throw(AssertionError("不得执行")),
+    )
+    assert "已用完全相同的参数读取 3 次" in result.content
+
+
+def test_read_file_cross_turn_not_accumulated():
+    # 上一轮读过 3 次，本轮第一次读不能熔断（轮次切分：只数最后一条 HumanMessage 之后）
+    args = {"file_path": "/skills/builtin/demo/SKILL.md", "limit": 1000}
+    history = []
+    for i in range(3):
+        history += _pair("read_file", args, "content", i)
+    history.append(HumanMessage(content="再看一下这个技能"))
+    mw = ToolProgressMiddleware()
+    result = mw.wrap_tool_call(
+        _fuse_request("read_file", args, history),
+        lambda _req: ToolMessage(content="content", tool_call_id="cur", name="read_file"),
+    )
+    assert "熔断" not in result.content
+
+
+def test_read_file_limit_variation_still_counts_as_repeat():
+    # 复审补的变体：同一文件、同一 offset，只把 limit 调来调去（1000/500/2000）
+    # 仍然是"同一份内容读三遍"。limit 不参与指纹，第 4 次必须拦。
+    history = []
+    for i, limit in enumerate([1000, 500, 2000]):
+        history += _pair(
+            "read_file", {"file_path": "/skills/builtin/demo/SKILL.md", "limit": limit}, "body", i
+        )
+    mw = ToolProgressMiddleware()
+    result = mw.wrap_tool_call(
+        _fuse_request(
+            "read_file", {"file_path": "/skills/builtin/demo/SKILL.md", "limit": 3000}, history
+        ),
+        lambda _req: (_ for _ in ()).throw(AssertionError("不得执行")),
+    )
+    assert "已用完全相同的参数读取 3 次" in result.content
+
+
+def test_read_file_offset_still_differentiates_fingerprint():
+    # 剔除 limit 不能顺带把 offset 也吞掉：不同 offset 是不同内容，必须放行
+    history = []
+    for i, offset in enumerate([0, 100, 200]):
+        history += _pair(
+            "read_file",
+            {"file_path": "/skills/builtin/big/SKILL.md", "offset": offset, "limit": 100},
+            f"part {i}",
+            i,
+        )
+    mw = ToolProgressMiddleware()
+    result = mw.wrap_tool_call(
+        _fuse_request(
+            "read_file", {"file_path": "/skills/builtin/big/SKILL.md", "offset": 300, "limit": 100}, history
+        ),
+        lambda _req: ToolMessage(content="part 3", tool_call_id="cur", name="read_file"),
+    )
+    assert "熔断" not in result.content

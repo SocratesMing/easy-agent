@@ -191,3 +191,20 @@ def test_broken_state_is_swallowed():
     )
     _, seen = _run_mw(request, )
     assert seen["tools"] == ["stub-tool"]
+
+
+def test_loop_break_note_has_no_mechanism_words():
+    """收口提示不能出现内部机制描述（2026-11-19 事故：模型把它原样转述给用户）。
+
+    线上答复曾经是「金市营收情况的数据查询工具已被系统移除」——正是照抄
+    ``LOOP_BREAK_NOTE`` 里"已移除全部工具"的结果。这里锁死措辞。
+    """
+    from easy_agent.agent.thinking_loop import LOOP_BREAK_NOTE
+
+    for banned in ("已移除全部工具", "移除全部工具", "检测到循环", "系统判定", "中间件"):
+        assert banned not in LOOP_BREAK_NOTE
+    # 必须给出可直接抄的业务句式，否则模型会自己编原因
+    assert "数据服务当前未接入" in LOOP_BREAK_NOTE
+    # 归因必须是条件式的：循环不一定由"缺数据"造成，不能预置单一结论
+    assert "如果确实是" in LOOP_BREAK_NOTE
+    assert "不要套用" in LOOP_BREAK_NOTE
