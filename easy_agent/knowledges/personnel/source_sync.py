@@ -38,7 +38,7 @@ _SYNC_FIELDS = (
 )
 
 DEFAULT_SOURCE_NAME = "接口同步"
-_REQUEST_TIMEOUT_SECONDS = 60.0
+_REQUEST_TIMEOUT_SECONDS = 600.0
 
 
 class PersonnelSyncError(RuntimeError):

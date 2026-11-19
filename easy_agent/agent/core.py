@@ -66,6 +66,11 @@ from easy_agent.tools.registry import (
 )
 from easy_agent.agent import builtin_skills
 from easy_agent.agent.skills import declared_include_tools, skill_tool_resolver
+from easy_agent.agent.skill_readiness import (
+    FRAMEWORK_BUILTIN_TOOLS,
+    gap_fingerprint,
+    skill_tool_gaps,
+)
 from easy_agent.utils.mcp_content import parse_mcp_content
 from easy_agent.utils.mcp_tool_names import resolve_tool_names
 from easy_agent.agent.builtin_skills import BUILTIN_VIRTUAL_ROOT
@@ -768,6 +773,27 @@ class EasyAgent(AgentWorkspaceMixin):
             gated_actual = set(gated_resolved.values())
             gated_tools = [t for t in graph_tools if getattr(t, "name", "") in gated_actual]
             graph_tools = [t for t in graph_tools if getattr(t, "name", "") not in gated_actual]
+
+            # P0-1 技能数据通道预检（2026-11-19）：技能正文点名了取数工具、但本会话
+            # 一个都没注入时，直接把结论写进技能清单——否则模型只能"读完 274 行
+            # 文档才发现无工具可调"，随后反复重读同一份文档（思考逐字相同）。
+            # 不新增配置：清单来自技能自身，可用集来自本会话工具。
+            skill_gaps = self._skill_gaps([*graph_tools, *gated_tools])
+            # 差集按**全部**技能算，不按本会话的技能作用域裁剪：编译图是跨会话共享的，
+            # 提示只渲染给真正出现在该会话清单里的技能（skills_metadata 由 runtime
+            # 路由决定），所以映射必须是全集，否则先建图的会话会把别人的提示吃掉。
+            # 日志才按作用域过滤——专家会话不必为无关技能刷告警。
+            logged = skill_gaps
+            if self.skill_whitelist is not None:
+                allowed = set(self.skill_whitelist)
+                logged = {k: v for k, v in skill_gaps.items() if k in allowed}
+            for skill_name, gap in sorted(logged.items()):
+                logger.warning(
+                    f"[{self.sid}] ⛔ 技能数据通道未就位 | 技能: {skill_name} | "
+                    f"{gap.summary()} | 缺失: {'、'.join(gap.missing)} | "
+                    f"用户: {self.safe_username}"
+                )
+
             if skills_paths:
                 main_middleware.append(
                     # 有技能源就替换框架默认项：技能段换成项目模板（agent/skills_middleware.py）。
@@ -776,6 +802,7 @@ class EasyAgent(AgentWorkspaceMixin):
                         backend=backend,
                         sources=skills_paths,
                         tools=skill_tool_resolver(gated_tools) if gated_tools else None,
+                        tool_gaps=skill_gaps,
                     )
                 )
             if memory_list:
@@ -814,12 +841,38 @@ class EasyAgent(AgentWorkspaceMixin):
 
         return _build
 
+    def _skill_gaps(self, tools):
+        """技能声明的取数工具 − 本会话可用工具（编译期算，供提示词与缓存键共用）。
+
+        纯读文件、纯计算，不缓存：技能目录一层、每个技能一个文件，成本可忽略；
+        两个调用点（装配与缓存键）必须拿到**完全相同**的结果，共用同一实现。
+
+        ``available`` 要并上框架内置工具：技能的 ``include_tools`` 可以声明
+        ``read_file`` 这类内置工具，它们永远在，不该被算成"数据通道缺工具"。
+        整个预检是"尽力而为"的：任何异常都降级为空差集，绝不能让建图失败。
+        """
+        try:
+            available = [getattr(tool, "name", "") for tool in (tools or ())]
+            available.extend(FRAMEWORK_BUILTIN_TOOLS)
+            return skill_tool_gaps(
+                [self.builtin_skills_dir, self.user_skills_dir], available
+            )
+        except Exception as exc:  # noqa: BLE001 - 预检失败不阻断建图
+            logger.warning(
+                f"[{self.sid}] 技能数据通道预检异常，本次跳过 | "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return {}
+
     def _compute_graph_key(self, actual_llm_cfg, inputs: "_GraphInputs", shared_checkpointer):
         """编译图缓存键：技能门控工具集合也参与指纹（frontmatter 变化要重编译）。"""
         # 门控工具集合参与编译图指纹：技能 frontmatter 的 include_tools 变了要重编译
         gated_names = set(skill_gated_tool_names()) | declared_include_tools(
             [self.builtin_skills_dir, self.user_skills_dir]
         )
+        # 技能正文里的工具清单变化同样要重编译：差集提示会写进系统提示词，
+        # 沿用旧图会一直挂着上一次的「工具未就位」，属于会误导模型的错误信息。
+        skill_tools_fp = [*sorted(gated_names), *gap_fingerprint(self._skill_gaps(inputs.raw_tools))]
         return build_graph_key(
             model=model_fingerprint(actual_llm_cfg),
             model_key=resolve_model_key(self.config, self.model_name),
@@ -836,7 +889,7 @@ class EasyAgent(AgentWorkspaceMixin):
             },
             subagents=inputs.subagents,
             skills=inputs.skills_paths,
-            skill_tools=sorted(gated_names),
+            skill_tools=skill_tools_fp,
             permissions=inputs.permissions,
             memory=inputs.memory_list,
             summarization=summarization_fingerprint(self.config),
