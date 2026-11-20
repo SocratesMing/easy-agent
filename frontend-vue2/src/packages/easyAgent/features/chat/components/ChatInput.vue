@@ -398,114 +398,12 @@
             :state="enhancement"
             @enhance="enhancePrompt"
           />
-          <div
-            v-if="showTokenRing"
-            ref="ringRef"
-            class="context-ring-wrapper"
-            @click.stop="toggleTokenPopup"
-          >
-            <span class="context-ring-inner">
-              <svg class="context-ring" viewBox="0 0 36 36">
-                <circle
-                  class="context-ring-bg"
-                  cx="18"
-                  cy="18"
-                  r="15.9"
-                  fill="none"
-                  stroke="#e5e7eb"
-                  stroke-width="3"
-                />
-                <circle
-                  class="context-ring-fill"
-                  cx="18"
-                  cy="18"
-                  r="15.9"
-                  fill="none"
-                  :stroke="contextColor"
-                  stroke-width="3"
-                  stroke-linecap="round"
-                  :stroke-dasharray="`${contextPercent} ${
-                    100 - contextPercent
-                  }`"
-                  transform="rotate(-90 18 18)"
-                />
-              </svg>
-            </span>
-            <span class="context-ring-text">{{ contextPercent }}%</span>
-            <!-- Vue 2.7 不支持 Teleport：弹窗留在 wrapper 内，依赖 wrapper 无 transform（hover 缩放作用于 .context-ring-inner）保证 fixed 定位正确 -->
-            <div
-              v-if="showTokenPopup"
-              class="token-popup"
-              :style="popupStyle"
-              @click.stop
-            >
-              <div class="token-popup-title">会话信息</div>
-              <div class="token-popup-section">
-                <div class="token-popup-row">
-                  <span class="token-popup-label">会话耗时</span>
-                  <span class="token-popup-value duration-value">{{
-                    formattedDuration
-                  }}</span>
-                </div>
-                <div class="token-popup-row">
-                  <span class="token-popup-label">迭代次数</span>
-                  <span class="token-popup-value">{{ iterationCount }}</span>
-                </div>
-              </div>
-              <div class="token-popup-divider"></div>
-              <div class="token-popup-section">
-                <div class="token-popup-row">
-                  <span class="token-popup-label"
-                    >本轮上下文占用{{
-                      sessionUsage.context_estimated ? "（估算）" : ""
-                    }}</span
-                  >
-                </div>
-                <div class="token-popup-context-row">
-                  <span class="token-popup-context-value"
-                    >{{ formatTokens(sessionUsage.context_tokens) }}/{{
-                      formatTokens(sessionUsage.context_length)
-                    }}</span
-                  >
-                  <span
-                    class="token-popup-context-percent"
-                    :style="{ color: contextColor }"
-                    >{{ contextPercent }}%</span
-                  >
-                </div>
-                <div class="token-popup-bar">
-                  <div class="token-popup-bar-inner">
-                    <div
-                      class="token-popup-bar-fill"
-                      :style="{
-                        width: contextPercent + '%',
-                        background: contextColor,
-                      }"
-                    ></div>
-                  </div>
-                </div>
-              </div>
-              <div class="token-popup-divider"></div>
-              <div class="token-popup-row">
-                <span class="token-popup-label">输入 Token</span>
-                <span class="token-popup-value input">{{
-                  formatTokens(sessionUsage.input_tokens)
-                }}</span>
-              </div>
-              <div class="token-popup-row">
-                <span class="token-popup-label">输出 Token</span>
-                <span class="token-popup-value output">{{
-                  formatTokens(sessionUsage.output_tokens)
-                }}</span>
-              </div>
-              <div class="token-popup-row">
-                <span class="token-popup-label">思考 Token</span>
-                <span class="token-popup-value reasoning">{{
-                  formatTokens(sessionUsage.reasoning_tokens)
-                }}</span>
-              </div>
-            </div>
-          </div>
+          <TokenUsageRing
+            :session-id="sessionId"
+            :session-usage="sessionUsage"
+            :session-duration="sessionDuration"
+            :iteration-count="iterationCount"
+          />
           <button
             v-if="!isStreaming"
             @click="send"
@@ -545,94 +443,19 @@
       </div>
     </div>
 
-    <!-- 技能选择面板：输入 / 后出现在输入框上方。
-         Vue 2.7 不支持 Teleport，用 fixed 定位脱离 .input-box 的 overflow: hidden 裁切 -->
-    <div
-      v-if="skillPickerOpen"
+    <SlashSkillPicker
       ref="skillPickerRef"
-      class="skill-picker"
-      :style="skillPickerStyle"
-      @click.stop
-    >
-      <div class="skill-picker-header">
-        <span class="skill-picker-hint">↑↓ 选择 · Enter 确认 · Esc 关闭</span>
-      </div>
-
-      <div v-if="skillPickerLoading" class="skill-picker-state">
-        正在加载技能…
-      </div>
-      <div
-        v-if="menuItems.length === 0 && !skillPickerLoading"
-        class="skill-picker-state"
-      >
-        {{
-          skillOptions.length === 0
-            ? "没有匹配项，可到技能中心添加并启用技能"
-            : "没有匹配的指令或技能"
-        }}
-      </div>
-
-      <div
-        v-if="menuItems.length"
-        class="skill-picker-list"
-        role="listbox"
-        aria-label="指令和技能"
-      >
-        <ul
-          v-for="group in pickerGroups"
-          :key="group.title"
-          class="picker-group"
-          role="group"
-          :aria-label="group.title"
-        >
-          <li class="picker-group-title" role="presentation">
-            {{ group.title }} ({{ group.rows.length }})
-          </li>
-          <li
-            v-for="row in group.rows"
-            :key="
-              (row.skill.command ? 'command:' : 'skill:') + row.skill.dir_name
-            "
-            class="skill-picker-item"
-            :class="{
-              active: row.index === skillPickerIndex,
-              unavailable: row.skill.disabled,
-            }"
-            :aria-disabled="row.skill.disabled ? 'true' : 'false'"
-            role="option"
-            :aria-selected="row.index === skillPickerIndex ? 'true' : 'false'"
-            @mouseenter="skillPickerIndex = row.index"
-            @mousedown.prevent="selectSkill(row.skill)"
-            @click="selectSkill(row.skill)"
-          >
-            <SkillIcon
-              :icon="row.skill.icon"
-              :category="iconCategoryFor(row.skill.category_id)"
-              size="xs"
-            />
-            <span class="skill-picker-body">
-              <span class="skill-picker-name"
-                ><span
-                  v-for="(part, pi) in row.nameParts"
-                  :key="'n' + pi"
-                  :class="{ 'skill-picker-hit': part.hit }"
-                  >{{ part.text }}</span
-                ></span
-              >
-              <span class="skill-picker-desc"
-                ><span
-                  v-for="(part, pi) in row.descParts"
-                  :key="'d' + pi"
-                  :class="{ 'skill-picker-hit': part.hit }"
-                  >{{ part.text }}</span
-                ></span
-              >
-            </span>
-            <span class="skill-picker-slash">/{{ row.skill.dir_name }}</span>
-          </li>
-        </ul>
-      </div>
-    </div>
+      :open="skillPickerOpen"
+      :loading="skillPickerLoading"
+      :menu-items="menuItems"
+      :skill-options="skillOptions"
+      :picker-groups="pickerGroups"
+      :active-index="skillPickerIndex"
+      :picker-style="skillPickerStyle"
+      :icon-category-for="iconCategoryFor"
+      @hover="skillPickerIndex = $event"
+      @select="selectSkill"
+    />
 
     <div v-if="showFooter" class="input-footer">
       <span class="footer-text">内容由AI生成，请仔细甄别</span>
@@ -643,6 +466,8 @@
 <script>
 import FileReferencePicker from "./FileReferencePicker.vue";
 import FileReferenceTag from "./FileReferenceTag.vue";
+import SlashSkillPicker from "./SlashSkillPicker.vue";
+import TokenUsageRing from "./TokenUsageRing.vue";
 import {
   addReference,
   referenceDraft,
@@ -715,7 +540,6 @@ import SkillIcon from "../../../shared/components/SkillIcon.vue";
 import KnowledgeScopeSelector from "../../knowledge/KnowledgeScopeSelector.vue";
 import tip from "../../../directives/tip.js";
 import promptEnhancementMixin from "../mixins/promptEnhancementMixin.js";
-import contextUsageMixin from "../mixins/contextUsageMixin.js";
 import { commandItems } from "../../../shared/compaction/state.js";
 import {
   DRAFT_KEY,
@@ -733,10 +557,12 @@ import {
 } from "./chatInputConstants.js";
 
 export default {
-  mixins: [promptEnhancementMixin, contextUsageMixin, fileReferenceInputMixin],
+  mixins: [promptEnhancementMixin, fileReferenceInputMixin],
   components: {
     FileReferenceTag,
     FileReferencePicker,
+    SlashSkillPicker,
+    TokenUsageRing,
     PromptEnhancementActions,
     FileIcon,
     SkillIcon,
@@ -1197,10 +1023,6 @@ export default {
         this.loadMyExpertsPage(1);
       }, EXPERT_SEARCH_DEBOUNCE_MS);
     },
-    shouldCountLive(on) {
-      if (on) this.startLiveDuration();
-      else this.stopLiveDuration();
-    },
     // 会话切换：文件保持原语义——oldVal 为 null（新对话加文件时触发的建会话）不清，
     // 否则会清掉刚选的文件。
     // 技能标签按「用户输入阶段 / 会话展示阶段」严格分区：任何 sessionId 变化都算进入展示阶段
@@ -1329,7 +1151,6 @@ export default {
     // 上传限额：公共接口，失败时保留默认值（10MB / 5 个 / 20MB）
     this.loadUploadLimits();
 
-    document.addEventListener("click", this.closeTokenPopup);
     document.addEventListener("click", this.closeSkillPickerOnClick);
     window.addEventListener("resize", this.handleViewportChange);
     document.addEventListener("click", this.closePlusMenu);
@@ -1339,7 +1160,6 @@ export default {
     if (this.expertPrompt) this.applyExpertPrompt(this.expertPrompt);
   },
   beforeDestroy() {
-    document.removeEventListener("click", this.closeTokenPopup);
     document.removeEventListener("click", this.closeSkillPickerOnClick);
     window.removeEventListener("resize", this.handleViewportChange);
     document.removeEventListener("click", this.closePlusMenu);
@@ -1347,7 +1167,6 @@ export default {
     if (this.connectorNoticeTimer) clearTimeout(this.connectorNoticeTimer);
     if (this.expertsSearchTimer) clearTimeout(this.expertsSearchTimer);
     this.cancelPlusClose();
-    this.stopLiveDuration();
     if (this._uploadNoticeTimer) clearTimeout(this._uploadNoticeTimer);
   },
   methods: {
@@ -2068,32 +1887,6 @@ export default {
     getMessage() {
       return this.message;
     },
-    startLiveDuration() {
-      this.stopLiveDuration();
-      this.liveDuration = 0;
-      this.durationTimer = setInterval(() => {
-        this.liveDuration += 1;
-      }, 1000);
-    },
-    stopLiveDuration() {
-      if (this.durationTimer) {
-        clearInterval(this.durationTimer);
-        this.durationTimer = null;
-      }
-    },
-    toggleTokenPopup() {
-      this.showTokenPopup = !this.showTokenPopup;
-    },
-    closeTokenPopup() {
-      if (this.showTokenPopup) {
-        this.showTokenPopup = false;
-      }
-    },
-    formatTokens(n) {
-      if (!n) return "0";
-      if (n >= 1000) return (n / 1000).toFixed(1) + "k";
-      return n.toString();
-    },
     formatSize(bytes) {
       if (bytes < 1024) return bytes + " B";
       if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
@@ -2752,17 +2545,9 @@ export default {
     /** 键盘切换选项时把当前高亮项滚进可视区（只滚列表本身，不带动外层级） */
     scrollActiveSkillIntoView() {
       const picker = this.$refs.skillPickerRef;
-      if (!picker) return;
-      const list = picker.querySelector(".skill-picker-list");
-      const item =
-        list &&
-        list.querySelectorAll(".skill-picker-item")[this.skillPickerIndex];
-      if (!list || !item) return;
-      const top = item.offsetTop;
-      const bottom = top + item.offsetHeight;
-      if (top < list.scrollTop) list.scrollTop = top;
-      else if (bottom > list.scrollTop + list.clientHeight)
-        list.scrollTop = bottom - list.clientHeight;
+      if (picker && typeof picker.scrollActiveIntoView === "function") {
+        picker.scrollActiveIntoView(this.skillPickerIndex);
+      }
     },
 
     /** 判定光标前是否为「/查询词」（/ 位于开头或空白之后），决定展开或收起面板 */
@@ -3037,7 +2822,7 @@ export default {
       }
       if (!this.skillPickerOpen) return;
       const picker = this.$refs.skillPickerRef;
-      if (picker && picker.contains(eventTarget(event))) return;
+      if (picker && typeof picker.containsTarget === "function" && picker.containsTarget(eventTarget(event))) return;
       this.closeSkillPicker();
     },
 
@@ -3264,128 +3049,6 @@ export default {
 .easy-agent-root[data-theme="dark"] .connector-switch.on {
   background: var(--accent-color);
   border-color: var(--accent-color);
-}
-
-/* ── 技能选择面板（fixed 定位，脱离 .input-box 的 overflow: hidden） ── */
-.skill-picker {
-  z-index: 1200;
-  display: flex;
-  flex-direction: column;
-  max-height: min(320px, 42vh);
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  background: var(--bg-primary);
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
-  overflow: hidden;
-}
-
-.skill-picker-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border-color);
-  background: var(--bg-secondary);
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.skill-picker-hint {
-  font-size: 11px;
-  opacity: 0.8;
-}
-
-.skill-picker-state {
-  padding: 14px 12px;
-  font-size: 12.5px;
-  color: var(--text-secondary);
-  text-align: center;
-}
-
-.skill-picker-list {
-  /* 面板是定高 flex 容器：列表必须可收缩（min-height: 0）才会在内部滚动，
-     否则内容会撑破面板被外层 overflow: hidden 裁掉，滚动条也随之失效 */
-  flex: 1 1 auto;
-  min-height: 0;
-  /* 让列表成为条目的 offsetParent，键盘滚动用的 offsetTop 与 scrollTop 同源 */
-  position: relative;
-  margin: 0;
-  padding: 6px;
-  list-style: none;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
-}
-
-.skill-picker-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 8px;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.skill-picker-item.active {
-  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
-}
-
-.skill-picker-body {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  /* 单行展示：技能名与描述同行，描述超出宽度用省略号截断，避免整条占两行 */
-  flex-direction: row;
-  align-items: baseline;
-  gap: 8px;
-}
-
-/* 检索命中的片段：只染色不加底，选中行本身有淡色背景，叠加底色会糊成一片 */
-.skill-picker-hit {
-  color: var(--accent-color);
-}
-
-/* 名称是这一行的主标识，命中再加粗一档，扫视时比描述更先被看到 */
-.skill-picker-name .skill-picker-hit {
-  font-weight: 600;
-}
-
-.skill-picker-name {
-  flex-shrink: 0;
-  font-size: 13px;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.skill-picker-desc {
-  flex: 1;
-  min-width: 0;
-  font-size: 11.5px;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.skill-picker-slash {
-  flex-shrink: 0;
-  font-size: 11.5px;
-  color: var(--text-secondary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-/* 移动端：面板更紧凑，去掉冗余提示 */
-@media (max-width: 48rem) {
-  .skill-picker {
-    max-height: min(240px, 38vh);
-  }
-
-  .skill-picker-hint {
-    display: none;
-  }
 }
 
 /* ── 上传限额提示条 / 额度行 / 重试按钮 ──
@@ -3705,18 +3368,6 @@ export default {
   color: #ffffff !important;
 }
 
-/* token 用量圆环：全局深色规则把环底描边设成 var(--bg-tertiary)，
-   与灰色输入框背景同色导致不可见，黑色主题下改为白色圆环 */
-.easy-agent-root[data-theme="dark"] .context-ring-bg {
-  stroke: #ffffff !important;
-}
-
-.easy-agent-root[data-theme="dark"] .context-ring-wrapper {
-  border: 1px solid #ffffff !important;
-  border-radius: 50% !important;
-  box-sizing: border-box !important;
-}
-
 .input-field textarea {
   position: relative;
   z-index: 1;
@@ -3925,153 +3576,6 @@ export default {
 .stop-btn:hover {
   transform: scale(1.05);
   box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
-}
-
-.context-ring-wrapper {
-  position: relative;
-  width: 36px;
-  height: 36px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.context-ring-inner {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: transform 0.2s;
-}
-
-.context-ring-wrapper:hover .context-ring-inner {
-  transform: scale(1.1);
-}
-
-.context-ring {
-  width: 36px;
-  height: 36px;
-}
-
-.context-ring-bg {
-  stroke: var(--border-color);
-}
-
-.context-ring-text {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  font-size: 9px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  line-height: 1;
-  pointer-events: none;
-}
-
-.token-popup {
-  position: fixed;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-  padding: 14px 16px;
-  min-width: 200px;
-  z-index: 9999;
-  cursor: default;
-}
-
-.token-popup-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 10px;
-}
-
-.token-popup-section {
-  margin-bottom: 2px;
-}
-
-.token-popup-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 3px 0;
-}
-
-.token-popup-label {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.token-popup-value {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-/* 语义色：11px 小字需满足 WCAG AA 4.5:1（对白色背景）。
-   原 indigo-500 / cyan-500 / purple-500 仅 4.46:1 / 2.43:1 / 3.92:1，
-   均不达标，故整体加深到 600~700 档（6.2~7.0:1） */
-.token-popup-value.input {
-  color: #4f46e5;
-}
-
-.token-popup-value.output {
-  color: #0e7490;
-}
-
-.token-popup-value.reasoning {
-  color: #7e22ce;
-}
-
-.token-popup-value.duration-value {
-  color: #4f46e5;
-  font-weight: 600;
-}
-
-.token-popup-context-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  padding: 2px 0 4px;
-}
-
-.token-popup-context-value {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text-primary);
-  font-variant-numeric: tabular-nums;
-}
-
-.token-popup-context-percent {
-  font-size: 13px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.token-popup-divider {
-  height: 1px;
-  background: var(--bg-tertiary);
-  margin: 6px 0;
-}
-
-.token-popup-bar {
-  margin-top: 4px;
-}
-
-.token-popup-bar-inner {
-  height: 5px;
-  border-radius: 3px;
-  overflow: hidden;
-  background: var(--bg-tertiary);
-}
-
-.token-popup-bar-fill {
-  height: 100%;
-  border-radius: 3px;
-  transition: width 0.4s ease;
 }
 
 /* 上传附件 / 联网搜索：与模型选择同规格的图标按钮，
@@ -4350,26 +3854,3 @@ export default {
 /* 「还有 N 位」兜底行（内容未超高、无滚动条时的可达入口） */
 </style>
 
-<style scoped>
-.picker-group {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.picker-group + .picker-group {
-  margin-top: 12px;
-}
-.picker-group-title {
-  padding: 8px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-.skill-picker-header {
-  justify-content: flex-end;
-}
-.skill-picker-item.unavailable {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-</style>

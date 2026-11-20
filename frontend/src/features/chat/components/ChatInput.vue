@@ -949,111 +949,12 @@
             :state="enhancement"
             @enhance="enhancePrompt"
           />
-          <div
-            v-if="showTokenRing"
-            ref="ringRef"
-            class="context-ring-wrapper"
-            @click.stop="toggleTokenPopup"
-          >
-            <svg class="context-ring" viewBox="0 0 36 36">
-              <circle
-                class="context-ring-bg"
-                cx="18"
-                cy="18"
-                r="15.9"
-                fill="none"
-                stroke="#e5e7eb"
-                stroke-width="3"
-              />
-              <circle
-                class="context-ring-fill"
-                cx="18"
-                cy="18"
-                r="15.9"
-                fill="none"
-                :stroke="contextColor"
-                stroke-width="3"
-                stroke-linecap="round"
-                :stroke-dasharray="`${contextPercent} ${100 - contextPercent}`"
-                transform="rotate(-90 18 18)"
-              />
-            </svg>
-            <span class="context-ring-text">{{ contextPercent }}%</span>
-            <Teleport to="body">
-              <div
-                v-if="showTokenPopup"
-                class="token-popup"
-                :style="popupStyle"
-                @click.stop
-              >
-                <div class="token-popup-title">会话信息</div>
-                <div class="token-popup-section">
-                  <div class="token-popup-row">
-                    <span class="token-popup-label">会话耗时</span>
-                    <span class="token-popup-value duration-value">{{
-                      formattedDuration
-                    }}</span>
-                  </div>
-                  <div class="token-popup-row">
-                    <span class="token-popup-label">迭代次数</span>
-                    <span class="token-popup-value">{{ iterationCount }}</span>
-                  </div>
-                </div>
-                <div class="token-popup-divider"></div>
-                <div class="token-popup-section">
-                  <div class="token-popup-row">
-                    <span class="token-popup-label"
-                      >本轮上下文占用{{
-                        sessionUsage.context_estimated ? "（估算）" : ""
-                      }}</span
-                    >
-                  </div>
-                  <div class="token-popup-context-row">
-                    <span class="token-popup-context-value"
-                      >{{ formatTokens(sessionUsage.context_tokens) }}/{{
-                        formatTokens(sessionUsage.context_length)
-                      }}</span
-                    >
-                    <span
-                      class="token-popup-context-percent"
-                      :style="{ color: contextColor }"
-                      >{{ contextPercent }}%</span
-                    >
-                  </div>
-                  <div class="token-popup-bar">
-                    <div class="token-popup-bar-inner">
-                      <div
-                        class="token-popup-bar-fill"
-                        :style="{
-                          width: contextPercent + '%',
-                          background: contextColor,
-                        }"
-                      ></div>
-                    </div>
-                  </div>
-                </div>
-                <div class="token-popup-divider"></div>
-                <div class="token-popup-row">
-                  <span class="token-popup-label">输入 Token</span>
-                  <span class="token-popup-value input">{{
-                    formatTokens(sessionUsage.input_tokens)
-                  }}</span>
-                </div>
-                <div class="token-popup-row">
-                  <span class="token-popup-label">输出 Token</span>
-                  <span class="token-popup-value output">{{
-                    formatTokens(sessionUsage.output_tokens)
-                  }}</span>
-                </div>
-                <div class="token-popup-row">
-                  <span class="token-popup-label">思考 Token</span>
-                  <span class="token-popup-value reasoning">{{
-                    formatTokens(sessionUsage.reasoning_tokens)
-                  }}</span>
-                </div>
-              </div>
-            </Teleport>
-          </div>
+          <TokenUsageRing
+            :session-id="sessionId"
+            :session-usage="sessionUsage"
+            :session-duration="sessionDuration"
+            :iteration-count="iterationCount"
+          />
           <button
             v-if="!isStreaming"
             @click="send"
@@ -1093,95 +994,19 @@
       </div>
     </div>
 
-    <!-- 技能选择面板：输入 / 后出现在输入框上方（Teleport 到 body，避免被输入框裁切） -->
-    <Teleport to="body">
-      <div
-        v-if="skillPickerOpen"
-        ref="skillPickerRef"
-        class="skill-picker"
-        :style="skillPickerStyle"
-        @click.stop
-      >
-        <div class="skill-picker-header">
-          <span class="skill-picker-hint">↑↓ 选择 · Enter 确认 · Esc 关闭</span>
-        </div>
-
-        <div v-if="skillPickerLoading" class="skill-picker-state">
-          正在加载技能…
-        </div>
-        <div
-          v-if="menuItems.length === 0 && !skillPickerLoading"
-          class="skill-picker-state"
-        >
-          {{
-            skillOptions.length === 0
-              ? "没有匹配项，可到技能中心添加并启用技能"
-              : "没有匹配的指令或技能"
-          }}
-        </div>
-
-        <div
-          v-if="menuItems.length"
-          class="skill-picker-list"
-          role="listbox"
-          aria-label="指令和技能"
-        >
-          <ul
-            v-for="group in pickerGroups"
-            :key="group.title"
-            class="picker-group"
-            role="group"
-            :aria-label="group.title"
-          >
-            <li class="picker-group-title" role="presentation">
-              {{ group.title }} ({{ group.rows.length }})
-            </li>
-            <li
-              v-for="row in group.rows"
-              :key="
-                (row.skill.command ? 'command:' : 'skill:') + row.skill.dir_name
-              "
-              class="skill-picker-item"
-              :class="{
-                active: row.index === skillPickerIndex,
-                unavailable: row.skill.disabled,
-              }"
-              :aria-disabled="row.skill.disabled ? 'true' : 'false'"
-              role="option"
-              :aria-selected="row.index === skillPickerIndex ? 'true' : 'false'"
-              @mouseenter="skillPickerIndex = row.index"
-              @mousedown.prevent="selectSkill(row.skill)"
-              @click="selectSkill(row.skill)"
-            >
-              <SkillIcon
-                :icon="row.skill.icon"
-                :category="iconCategoryFor(row.skill.category_id)"
-                size="xs"
-              />
-              <span class="skill-picker-body">
-                <span class="skill-picker-name"
-                  ><span
-                    v-for="(part, pi) in row.nameParts"
-                    :key="'n' + pi"
-                    :class="{ 'skill-picker-hit': part.hit }"
-                    >{{ part.text }}</span
-                  ></span
-                >
-                <span class="skill-picker-desc"
-                  ><span
-                    v-for="(part, pi) in row.descParts"
-                    :key="'d' + pi"
-                    :class="{ 'skill-picker-hit': part.hit }"
-                    >{{ part.text }}</span
-                  ></span
-                >
-              </span>
-              <span class="skill-picker-slash">/{{ row.skill.dir_name }}</span>
-            </li>
-          </ul>
-        </div>
-      </div>
-    </Teleport>
+    <SlashSkillPicker
+      ref="skillPickerRef"
+      :open="skillPickerOpen"
+      :loading="skillPickerLoading"
+      :menu-items="menuItems"
+      :skill-options="skillOptions"
+      :picker-groups="pickerGroups"
+      :active-index="skillPickerIndex"
+      :picker-style="skillPickerStyle"
+      :icon-category-for="iconCategoryFor"
+      @hover="skillPickerIndex = $event"
+      @select="selectSkill"
+    />
 
     <div v-if="showFooter" class="input-footer">
       <span class="footer-text">内容由AI生成，请仔细甄别</span>
@@ -1194,6 +1019,8 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from "vue";
 import { commandItems } from "../../../shared/compaction/state.js";
 import FileReferencePicker from "./FileReferencePicker.vue";
 import FileReferenceTag from "./FileReferenceTag.vue";
+import SlashSkillPicker from "./SlashSkillPicker.vue";
+import TokenUsageRing from "./TokenUsageRing.vue";
 import {
   addReference,
   restoreReferenceDraft,
@@ -1257,10 +1084,6 @@ import {
 import { formatSize } from "../../../utils/format.js";
 import SkillPicker from "./SkillPicker.vue";
 import UploadTray from "./UploadTray.vue";
-import {
-  useContextDuration,
-  useContextRing,
-} from "../composables/useContextUsage.js";
 import { useFileReferences } from "../composables/useFileReferences.js";
 import { usePromptEnhancement } from "../composables/usePromptEnhancement.js";
 import ModelPicker from "./ModelPicker.vue";
@@ -1837,15 +1660,7 @@ function updateSkillPickerPosition() {
 
 /** 键盘切换选项时把当前高亮项滚进可视区（只滚列表本身，不带动外层级） */
 function scrollActiveSkillIntoView() {
-  const list = skillPickerRef.value?.querySelector(".skill-picker-list");
-  const item =
-    list?.querySelectorAll(".skill-picker-item")[skillPickerIndex.value];
-  if (!list || !item) return;
-  const top = item.offsetTop;
-  const bottom = top + item.offsetHeight;
-  if (top < list.scrollTop) list.scrollTop = top;
-  else if (bottom > list.scrollTop + list.clientHeight)
-    list.scrollTop = bottom - list.clientHeight;
+  skillPickerRef.value?.scrollActiveIntoView?.(skillPickerIndex.value);
 }
 
 /** 判定光标前是否为「/查询词」（/ 位于开头或空白之后），决定展开或收起面板 */
@@ -2122,8 +1937,7 @@ function closeSkillPickerOnClick(event) {
     if (event.target !== textareaRef.value) closeReference();
   }
   if (!skillPickerOpen.value) return;
-  const picker = skillPickerRef.value;
-  if (picker && picker.contains(event.target)) return;
+  if (skillPickerRef.value?.containsTarget?.(event.target)) return;
   closeSkillPicker();
 }
 
@@ -3163,13 +2977,6 @@ const canSend = computed(() => {
   );
 });
 
-const showTokenPopup = ref(false);
-
-// ========== 会话耗时 ==========
-// 后台未返回耗时数据（sessionDuration<=0）且「会话信息」弹窗打开时，前端按 1s
-// 间隔本地计时，让会话耗时实时更新；后台有数据时直接用后台值。
-const formattedDuration = useContextDuration(props, showTokenPopup);
-
 // 联网开关的真身在本组件，但发送动作不止「输入框回车」一条：消息下方「重新发送」
 // 走的是页面层的 handleRetry，不经过这里。父级没有镜像就只能用默认值 false 发请求，
 // 于是出现「按钮亮着、请求却是关网」。所以状态一变就上报，immediate 保证挂载时先对齐一次。
@@ -3201,36 +3008,6 @@ watch(subpanelKeyword, val => {
 // 技能面板用的是自己的 skillSearch（不是 subpanelKeyword）：漏了这一条，在技能面板里
 // 搜索时列表变了但面板高度不重算 —— 表现就是「搜索后高度不跟着收，只有专家面板对」。
 watch(skillSearch, () => nextTick(syncSubpanelBox));
-
-function toggleTokenPopup() {
-  showTokenPopup.value = !showTokenPopup.value;
-}
-
-function closeTokenPopup() {
-  if (showTokenPopup.value) {
-    showTokenPopup.value = false;
-  }
-}
-
-const { showTokenRing, contextPercent, contextColor } = useContextRing(props);
-
-const ringRef = ref(null);
-
-const popupStyle = computed(() => {
-  if (!ringRef.value) return {};
-  const rect = ringRef.value.getBoundingClientRect();
-  return {
-    position: "fixed",
-    bottom: `${window.innerHeight - rect.top + 10}px`,
-    right: `${window.innerWidth - rect.right - 8}px`,
-  };
-});
-
-function formatTokens(n) {
-  if (!n) return "0";
-  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
-  return n.toString();
-}
 
 /**
  * 确保会话存在并返回 sessionId：并行上传共享同一个创建 Promise，避免重复建会话。
@@ -3710,7 +3487,6 @@ onMounted(() => {
   }
 
   syncMirror();
-  document.addEventListener("click", closeTokenPopup);
   document.addEventListener("click", closeSkillPickerOnClick);
   window.addEventListener("resize", handleViewportChange);
   document.addEventListener("click", closePlusMenu);
@@ -3722,7 +3498,6 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-  document.removeEventListener("click", closeTokenPopup);
   document.removeEventListener("click", closeSkillPickerOnClick);
   window.removeEventListener("resize", handleViewportChange);
   document.removeEventListener("click", closePlusMenu);

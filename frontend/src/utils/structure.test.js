@@ -15,8 +15,8 @@ const srcRoot = path.join(frontendRoot, 'src')
 
 const MAX_NEW_FILE_LINES = 800
 
-/** 现存超大文件的行数预算（当前实测值，只允许下调）。
- * 改动导致行数变化时按实测值更新；拆分文件后同步删除条目。
+/** 现存超大文件的行数预算（上限 = 当前实测值）。
+ * 重构拆分后应下调或删除条目；功能确需增长导致超限时，按实测值更新并在 PR 说明。
  */
 const LINE_BUDGET = {
   'App.vue': 3383,

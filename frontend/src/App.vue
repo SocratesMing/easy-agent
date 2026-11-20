@@ -144,7 +144,7 @@
 </template>
 
 <script setup>
-// 与 frontend-vue2 的同名实现（App.vue / EasyAgentPage.vue）同构：改动需同步两侧。
+// 与 frontend-vue2 的 EasyAgentPage.vue / chatSession.js 等同名实现同构：改动需同步两侧。
 import { referenceMessage } from './shared/fileReferences.js'
 import { API_BASE_URL, APP_WELCOME_TITLE, appRuntime } from './config.js'
 import { readStandaloneSessionLink } from './features/chat/services/sessionNavigation.js'
