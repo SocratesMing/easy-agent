@@ -359,9 +359,11 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 16px;
+  height: 44px;
+  padding: 0 16px;
   border-bottom: 1px solid var(--border-color, #e2e8f0);
   flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .nav-title {

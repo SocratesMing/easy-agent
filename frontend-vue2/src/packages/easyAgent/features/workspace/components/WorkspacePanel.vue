@@ -144,6 +144,7 @@
             :selectedId="selectedFile?.id"
             :depth="0"
             :sessionId="currentSessionId"
+            :taskId="taskId"
             @select="handleSelectFile"
           @download="handleDownloadFile"
           />
@@ -167,6 +168,7 @@
         :filePath="activeTab?.file_path || ''"
         :expertId="activeTab?.expert_id || ''"
         :sessionId="currentSessionId"
+        :taskId="taskId"
         :visible="showPreview"
         inline
         @close="closeTab(activeTabId)"
@@ -179,6 +181,7 @@
 import FileTreeNode from '../../../shared/preview/FileTreeNode.vue'
 import FilePreview from '../../../shared/preview/FilePreview.vue'
 import { getWorkspaceTree } from '../../../api/files'
+import { getScheduledTaskWorkspace } from '../../../api/scheduledTasks.js'
 import { createWorkspaceReveal } from '../../../shared/utils/workspaceReveal.js'
 import { getSessionExperts } from '../../../api/expert.js'
 import { getStoredToken } from '../../../api/auth.js'
@@ -201,6 +204,8 @@ export default {
   props: {
     username: { type: String, default: '' },
     currentSessionId: { type: String, default: null },
+    // 定时任务工作目录模式：传入 taskId 时改为读取该任务的工作目录
+    taskId: { type: String, default: '' },
     isStreaming: { type: Boolean, default: false },
     visible: { type: Boolean, default: true },
   },
@@ -242,6 +247,10 @@ export default {
     // 有激活的文件 tab 即处于预览态（沿用原 showPreview 的语义）
     showPreview() {
       return this.activeTab !== null
+    },
+    // 数据源标识：定时任务工作目录（taskId）优先，否则会话工作区（currentSessionId）。
+    activeSourceKey() {
+      return this.taskId || this.currentSessionId || ''
     },
     panelStyle() {
       if (this.isFullscreen) {
@@ -290,18 +299,22 @@ export default {
       },
     ],
     isStreaming(newVal, oldVal) {
+      if (this.taskId) {
+        if (oldVal && !newVal) setTimeout(() => this.refresh(), 300)
+        return
+      }
       if (newVal && !oldVal) this.workspaceReveal().remember(this.currentSessionId)
       if (oldVal && !newVal) {
         const sessionId = this.currentSessionId
         this.workspaceReveal().reveal({
           sessionId,
-          stillCurrent: () => Boolean(sessionId) && sessionId === this.currentSessionId && !this.isStreaming,
+          stillCurrent: () => Boolean(sessionId) && sessionId === this.currentSessionId && !this.isStreaming && !this.taskId,
           refresh: () => this.buildWorkspaceTree(),
           onExpand: () => { if (!this.visible) this.$emit('expand') },
         })
       }
     },
-    currentSessionId() {
+    activeSourceKey() {
       this.resetWorkspaceView()
       this.refresh()
     },
@@ -382,8 +395,10 @@ export default {
       localStorage.setItem(WIDTH_KEY, String(Math.round(this.panelWidth)))
     },
     async buildWorkspaceTree() {
+      const taskId = this.taskId
       const sessionId = this.currentSessionId
-      if (!sessionId) {
+      const sourceKey = taskId || sessionId
+      if (!sourceKey) {
         this.workspaceTreeData = []
         return
       }
@@ -391,11 +406,13 @@ export default {
       this.error = null
       try {
         const [response, expertEntries] = await Promise.all([
-          getWorkspaceTree('', sessionId),
-          this.buildExpertMdEntries(sessionId),
+          taskId
+            ? getScheduledTaskWorkspace(taskId, '')
+            : getWorkspaceTree('', sessionId),
+          taskId ? Promise.resolve([]) : this.buildExpertMdEntries(sessionId),
         ])
-        // 切换会话期间到达的旧响应丢弃，避免工作区内容串会话
-        if (this.currentSessionId !== sessionId) return
+        // 切换来源期间到达的旧响应丢弃，避免工作区内容串会话 / 串任务
+        if (this.activeSourceKey !== sourceKey) return
         this.workspaceTreeData = [
           // 本会话创建的专家：提示词 MD 置于文件树顶部（只读虚拟文件）
           ...expertEntries,
@@ -412,11 +429,11 @@ export default {
           })),
         ]
       } catch (e) {
-        if (this.currentSessionId !== sessionId) return
+        if (this.activeSourceKey !== sourceKey) return
         this.error = '加载工作区失败: ' + e.message
         this.workspaceTreeData = []
       } finally {
-        if (this.currentSessionId === sessionId) this.isLoading = false
+        if (this.activeSourceKey === sourceKey) this.isLoading = false
       }
     },
     /**
@@ -488,10 +505,15 @@ export default {
       const token = getStoredToken()
       const params = new URLSearchParams()
       params.set('file_path', filePath)
-      params.set('session_id', this.currentSessionId)
       params.set('download', 'true')
       if (token) params.set('token', token)
-      const url = resolveUrl(`/agent/files/preview?${params.toString()}`)
+      let url
+      if (this.taskId) {
+        url = resolveUrl(`/agent/scheduled-tasks/${this.taskId}/workspace/file?${params.toString()}`)
+      } else {
+        params.set('session_id', this.currentSessionId)
+        url = resolveUrl(`/agent/files/preview?${params.toString()}`)
+      }
       const link = document.createElement('a')
       link.href = url
       link.download = file.name
