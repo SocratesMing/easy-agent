@@ -34,7 +34,6 @@ def build_health_router(
         return HealthResponse(status="live")
 
     @router.get("/agent/version", summary="部署版本")
-    @router.get("/api/version", summary="部署版本")
     async def version_info():
         return get_version_info()
 

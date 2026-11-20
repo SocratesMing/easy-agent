@@ -484,7 +484,7 @@ import {
   updateKnowledgeBase, uploadDocument,
 } from './api.js'
 export default {
-  mixins: [knowledgeCitationMixin],
+  mixins: [knowledgeCitationMixin], beforeUnmount() { this.disposeCitations() },
   components: {
     CitationPopover,
     ChatMessage,

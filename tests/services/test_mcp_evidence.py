@@ -271,6 +271,15 @@ def test_truncation_caps_content_and_marks_evidence(monkeypatch):
     assert len(out) < 400
 
 
+def test_default_limit_allows_deepagents_eviction_threshold():
+    # FilesystemMiddleware 默认在 20,000 tokens（约 80,000 字符）触发落盘，
+    # MCP 包装层不应在 80,000 字符内提前截断导致无法落盘。
+    assert mcp_evidence.DEFAULT_MAX_CONTENT_CHARS > 80_000
+    wrapped = wrap_mcp_tool(SyncEchoTool(), server="demo")
+    out = wrapped.invoke({"text": "x" * 90_000})
+    assert "truncated=false" in out
+
+
 def test_multimodal_blocks_keep_images():
     wrapped = wrap_mcp_tool(ImageTool(), server="demo")
 

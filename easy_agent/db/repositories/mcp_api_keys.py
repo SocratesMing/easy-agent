@@ -51,3 +51,19 @@ def get_mcp_api_keys(db, username: str) -> list[dict]:
         )
         rows = cursor.fetchall()
     return [dict(r) if not isinstance(r, dict) else r for r in rows]
+
+
+class McpApiKeyRepository:
+    """MCP API Key 领域 repository。"""
+
+    def __init__(self, db) -> None:
+        self._db = db
+
+    def issue_mcp_api_key(self, username: str, business: str, key_hash: str) -> bool:
+        return issue_mcp_api_key(self._db, username, business, key_hash)
+
+    def revoke_mcp_api_key(self, username: str, business: str) -> bool:
+        return revoke_mcp_api_key(self._db, username, business)
+
+    def get_mcp_api_keys(self, username: str) -> list[dict]:
+        return get_mcp_api_keys(self._db, username)

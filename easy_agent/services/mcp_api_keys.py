@@ -11,8 +11,7 @@ import hashlib
 import logging
 import secrets
 
-from easy_agent.db import get_database
-from easy_agent.db.repositories import mcp_api_keys
+from easy_agent.db.providers import get_mcp_api_key_repository
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +29,8 @@ def issue_api_key(username: str, business: str) -> str:
     同一 (用户, 业务) 重复签发会覆盖旧哈希，旧 Key 立即失效。
     """
     api_key = _KEY_PREFIX + secrets.token_urlsafe(32)
-    mcp_api_keys.issue_mcp_api_key(
-        get_database(), username, business, hash_api_key(api_key)
+    get_mcp_api_key_repository().issue_mcp_api_key(
+        username, business, hash_api_key(api_key)
     )
     logger.info(f"签发 MCP API Key | 用户: {username} | 业务: {business}")
     return api_key

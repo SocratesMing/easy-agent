@@ -32,8 +32,10 @@ from pydantic import Field
 
 logger = logging.getLogger("easy-agent")
 
-# 单次 MCP 结果进入模型上下文的文本上限（字符）。图片 / 文件等二进制块不截断。
-DEFAULT_MAX_CONTENT_CHARS = 20000
+# 单次 MCP 结果进入模型上下文的文本上限（字符）。设为 200_000（高于 DeepAgents
+# FilesystemMiddleware 的 20,000 token ≈ 80,000 字符落盘阈值），确保常规大结果
+# 完整交给框架自动落盘到 /large_tool_results/ 供 read_file 按需读取，而非在此提前截断。
+DEFAULT_MAX_CONTENT_CHARS = 200_000
 # 截断提示必须说清「截断≠数据量」并给出正确出路（分页），否则模型会把
 # truncated=true 读成「数据还有更多」，转而用缩小时间窗口反复查询来数总数——
 # 那是探索型死循环的主要驱动之一。

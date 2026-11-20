@@ -23,6 +23,7 @@ from easy_agent.db.repositories.agent_runs import AgentRunRepository
 from easy_agent.db.repositories.agent_state import AgentStateRepository
 from easy_agent.db.repositories.expert_repository import ExpertRepository
 from easy_agent.db.repositories.file_repository import FileRepository
+from easy_agent.db.repositories.mcp_api_keys import McpApiKeyRepository
 from easy_agent.db.repositories.rate_limits import RateLimitRepository
 from easy_agent.db.repositories.scheduled_task_repository import (
     ScheduledTaskRepository,
@@ -39,6 +40,7 @@ __all__ = [
     "get_agent_state_repository",
     "get_expert_repository",
     "get_file_repository",
+    "get_mcp_api_key_repository",
     "get_message_repository",
     "get_session_repository",
     "get_session_runtime_repository",
@@ -107,3 +109,8 @@ def get_rate_limit_repository() -> RateLimitRepository:
 def get_token_usage_repository() -> TokenUsageRepository:
     """进程级 Token 账本 repository（模型采集器使用）。"""
     return TokenUsageRepository(get_database())
+
+
+def get_mcp_api_key_repository() -> McpApiKeyRepository:
+    """进程级 MCP API Key repository。"""
+    return McpApiKeyRepository(get_database())

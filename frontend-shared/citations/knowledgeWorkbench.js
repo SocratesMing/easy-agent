@@ -14,6 +14,4 @@ export default {
     selectedBaseId() { this.closeCitation() },
     askOpen(open) { if (!open) this.closeCitation() },
   },
-  // Vue 2 的 beforeDestroy 由共享 mixin 提供；Vue 3 使用此钩子。
-  beforeUnmount() { this.disposeCitations() },
 }

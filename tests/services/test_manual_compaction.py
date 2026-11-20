@@ -232,7 +232,7 @@ async def test_compact_after_failed_generation_uses_summary_on_next_turn(tmp_pat
 
 
 async def test_pending_graph_interrupt_is_not_abandoned_by_compaction(tmp_path):
-    from fastapi import HTTPException
+    from easy_agent.models.exceptions import ConflictError
     from langgraph.types import interrupt
 
     async with AsyncSqliteSaver.from_conn_string(str(tmp_path / 'c.db')) as saver:
@@ -244,10 +244,9 @@ async def test_pending_graph_interrupt_is_not_abandoned_by_compaction(tmp_path):
         await a.agent.ainvoke({'messages': [HumanMessage(content='approval', id='approval')]},
                              {'configurable': {'thread_id': 's1'}})
         before = await a.agent.aget_state({'configurable': {'thread_id': 's1'}})
-        with pytest.raises(HTTPException) as error:
+        with pytest.raises(ConflictError):
             await compaction._prepare_and_commit(repo(history()), runtime(tmp_path), a,
                                                 repo(history()).get_owned_session('s1', 'tester'), 'operation', 'blocked')
-        assert error.value.status_code == 409
         after = await a.agent.aget_state({'configurable': {'thread_id': 's1'}})
         assert after == before
 
@@ -376,14 +375,13 @@ async def test_successful_mismatch_replaces_only_at_commit(tmp_path):
 
 
 async def test_same_database_rejected_and_expired_cancelled_leases_fenced(tmp_path):
-    from fastapi import HTTPException
+    from easy_agent.models.exceptions import ConflictError
     rt = runtime(tmp_path)
     async with AsyncSqliteSaver.from_conn_string(rt._db.db_path) as saver:
         a = agent(saver, tmp_path)
-        with pytest.raises(HTTPException) as error:
+        with pytest.raises(ConflictError):
             await compaction._prepare_and_commit(repo(history()), rt, a,
                                                 repo(history()).get_owned_session('s1', 'tester'), 'operation', 'same-db')
-        assert error.value.status_code == 409
     expired = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
     rt.upsert_session_runtime('s1', stream_until=expired)
     assert not rt.renew_stream_lease('s1', 'operation')

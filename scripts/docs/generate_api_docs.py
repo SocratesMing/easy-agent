@@ -72,6 +72,7 @@ MODULE_LABELS = [
     ("/agent/health", "健康检查"),
     ("/agent/live", "健康检查"),
     ("/agent/ready", "健康检查"),
+    ("/agent/version", "部署版本"),
     ("/agent/config", "配置"),
     # 兼容宿主/旧前端的 /api 前缀（后端 LegacyHostRoutes 之外，少量直挂路由）
     ("/api/health", "健康检查(legacy)"),

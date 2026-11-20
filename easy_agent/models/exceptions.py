@@ -55,9 +55,24 @@ class BadRequestError(DomainError):
     """
 
 
+class UnprocessableError(DomainError):
+    """请求语义或参数在当前配置下不可处理（HTTP 映射 422）。"""
+
+
+class BadGatewayError(DomainError):
+    """上游模型或外部依赖执行失败（HTTP 映射 502）。"""
+
+
+class GatewayTimeoutError(DomainError):
+    """上游模型或外部依赖执行超时（HTTP 映射 504）。"""
+
+
 __all__ = [
+    "BadGatewayError",
     "BadRequestError",
     "ConflictError",
     "DomainError",
+    "GatewayTimeoutError",
     "NotFoundError",
+    "UnprocessableError",
 ]

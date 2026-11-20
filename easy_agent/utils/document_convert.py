@@ -8,12 +8,13 @@ pptx/xlsx/docx，输出为标准 PDF，由浏览器内置查看器渲染（多�
 
 import hashlib
 import logging
-import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+from easy_agent.bootstrap.env import env_str
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ def _find_soffice() -> str | None:
                 return str(executable)
     elif sys.platform == "win32":
         for env_name in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
-            root = os.environ.get(env_name)
+            root = env_str(env_name, strip=False)
             if not root:
                 continue
             for binary in ("soffice.com", "soffice.exe"):

@@ -194,17 +194,17 @@ def gap_fingerprint(gaps: dict[str, SkillGap]) -> list[str]:
 def format_gap_hint(gap: SkillGap) -> str:
     """技能清单里给单个技能追加的提示行（一两行，不展开全部工具名）。"""
     shown = "、".join(gap.missing[:_MAX_SHOWN])
-    more = f" 共 {len(gap.missing)} 个" if len(gap.missing) > _MAX_SHOWN else ""
+    more = f" 等共 {len(gap.missing)} 个" if len(gap.missing) > _MAX_SHOWN else ""
     if gap.fully_missing:
         return (
             f"  -> ⛔ 数据通道未接入：本技能需要的工具（{shown}{more}）"
-            "在本会话全部不可用。不要读完文档再重试、也不要换参数试探："
-            "直接告知用户「数据未就位」，并说明缺少哪类能力"
-            "（数据服务未接入 / 该操作当前不可用）。"
+            "在本会话全部不可用。**严禁再读取 SKILL.md 核对或换参数试探**："
+            "立即停止尝试并直接告知用户「数据未就位」，明确列出上述缺失工具/服务。"
         )
     return (
         f"  -> ⚠️ 部分取数工具未就位（{shown}{more}）："
-        "涉及这些工具的步骤直接说明「数据未就位」，不要重复读取文档或换参数重试。"
+        "涉及这些缺失工具的步骤直接告知用户「数据未就位」并跳过，"
+        "**严禁重复读取 SKILL.md 核对或换参数重试**。"
     )
 
 

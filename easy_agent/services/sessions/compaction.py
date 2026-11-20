@@ -6,7 +6,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi import HTTPException
+from easy_agent.models.exceptions import (
+    BadGatewayError,
+    ConflictError,
+    DomainError,
+    GatewayTimeoutError,
+    UnprocessableError,
+)
 from langchain_core.messages import RemoveMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
@@ -131,9 +137,9 @@ async def _execute(repo, session, username, model, request_id, identity):
 
         config = (get_agent_config() or {}).get("config")
         if reason := unsupported_reason(config):
-            raise HTTPException(409, reason)
+            raise ConflictError(reason)
         if model and model not in config.models:
-            raise HTTPException(422, "所选模型不可用")
+            raise UnprocessableError("所选模型不可用")
         sid = session.session_id
         runtime = get_session_runtime_repository()
         owner = f"{instance_owner()}:compact:{uuid.uuid4()}"
@@ -141,11 +147,11 @@ async def _execute(repo, session, username, model, request_id, identity):
         until = (now + timedelta(seconds=30)).isoformat(timespec="seconds")
         acquired, _ = await run_blocking(runtime.try_acquire_session_stream, sid, owner, until, now.isoformat(timespec="seconds"))
         if not acquired:
-            raise HTTPException(409, "会话正在生成或压缩，请稍后重试")
+            raise ConflictError("会话正在生成或压缩，请稍后重试")
         heartbeat = None
         try:
             if is_session_streaming(sid):
-                raise HTTPException(409, "会话仍在生成，请稍后重试")
+                raise ConflictError("会话仍在生成，请稍后重试")
             async def heartbeat_loop():
                 while True:
                     await asyncio.sleep(HEARTBEAT_SECONDS)
@@ -155,12 +161,12 @@ async def _execute(repo, session, username, model, request_id, identity):
             heartbeat = asyncio.create_task(heartbeat_loop())
             async def prepare():
                 if await run_blocking(get_agent_run_repository().has_other_live_run, sid, "", datetime.now(UTC).isoformat(timespec="seconds")):
-                    raise HTTPException(409, "会话仍有运行任务，请稍后重试")
+                    raise ConflictError("会话仍有运行任务，请稍后重试")
                 agent = await get_or_create_agent_for_session(
                     sid, username=username, workspace_name=session.workspace_name, model_name=model,
                 )
                 if not session_thread_active(agent) or agent.agent.checkpointer is not get_session_checkpointer(sid):
-                    raise HTTPException(409, "当前实际 checkpointer 不支持手动压缩")
+                    raise ConflictError("当前实际 checkpointer 不支持手动压缩")
                 return await _prepare_and_commit(repo, runtime, agent, session, owner, request_id)
 
             work = asyncio.create_task(prepare())
@@ -172,16 +178,16 @@ async def _execute(repo, session, username, model, request_id, identity):
                 await asyncio.gather(work, return_exceptions=True)
                 if heartbeat in done:
                     await heartbeat
-                raise HTTPException(504, "压缩超时；请使用原请求标识查询结果")
+                raise GatewayTimeoutError("压缩超时；请使用原请求标识查询结果")
             finally:
                 if not work.done():
                     work.cancel()
                     await asyncio.gather(work, return_exceptions=True)
-        except HTTPException:
+        except DomainError:
             raise
         except Exception as exc:
             logger.exception("手动压缩失败 session=%s request=%s", sid, request_id)
-            raise HTTPException(502, "压缩失败，请查询原请求结果后重试") from exc
+            raise BadGatewayError("压缩失败，请查询原请求结果后重试") from exc
         finally:
             if heartbeat:
                 heartbeat.cancel()
@@ -193,14 +199,14 @@ async def _prepare_and_commit(repo, runtime, agent, session, owner, request_id):
     sid = session.session_id
     session = await run_blocking(repo.get_owned_session, sid, session.username)
     if _pending(session.messages or []):
-        raise HTTPException(409, "会话正在等待审批，请先处理审批")
+        raise ConflictError("会话正在等待审批，请先处理审批")
     graph = agent.agent
     if not await independent_checkpoint(runtime, graph.checkpointer):
-        raise HTTPException(409, "手动压缩需要业务库与 checkpoint 使用独立的数据库文件")
+        raise ConflictError("手动压缩需要业务库与 checkpoint 使用独立的数据库文件")
     config = build_run_config(agent, sid)
     state = await graph.aget_state(config)
     if _unfinished_work(state):
-        raise HTTPException(409, "会话有待执行任务或审批，无法压缩")
+        raise ConflictError("会话有待执行任务或审批，无法压缩")
     node = terminal_update_node(graph)
     values = state.values or {}
     existing = dict(values.get("context_compactions") or {})
@@ -208,7 +214,7 @@ async def _prepare_and_commit(repo, runtime, agent, session, owner, request_id):
         return response(sid, existing[request_id])
     history = session.messages or []
     if not any(row.get("role") == "user" for row in history):
-        raise HTTPException(409, "请先开始对话")
+        raise ConflictError("请先开始对话")
     plan = await plan_turn(agent, session_id=sid, turn_id="compact-placeholder", history=history, raw="", dry_run=True)
     additions = plan.messages[:-1]  # 不写入伪造的本轮用户消息。
     reset = plan.mode in ("hydrate", "rehydrate")

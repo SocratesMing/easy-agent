@@ -43,10 +43,13 @@ from easy_agent.knowledges.facade import knowledge_router
 from easy_agent.knowledges.personnel import router as personnel_router
 from easy_agent.agent.model import create_model
 from easy_agent.models.exceptions import (
+    BadGatewayError,
     BadRequestError,
     ConflictError,
     DomainError,
+    GatewayTimeoutError,
     NotFoundError,
+    UnprocessableError,
 )
 from easy_agent.utils.paths import PROJECT_ROOT
 from easy_agent.utils.version_info import get_version_info
@@ -674,6 +677,9 @@ _DOMAIN_ERROR_STATUS: dict[type[DomainError], int] = {
     BadRequestError: 400,
     NotFoundError: 404,
     ConflictError: 409,
+    UnprocessableError: 422,
+    BadGatewayError: 502,
+    GatewayTimeoutError: 504,
 }
 
 
