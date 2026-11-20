@@ -38,8 +38,8 @@ def find_skills_root(skills_dir: str | None = None) -> str | None:
         if not p.exists():
             try:
                 p.mkdir(parents=True, exist_ok=True)
-            except Exception:  # noqa: S110 - 外部挂载点可能无需创建，失败也保持配置值不回退
-                pass
+            except Exception as exc:  # noqa: BLE001 - 外部挂载点可能无需创建，失败也保持配置值不回退
+                logger.debug("创建技能根目录 %s 失败，保留配置值: %s", p, exc)
         return str(p.absolute())
 
     search_paths = [

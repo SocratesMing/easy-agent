@@ -138,8 +138,8 @@ def get_context_length() -> int | None:
         cfg = get_agent_config()
         if cfg and cfg.get("config"):
             return cfg["config"].llm.context_length
-    except Exception:  # noqa: S110 - 运行期配置不可用时回退到下面对 Config.load() 的兜底读取
-        pass
+    except Exception as exc:  # noqa: BLE001 - 运行期配置不可用时回退到下面对 Config.load() 的兜底读取
+        logger.debug("读取运行期 context_length 失败，回退 Config.load(): %s", exc)
     try:
         cfg = Config.load()
         return cfg.llm.context_length if cfg and cfg.llm else None

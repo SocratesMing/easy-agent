@@ -409,8 +409,8 @@ async def _pump_pty_input(websocket: WebSocket, master_fd: int) -> None:
                 try:
                     data = text.encode("utf-8")
                     os.write(master_fd, data)
-                except Exception:  # noqa: BLE001, S110 - 客户端断开/pty 已关闭时丢弃本次输入
-                    pass
+                except Exception as exc:  # noqa: BLE001 - 客户端断开/pty 已关闭时丢弃本次输入
+                    logger.debug("写入终端 pty 失败（连接或 pty 可能已关闭）: %s", exc)
     except WebSocketDisconnect:
         pass
     except Exception as e:

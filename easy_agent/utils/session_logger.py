@@ -131,8 +131,8 @@ class SessionLogger:
             _cfg = get_runtime_agent_config()
             if _cfg:
                 return _cfg.get("system_prompt", "") or ""
-        except Exception:  # noqa: S110 - 配置未初始化时返回空提示词
-            pass
+        except Exception as exc:  # noqa: BLE001 - 配置未初始化时返回空提示词
+            logger.debug("读取默认 system_prompt 失败: %s", exc)
         return ""
 
     @staticmethod

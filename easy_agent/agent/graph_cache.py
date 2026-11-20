@@ -151,8 +151,8 @@ def _schema_fingerprint(schema: Any) -> Any:
     if hasattr(schema, "model_json_schema"):
         try:
             return schema.model_json_schema()
-        except Exception:  # noqa: BLE001, S110 - 指纹失败时退回 repr
-            pass
+        except Exception as exc:  # noqa: BLE001 - 指纹失败时退回 repr
+            logger.debug("schema.model_json_schema() 失败，回退 repr: %s", exc)
     return repr(schema)
 
 
@@ -625,14 +625,14 @@ def resolve_tool_for_context(tool: Any, context: Any) -> Any:
     if callable(model_copy):
         try:
             return model_copy(update=updates)
-        except Exception:  # noqa: BLE001, S110 - 非 pydantic 工具退回浅拷贝
-            pass
+        except Exception as exc:  # noqa: BLE001 - 非 pydantic 工具退回浅拷贝
+            logger.debug("tool.model_copy 失败，回退浅拷贝: %s", exc)
     clone = copy.copy(tool)
     for name, value in updates.items():
         try:
             setattr(clone, name, value)
-        except Exception:  # noqa: BLE001, S110 - 只读字段忽略
-            pass
+        except Exception as exc:  # noqa: BLE001 - 只读字段忽略
+            logger.debug("跳过工具只读字段 %s: %s", name, exc)
     return clone
 
 

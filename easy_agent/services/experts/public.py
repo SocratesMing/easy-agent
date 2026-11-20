@@ -248,8 +248,8 @@ def _as_str_list(value: Any) -> list[str]:
                 parsed = json.loads(text)
                 if isinstance(parsed, list):
                     return [str(v).strip() for v in parsed if str(v).strip()]
-            except Exception:  # noqa: BLE001, S110 - 非法 JSON 回退按逗号分隔解析
-                pass
+            except Exception as exc:  # noqa: BLE001 - 非法 JSON 回退按逗号分隔解析
+                logger.debug("解析专家标签 JSON 失败，回退逗号分隔: %s", exc)
         return [part.strip() for part in text.replace("，", ",").split(",") if part.strip()]
     return []
 

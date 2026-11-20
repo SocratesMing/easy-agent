@@ -244,8 +244,8 @@ def resolve_chat_context(agent) -> tuple[int | None, int | None, int]:
 def resolve_resume_context(agent) -> tuple[int, int]:
     """恢复流的上下文窗口/自动压缩点。
 
-    与 chat 流口径一致：取「本次实际使用的模型」的窗口，并按阈值折算自动压缩点；
-    取不到时返回 0（前端上下文占用率会显示为 0/N）。
+    与 chat 流口径一致：取「本次实际使用的模型」的窗口（``resolve_context_length``，
+    兜底 1_000_000），并按阈值折算自动压缩点。
     """
     context_length = resolve_context_length(
         getattr(agent, "config", None), getattr(agent, "model_name", None)

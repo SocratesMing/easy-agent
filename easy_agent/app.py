@@ -1,9 +1,7 @@
 """FastAPI application entry point"""
 
 import asyncio
-import gzip
 import logging
-import mimetypes
 import os
 from easy_agent.bootstrap.env import env_bool
 import platform
@@ -17,17 +15,15 @@ from easy_agent.bootstrap.initialization import initialize_runtime
 
 runtime_initialization = initialize_runtime()
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from easy_agent.middleware import get_current_username
 from easy_agent.middleware.metrics import MetricsMiddleware
 from easy_agent.middleware.rate_limit import RateLimitMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import JSONResponse
 from langchain_core.messages import HumanMessage
-from starlette.concurrency import run_in_threadpool
 
 from easy_agent.bootstrap.config import AgentConfig
 from easy_agent.db import init_database
@@ -46,7 +42,6 @@ from easy_agent.knowledges.facade import (
 from easy_agent.knowledges.facade import knowledge_router
 from easy_agent.knowledges.personnel import router as personnel_router
 from easy_agent.agent.model import create_model
-from easy_agent.models.api import HealthResponse
 from easy_agent.models.exceptions import (
     BadRequestError,
     ConflictError,
@@ -57,7 +52,6 @@ from easy_agent.utils.paths import PROJECT_ROOT
 from easy_agent.utils.version_info import get_version_info
 from easy_agent.services.agents.manager import (
     drain_stream_tasks,
-    get_agent_config,
     init_agent_config,
 )
 from easy_agent.services.streaming.events import flush_all_stream_events
@@ -89,14 +83,14 @@ from easy_agent.api import (
     usage_router,
     viz_router,
 )
-from easy_agent.services.metrics import snapshot_metrics
-from easy_agent.services.health import ping_database, workspace_writable
+from easy_agent.api.health import build_health_router
+from easy_agent.api.static import build_static_router
 from easy_agent.services.streaming.runs import start_run_recovery
 from easy_agent.services.sessions.upload_storage import preflight_upload_store
 from easy_agent.persistence.stores import reset_store
 from easy_agent.sandboxing.sandbox import log_sandbox_startup_report
 from easy_agent.bootstrap.runtime_features import check_multi_replica_startup
-from easy_agent.utils.auth import SECRET_FINGERPRINT, is_super_admin, validate_production_jwt_secret
+from easy_agent.utils.auth import SECRET_FINGERPRINT, validate_production_jwt_secret
 from easy_agent.persistence.checkpoints import shutdown_checkpointers
 from easy_agent.services.mcp.sessions import aclose_mcp_sessions
 from easy_agent.services.streaming.runs import stop_run_recovery
@@ -758,206 +752,10 @@ app.include_router(expert_router)
 app.include_router(usage_router)
 # 对话内可视化的沙箱框架页与图表库（不需要登录，见 api/viz.py）
 app.include_router(viz_router)
-
-
-@app.get("/agent/live", summary="存活检查（liveness）", response_model=HealthResponse)
-@app.get("/api/live", summary="存活检查（liveness）", response_model=HealthResponse)
-async def liveness():
-    return HealthResponse(status="live")
-
-
-@app.get("/agent/version", summary="部署版本")
-@app.get("/api/version", summary="部署版本")
-async def version_info():
-    return get_version_info()
-
-
-@app.get("/agent/health", summary="健康检查", response_model=HealthResponse)
-async def health_check():
-    return await liveness()
-
-
-async def _readiness_payload() -> HealthResponse:
-
-    # 探针每隔几秒就来一次：查库和写盘检查都放进线程，库慢或盘慢时不拖住事件循环
-    db_ok, db_detail = await asyncio.to_thread(ping_database, db_instance)
-    workspace_dir = "./workspace"
-    try:
-        cfg = get_agent_config()
-        if cfg and cfg.get("config"):
-            workspace_dir = cfg["config"].agent.workspace_dir
-    except Exception:  # noqa: S110 - 运行期配置缺失时按默认 workspace 目录探测可写性
-        pass
-    ws_ok, ws_detail = await asyncio.to_thread(workspace_writable, workspace_dir)
-    ready = db_ok and ws_ok and agent_config is not None
-    detail = ""
-    if not db_ok:
-        detail = f"database: {db_detail}"
-    elif not ws_ok:
-        detail = f"workspace: {ws_detail}"
-    elif agent_config is None:
-        detail = "agent not initialized"
-    return HealthResponse(
-        status="ready" if ready else "not_ready",
-        agent_initialized=agent_config is not None,
-        database_initialized=db_instance is not None,
-        database_ready=db_ok,
-        workspace_ready=ws_ok,
-        detail=detail,
+app.include_router(
+    build_health_router(
+        get_db=lambda: db_instance,
+        get_agent_cfg=lambda: agent_config,
     )
-
-
-@app.get("/agent/ready", summary="就绪检查（readiness）", response_model=HealthResponse)
-@app.get("/api/ready", summary="就绪检查（readiness）", response_model=HealthResponse)
-async def readiness():
-    payload = await _readiness_payload()
-    if payload.status != "ready":
-        return JSONResponse(status_code=503, content=payload.model_dump())
-    return payload
-
-
-@app.get("/agent/metrics", summary="运行指标（RED，仅管理员）")
-async def runtime_metrics(
-    username: str = Depends(get_current_username),
-):
-    """进程内 RED 指标 JSON 快照；仅超级管理员可读。
-
-    指标是进程内聚合的，多 worker/多副本需逐实例抓取后由外部汇总。
-    """
-    if not is_super_admin(username):
-        raise HTTPException(status_code=403, detail="仅管理员可以查看运行指标")
-
-    return JSONResponse(content=snapshot_metrics())
-
-
-@app.get("/agent/config", summary="获取Agent配置")
-async def get_config():
-    _cfg = get_agent_config()
-    if _cfg:
-        return {
-            "system_prompt": _cfg["system_prompt"][:100] + "...",
-            "provider": _cfg["config"].llm.provider,
-            "model": _cfg["config"].llm.model,
-        }
-    return {"status": "not initialized"}
-
-
-
-@app.get("/api/health", summary="健康检查", response_model=HealthResponse)
-async def api_health_check():
-    return await health_check()
-
-
-@app.get("/api/config", summary="获取Agent配置")
-async def api_get_config():
-    return await get_config()
-
-
-@app.get("/", response_class=FileResponse)
-async def serve_frontend():
-    index_html = os.path.join(frontend_dist, "index.html")
-    if os.path.exists(index_html):  # noqa: ASYNC240 - 单次 stat，切线程开销更大
-        # 入口 HTML 禁止缓存：打包产物文件名固定（/js/app.js），旧缓存会指向
-        # 已下线的接口/入口，出现 405、旧界面等问题。
-        return FileResponse(
-            index_html,
-            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
-        )
-    return FileResponse(os.path.join(frontend_dist, "index.html"))
-
-
-def _is_within_dir(root: str, path: str) -> bool:
-    """``path`` 是否在 ``root`` 目录内（两者都应是 realpath）；跨盘符视为不在。"""
-    try:
-        return os.path.commonpath([root, path]) == root
-    except ValueError:
-        return False
-
-
-# ── 静态资源 gzip ────────────────────────────────────────────────────
-# 构建产物 27MB（monaco 单 chunk 12MB），后端直接托管 dist 时若不压缩，
-# 首屏要拉几十 MB。这里按扩展名在路由内压缩，而不是挂全局 GZipMiddleware：
-# 全局中间件会把 text/event-stream 攒包，SSE 会变成「一次性到达」
-# （2026-10-15 在 webpack-dev-server 上踩过同样的坑）。
-_STATIC_GZIP_EXTS = {".js", ".mjs", ".css", ".svg", ".json", ".woff", ".woff2", ".ttf"}
-_STATIC_GZIP_MIN_BYTES = 1024
-_STATIC_GZIP_CACHE_MAX = 64
-_static_gzip_cache: dict[str, tuple[int, bytes]] = {}
-
-
-def _accepts_gzip(request: Request) -> bool:
-    encoding = (request.headers.get("accept-encoding") or "").lower()
-    return "gzip" in encoding or "*" in encoding
-
-
-def _gzip_static_file(path: str) -> bytes | None:
-    """读取并压缩静态文件；按 (路径, mtime) 缓存，避免每次请求重复压缩。"""
-    try:
-        stat = os.stat(path)
-    except OSError:
-        return None
-    cached = _static_gzip_cache.get(path)
-    if cached and cached[0] == stat.st_mtime_ns:
-        return cached[1]
-    with open(path, "rb") as f:
-        raw = f.read()
-    if len(raw) < _STATIC_GZIP_MIN_BYTES:
-        return None
-    body = gzip.compress(raw, compresslevel=6)
-    if len(_static_gzip_cache) >= _STATIC_GZIP_CACHE_MAX:
-        _static_gzip_cache.clear()
-    _static_gzip_cache[path] = (stat.st_mtime_ns, body)
-    return body
-
-
-@app.get("/{full_path:path}", response_class=FileResponse)
-async def serve_static(full_path: str, request: Request):
-    # /agent/* 是接口命名空间，未匹配到任何路由时必须返回 JSON 404。
-    # 否则会落到下面的 SPA 兜底、以 200 + text/html 返回 index.html，
-    # 前端 response.json() 报 "Unexpected token '<'"，把「接口不存在
-    # （后端没重启 / 版本过旧）」这个真实原因完全掩盖掉。
-    if full_path == "agent" or full_path.startswith("agent/"):
-        return JSONResponse({"detail": "Not Found"}, status_code=404)
-
-    # SEC-02：先解析再校验必须落在构建目录内。os.path.join 遇到绝对路径会丢掉
-    # 前缀（``GET //etc/passwd``），``%2e%2e/`` 也能逃出目录。
-    dist_root = os.path.realpath(frontend_dist)  # noqa: ASYNC240 - 单次路径解析，切线程开销更大
-    static_file = os.path.realpath(os.path.join(dist_root, full_path))  # noqa: ASYNC240 - 单次路径解析
-    if not _is_within_dir(dist_root, static_file):
-        return JSONResponse({"detail": "Not Found"}, status_code=404)
-    if os.path.isfile(static_file):  # noqa: ASYNC240 - 单次 stat，切线程开销更大
-        # 静态产物文件名固定（/js/app.js）：no-cache 禁止启发式强缓存，
-        # 强制走协商缓存（ETag/Last-Modified 变了即拉新），新版本部署后普通刷新即可生效。
-        if (
-            os.path.splitext(static_file)[1].lower() in _STATIC_GZIP_EXTS
-            and _accepts_gzip(request)
-        ):
-            compressed = await run_in_threadpool(_gzip_static_file, static_file)
-            if compressed is not None:
-                etag = f'W/"{os.stat(static_file).st_mtime_ns}-{len(compressed)}"'
-                if request.headers.get("if-none-match") == etag:
-                    return Response(
-                        status_code=304,
-                        headers={"ETag": etag, "Vary": "Accept-Encoding", "Cache-Control": "no-cache"},
-                    )
-                media_type = mimetypes.guess_type(static_file)[0] or "application/octet-stream"
-                return Response(
-                    content=compressed,
-                    media_type=media_type,
-                    headers={
-                        "Content-Encoding": "gzip",
-                        "Vary": "Accept-Encoding",
-                        "Cache-Control": "no-cache",
-                        "ETag": etag,
-                    },
-                )
-        return FileResponse(static_file, headers={"Cache-Control": "no-cache"})
-
-    index_html = os.path.join(frontend_dist, "index.html")
-    if os.path.exists(index_html):  # noqa: ASYNC240 - 单次 stat，切线程开销更大
-        return FileResponse(
-            index_html,
-            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
-        )
-
-    return JSONResponse({"error": "Not found"}, status_code=404)
+)
+app.include_router(build_static_router(get_frontend_dist=lambda: frontend_dist))
