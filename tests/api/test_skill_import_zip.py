@@ -152,18 +152,20 @@ def test_existing_skill_is_a_conflict(client):
 
 
 def test_size_and_count_limits(client, monkeypatch):
+    from easy_agent.services.skills import zip_import
+
     data = _zip({"my-skill/SKILL.md": SKILL_MD, "my-skill/a.txt": "x" * 100})
 
-    monkeypatch.setattr(skill_center, "MAX_FILE_COUNT", 1)
+    monkeypatch.setattr(zip_import, "MAX_FILE_COUNT", 1)
     resp = _post(client, data)
     assert (resp.status_code, resp.json()["detail"]) == (400, "压缩包内条目过多，上限 1")
 
-    monkeypatch.setattr(skill_center, "MAX_FILE_COUNT", 1000)
-    monkeypatch.setattr(skill_center, "MAX_EXTRACT_SIZE", 50)
+    monkeypatch.setattr(zip_import, "MAX_FILE_COUNT", 1000)
+    monkeypatch.setattr(zip_import, "MAX_EXTRACT_SIZE", 50)
     resp = _post(client, data)
     assert (resp.status_code, resp.json()["detail"]) == (400, "解压后内容过大")
 
-    monkeypatch.setattr(skill_center, "MAX_ZIP_SIZE", 10)
+    monkeypatch.setattr(zip_import, "MAX_ZIP_SIZE", 10)
     resp = _post(client, data)
     assert resp.status_code == 400
     assert resp.json()["detail"].startswith("压缩包过大")

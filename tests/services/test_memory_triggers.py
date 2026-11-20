@@ -263,4 +263,25 @@ def test_invoke_memory_llm_disables_thinking_and_falls_back_on_bad_params():
     assert res.content == "{}"
     assert llm.bound.get("reasoning_effort") == "none"
     assert llm.bound.get("extra_body") == {"thinking": {"type": "disabled"}}
+    assert llm.bound.get("timeout") == memory_manager.MEMORY_LLM_TIMEOUT_SECONDS
     assert llm.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_ainvoke_memory_llm_disables_thinking_and_enforces_timeout():
+    class _AsyncLLM:
+        def __init__(self):
+            self.bound = {}
+
+        def bind(self, **kwargs):
+            self.bound = kwargs
+            return self
+
+        async def ainvoke(self, messages):
+            return SimpleNamespace(content='{"add": []}')
+
+    llm = _AsyncLLM()
+    res = await memory_manager._ainvoke_memory_llm(llm, ["hi"], timeout=5.0)
+    assert res.content == '{"add": []}'
+    assert llm.bound.get("reasoning_effort") == "none"
+    assert llm.bound.get("extra_body") == {"thinking": {"type": "disabled"}}

@@ -306,7 +306,7 @@ async def test_lease_loss_marks_failed_even_if_generator_swallows_cancel(monkeyp
     monkeypatch.setattr(chat_api, "aunregister_stream_task", unregister)
     monkeypatch.setattr(chat_api, "_record_run_end", record_end)
 
-    async def lose_lease(session_id, sid, renew_stream, runs, run_id, owner_task, lease_lost):
+    async def lose_lease(session_id, sid, renew_stream, runs, run_id, owner_task, lease_lost, **_kwargs):
         await started.wait()
         lease_lost.set()
         owner_task.cancel()

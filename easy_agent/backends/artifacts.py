@@ -32,6 +32,8 @@ from deepagents.backends.protocol import (
 
 #: 框架产物（大工具结果、对话历史、二进制 blob）的虚拟根，见 ``CompositeBackend.artifacts_root``。
 AGENT_ARTIFACTS_ROOT = "/.agent"
+#: 单会话 ``large_tool_results/`` 最多保留的落盘文件数，超出按 mtime 清理最旧文件。
+DEFAULT_MAX_LARGE_TOOL_RESULTS = 50
 
 
 class AgentArtifactsBackend(FilesystemBackend, SandboxBackendProtocol):
@@ -45,10 +47,16 @@ class AgentArtifactsBackend(FilesystemBackend, SandboxBackendProtocol):
         artifacts_root: str = AGENT_ARTIFACTS_ROOT,
         workspace_virtual_path: str = "/workspace",
         max_timeout: int | None = None,
+        max_large_tool_results: int = DEFAULT_MAX_LARGE_TOOL_RESULTS,
     ) -> None:
         super().__init__(root_dir=root_dir, virtual_mode=True)
         self._shell = shell
         self._writable_prefix = artifacts_root.rstrip("/") + "/"
+        self._large_results_prefix = f"{self._writable_prefix}large_tool_results/"
+        self._large_results_dir = (
+            Path(root_dir) / artifacts_root.strip("/") / "large_tool_results"
+        )
+        self._max_large_tool_results = max(1, int(max_large_tool_results))
         self._workspace = workspace_virtual_path.rstrip("/") or "/workspace"
         self._max_timeout = int(max_timeout) if max_timeout and int(max_timeout) > 0 else None
 
@@ -85,10 +93,34 @@ class AgentArtifactsBackend(FilesystemBackend, SandboxBackendProtocol):
         return await self._shell.aexecute(command, timeout=self._capped(timeout))
 
     # ── 写入只允许框架产物前缀（异步版本默认经 to_thread 调到这里） ──
+    def _prune_large_tool_results(self) -> int:
+        """大工具结果落盘超过上限时按修改时间清理最旧文件，避免长会话磁盘无限膨胀。"""
+        try:
+            if not self._large_results_dir.is_dir():
+                return 0
+            files = [p for p in self._large_results_dir.iterdir() if p.is_file()]
+            overflow = len(files) - self._max_large_tool_results
+            if overflow <= 0:
+                return 0
+            files.sort(key=lambda p: (p.stat().st_mtime_ns, p.name))
+            removed = 0
+            for old in files[:overflow]:
+                try:
+                    old.unlink(missing_ok=True)
+                    removed += 1
+                except OSError:
+                    continue
+            return removed
+        except OSError:
+            return 0
+
     def write(self, file_path: str, content: str) -> WriteResult:
         if error := self._outside_error(file_path):
             return WriteResult(error=error)
-        return super().write(file_path, content)
+        res = super().write(file_path, content)
+        if res.error is None and file_path.startswith(self._large_results_prefix):
+            self._prune_large_tool_results()
+        return res
 
     def edit(
         self, file_path: str, old_string: str, new_string: str, replace_all: bool = False

@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from easy_agent.agent.skills import parse_skill_frontmatter
+from easy_agent.agent.skills import parse_skill_frontmatter, read_skill_md_cached
 from easy_agent.utils.mcp_tool_names import resolve_tool_names
 
 logger = logging.getLogger("easy_agent.agent")
@@ -148,12 +148,10 @@ def skill_tool_gaps(
                 continue
             for entry in entries:
                 skill_md = entry / "SKILL.md"
-                try:
-                    if not entry.is_dir() or not skill_md.is_file():
-                        continue
-                    text = skill_md.read_text(encoding="utf-8", errors="ignore")
-                except OSError as exc:  # pragma: no cover - 文件级异常
-                    logger.debug("技能预检跳过 %s（%s）", skill_md, exc)
+                if not entry.is_dir() or not skill_md.is_file():
+                    continue
+                text = read_skill_md_cached(skill_md)
+                if text is None:
                     continue
                 declared = declared_tools(text)
                 if not declared:

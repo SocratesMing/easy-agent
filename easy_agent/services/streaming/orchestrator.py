@@ -286,11 +286,33 @@ async def pump_stream(
     }
     if context is not None:
         astream_kwargs["context"] = context
+    active_tasks: dict[str, tuple[str, float]] = {}
     async for event in agent.agent.astream(stream_input, **astream_kwargs):
-        mode, data = event if isinstance(event, tuple) else ("messages", event)
+        if isinstance(event, tuple) and len(event) == 3:
+            namespace, mode, data = event
+            if namespace:
+                # 预留子图事件分流：避免子代理原始流混入主代理回复正文
+                continue
+        else:
+            mode, data = event if isinstance(event, tuple) else ("messages", event)
         for ev in proc.handle(mode, data):
             ev_type = ev.get("type")
-            if ev_type == "tool_result":
+            if ev_type == "tool_call" and ev.get("tool_name") == "task":
+                call_id = str(ev.get("tool_call_id") or "")
+                args = ev.get("arguments") or {}
+                sub_type = str(args.get("subagent_type") or "general-purpose")
+                active_tasks[call_id] = (sub_type, time.monotonic())
+                logger.info(
+                    f"[{sid}] 🤖 子代理任务开始 | subagent={sub_type} | call_id={call_id}"
+                )
+            elif ev_type == "tool_result":
+                call_id = str(ev.get("tool_call_id") or "")
+                if call_id in active_tasks:
+                    sub_type, started_at = active_tasks.pop(call_id)
+                    logger.info(
+                        f"[{sid}] 🤖 子代理任务完成 | subagent={sub_type} | "
+                        f"耗时={time.monotonic() - started_at:.2f}s | success={ev.get('success', True)}"
+                    )
                 await run_blocking(
                     persist_tool_result_event,
                     ev,

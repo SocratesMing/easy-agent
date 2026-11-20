@@ -60,6 +60,7 @@ LONG_TERM_SECTIONS = ("工作背景", "个人背景", "当前关注", "近期动
 #: 一次记忆更新最多做几遍：写回前发现文件已被别处改写（另一个进程的更新、用户在设置页
 #: 手动修改），就基于最新内容重做；再冲突就放弃本次更新，不覆盖别人刚写的内容。
 MAX_UPDATE_ATTEMPTS = 2
+MEMORY_LLM_TIMEOUT_SECONDS = 30.0
 
 _NO_THINKING_KWARGS = {
     "reasoning_effort": "none",
@@ -75,27 +76,51 @@ _BAD_PARAM_HINTS = (
     "extra fields",
     "reasoning_effort",
     "thinking",
+    "timeout",
 )
 
 
+def _bind_memory_llm(llm, *, with_timeout: bool = True):
+    """绑定关思考与超时参数；不支持 bind 时返回 (llm, False)。"""
+    if not hasattr(llm, "bind"):
+        return llm, False
+    kwargs = dict(_NO_THINKING_KWARGS)
+    if with_timeout:
+        kwargs["timeout"] = MEMORY_LLM_TIMEOUT_SECONDS
+    try:
+        return llm.bind(**kwargs), True
+    except Exception as exc:  # noqa: BLE001 - bind 失败回退原模型
+        logger.debug("记忆模型参数绑定失败，按默认参数调用: %s", exc)
+        return llm, False
+
+
 def _invoke_memory_llm(llm, messages):
-    """调用记忆整理模型并默认关闭思考模式，网关不支持参数时回退原始调用。"""
-    call_model = llm
-    thinking_disabled = False
-    if hasattr(llm, "bind"):
-        try:
-            call_model = llm.bind(**_NO_THINKING_KWARGS)
-            thinking_disabled = True
-        except Exception as exc:  # noqa: BLE001 - bind 失败回退原模型
-            logger.debug("记忆模型关思考参数绑定失败，按默认参数调用: %s", exc)
+    """调用记忆整理模型并默认关闭思考模式与设置超时，网关不支持参数时回退原始调用。"""
+    call_model, bound = _bind_memory_llm(llm, with_timeout=True)
     try:
         return call_model.invoke(messages)
     except Exception as exc:
-        if thinking_disabled and any(
+        if bound and any(
             hint in f"{type(exc).__name__}: {exc}".lower() for hint in _BAD_PARAM_HINTS
         ):
-            logger.warning("记忆模型关思考参数被网关拒绝，回退默认参数重试: %s", exc)
+            logger.warning("记忆模型关思考/超时参数被网关拒绝，回退默认参数重试: %s", exc)
             return llm.invoke(messages)
+        raise
+
+
+async def _ainvoke_memory_llm(llm, messages, *, timeout: float = MEMORY_LLM_TIMEOUT_SECONDS):  # noqa: ASYNC109 - 超时由 asyncio.wait_for 消费
+    """异步调用记忆整理模型（原生 ainvoke + 关思考 + 显式超时 + 400 回退）。"""
+    import asyncio
+
+    call_model, bound = _bind_memory_llm(llm, with_timeout=False)
+    try:
+        return await asyncio.wait_for(call_model.ainvoke(messages), timeout=timeout)
+    except Exception as exc:
+        if bound and any(
+            hint in f"{type(exc).__name__}: {exc}".lower() for hint in _BAD_PARAM_HINTS
+        ):
+            logger.warning("异步记忆模型关思考参数被网关拒绝，回退默认参数重试: %s", exc)
+            return await asyncio.wait_for(llm.ainvoke(messages), timeout=timeout)
         raise
 
 # 提示词统一放在 easy_agent/config/prompts/ 下（文件为权威）；

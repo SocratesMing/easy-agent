@@ -17,6 +17,31 @@ MAX_COMPATIBILITY_CHARS = 500
 MAX_SKILL_NAME_CHARS = 64
 SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
+# 按 (路径, mtime_ns, size) 缓存 SKILL.md 正文，避免单次建图/多会话重复读盘，
+# 同时文件一经修改立即失效。
+_SKILL_MD_CACHE: dict[str, tuple[int, int, str]] = {}
+_SKILL_MD_CACHE_MAX = 512
+
+
+def read_skill_md_cached(skill_md: Path) -> str | None:
+    """读取 SKILL.md（按 mtime_ns + size 缓存），读取失败返回 ``None``。"""
+    try:
+        st = skill_md.stat()
+    except OSError:
+        return None
+    key = str(skill_md)
+    hit = _SKILL_MD_CACHE.get(key)
+    if hit is not None and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+        return hit[2]
+    try:
+        text = skill_md.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    if len(_SKILL_MD_CACHE) >= _SKILL_MD_CACHE_MAX:
+        _SKILL_MD_CACHE.clear()
+    _SKILL_MD_CACHE[key] = (st.st_mtime_ns, st.st_size, text)
+    return text
+
 
 def find_skills_root(skills_dir: str | None = None) -> str | None:
     """Find the skills root directory.
@@ -178,9 +203,8 @@ def declared_include_tools(skill_dirs: Iterable[str | Path | None] | None = None
             skill_md = entry / "SKILL.md"
             if not entry.is_dir() or not skill_md.is_file():
                 continue
-            try:
-                text = skill_md.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
+            text = read_skill_md_cached(skill_md)
+            if text is None:
                 continue
             meta, error = parse_skill_frontmatter(text)
             if error or not isinstance(meta, dict):
