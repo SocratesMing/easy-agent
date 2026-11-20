@@ -168,34 +168,23 @@ def init_agent_config(
 
 
 def _tool_factories() -> dict[str, Callable[..., Any]]:
-    """工具工厂表：由装配根提供，注册表只按名字取用。
-
-    为什么放在这里而不是 ``tools/registry.py``：注册表保持「无包内 import 边的叶子
-    模块」，工厂经 ``ToolBuildContext.factories`` 注入，测试可直接换成假工厂。最初
-    是为了避开当年的 knowledge-chat-scheduler-core SCC；该环已在 A1 拆掉，2026-10-19
-    核对过工厂模块都不会 import 回注册表，搬进 ``ToolSpec`` 不会形成环（后续可简化）。
-
-    加载时机与改造前一致：知识库扩展每次装配都会 import（与改造前相同），
-    其余三个工厂在对应工具真正被构造时才 import——这样单个工具模块加载失败
-    只会让该工具被跳过（注册表逐条目告警），不会拖垮整次 Agent 创建。
-    """
-
-    from easy_agent.knowledges.facade import extend_agent_tools  # 延迟导入：每次装配才加载知识库扩展，避免导入期强依赖
+    """按工具名延迟构造工具实例，单个工具加载失败时仅跳过该工具。"""
+    from easy_agent.knowledges.facade import extend_agent_tools
 
     def _scheduled_task(**kwargs: Any) -> Any:
-        from easy_agent.tools.scheduled_task import CreateScheduledTaskTool  # 延迟导入：工具模块加载隔离（单模块失败只跳过该工具）
+        from easy_agent.tools.scheduled_task import CreateScheduledTaskTool
         return CreateScheduledTaskTool(**kwargs)
 
     def _save_expert(**kwargs: Any) -> Any:
-        from easy_agent.tools.expert_writer import create_save_expert_tool  # 延迟导入：工具模块加载隔离（单模块失败只跳过该工具）
+        from easy_agent.tools.expert_writer import create_save_expert_tool
         return create_save_expert_tool(**kwargs)
 
     def _read_uploaded_file(**kwargs: Any) -> Any:
-        from easy_agent.tools.session_file_reader import ReadUploadedFileTool  # 延迟导入：工具模块加载隔离（单模块失败只跳过该工具）
+        from easy_agent.tools.session_file_reader import ReadUploadedFileTool
         return ReadUploadedFileTool(**kwargs)
 
     def _ask_user() -> Any:
-        from easy_agent.tools.user_interaction import create_ask_user_tool  # 延迟导入：工具模块加载隔离
+        from easy_agent.tools.user_interaction import create_ask_user_tool
         return create_ask_user_tool()
 
     return {
@@ -294,7 +283,7 @@ async def _resolve_session_connectors(state, session_id: str) -> list[str] | Non
     recorded_connectors = state.connectors
     if recorded_connectors is None:
         try:
-            from easy_agent.services.sessions.runtime import load_connectors  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
+            from easy_agent.services.sessions.runtime import load_connectors
 
             recorded_connectors = await run_blocking(
                 load_connectors, get_session_runtime_repository(), session_id
@@ -759,7 +748,7 @@ def _bind_edit_target(session_id: str, expert_agent_id: str) -> str:
 
 def _save_edit_target(session_id: str, expert_agent_id: str) -> None:
     try:
-        from easy_agent.services.sessions.runtime import save_edit_target  # 延迟导入：测试按 session_runtime 模块属性 monkeypatch 写库函数
+        from easy_agent.services.sessions.runtime import save_edit_target
         save_edit_target(
             get_session_runtime_repository(), session_id, expert_agent_id
         )
@@ -848,7 +837,7 @@ def _apply_session_connectors(
 
 def _save_connectors(session_id: str, normalized: tuple[str, ...]) -> None:
     try:
-        from easy_agent.services.sessions.runtime import save_connectors  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
+        from easy_agent.services.sessions.runtime import save_connectors
 
         save_connectors(
             get_session_runtime_repository(), session_id, list(normalized)

@@ -1,19 +1,4 @@
-"""API 层统一的 repository providers（批次 4）。
-
-所有 API 路由的 repository 依赖集中在本模块：
-
-- 只有本模块把进程级 ``Database`` 接入 FastAPI 依赖图（``get_database`` 的
-  Depends 在整份 ``easy_agent/api`` 中只出现一次）；
-- 各 API 路由模块从本模块导入 provider，并保留模块级旧名字 re-export
-  （``get_chat_repository`` / ``_as_chat_repository`` 等），外部导入不断裂；
-- 本模块不 import 任何 ``easy_agent.api.*``，只依赖 ``db`` / ``middleware`` /
-  repositories，避免 provider 层与路由层形成环；
-- ``get_user_repository`` 的实现仍在 ``middleware.auth``（活跃时间与 SSO
-  token 校验语义），这里只做 re-export。
-
-``as_*`` 系列保持既有语义：FastAPI 注入时已是 repository 则原样返回；既有测试
-直接以 ``Database`` 调用路由函数时做一次窄包装。
-"""
+"""API 层统一的 repository FastAPI 依赖与 ``as_*`` 适配入口。"""
 
 from typing import Annotated
 

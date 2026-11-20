@@ -1,28 +1,7 @@
-"""每次运行都重新加载记忆源的 MemoryMiddleware（DA-03 P0）。
+"""每轮重读的记忆中间件：原位替换框架 MemoryMiddleware。
 
-deepagents 的 ``MemoryMiddleware`` 在 ``before_agent`` 里只要 state 已有
-``memory_contents`` 就跳过加载，即每个 thread 只读一次记忆。本项目的记忆源每轮都可能变：
-
-- 会话记忆 ``/workspace/memory.md``：对话后由后台任务改写（``streaming/side_effects.py``）；
-- 长期记忆 ``/memories/AGENTS.md``：其他会话也会写；
-- 上传清单 ``/workspace/uploads/index.md``：随上传变化。
-
-每消息一个 thread 时每轮都是新 thread，自然每轮重读；改成会话级 thread 后就会停在第一轮
-（``docs/archive/audit-evidence-deepagents/exp_session_thread.py`` 实测）。
-``memory_contents`` 是私有状态，不能经运行输入重置，所以这里重写加载钩子：每次运行都忽略
-已缓存的内容重新读取。
-
-**记忆放在本轮用户消息开头，不放系统提示词。** 框架把记忆接在系统提示词末尾；记忆一改，
-系统提示词后面的工具定义和整段历史就都失去前缀缓存。真实对话里，记忆刚改过的下一轮，最大的
-那次调用只命中 8%~9%，记忆没变时是 77%~97%。现在系统提示词里只留每轮不变的使用说明
-（:data:`MEMORY_GUIDELINES`），记忆内容（:data:`SESSION_MEMORY_PROMPT`）只放进本次请求的
-本轮用户消息，不写回 state、不进数据库；同一轮的工具循环里内容不变，缓存照常命中。
-
-使用说明也换成了项目自己的：框架默认的 ``MEMORY_SYSTEM_PROMPT`` 要求模型「把学到的东西
-及时用 ``edit_file`` 写进记忆」，和本项目「记忆由系统自动整理、模型不改写记忆文件」正好相反
-（日志里模型多次自己改写 ``/memories/AGENTS.md``，还把「没有 uv」写进了长期记忆）。
-
-``name`` 与框架默认项相同，经 ``create_deep_agent(middleware=...)`` 原位替换默认实例。
+- 每次运行忽略缓存重新读取记忆源（会话记忆、长期记忆、上传清单）；
+- 系统提示词仅保留不变的使用说明，动态记忆内容注入本轮用户消息开头以保持前缀缓存命中。
 """
 
 from __future__ import annotations

@@ -1,15 +1,4 @@
-"""主代理与子代理的技能中间件：框架 ``SkillsMiddleware`` + 项目自己的技能段提示词。
-
-框架默认的技能段（``SKILLS_SYSTEM_PROMPT``）是通用模板，放进本项目有几处不对：
-
-- 没有技能时提示 "You can create skills in /skills/builtin/ or /user-skills/"，但公共技能目录只读；
-- "Sources labeled Deepagents / Agents" 说的是框架 CLI 的技能来源，本项目没有这两类；
-- 示例里的 web-research 技能不存在。
-
-这里换成中文模板，其余行为（技能发现、``include_tools`` 门控、pin）全部沿用框架实现。
-``name`` 与框架默认项相同，经 ``create_deep_agent(middleware=...)`` 原位替换默认实例；
-子代理经 spec 的 ``middleware`` 同样替换（``agent/subagents.py:apply_skill_gated_tools``）。
-"""
+"""项目技能中间件：沿用框架 SkillsMiddleware，替换中文提示词模板并在清单中附带缺失工具提示。"""
 
 from __future__ import annotations
 

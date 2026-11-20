@@ -1,20 +1,4 @@
-"""HITL helpers: destructive shell detection, interrupt config and execute copy.
-
-FW-04：execute 的人工审批说明不再 monkeypatch ``FilesystemMiddleware.__init__``，
-改为在启动期/首次建图前通过 DeepAgents 官方（beta）能力
-``HarnessProfile.tool_description_overrides`` 注册
-（:func:`register_execute_description_profiles`）。旧入口
-:func:`install_execute_tool_description` 保留为 deprecated 兼容包装，不再改写框架类。
-
-FW-12：``interrupt_on`` 不再静态预置全部 HITL 工具，而由
-:func:`build_interrupt_config` 按「本会话实际注入的工具」动态构造；
-未注入的注册表 HITL 工具只记 debug 日志，不进入配置（DeepAgents 对
-``interrupt_on`` 里不存在的工具名静默无效，见 T1-14）。
-
-哪些工具要审批由 config.yaml 的 ``hitl`` 段决定：``enabled`` 总开关（:func:`hitl_enabled`），
-``tools`` 审批名单（不配时是 :data:`DEFAULT_APPROVAL_TOOLS`）；名单外的 MCP 工具按服务端
-标注 / 名字兜底。
-"""
+"""HITL 人工审批配置：破坏性命令识别、按会话注入工具动态构造 interrupt_on 及 execute 说明注册。"""
 
 from __future__ import annotations
 
@@ -40,15 +24,10 @@ from easy_agent.tools.registry import (
 
 logger = logging.getLogger("easy-agent.hitl")
 
-# 默认人工审批名单：由工具注册表派生（无条件 HITL 工具），
-# 内容与顺序保持改造前逐字一致（save_expert -> create_scheduled_task）。
-# FW-12 起 agent.py 不再直接消费本常量：它只作为注册表派生结果的兼容出口，
-# 实际 interrupt_on 由 build_interrupt_config() 按会话实际工具集过滤。
+# 无条件审批工具兼容出口；实际 interrupt_on 由 build_interrupt_config 按会话工具集动态构造。
 DEFAULT_INTERRUPT_TOOLS = default_interrupt_tool_names()
 
-# config.yaml 的 hitl.tools 不配时的审批名单：注册表里的全部**安全审批**工具（含按条件
-# 审批的 execute / access_knowledge_original），按 hitl_order 排序。ask_user 属于产品
-# 交互中断，不走这个名单，也不受 hitl.enabled 关闭影响。
+# config.hitl.tools 未配置时的默认安全审批名单（不含产品交互中断 ask_user）。
 DEFAULT_APPROVAL_TOOLS = tuple(spec.name for spec in approval_tool_specs())
 
 # ── 用户级审批模式（设置 → 权限设置） ────────────────────────────────────

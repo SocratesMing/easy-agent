@@ -79,32 +79,16 @@ router = APIRouter(
 )
 
 
-# 批次 4：repository provider 统一在 ``api.deps``；``get_chat_repository`` /
-# ``_as_chat_repository`` 由上方导入在模块级 re-export，旧导入路径不变。
-#
-# T4：本轮的准备逻辑（鉴权 / 技能解析 / 找会话 / 专家预检 / 知识检索 / 文件上下文 /
-# 用户消息落库 / 建 Agent / 登记 run）已下沉到 ``services/chat_turn``，路由只做
-# 「参数校验 → prepare_turn / prepare_resume → 构造 SSE 响应」。流的中枢驱动
-# （后台任务 + 事件 hub + run/流锁续约）仍留在本模块，因为它只决定「怎么回」而不是
-# 「准备什么」。
-
-
 _detached_bg_tasks: "set[asyncio.Task]" = set()
 
-# 流锁续约间隔：TTL 180 秒，60 秒续一次（必须 ≤ TTL/3）。
-# 心跳本身只是一条 ``UPDATE session_runtime``，每会话每分钟一次，可忽略；
-# 反过来 TTL 不能太长：Pod 崩溃后锁要挂到过期才失效，这期间任何 Pod 的
-# ``/stream/status`` 都报 active，用户刷新后会一直看到"生成中"。
+# 流锁 TTL 180s，每 60s 续约一次；跨副本取消标记每 5s 独立轮询。
 _STREAM_HEARTBEAT_SECONDS = 60.0
-# 跨副本取消轮询间隔：与 60s 租约续约分离，使另一 Pod 发起 /cancel 后在数秒内生效并正确记为 cancelled。
 _CANCEL_POLL_SECONDS = 5.0
-
-# 流锁租约丢失时给客户端的终态文案：不暴露内部细节，只说明"被接走了、要重连"。
 _LEASE_LOST_MESSAGE = "本轮生成的会话锁已失效（可能已在其它实例上重新生成），请刷新页面继续"
 
 
 async def _record_run_end(runs, run_id: str, status: str, error: str, sid: str) -> None:
-    """落 run 终态（Phase 2B）；写库失败只告警，不改变本轮流的结束方式。"""
+    """落 run 终态；写库失败只告警，不中断主流程。"""
     try:
         await asyncio.to_thread(finish_run, runs, run_id, status, error)
     except Exception as exc:  # noqa: BLE001 - 收尾失败不改变错误流

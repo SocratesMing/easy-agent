@@ -203,7 +203,7 @@ def _shared_graph_checkpointer():
     纯内存 ``MemorySaver`` 属"每会话一个"，它的多会话共享实例也是同一个对象，但
     生命周期与进程绑定、重启即失，因此这里仍返回 None 让调用方走按会话建图。
     """
-    from easy_agent.persistence.checkpoints import shared_checkpointer_active  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
+    from easy_agent.persistence.checkpoints import shared_checkpointer_active
 
     if not shared_checkpointer_active():
         return None
@@ -751,9 +751,7 @@ class EasyAgent(AgentWorkspaceMixin):
             )
             graph_tools = contextualize_tools(raw_tools)
 
-            # DA-06：同名实例原位替换框架默认的摘要中间件（主代理与每个子代理各一份），
-            # 阈值按会话模型的配置键（self.model_name）取窗口，不按模型对象上的 API 模型名。
-            # DA-03：主代理的摘要先渲染本轮上下文再计 token；记忆每次运行都重新加载。
+            # 按同名原位替换默认摘要中间件；主代理先渲染本轮上下文再计 token。
             def summarization(*, render_turn: bool = False):
                 return build_summarization_middleware(
                     self.config,
@@ -764,16 +762,11 @@ class EasyAgent(AgentWorkspaceMixin):
                 )
 
             main_middleware = [*middleware, summarization(render_turn=True)]
-            # DA-13：由技能带出的工具不进 agent 工具列表，交给同名替换默认项的
-            # SkillsMiddleware，模型读到 / pin 了在 include_tools 里声明它的技能后才出现
-            # DA-13：注册表里标记为 skill_gated 的工具 + 任意 SKILL.md 通过
-            # metadata.include_tools 声明的工具（官方约定为空格分隔字符串）
-            # 例外：_ALWAYS_AVAILABLE_TOOLS 常驻，旧版技能副本的声明缺失不会把它们锁死
+            # 技能门控工具移交 SkillsMiddleware 按需披露；_ALWAYS_AVAILABLE_TOOLS 始终常驻。
             gated_names = (
                 set(skill_gated_tool_names())
                 | set(inputs.declared_gated_tools)
             ) - _ALWAYS_AVAILABLE_TOOLS
-            # D4：开启 MCP 前缀后，技能里写的仍是原始工具名，这里按后缀唯一匹配解析
             gated_resolved, gated_unresolved = resolve_tool_names(
                 gated_names, [getattr(t, "name", "") for t in graph_tools]
             )
@@ -785,8 +778,7 @@ class EasyAgent(AgentWorkspaceMixin):
             gated_tools = [t for t in graph_tools if getattr(t, "name", "") in gated_actual]
             graph_tools = [t for t in graph_tools if getattr(t, "name", "") not in gated_actual]
 
-            # P0-1 技能数据通道预检（2026-11-19）：复用 _prepare_graph_inputs 已计算的差集，
-            # 避免与 _compute_graph_key 重复扫描技能目录。
+            # 复用 _prepare_graph_inputs 已计算的技能缺失工具差集，日志按会话作用域过滤。
             skill_gaps = inputs.skill_gaps
             # 差集按**全部**技能算，不按本会话的技能作用域裁剪：编译图是跨会话共享的，
             # 提示只渲染给真正出现在该会话清单里的技能（skills_metadata 由 runtime

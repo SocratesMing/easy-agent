@@ -1,25 +1,11 @@
-"""本轮聊天的准备工作（T4）：从 ``api/chat.py`` 下沉到服务层。
+"""本轮聊天的准备与恢复编排。
 
-路由只做参数校验 → ``prepare_turn`` / ``prepare_resume`` → 构造 SSE 响应；本轮需要的
-知识库会话鉴权、技能解析、会话打开 / 新建、并发互斥、专家提示词与依赖技能补装、职责
-范围预检与拒答、待修改专家绑定、知识库检索、上传文件上下文、用户消息落库、建 Agent、
-登记 run 全部在这里完成。这样同一套准备工作可以不经 HTTP 直接调用与测试
-（见 ``tests/api/test_chat_turn_prep.py``）。
-
-顺序约束（**不可颠倒**，与改造前 ``api/chat.py`` 逐行一致）：
-
-1. 知识库会话鉴权（fail-closed）最先；
-2. 打开 / 新建会话，然后 ``reject_concurrent_stream``——409 必须在用户消息落库之前，
-   否则会话里会多出一条没有回复的用户消息；
+执行顺序不可颠倒：
+1. 知识库会话鉴权（fail-closed）；
+2. 打开/新建会话并检查并发流（409 必须早于用户消息落库）；
 3. 解析技能归属与启用状态；
-4. 专家分支：提示词 → 依赖技能补装 → 职责范围预检（硬闸）→ 命中即短路拒答。
-   预检必须早于文件解析与知识库检索：被拒答的消息不该为这些付成本，更重要的是
-   「Agent 未创建」时任何工具都不可达（提示词层面的边界块做不到这点）；
-5. 待修改专家绑定 → 知识库检索 → 上传文件上下文 → 用户消息落库 → 建 Agent → 登记 run。
-
-事件循环约束（第 1 节通用约定第 7 条）：数据库层是同步的，查库 / 写库都经
-``asyncio.to_thread`` / ``run_blocking`` 放进线程；进程内状态（Agent 缓存、流锁、
-``invalidate_user_agents``）留在事件循环上。
+4. 专家提示词、依赖技能补装与职责范围预检（命中即短路拒答，不创建 Agent）；
+5. 绑定待修改专家 → 知识库检索 → 上传文件上下文 → 用户消息落库 → 建 Agent → 登记 run。
 """
 
 from __future__ import annotations
@@ -737,7 +723,7 @@ async def prepare_turn(
     # 本人创建的可用专家，预置专家 / 他人的专家 / 不存在的 ID 一律忽略并告警。
     # 绑定后由 save_expert 工具在修改时取用（见 tools/expert_writer.py）。
     if request.pending_expert_id:
-        from easy_agent.tools.expert_writer import resolve_owned_expert  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
+        from easy_agent.tools.expert_writer import resolve_owned_expert
 
         owned = await asyncio.to_thread(
             resolve_owned_expert, repo.experts, username, request.pending_expert_id
