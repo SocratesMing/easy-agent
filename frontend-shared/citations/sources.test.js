@@ -435,3 +435,19 @@ test('相邻重复连接器标注合并为单个编号，表格下独立来源�
   assert.doesNotMatch(midRendered, /EACNUM/)
   assert.match(midRendered, /35\.29亿元[\s\S]*要点：/)
 })
+
+test('多个连续引用序号之间的顿号/逗号自动去掉，不渲染多余标点', () => {
+  const message = {
+    content: '涨幅在 2%~4.5% 之间。[知识依据1]、[知识依据2]，[知识依据3]',
+    knowledge_evidence: [
+      { document_name: 'A.pdf', snippet: 'a' },
+      { document_name: 'B.pdf', snippet: 'b' },
+      { document_name: 'C.pdf', snippet: 'c' },
+    ],
+  }
+  const { numberMap } = relatedEvidence(message)
+  const rendered = linkKnowledgeCitations(message.content, numberMap, true)
+  const html = renderMarkdown(rendered, createMarkdownRenderer({}))
+  assert.doesNotMatch(rendered, /[、,，]/)
+  assert.deepEqual([...html.matchAll(/data-cite="(\d+)"/g)].map(m => Number(m[1])), [1, 2, 3])
+})

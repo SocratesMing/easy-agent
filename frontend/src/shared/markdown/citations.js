@@ -63,6 +63,11 @@ export function linkKnowledgeCitations(content, citeMap, compact = false, option
       return map[resolved] ? citationMarker(map[resolved], true) : raw
     }
     let rewritten = rewriteReferences(source, replace, replace, options)
+    // 多个连续引用序号之间的顿号/逗号/分号（如 [3]、[4]）在紧凑胶囊模式下去掉，只留紧邻序号
+    rewritten = rewritten.replace(
+      /(\uE000EACNUM:[^\uE001]+\uE001)(?:\s*[、,，;；]\s*(?=\uE000EACNUM:[^\uE001]+\uE001))+/g,
+      '$1',
+    )
     // 合并相邻重复编号（如模型同时输出「来源：外部连接器（...）[连接器依据 ...]」时只保留一个 [1]）
     rewritten = rewritten.replace(/\uE000EACNUM:([^\uE001]+)\uE001(?:\s*\uE000EACNUM:\1\uE001)+/g, '\uE000EACNUM:$1\uE001')
     if (options.hideMatchedFooter) {
