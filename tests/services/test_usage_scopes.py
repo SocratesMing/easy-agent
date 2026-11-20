@@ -133,6 +133,7 @@ async def test_scheduler_uses_owner_session_and_preserves_pause_callback(db):
 
 async def test_knowledge_ask_uses_trusted_principal_without_username_lookup(monkeypatch):
     from easy_agent.knowledges import api
+    from easy_agent.knowledges.api import chat as api_chat
     from easy_agent.knowledges.core.models import AskRequest, KnowledgePrincipal
 
     observed = []
@@ -144,14 +145,14 @@ async def test_knowledge_ask_uses_trusted_principal_without_username_lookup(monk
     async def retrieve(**kwargs):
         return SimpleNamespace(evidence=[], warnings=[])
 
-    monkeypatch.setattr(api, "_answer", answer)
+    monkeypatch.setattr(api_chat, "_answer", answer)
     fake_service = SimpleNamespace(
         _retrieve_base_evidence=retrieve,
         config=SimpleNamespace(audit=SimpleNamespace(enabled=False)),
     )
     principal = KnowledgePrincipal(user_id="principal-real-id", username="display-name", department_id=None)
     with usage_scope("unrelated-parent", "other-session"):
-        result = await api.ask(
+        result = await api_chat.ask(
             base_id="base", payload=AskRequest(question="question"),
             request=SimpleNamespace(state=SimpleNamespace(request_id="request")),
             service=fake_service, principal=principal,

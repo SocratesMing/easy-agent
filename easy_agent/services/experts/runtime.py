@@ -491,6 +491,81 @@ async def _relevance_gate(
     )
 
 
+async def _skill_relevance_gate(
+    repo: ExpertRepository,
+    session_id: str,
+    username: str,
+    skills: list[dict[str, Any]],
+    message: str,
+    sid: str,
+    *,
+    files: Optional[list] = None,
+) -> Optional[tuple[str, str]]:
+    """已选技能范围预检：提问超出已选技能适用范围时短路拒答，不进大模型。"""
+    import re
+
+    if not skills:
+        return None
+    clean_message = re.sub(r"^(?:/[^\s]+(?:\s+|$))+", "", message or "").strip()
+    if not clean_message:
+        return None
+
+    _guardrail_enabled, check_enabled, _strict = _expert_flags()
+    if not check_enabled:
+        return None
+
+    skill_names = [
+        str(s.get("name") or s.get("dir_name") or "").strip()
+        for s in skills
+        if isinstance(s, dict) and str(s.get("name") or s.get("dir_name") or "").strip()
+    ]
+    if not skill_names:
+        return None
+
+    if expert_relevance.detect_unsafe_request(clean_message):
+        logger.info(
+            f"[{sid}] ⛔ 技能预检高危操作红线命中 | skills={skill_names} | 直接短路拒答"
+        )
+        return expert_relevance.UNSAFE, expert_relevance.build_skill_refusal(
+            skill_names, expert_relevance.UNSAFE
+        )
+
+    llm = _precheck_llm()
+    if llm is None:
+        return None
+
+    basis = expert_relevance.build_skill_basis(skills)
+    if not basis:
+        return None
+
+    attachments = [
+        str(f.get("filename") or "").strip()
+        for f in (files or [])
+        if isinstance(f, dict) and str(f.get("filename") or "").strip()
+    ]
+    started = time.time()
+    context = await run_blocking(_recent_context, repo, session_id)
+    classification = await expert_relevance.check_relevance(
+        llm,
+        basis,
+        clean_message,
+        context=context,
+        disable_thinking=_precheck_disable_thinking(),
+        attachments=attachments,
+        system_prompt=expert_relevance._SKILL_CLASSIFIER_SYSTEM,
+        basis_label="已选技能范围",
+    )
+    elapsed = time.time() - started
+    reject = classification == expert_relevance.IRRELEVANT
+    logger.info(
+        f"[{sid}] 🧩 技能范围预检 | skills={skill_names} | 判定={classification or '跳过'} | "
+        f"结果={'拒答' if reject else '放行'} | 耗时={elapsed:.2f}s"
+    )
+    if not reject:
+        return None
+    return classification, expert_relevance.build_skill_refusal(skill_names, classification)
+
+
 async def _refusal_event_stream(session_id: str, repo: ExpertRepository, answer: str):
     """短路拒答的极简 SSE 流：start → content → content_end → done。
 
@@ -549,6 +624,7 @@ session_logger_for = _session_logger_for
 persist_user_turn = _persist_user_turn
 recent_context = _recent_context
 relevance_gate = _relevance_gate
+skill_relevance_gate = _skill_relevance_gate
 refusal_event_stream = _refusal_event_stream
 
 __all__ = [
@@ -563,5 +639,6 @@ __all__ = [
     "persist_user_turn",
     "recent_context",
     "relevance_gate",
+    "skill_relevance_gate",
     "refusal_event_stream",
 ]

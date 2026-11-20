@@ -106,19 +106,16 @@ def test_ensure_parsed_text_reuses_stored_body(tmp_path):
 
 def test_doc_failed_upload_recovers_body_and_manifest(tmp_path, monkeypatch):
     import subprocess
+    import sys
 
     from easy_agent.services import document_convert
-    from easy_agent.utils import file_parser
 
-    docx = pytest.importorskip("docx")
     src = _upload(tmp_path, "abc12345_旧文档.doc", bytes.fromhex("d0cf11e0a1b11ae1"))
-    converted = tmp_path / "converted.docx"
-    document = docx.Document()
-    document.add_paragraph("可恢复的中文正文")
-    document.save(converted)
+    converted = tmp_path / "converted.html"
+    converted.write_text("<p>可恢复的中文正文</p>", encoding="utf-8")
     db = _FakeDB([{"filename": "旧文档.doc", "file_path": str(src)}])
     monkeypatch.setattr(su, "get_file_repository", lambda: db)
-    monkeypatch.setattr(file_parser.sys, "platform", "linux")
+    monkeypatch.setattr(sys, "platform", "linux")
 
     def missing(command, **kwargs):
         raise FileNotFoundError(command[0])

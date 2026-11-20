@@ -124,6 +124,17 @@ _CLASSIFIER_SYSTEM: Final = """你是一个投研专家的「问题分诊器」�
 只输出一行 JSON：{"relevance": "relevant" | "adjacent" | "partial" | "irrelevant"}
 """
 
+_SKILL_CLASSIFIER_SYSTEM: Final = """你是「技能适用范围预检器」，只输出一行 JSON，不输出任何解释。
+
+判断用户的提问是否在「已选技能范围」的能力与适用范围之内：
+- "relevant"  ：问题在已选技能能够处理或服务的范围内，或是围绕上传附件、会话上文继续提问；
+- "irrelevant"：问题明显超出已选技能的适用范围（例如选了文档/表格处理技能却问天气、闲聊或不相干业务，或选了某业务分析技能却问完全无关领域的问题）。
+
+关键规则：
+1. 拿不准、边界模糊或简短追问时判 "relevant"，不要误拦。
+2. 只输出一行 JSON：{"relevance": "relevant" | "irrelevant"}。
+"""
+
 # 只认这四个词，按「最具体优先」排列：
 # "irrelevant" 尾部含 "relevant"，"adjacent" 不含 → irrelevant 必须排最前；
 # JSON 键名 "relevance" 不会命中任何一个（relevance ≠ relevant）。
@@ -144,6 +155,11 @@ REFUSAL_UNSAFE_TEMPLATE: Final = (
     "我不会执行。\n\n"
     "需要整理数据、分析文件或生成报告，我可以直接在工作区新建文件来做；"
     "请提问我领域内的问题。"
+)
+
+REFUSAL_SKILL_IRRELEVANT_TEMPLATE: Final = (
+    "当前已选定技能「{name}」，您的问题不在该技能的适用范围内，暂不调用模型作答。"
+    "请调整提问内容，或取消选定该技能后再试。"
 )
 
 # ── 高危操作红线（确定性规则，不依赖模型） ─────────────────────────────
@@ -328,13 +344,64 @@ def build_refusal(expert_name: str, classification: Optional[str]) -> str:
     return template.format(name=name)
 
 
+def build_skill_basis(skills: list[dict[str, Any]]) -> str:
+    """从已选技能的元数据与 SKILL.md 摘要组装范围画像，供预检器判定适用范围。"""
+    from pathlib import Path
+
+    from easy_agent.services.skills import library as skill_library
+
+    lines: list[str] = []
+    for item in skills or ():
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("dir_name") or "").strip()
+        raw_path = item.get("path")
+        path = Path(str(raw_path).strip()) if raw_path else None
+        if not name and path is None:
+            continue
+        meta = skill_library.skill_metadata(path) if path is not None else {}
+        desc = str(meta.get("description") or "").strip()
+        snippet = ""
+        if len(desc) < 80 and path is not None:
+            skill_md = path / "SKILL.md"
+            try:
+                if skill_md.is_file():
+                    raw = skill_md.read_text(encoding="utf-8", errors="ignore")
+                    if raw.startswith("---"):
+                        parts = raw.split("---", 2)
+                        raw = parts[2] if len(parts) == 3 else raw
+                    snippet = " ".join(raw.strip().split())[:300]
+            except OSError:
+                snippet = ""
+        entry = f"- 技能：{name or meta.get('name') or '未命名技能'}"
+        if desc:
+            entry += f"｜说明：{desc}"
+        if snippet:
+            entry += f"｜内容摘要：{snippet}"
+        lines.append(entry)
+    return "\n".join(lines)[:_MAX_BASIS_CHARS]
+
+
+def build_skill_refusal(skill_names: list[str], classification: Optional[str]) -> str:
+    """生成已选技能越界时的拒答正文。"""
+    joined = "、".join(n.strip() for n in skill_names if str(n).strip()) or "当前技能"
+    if classification == UNSAFE:
+        return REFUSAL_UNSAFE_TEMPLATE.format(name=joined)
+    return REFUSAL_SKILL_IRRELEVANT_TEMPLATE.format(name=joined)
+
+
 def _build_user_prompt(
-    basis: str, message: str, context: str = "", attachments: Optional[list[str]] = None
+    basis: str,
+    message: str,
+    context: str = "",
+    attachments: Optional[list[str]] = None,
+    *,
+    basis_label: str = "专家职责画像",
 ) -> str:
     parts: list[str] = []
     if (context or "").strip():
         parts.append(f"【会话上下文（仅用于理解指代）】\n{context.strip()}\n")
-    parts.append(f"【专家职责画像】\n{basis}\n")
+    parts.append(f"【{basis_label}】\n{basis}\n")
     names = [str(n).strip() for n in (attachments or []) if str(n).strip()]
     if names:
         # 附件名是重要信号：正文常常只是「分析一下这个文件」，没有任何领域词
@@ -378,6 +445,9 @@ async def check_relevance(
     context: str = "",
     disable_thinking: bool = True,
     attachments: Optional[list[str]] = None,
+    *,
+    system_prompt: str = _CLASSIFIER_SYSTEM,
+    basis_label: str = "专家职责画像",
 ) -> Optional[str]:
     """调用轻量 LLM 做四分类。
 
@@ -404,9 +474,15 @@ async def check_relevance(
     from langchain_core.messages import HumanMessage, SystemMessage
 
     messages = [
-        SystemMessage(content=_CLASSIFIER_SYSTEM),
+        SystemMessage(content=system_prompt),
         HumanMessage(
-            content=_build_user_prompt(basis, message, context, attachments=attachments)
+            content=_build_user_prompt(
+                basis,
+                message,
+                context,
+                attachments=attachments,
+                basis_label=basis_label,
+            )
         ),
     ]
 

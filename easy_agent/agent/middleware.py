@@ -22,18 +22,13 @@ def framework_provides_todolist() -> bool:
         return False
 
 
-def build_agent_middleware(config, max_steps, *, approval_mode: str | None = None) -> list:
-    """按固定顺序构建 Agent 中间件列表。"""
-    from langchain.agents.middleware import TodoListMiddleware
-
-    from easy_agent.agent.tool_errors import build_tool_error_middleware
-
-    middleware = []
-    if not framework_provides_todolist():
-        middleware.append(TodoListMiddleware())
-    # 置于 ToolError 之前（更外层），以便对 ToolError 转换后的空结果补充终止提示。
+def build_loop_guard_middleware(config=None) -> list:
+    """构建防循环护栏中间件列表（ToolProgress + ThinkingLoop）。"""
+    from easy_agent.agent.thinking_loop import ThinkingLoopMiddleware
     from easy_agent.agent.tool_progress import ToolProgressMiddleware
     from easy_agent.bootstrap.config_models import (
+        DEFAULT_THINKING_LOOP_LIMIT,
+        DEFAULT_THINKING_LOOP_MIN_CHARS,
         DEFAULT_TOOL_PROGRESS_CONVERGE_LIMIT,
         DEFAULT_TOOL_PROGRESS_EMPTY_HARD_LIMIT,
         DEFAULT_TOOL_PROGRESS_EMPTY_LIMIT,
@@ -46,7 +41,7 @@ def build_agent_middleware(config, max_steps, *, approval_mode: str | None = Non
     )
 
     agent_cfg = getattr(config, "agent", None)
-    middleware.append(
+    return [
         ToolProgressMiddleware(
             enabled=bool(getattr(agent_cfg, "tool_progress_enabled", True)),
             empty_limit=int(
@@ -85,15 +80,7 @@ def build_agent_middleware(config, max_steps, *, approval_mode: str | None = Non
                 getattr(agent_cfg, "tool_progress_same_args_total_limit", None)
                 or DEFAULT_TOOL_PROGRESS_SAME_ARGS_TOTAL_LIMIT
             ),
-        )
-    )
-    from easy_agent.agent.thinking_loop import ThinkingLoopMiddleware
-    from easy_agent.bootstrap.config_models import (
-        DEFAULT_THINKING_LOOP_LIMIT,
-        DEFAULT_THINKING_LOOP_MIN_CHARS,
-    )
-
-    middleware.append(
+        ),
         ThinkingLoopMiddleware(
             enabled=bool(getattr(agent_cfg, "thinking_loop_enabled", True)),
             limit=int(
@@ -104,8 +91,21 @@ def build_agent_middleware(config, max_steps, *, approval_mode: str | None = Non
                 getattr(agent_cfg, "thinking_loop_min_chars", None)
                 or DEFAULT_THINKING_LOOP_MIN_CHARS
             ),
-        )
-    )
+        ),
+    ]
+
+
+def build_agent_middleware(config, max_steps, *, approval_mode: str | None = None) -> list:
+    """按固定顺序构建 Agent 中间件列表。"""
+    from langchain.agents.middleware import TodoListMiddleware
+
+    from easy_agent.agent.tool_errors import build_tool_error_middleware
+
+    middleware = []
+    if not framework_provides_todolist():
+        middleware.append(TodoListMiddleware())
+    # 置于 ToolError 之前（更外层），以便对 ToolError 转换后的空结果补充终止提示。
+    middleware.extend(build_loop_guard_middleware(config))
     middleware.append(
         build_tool_error_middleware(
             log_truncate=getattr(config.tools, "result_log_truncate", 500)

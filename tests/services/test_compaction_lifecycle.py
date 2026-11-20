@@ -4,8 +4,9 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+from easy_agent.models.exceptions import BadGatewayError, ConflictError, GatewayTimeoutError
 
 from easy_agent.services.agents import manager
 from easy_agent.services.sessions import compaction
@@ -62,9 +63,8 @@ async def test_prepare_failure_never_commits_and_preserves_new_owner(tmp_path, m
                 # 心跳可能在 prepare 之前就发现租约已失效。此时安全要求仍然成立：
                 # 不进入准备、不提交 checkpoint、释放自己持有的租约。
                 assert failure == "heartbeat"
-                with pytest.raises(HTTPException) as error:
+                with pytest.raises(BadGatewayError):
                     await task
-                assert error.value.status_code == 502
                 assert not stopped.is_set()
                 assert not (await a.agent.aget_state({"configurable": {"thread_id": "s1"}})).values
                 assert rows == history()
@@ -78,9 +78,9 @@ async def test_prepare_failure_never_commits_and_preserves_new_owner(tmp_path, m
             if failure == "cancel":
                 rt.upsert_session_runtime("s1", cancel_requested=True)
                 proceed.set()
-            with pytest.raises(HTTPException) as error:
+            expected_exc = GatewayTimeoutError if failure == "timeout" else BadGatewayError
+            with pytest.raises(expected_exc):
                 await asyncio.wait_for(task, 5)
-            assert error.value.status_code == (504 if failure == "timeout" else 502)
             assert stopped.is_set()
             assert not (await a.agent.aget_state({"configurable": {"thread_id": "s1"}})).values
             assert rows == history()
@@ -132,9 +132,8 @@ async def test_timeout_during_commit_waits_for_save_then_retry_recovers(tmp_path
             assert not task.done()
             assert releases == []  # 围栏仍持有业务库锁，不能在事件循环同步读库。
             finish.set()
-            with pytest.raises(HTTPException) as error:
+            with pytest.raises(GatewayTimeoutError):
                 await asyncio.wait_for(task, 5)
-            assert error.value.status_code == 504
             assert not rt.get_session_runtime("s1")["stream_owner"]
             saved = await compaction.records("s1")
             assert saved[0]["id"] == "commit-timeout"
@@ -165,18 +164,16 @@ async def test_chat_resume_and_different_compactions_share_lease(tmp_path, monke
                                              "tester", "small", request_id, None)
         # 聊天/resume 共用 acquire_stream；先占用时压缩不能进入摘要。
         acquire_stream(rt, "s1")
-        with pytest.raises(HTTPException) as error:
+        with pytest.raises(ConflictError):
             await execute("blocked-by-chat")
-        assert error.value.status_code == 409
         release_stream(rt, "s1")
         first = asyncio.create_task(execute("first"))
         try:
             await asyncio.wait_for(entered.wait(), 5)
             with pytest.raises(SessionBusyError):
                 acquire_stream(rt, "s1")
-            with pytest.raises(HTTPException) as error:
+            with pytest.raises(ConflictError):
                 await execute("second")
-            assert error.value.status_code == 409
             finish.set()
             assert (await asyncio.wait_for(first, 5))["status"] == "compacted"
             assert len(a.model.inputs) == 1

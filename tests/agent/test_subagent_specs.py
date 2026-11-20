@@ -142,3 +142,30 @@ def test_official_spec_keys_are_preserved():
     resolved = resolve_subagent_tools([spec], [])
     for key in spec:
         assert resolved[0][key] == spec[key]
+
+
+def test_every_subagent_has_loop_guard_middleware_before_tool_error():
+    from types import SimpleNamespace
+
+    from easy_agent.agent.thinking_loop import ThinkingLoopMiddleware
+    from easy_agent.agent.tool_progress import ToolProgressMiddleware
+
+    cfg = SimpleNamespace(
+        agent=SimpleNamespace(
+            tool_progress_empty_limit=4,
+            thinking_loop_limit=6,
+        )
+    )
+    for spec in build_subagent_specs(config=cfg):
+        mw = spec["middleware"]
+        tp_idx = next(i for i, m in enumerate(mw) if isinstance(m, ToolProgressMiddleware))
+        tl_idx = next(i for i, m in enumerate(mw) if isinstance(m, ThinkingLoopMiddleware))
+        err_idx = next(
+            i for i, m in enumerate(mw) if type(m).__name__ != "ModelCallLimitMiddleware"
+            and type(m).__name__ != "ToolCallLimitMiddleware"
+            and i not in (tp_idx, tl_idx)
+        )
+        assert tp_idx < err_idx
+        assert tl_idx < err_idx
+        assert mw[tp_idx].empty_limit == 4
+        assert mw[tl_idx].limit == 6

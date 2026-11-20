@@ -44,7 +44,11 @@ from easy_agent.agent.graph_cache import (
     summarization_fingerprint,
 )
 from easy_agent.agent.backend import _build_backend_for_context
-from easy_agent.agent.middleware import build_agent_middleware, build_call_limit_middleware
+from easy_agent.agent.middleware import (
+    build_agent_middleware,
+    build_call_limit_middleware,
+    build_loop_guard_middleware,
+)
 from easy_agent.agent.workspace import (
     LONG_TERM_MEMORY_VIRTUAL_PATH,
     AgentWorkspaceMixin,
@@ -152,6 +156,7 @@ def build_subagent_specs(
     *,
     max_steps: int | None = None,
     skills_paths: list[str] | None = None,
+    config=None,
 ) -> list[dict]:
     """构造传给 create_deep_agent 的 subagent specs。
 
@@ -178,6 +183,7 @@ def build_subagent_specs(
         item = dict(base)
         item.setdefault("skills", list(skills_paths or ["/user-skills/"]))
         item["middleware"] = [
+            *build_loop_guard_middleware(config),
             build_tool_error_middleware(log_truncate=result_log_truncate),
             *build_call_limit_middleware(max_steps, exit_behavior="end"),
         ]
@@ -655,6 +661,7 @@ class EasyAgent(AgentWorkspaceMixin):
             result_log_truncate=getattr(self.config.tools, "result_log_truncate", 500),
             max_steps=getattr(self, "max_steps", None),
             skills_paths=skills_paths,
+            config=self.config,
         )
 
         store = None

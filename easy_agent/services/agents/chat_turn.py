@@ -283,6 +283,7 @@ class TurnSkills:
     dirs: list[str]  # 命中的技能目录名：落库到用户消息的 skills 字段，气泡据此渲染技能标签
     pinned: list[str]  # 本轮 pin 进对话的技能名（DA-13），只含已启用的
     fallback_name: str  # 只挂技能、没写正文时的会话标题兜底：首个技能的展示名
+    items: tuple[dict[str, Any], ...] = ()  # 命中的完整技能元数据（供范围预检使用）
 
 
 def resolve_request_skills(
@@ -309,6 +310,7 @@ def resolve_request_skills(
         dirs=dirs,
         pinned=skill_library.pinned_skill_names(items),
         fallback_name=items[0]["name"] if items else "",
+        items=tuple(items),
     )
 
 
@@ -463,9 +465,29 @@ def _mark_resumed_interaction(
         if tool_call_id:
             status_by_id[tool_call_id] = (
                 "approved"
-                if decision_type in {"approve", "respond"}
+                if decision_type in {"approve", "edit", "respond"}
                 else "rejected"
             )
+
+    if not status_by_id and not remaining and decisions:
+        # 兼容未落盘 tool_call_id 的历史中断记录：按 pending 顺序把决策写回。
+        pending_blocks = [
+            b
+            for b in updated["blocks"]
+            if b.get("type") == "tool_call" and b.get("approval_status") == "pending"
+        ]
+        for idx, block in enumerate(pending_blocks):
+            if idx >= len(decisions):
+                break
+            d = decisions[idx]
+            d_type = str(d.get("type") or "reject") if isinstance(d, dict) else "reject"
+            tid = block.get("tool_call_id") or block.get("id")
+            status = "approved" if d_type in {"approve", "edit", "respond"} else "rejected"
+            if tid:
+                status_by_id[tid] = status
+            else:
+                block["approval_status"] = status
+                block.pop("pending_approval", None)
 
     for block in updated["blocks"]:
         tool_call_id = block.get("tool_call_id") or block.get("id")
@@ -605,6 +627,16 @@ async def _maybe_refuse_turn(
             files=request.files,
             prompt_text=expert_prompt,
         )
+        if gate is None and turn.items:
+            gate = await expert_runtime.skill_relevance_gate(
+                expert_repo,
+                session_id,
+                username,
+                list(turn.items),
+                request.message,
+                sid,
+                files=request.files,
+            )
     if gate is None:
         return None
 
@@ -1077,6 +1109,24 @@ async def _apply_plan_confirmation(
     return confirmation_message
 
 
+async def _persist_immediate_approval_state(
+    repo: ChatRepository,
+    session_id: str,
+    decisions: list[dict[str, Any]],
+    sid: str,
+) -> None:
+    """审批决策通过校验后立即落库，避免后续流异常或发版中断导致审批状态残留。"""
+    last_message = await asyncio.to_thread(_session_last_message, repo, session_id)
+    if not isinstance(last_message, dict) or last_message.get("role") != "assistant":
+        return
+    updated = _mark_resumed_interaction(last_message, decisions)
+    if updated is not None and updated != last_message:
+        await asyncio.to_thread(
+            repo.messages.update_last_assistant_message, session_id, updated
+        )
+        logger.info(f"[{sid}] ✅ HITL 审批状态已即时落库")
+
+
 async def prepare_resume(
     *,
     request: ResumeRequest,
@@ -1134,6 +1184,8 @@ async def prepare_resume(
         sid=sid,
     )
     confirmation_message = await _apply_plan_confirmation(repo, session_id, username, request)
+    if not confirmation_message:
+        await _persist_immediate_approval_state(repo, session_id, request.decisions, sid)
 
     run_message_id = request.message_id or str(uuid.uuid4())
     run_id = run_registry.new_run_id(session_id, run_message_id)

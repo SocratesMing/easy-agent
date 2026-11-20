@@ -433,3 +433,54 @@ async def test_check_relevance_does_not_retry_on_unrelated_error():
 
     assert await rel.check_relevance(llm, "名称：债券专家", "分析资金面") is None
     assert llm.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_skill_relevance_gate_refuses_out_of_scope_question(tmp_path, monkeypatch):
+    """用户选定技能后，提问不在技能范围内时直接短路拒答。"""
+    from easy_agent.services.experts import runtime as expert_runtime
+
+    skill_dir = tmp_path / "xlsx"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: xlsx\ndescription: 电子表格与 Excel 统计分析处理\n---\n处理表格。",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(expert_runtime, "_precheck_llm", lambda: _FakeLLM('{"relevance": "irrelevant"}'))
+    monkeypatch.setattr(expert_runtime, "_recent_context", lambda repo, sid: "")
+
+    result = await expert_runtime.skill_relevance_gate(
+        repo=None,  # type: ignore[arg-type]
+        session_id="s1",
+        username="u1",
+        skills=[{"dir_name": "xlsx", "name": "xlsx", "path": str(skill_dir), "enabled": True}],
+        message="/xlsx 今天北京天气怎么样？",
+        sid="s1",
+    )
+    assert result is not None
+    classification, refusal = result
+    assert classification == rel.IRRELEVANT
+    assert "xlsx" in refusal
+    assert "不在该技能的适用范围内" in refusal
+
+
+@pytest.mark.asyncio
+async def test_skill_relevance_gate_allows_in_scope_or_bare_directive(tmp_path, monkeypatch):
+    from easy_agent.services.experts import runtime as expert_runtime
+
+    skill_dir = tmp_path / "xlsx"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: xlsx\ndescription: 电子表格与 Excel 统计分析处理\n---\n处理表格。",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(expert_runtime, "_precheck_llm", lambda: _FakeLLM('{"relevance": "relevant"}'))
+    monkeypatch.setattr(expert_runtime, "_recent_context", lambda repo, sid: "")
+
+    skills = [{"dir_name": "xlsx", "name": "xlsx", "path": str(skill_dir), "enabled": True}]
+    assert await expert_runtime.skill_relevance_gate(
+        repo=None, session_id="s1", username="u1", skills=skills, message="/xlsx", sid="s1"  # type: ignore[arg-type]
+    ) is None
+    assert await expert_runtime.skill_relevance_gate(
+        repo=None, session_id="s1", username="u1", skills=skills, message="/xlsx 帮我汇总表格", sid="s1"  # type: ignore[arg-type]
+    ) is None

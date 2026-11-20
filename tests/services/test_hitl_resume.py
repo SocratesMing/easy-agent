@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from easy_agent.services.streaming.approvals import (
     action_args,
     action_name,
@@ -124,3 +126,47 @@ def test_decision_label_covers_all_decision_types():
     assert decision_label({"type": "reject"}) == "拒绝执行"
     assert decision_label({"type": "respond"}) == "直接回复"
     assert decision_label({"type": "whatever"}) == "whatever"
+
+
+@pytest.mark.asyncio
+async def test_persist_immediate_approval_state_updates_db_before_stream():
+    """审批决策通过后立即落库清除 pending_approval，不依赖后续流完整结束。"""
+    from easy_agent.services.agents.chat_turn import _persist_immediate_approval_state
+
+    saved = {}
+    last_msg = {
+        "role": "assistant",
+        "content": "",
+        "blocks": [
+            {"type": "tool_call", "tool_call_id": "tc-1", "approval_status": "pending", "pending_approval": True}
+        ],
+        "tool_calls": [{"tool_call_id": "tc-1", "approval_status": "pending"}],
+        "pending_approval": {
+            "thread_id": "s1:t1",
+            "action_requests": [{"tool_call_id": "tc-1", "interrupt_id": "i1", "action_index": 0}],
+        },
+    }
+
+    class _FakeMessages:
+        def update_last_assistant_message(self, session_id, msg):
+            saved["session_id"] = session_id
+            saved["msg"] = msg
+
+    class _FakeRepo:
+        messages = _FakeMessages()
+
+        def get_session(self, session_id):
+            return type("S", (), {"messages": [last_msg]})()
+
+    await _persist_immediate_approval_state(
+        _FakeRepo(),  # type: ignore[arg-type]
+        "s1",
+        [{"type": "approve", "interrupt_id": "i1", "action_index": 0}],
+        "s1",
+    )
+    assert saved["session_id"] == "s1"
+    updated = saved["msg"]
+    assert "pending_approval" not in updated
+    assert updated["blocks"][0]["approval_status"] == "approved"
+    assert "pending_approval" not in updated["blocks"][0]
+    assert updated["tool_calls"][0]["approval_status"] == "approved"

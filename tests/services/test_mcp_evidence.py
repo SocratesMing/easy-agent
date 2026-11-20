@@ -348,3 +348,44 @@ async def test_get_mcp_tools_wraps_each_server(monkeypatch, tmp_path):
     finally:
         mcp._mcp_tools_cache.clear()
         mcp._mcp_clients.clear()
+
+
+def test_completeness_hint_added_for_terminal_json_responses():
+    from langchain_core.tools import StructuredTool
+
+    raw_tool = StructuredTool.from_function(
+        func=lambda text: text,
+        name="json_echo",
+        description="echo raw json",
+    )
+    wrapped = wrap_mcp_tool(raw_tool, server="demo")
+
+    for payload in (
+        json.dumps({"items": [{"id": 1}], "has_more": False}),
+        json.dumps({"records": [{"id": 1}], "hasMore": False}),
+        json.dumps([]),
+        json.dumps({"data": []}),
+        json.dumps({"items": [{"id": 1}], "total": 1}),
+    ):
+        out = wrapped.invoke({"text": payload})
+        assert "is_error=false]" in out
+        assert "数据完整性提示" in out
+
+
+def test_completeness_hint_skipped_when_incomplete_or_non_json():
+    from langchain_core.tools import StructuredTool
+
+    raw_tool = StructuredTool.from_function(
+        func=lambda text: text,
+        name="json_echo",
+        description="echo raw json",
+    )
+    wrapped = wrap_mcp_tool(raw_tool, server="demo")
+
+    for payload in (
+        json.dumps({"items": [{"id": 1}], "has_more": True}),
+        json.dumps({"items": [{"id": 1}], "total": 10}),
+        "plain text ok",
+    ):
+        out = wrapped.invoke({"text": payload})
+        assert "数据完整性提示" not in out

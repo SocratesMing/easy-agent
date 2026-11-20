@@ -19,14 +19,14 @@ from pathlib import Path
 
 import pytest
 
-import easy_agent.services.agents.manager as agent_manager
+import easy_agent.bootstrap.runtime_config as runtime_config
 from easy_agent.services.experts import public as P
 
 
 @pytest.fixture()
 def root(tmp_path, monkeypatch):
     """把公共专家根目录指向 tmp_path（清掉 agent 配置，让环境变量生效）。"""
-    monkeypatch.setattr(agent_manager, "get_agent_config", lambda: {})
+    monkeypatch.setattr(runtime_config, "get_runtime_agent_config", lambda: {})
     monkeypatch.setenv(P.ENV_EXPERTS_DIR, str(tmp_path))
     return tmp_path
 
@@ -184,7 +184,7 @@ def test_hidden_and_underscore_dirs_ignored(root):
 
 
 def test_missing_root_returns_empty(tmp_path, monkeypatch):
-    monkeypatch.setattr(agent_manager, "get_agent_config", lambda: {})
+    monkeypatch.setattr(runtime_config, "get_runtime_agent_config", lambda: {})
     monkeypatch.setenv(P.ENV_EXPERTS_DIR, str(tmp_path / "not-created"))
     assert P.discover_public_experts() == []
 
@@ -209,22 +209,22 @@ def test_load_public_prompt_missing_expert(root):
 def test_root_prefers_config_over_env(tmp_path, monkeypatch):
     monkeypatch.setenv(P.ENV_EXPERTS_DIR, str(tmp_path / "from-env"))
     monkeypatch.setattr(
-        agent_manager,
-        "get_agent_config",
+        runtime_config,
+        "get_runtime_agent_config",
         lambda: {"config": type("C", (), {"tools": type("T", (), {"experts_dir": str(tmp_path / "from-config")})()})()},
     )
     assert P.public_experts_root() == tmp_path / "from-config"
 
 
 def test_root_env_over_default(monkeypatch, tmp_path):
-    monkeypatch.setattr(agent_manager, "get_agent_config", lambda: {})
+    monkeypatch.setattr(runtime_config, "get_runtime_agent_config", lambda: {})
     monkeypatch.setenv(P.ENV_EXPERTS_DIR, str(tmp_path / "env-dir"))
     assert P.public_experts_root() == tmp_path / "env-dir"
 
 
 def test_root_default_when_nothing_set(monkeypatch):
     """未配置任何目录时，默认锚定「项目根/experts」，不随进程 CWD 漂移。"""
-    monkeypatch.setattr(agent_manager, "get_agent_config", lambda: {})
+    monkeypatch.setattr(runtime_config, "get_runtime_agent_config", lambda: {})
     monkeypatch.delenv(P.ENV_EXPERTS_DIR, raising=False)
 
     root, source = P.public_experts_root_info()
@@ -246,7 +246,7 @@ def test_root_default_is_independent_of_cwd(tmp_path, monkeypatch):
     fake_root.mkdir()
     _flat_expert(fake_root / P.DEFAULT_EXPERTS_DIRNAME, "preset_cwd", name_en="cwd")
 
-    monkeypatch.setattr(agent_manager, "get_agent_config", lambda: {})
+    monkeypatch.setattr(runtime_config, "get_runtime_agent_config", lambda: {})
     monkeypatch.setattr(P, "PROJECT_ROOT", fake_root)
     monkeypatch.delenv(P.ENV_EXPERTS_DIR, raising=False)
     monkeypatch.chdir(tmp_path)  # CWD 下没有 experts/
@@ -265,8 +265,8 @@ def test_root_relative_config_resolves_against_project_root(tmp_path, monkeypatc
     monkeypatch.setattr(P, "PROJECT_ROOT", fake_root)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        agent_manager,
-        "get_agent_config",
+        runtime_config,
+        "get_runtime_agent_config",
         lambda: {
             "config": type(
                 "C", (), {"tools": type("T", (), {"experts_dir": "my-experts"})()}
@@ -282,8 +282,8 @@ def test_root_missing_dir_keeps_raw_path(tmp_path, monkeypatch):
     """两处都不存在时保留原样（报错信息指向用户真正写下的位置）。"""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        agent_manager,
-        "get_agent_config",
+        runtime_config,
+        "get_runtime_agent_config",
         lambda: {
             "config": type(
                 "C", (), {"tools": type("T", (), {"experts_dir": "no-such-dir"})()}

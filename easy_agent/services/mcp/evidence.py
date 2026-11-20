@@ -46,6 +46,11 @@ _TRUNCATION_NOTICE = (
     "不要用缩小时间窗口反复查询的方式统计总数或判定数据可用性；"
     "已见内容足以判定时，直接下结论。）"
 )
+_COMPLETENESS_HINT = (
+    "\n[数据完整性提示: 接口已返回全部可用数据（has_more=false / 已达 total / 空列表），"
+    "请直接基于当前结果作答，不要重复调用或改参数凑行数。]"
+)
+_PAGINATION_LIST_KEYS = ("items", "data", "list", "records", "rows", "results")
 
 # 保守的「文本包装错误」启发式（FW-14）。只检查首个非空行，避免长文档中间
 # 偶尔出现 error 字样就误判。
@@ -268,6 +273,58 @@ def _prefix_content(content: Any, marker: str) -> Any:
     return f"{marker}\n{content}"
 
 
+def _completeness_hint(text: str, *, truncated: bool) -> str:
+    """当未截断的 JSON 明确表明已取完或为空时，提示模型不要重复翻页或改参凑数。"""
+    if truncated or not text:
+        return ""
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "{[":
+        return ""
+    try:
+        parsed = json.loads(stripped)
+    except (ValueError, TypeError):
+        return ""
+
+    if isinstance(parsed, list):
+        return _COMPLETENESS_HINT if len(parsed) == 0 else ""
+
+    if not isinstance(parsed, dict):
+        return ""
+
+    if parsed.get("has_more") is False or parsed.get("hasMore") is False:
+        return _COMPLETENESS_HINT
+
+    for key in _PAGINATION_LIST_KEYS:
+        val = parsed.get(key)
+        if isinstance(val, list):
+            if len(val) == 0:
+                return _COMPLETENESS_HINT
+            for total_key in ("total", "totalCount", "total_count"):
+                total = parsed.get(total_key)
+                if (
+                    isinstance(total, int)
+                    and not isinstance(total, bool)
+                    and 0 <= total <= len(val)
+                ):
+                    return _COMPLETENESS_HINT
+    return ""
+
+
+def _append_content(content: Any, suffix: str) -> Any:
+    """把补充提示追加到原始结果之后，尽量保持内容块结构。"""
+    if isinstance(content, str):
+        return f"{content}{suffix}" if content else suffix.lstrip("\n")
+    if isinstance(content, list):
+        if all(isinstance(item, dict) for item in content):
+            return [*content, {"type": "text", "text": suffix.lstrip("\n")}]
+        if all(isinstance(item, str) for item in content):
+            return [*content, suffix.lstrip("\n")]
+        return f"{content}{suffix}"
+    if content is None:
+        return suffix.lstrip("\n")
+    return f"{content}{suffix}"
+
+
 # ---------------------------------------------------------------------------
 # 结果解包 / 包装器
 # ---------------------------------------------------------------------------
@@ -331,6 +388,11 @@ class _MCPEvidenceTool(BaseTool):
         status_error = status == "error"
         text_error = (not status_error) and _looks_like_error_text(text)
         is_error = status_error or text_error
+        final_content = truncated_content
+        if not is_error:
+            hint = _completeness_hint(text, truncated=truncated)
+            if hint:
+                final_content = _append_content(truncated_content, hint)
         evidence = MCPEvidence(
             server=self.server,
             tool=self.name,
@@ -338,7 +400,7 @@ class _MCPEvidenceTool(BaseTool):
             is_error=is_error,
             fetched_at=fetched_at,
             truncated=truncated,
-            content=truncated_content,
+            content=final_content,
             error=text if text_error else "",
             error_from_text=text_error,
         )
