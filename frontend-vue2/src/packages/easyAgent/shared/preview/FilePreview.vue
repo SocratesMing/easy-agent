@@ -25,8 +25,8 @@
             <div class="spinner"></div>
             <span>加载中...</span>
           </div>
-          <div v-else-if="error" class="preview-error">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <div v-else-if="error" class="preview-error" :class="{ 'is-pptx': isPptx }">
+            <svg v-if="!isPptx" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"></circle>
               <line x1="12" y1="8" x2="12" y2="12"></line>
               <line x1="12" y1="16" x2="12.01" y2="16"></line>
@@ -267,6 +267,9 @@ export default {
     },
     isPdf() {
       return getExt(this.filename) === 'pdf'
+    },
+    isPptx() {
+      return getExt(this.filename) === 'pptx'
     },
     // PPTX 与老版 PPT/DOC 都没有可用的前端渲染器：统一交后端 LibreOffice 转 PDF。
     isPdfConverted() {
@@ -580,7 +583,7 @@ export default {
       } catch (e) {
         if (seq !== this._loadSeq) return
         console.error('[FilePreview] 预览加载失败:', e, { filename: this.filename, filePath: this.filePath })
-        this.error = `加载失败: ${e.message}`
+        this.error = ext === 'pptx' ? 'PPTX 预览失败，请下载后查看' : `加载失败: ${e.message}`
       }
 
       if (seq !== this._loadSeq) return
@@ -772,6 +775,10 @@ export default {
 
 .preview-error {
   color: #ef4444;
+}
+
+.preview-error.is-pptx {
+  color: #6b7280;
 }
 
 .preview-unsupported svg {

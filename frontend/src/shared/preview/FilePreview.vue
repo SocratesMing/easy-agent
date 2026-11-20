@@ -27,8 +27,8 @@
             <div class="spinner"></div>
             <span>加载中...</span>
           </div>
-          <div v-else-if="error" class="preview-error">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <div v-else-if="error" class="preview-error" :class="{ 'is-pptx': isPptx }">
+            <svg v-if="!isPptx" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"></circle>
               <line x1="12" y1="8" x2="12" y2="12"></line>
               <line x1="12" y1="16" x2="12.01" y2="16"></line>
@@ -258,6 +258,7 @@ const isImage = computed(() => {
 })
 
 const isPdf = computed(() => getExt(props.filename) === 'pdf')
+const isPptx = computed(() => getExt(props.filename) === 'pptx')
 
 // PPTX 与老版 PPT/DOC 都没有可用的前端渲染器：统一交后端 LibreOffice 转 PDF。
 const isPdfConverted = computed(() => ['pptx', 'ppt', 'doc'].includes(getExt(props.filename)))
@@ -563,7 +564,7 @@ async function loadPreview() {
   } catch (e) {
     if (seq !== loadSeq) return
     console.error('[FilePreview] 预览加载失败:', e, { filename: props.filename, filePath: props.filePath })
-    error.value = `加载失败: ${e.message}`
+    error.value = ext === 'pptx' ? 'PPTX 预览失败，请下载后查看' : `加载失败: ${e.message}`
   }
 
   if (seq !== loadSeq) return
@@ -782,6 +783,10 @@ function handleClose() {
 
 .preview-error {
   color: #ef4444;
+}
+
+.preview-error.is-pptx {
+  color: #6b7280;
 }
 
 .preview-unsupported svg {
