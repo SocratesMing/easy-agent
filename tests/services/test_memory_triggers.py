@@ -199,7 +199,9 @@ def test_long_term_memory_skips_turns_without_signal(executor, monkeypatch, tmp_
 
     assert len(calls) == 1
     assert calls[0]["user_message"] == f"任务 {EVERY_N_TURNS - 1}"
-    assert calls[0]["earlier_user_messages"] == tuple(f"任务 {i}" for i in range(EVERY_N_TURNS - 1))
+    assert calls[0]["earlier_user_messages"] == tuple(
+        f"用户：任务 {i}｜助手：答复" for i in range(EVERY_N_TURNS - 1)
+    )
 
 
 def test_session_memory_is_batched_and_merges_earlier_turns(executor, monkeypatch, tmp_path):
@@ -230,6 +232,35 @@ def test_session_memory_updates_at_once_on_a_decision(executor, monkeypatch, tmp
     side_effects.submit_memory_updates(agent, "s1", None, "看看两种方案", "方案一更稳", "s1")
     side_effects.submit_memory_updates(agent, "s1", None, "就用方案一", "好的", "s1")
     executor.shutdown(wait=True)
+    assert len(calls) == 1
+    assert calls[0]["user_message"] == "就用方案一"
 
-    assert [call["user_message"] for call in calls] == ["就用方案一"]
-    assert calls[0]["earlier_turns"] == ("用户：看看两种方案\n助手：方案一更稳",)
+
+def test_invoke_memory_llm_disables_thinking_and_falls_back_on_bad_params():
+    class _BoundRejectLLM:
+        def __init__(self, parent):
+            self.parent = parent
+
+        def invoke(self, messages):
+            self.parent.calls += 1
+            raise ValueError("400 Bad Request: unknown field reasoning_effort")
+
+    class _GatewayLLM:
+        def __init__(self):
+            self.calls = 0
+            self.bound = {}
+
+        def bind(self, **kwargs):
+            self.bound = kwargs
+            return _BoundRejectLLM(self)
+
+        def invoke(self, messages):
+            self.calls += 1
+            return SimpleNamespace(content="{}")
+
+    llm = _GatewayLLM()
+    res = memory_manager._invoke_memory_llm(llm, ["hi"])
+    assert res.content == "{}"
+    assert llm.bound.get("reasoning_effort") == "none"
+    assert llm.bound.get("extra_body") == {"thinking": {"type": "disabled"}}
+    assert llm.calls == 2

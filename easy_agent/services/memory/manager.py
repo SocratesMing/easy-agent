@@ -61,6 +61,43 @@ LONG_TERM_SECTIONS = ("工作背景", "个人背景", "当前关注", "近期动
 #: 手动修改），就基于最新内容重做；再冲突就放弃本次更新，不覆盖别人刚写的内容。
 MAX_UPDATE_ATTEMPTS = 2
 
+_NO_THINKING_KWARGS = {
+    "reasoning_effort": "none",
+    "extra_body": {"thinking": {"type": "disabled"}},
+}
+_BAD_PARAM_HINTS = (
+    "400 bad request",
+    "error code: 400",
+    "invalid_request",
+    "unsupported parameter",
+    "unknown field",
+    "unrecognized",
+    "extra fields",
+    "reasoning_effort",
+    "thinking",
+)
+
+
+def _invoke_memory_llm(llm, messages):
+    """调用记忆整理模型并默认关闭思考模式，网关不支持参数时回退原始调用。"""
+    call_model = llm
+    thinking_disabled = False
+    if hasattr(llm, "bind"):
+        try:
+            call_model = llm.bind(**_NO_THINKING_KWARGS)
+            thinking_disabled = True
+        except Exception as exc:  # noqa: BLE001 - bind 失败回退原模型
+            logger.debug("记忆模型关思考参数绑定失败，按默认参数调用: %s", exc)
+    try:
+        return call_model.invoke(messages)
+    except Exception as exc:
+        if thinking_disabled and any(
+            hint in f"{type(exc).__name__}: {exc}".lower() for hint in _BAD_PARAM_HINTS
+        ):
+            logger.warning("记忆模型关思考参数被网关拒绝，回退默认参数重试: %s", exc)
+            return llm.invoke(messages)
+        raise
+
 # 提示词统一放在 easy_agent/config/prompts/ 下（文件为权威）；
 # 以下为文件缺失时的兜底文本，保证部署漏挂载仍能工作。
 # 占位符使用 string.Template 的 $name 形式，对正文中的 JSON 大括号免疫。
@@ -286,7 +323,7 @@ def compress_memory(content: str, llm, max_chars: int = MAX_MEMORY_CHARS) -> str
 
         template = load_prompt("memory_compress") or FALLBACK_COMPRESS_PROMPT
         prompt = render(template, max_chars=max_chars, content=content)
-        response = llm.invoke([HumanMessage(content=prompt)])
+        response = _invoke_memory_llm(llm, [HumanMessage(content=prompt)])
         compressed = getattr(response, "content", str(response)).strip()
 
         # 如果压缩后仍超限，递归截断保留头部（最常访问的部分）
@@ -327,7 +364,7 @@ def _compact_with_ops(
         current_memory=annotate_for_prompt(markdown),
     )
     try:
-        reply = getattr(llm.invoke([HumanMessage(content=prompt)]), "content", "") or ""
+        reply = getattr(_invoke_memory_llm(llm, [HumanMessage(content=prompt)]), "content", "") or ""
     except Exception as exc:  # noqa: BLE001 - 精简失败就按长度丢弃，不影响写入
         logger.warning(f"{scope}精简调用失败，改为按长度丢弃条目: {exc}")
         reply = ""
@@ -486,7 +523,7 @@ def update_memory_after_session(
                 max_chars=MAX_MEMORY_CHARS,
                 turn_actions=turn_actions,
             )
-            response = llm.invoke([HumanMessage(content=prompt)])
+            response = _invoke_memory_llm(llm, [HumanMessage(content=prompt)])
             reply = getattr(response, "content", str(response)).strip()
 
             if not reply:
@@ -865,7 +902,7 @@ def _generate_long_term_update(
         assistant_response=asst_msg_trunc,
         max_chars=max_chars,
     )
-    response = llm.invoke([HumanMessage(content=prompt)])
+    response = _invoke_memory_llm(llm, [HumanMessage(content=prompt)])
     return getattr(response, "content", str(response)).strip()
 
 

@@ -428,7 +428,9 @@ def submit_memory_updates(
         try:
             long_term_key = f"file:{Path(agent.long_term_memory_file).resolve()}"
             decision = LONG_TERM_BATCHER.add(
-                long_term_key, raw_user_msg, signal=has_long_term_signal(raw_user_msg)
+                long_term_key,
+                _long_term_note(raw_user_msg, accumulated_response),
+                signal=has_long_term_signal(raw_user_msg),
             )
             if decision.due:
                 _submit_long_term_update(
@@ -441,6 +443,15 @@ def submit_memory_updates(
                 )
         except Exception as e:
             logger.warning(f"[{sid}] 用户长期记忆更新提交失败: {e}")
+
+
+def _long_term_note(user_message: str, reply: str) -> str:
+    """长期记忆攒批时登记的一轮极简摘要：用户输入 + 助手回复结论节选。"""
+    user_part = " ".join((user_message or "").split())[:180]
+    reply_part = " ".join((reply or "").split())
+    if reply_part:
+        return f"用户：{user_part}｜助手：{clip_middle(reply_part, 110, tail=35)}"
+    return user_part
 
 
 def _session_note(user_message, reply, turn_actions) -> str:
