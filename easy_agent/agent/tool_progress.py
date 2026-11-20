@@ -837,13 +837,21 @@ class ToolProgressMiddleware(AgentMiddleware):
 
     # ── MCP 止损（新增） ─────────────────────────────────────────────
 
-    def _mcp_note(self, request: Any, name: str, text: str) -> str:
+    def _mcp_note(
+        self,
+        request: Any,
+        name: str,
+        text: str,
+        *,
+        history: list[ToolResultEntry] | None = None,
+    ) -> str:
         body = strip_progress_notes(strip_mcp_envelope(text))
         current_empty = is_empty_mcp_body(body)
 
         state = getattr(request, "state", None)
         prefix = _log_prefix(request)
-        history = tool_result_entries(state, name)
+        if history is None:
+            history = tool_result_entries(state, name)
         # 「本轮是否取到过数据」必须把本次结果算进来：本次非空即算取到过。
         has_data_once = (not current_empty) or any(not e.is_empty for e in history)
 
@@ -929,32 +937,27 @@ class ToolProgressMiddleware(AgentMiddleware):
             return _MCP_CONVERGE.format(n=no_progress)
         return ""
 
-    # ── 工具熔断（硬止损，2026-11-17）───────────────────────────────
+    # ── 工具熔断 ────────────────────────────────────────────────────
 
-    def _fuse_reason(self, request: Any, name: str, args: Any) -> str | None:
-        """本次调用是否应被熔断；返回原因文本，``None`` 表示放行。
-
-        三个判定全部从消息历史**无状态推导**（本轮范围，跨轮不累加），
-        不写 state、不加实例计数——中间件实例进共享编译图，必须无实例态。
-        """
+    def _fuse_reason(
+        self,
+        request: Any,
+        name: str,
+        args: Any,
+        *,
+        entries: list[ToolResultEntry] | None = None,
+    ) -> str | None:
+        """无状态判定本次调用是否应熔断；返回原因文本，``None`` 表示放行。"""
         state = getattr(request, "state", None)
-        entries = tool_result_entries(state, name)
+        if entries is None:
+            entries = tool_result_entries(state, name)
 
-        # 合成熔断消息只用于「范围判定」，不构成一次执行：下面所有「读了几次 /
-        # 执行了几次 / 空了几次 / 低价值占比」都必须只在真实结果上算，否则每续调
-        # 一次熔断就多一条「非空非重复」的合成结果，把计数全部洗白（P0-A）。
+        # 合成熔断消息只参与范围判定，不计入真实执行次数与低价值占比。
         real_entries = [entry for entry in entries if not entry.is_synthetic]
         has_synthetic = len(real_entries) != len(entries)
 
-        # 情况 0（读取型，2026-11-19）：同一文件 + 完全相同参数重复读。
-        # 必须放在下面的范围门控**之前**：read_file 故意不在 ``_SCOPE_TOOLS`` 里，
-        # 走门控会直接 return None——这正是金市营收那轮"同一 SKILL.md 读 3 次
-        # 无人管"的原因。这里阈值复用 fuse_limit（默认 3），与"同查询连续空"
-        # 同一口径：读满 3 次，第 4 次起拦截；参数变了（分页用 offset）不计数。
         if name in _READ_TOOLS:
             if entries and not real_entries:
-                # 与查询工具同款防振荡：真实读取结果被窗口挤出、只剩熔断消息时，
-                # 若按 same_reads=0 放行，会退化成「熔断—放行—执行」交替。
                 return "本轮对该文件的读取持续被系统拦截，历史结果已超出判定窗口"
             args_fp = _fingerprint(name, args)
             same_reads = sum(1 for entry in real_entries if entry.args_fp == args_fp)
@@ -962,13 +965,6 @@ class ToolProgressMiddleware(AgentMiddleware):
                 return f"同一文件已用完全相同的参数读取 {same_reads} 次，内容没有变化"
             return None
 
-        # 熔断只覆盖查询型工具：探索型四件套 + MCP 查询工具（历史结果里出现过
-        # 证据信封即认定）。写类工具（write_file/edit_file/write_todos 等）在
-        # 长任务里合法调用几十次是常态，绝不能被预算误熔断。
-        #
-        # ``has_synthetic`` 也是"曾在范围内"的证据：合成熔断消息的正文不带 MCP
-        # 信封（``is_mcp`` 恒为 False），一旦真实结果被 200 条窗口挤出，只看
-        # is_mcp 会直接放行——2026-11-18 外汇事故"熔断后又跑上百步"正是这个形态。
         if (
             name not in _SCOPE_TOOLS
             and not any(e.is_mcp for e in entries)
@@ -976,27 +972,15 @@ class ToolProgressMiddleware(AgentMiddleware):
         ):
             return None
 
-        # 情况 1：同一查询（工具名 + 参数指纹）连续空结果——3 次执行后，
-        # 第 4 次起熔断。entries 不含本次（结果还没产生），streak 即已执行次数。
         args_fp = _fingerprint(name, args)
 
         if entries and not real_entries:
-            # 边界：该工具在窗口内的历史结果已全是熔断消息（真实结果被挤出）。
-            # 剔除合成消息后若就此放行，会退化成「熔断—放行—执行」交替，所以
-            # 持续拦截本身就是要继续拦的证据。
             return "本轮对该工具的调用持续被系统拦截，历史执行结果已超出判定窗口"
 
         empty_streak = trailing_args_empty_streak(real_entries, args_fp)
         if empty_streak >= self.fuse_limit:
             return f"同一查询已连续 {empty_streak} 次返回空结果"
 
-        # 情况 1b：同一查询本轮**累计**执行到上限，无论结果是否为空、是否与
-        # 此前重复——只看参数指纹不变的原样重跑次数。兜「同一条命令反复执行
-        # + 输出带时间戳等微变内容」的循环：空结果（非空）、重复指纹（每次
-        # 微变）、低价值行数（非 JSON 判不出）三类判定全部擦边漏过时，只有
-        # 参数指纹不变这一条稳定信号。合法重跑（修完问题验证同一命令）到不了
-        # 上限；分页遍历每次参数不同，不受影响。entries 不含本次，计数即已
-        # 执行次数：第 ``limit`` 次执行后，下一次起熔断。
         same_args_total = sum(1 for entry in real_entries if entry.args_fp == args_fp)
         if same_args_total >= self.same_args_total_limit:
             return (
@@ -1004,17 +988,9 @@ class ToolProgressMiddleware(AgentMiddleware):
                 f"（上限 {self.same_args_total_limit}），结果无进展"
             )
 
-        # 情况 2a：单工具本轮调用预算。计数含本次（当前 AIMessage 已进 state），
-        # count > budget 即第 budget+1 次起熔断。
-        # 预算必须叠加「低进展信号」才熔断：健康分页（每页都是足量新数据）
-        # 超过 20 页是合法工作，绝不能拦；只拦「参数组合爆炸式试探」——
-        # 其特征是低价值结果占比过半，或末尾已连续无进展。
+        # 超预算仅在叠加低进展信号时熔断，避免误拦健康分页。
         call_count = tool_call_count_in_turn(state, name)
         if call_count > self.tool_call_budget:
-            # 预算必须叠加「低进展信号」才熔断：健康分页（每页都是足量新数据）
-            # 超过 20 页是合法工作，绝不能拦；只拦「参数组合爆炸式试探」——
-            # 其特征是低价值结果占比过半，或末尾已连续无进展。
-            # 分母同样只用真实条目：合成消息进分母会把占比稀释，让预算永远不触发。
             ratio = (
                 low_value_count(real_entries, low_value_rows=self.low_value_rows)
                 / len(real_entries)
@@ -1030,9 +1006,6 @@ class ToolProgressMiddleware(AgentMiddleware):
                     f"且低价值结果占比 {ratio:.0%}"
                 )
 
-        # 情况 2b：连续低价值结果（空 / 行数过少 / 与此前重复）——
-        # 每次「都换参数、都只回一点脏数据」的探索型循环，
-        # 空结果与逐字节重复判定都不命中，只有这条能兜住。
         low_value = no_progress_streak(real_entries, low_value_rows=self.low_value_rows)
         if low_value >= self.low_value_limit:
             return f"本工具已连续 {low_value} 次查询未取得有效数据（空/过少/重复）"
@@ -1040,11 +1013,7 @@ class ToolProgressMiddleware(AgentMiddleware):
         return None
 
     def _fused_tool_message(self, request: Any, name: str, reason: str) -> ToolMessage:
-        """熔断时返回的合成 ToolMessage。
-
-        必须真的返回 ToolMessage（而不是抛异常/返回 None）：当前 AIMessage 已带
-        tool_call，缺一条配对的 ToolMessage 会让下一轮模型调用直接报 API 错误。
-        """
+        """返回与当前 tool_call 配对的合成熔断 ToolMessage。"""
         call = getattr(request, "tool_call", None) or {}
         call_id = str(call.get("id") or "")
         return ToolMessage(
@@ -1053,11 +1022,10 @@ class ToolProgressMiddleware(AgentMiddleware):
             name=name,
         )
 
-    def _maybe_fuse(self, request: Any) -> ToolMessage | None:
-        """工具执行前的熔断检查；命中返回合成结果，未命中返回 ``None`` 放行。
-
-        熔断检查绝不能影响正常工具调用：任何取值/判定异常都吞成 debug。
-        """
+    def _maybe_fuse(
+        self, request: Any, *, entries: list[ToolResultEntry] | None = None
+    ) -> ToolMessage | None:
+        """工具执行前的熔断检查；命中返回合成结果，未命中返回 ``None`` 放行。"""
         if not self.enabled:
             return None
         try:
@@ -1066,7 +1034,7 @@ class ToolProgressMiddleware(AgentMiddleware):
             if not name:
                 return None
             args = call.get("args") or {}
-            reason = self._fuse_reason(request, name, args)
+            reason = self._fuse_reason(request, name, args, entries=entries)
             if reason is None:
                 return None
             logger.warning(
@@ -1078,20 +1046,33 @@ class ToolProgressMiddleware(AgentMiddleware):
                 str(args)[:200],
             )
             return self._fused_tool_message(request, name, reason)
-        except Exception as exc:  # noqa: BLE001 - 熔断检查失败不该阻断工具执行
+        except Exception as exc:  # noqa: BLE001 - 熔断检查失败不阻断工具执行
             logger.debug("熔断检查跳过（%s: %s）", type(exc).__name__, exc)
             return None
 
     # ── 入口 ────────────────────────────────────────────────────────
 
-    def annotate(self, request: Any, result: Any) -> Any:
-        """给工具结果补尾注；非目标工具 / 非文本 / 错误结果原样返回。
+    def _prefetched_entries(self, request: Any) -> list[ToolResultEntry] | None:
+        """单次工具调用周期内预取一次历史条目，避免 _maybe_fuse / annotate / _mcp_note 重复扫描。"""
+        if not self.enabled:
+            return None
+        call = getattr(request, "tool_call", None) or {}
+        name = str(call.get("name") or "")
+        if not name:
+            return None
+        try:
+            return tool_result_entries(getattr(request, "state", None), name)
+        except Exception:  # noqa: BLE001
+            return None
 
-        **必须同时支持 str 与 list 两种 content**：MCP 工具走的是
-        ``response_format="content_and_artifact"``，ToolNode 组装出的
-        ``ToolMessage.content`` 是 content block 列表（首块是证据信封，其后是正文）。
-        只认 str 会让整个 MCP 止损在生产环境一次都不触发——单测用 str 构造发现不了。
-        """
+    def annotate(
+        self,
+        request: Any,
+        result: Any,
+        *,
+        entries: list[ToolResultEntry] | None = None,
+    ) -> Any:
+        """给工具结果补尾注（兼容 str 与 list content）；非目标/错误结果原样返回。"""
         if not self.enabled or not isinstance(result, ToolMessage):
             return result
         if not isinstance(result.content, (str, list)):
@@ -1104,14 +1085,13 @@ class ToolProgressMiddleware(AgentMiddleware):
         if looks_like_error(text) or is_mcp_error(text):
             return result
 
-        # MCP 工具识别口径必须与 _fuse_reason 一致：本次是信封结果，**或**
-        # 历史里出现过信封。只看本次文本会让「历史有信封、本次返回裸结果」
-        # 的场景熔断在计数、提示却不给——模型在收不到任何警告的情况下被拦。
-        if is_mcp_result(text) or any(
-            e.is_mcp
-            for e in tool_result_entries(getattr(request, "state", None), name)
-        ):
-            note = self._mcp_note(request, name, text)
+        history = (
+            entries
+            if entries is not None
+            else tool_result_entries(getattr(request, "state", None), name)
+        )
+        if is_mcp_result(text) or any(e.is_mcp for e in history):
+            note = self._mcp_note(request, name, text, history=history)
         elif name in _SCOPE_TOOLS:
             note = self._scope_note(request, name, args, text)
         elif name in _READ_TOOLS:
@@ -1124,19 +1104,20 @@ class ToolProgressMiddleware(AgentMiddleware):
         if isinstance(result.content, str):
             merged = f"{text}\n{note}" if text.strip() else note
             return result.model_copy(update={"content": merged})
-        # 分段内容：尾注单独成块。不动已有块，图片/文件等非文本块原样保留。
         return result.model_copy(
             update={"content": [*result.content, {"type": "text", "text": note}]}
         )
 
     def wrap_tool_call(self, request: Any, handler: Any) -> Any:
-        fused = self._maybe_fuse(request)
+        entries = self._prefetched_entries(request)
+        fused = self._maybe_fuse(request, entries=entries)
         if fused is not None:
             return fused
-        return self.annotate(request, handler(request))
+        return self.annotate(request, handler(request), entries=entries)
 
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
-        fused = self._maybe_fuse(request)
+        entries = self._prefetched_entries(request)
+        fused = self._maybe_fuse(request, entries=entries)
         if fused is not None:
             return fused
-        return self.annotate(request, await handler(request))
+        return self.annotate(request, await handler(request), entries=entries)

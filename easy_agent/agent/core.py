@@ -9,15 +9,12 @@
 ``TodoListMiddleware`` explicitly.
 """
 
-import json
 import logging
 import shutil
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from deepagents import create_deep_agent
-from langchain_core.messages import AIMessageChunk, ToolMessage
 
 from easy_agent.backends.shell import _PathTranslatingShell  # noqa: F401  旧导入路径兼容（测试/外部直接 import）
 from easy_agent.backends.context import ContextBackend
@@ -71,15 +68,10 @@ from easy_agent.agent.skill_readiness import (
     gap_fingerprint,
     skill_tool_gaps,
 )
-from easy_agent.utils.mcp_content import parse_mcp_content
 from easy_agent.utils.mcp_tool_names import resolve_tool_names
 from easy_agent.agent.builtin_skills import BUILTIN_VIRTUAL_ROOT
 from easy_agent.bootstrap.logger import AgentLogger
-from easy_agent.agent.model import (
-    create_model,
-    extract_reasoning,
-    is_internal_model_call,
-)
+from easy_agent.agent.model import create_model
 from easy_agent.security.prompt_guard import assemble_system_prompt
 from easy_agent.utils.prompt_probe import describe_prompt, prompt_fingerprint
 from easy_agent.agent.model import resolve_llm_config, resolve_model_key
@@ -1022,109 +1014,3 @@ class EasyAgent(AgentWorkspaceMixin):
             self.max_steps,
             approval_mode=self.approval_mode if self.enable_hitl else None,
         )
-
-    async def run(self, user_input: str) -> str:
-        """Execute agent with streaming output (CLI mode).
-
-        Uses agent.astream(stream_mode='messages') for raw message-level streaming,
-        which correctly captures DeepSeek's reasoning_content as per-token chunks.
-        """
-        self.logger.start_new_run()
-        self.logger.log_request(
-            messages=[{"role": "user", "content": user_input}], tools=None
-        )
-
-        start_time = time.time()
-        full_response = ""
-        thinking_shown = False
-        response_shown = False
-        tool_call_accumulated_args = {}
-
-        try:
-            async for event in self.agent.astream(
-                {"messages": [{"role": "user", "content": user_input}]},
-                stream_mode="messages",
-                context=self.session_context,
-            ):
-                chunk, metadata = event
-                if is_internal_model_call(metadata):
-                    continue  # 摘要等中间件内部调用的 token 不是回复
-
-                if isinstance(chunk, AIMessageChunk):
-                    rc = (
-                        extract_reasoning(chunk.additional_kwargs)
-                        if hasattr(chunk, "additional_kwargs")
-                        else ""
-                    )
-                    content = chunk.content or ""
-                    tcc = getattr(chunk, "tool_call_chunks", None) or []
-
-                    if rc:
-                        if not thinking_shown:
-                            logger.info("🧠 Thinking:")
-                            thinking_shown = True
-                        print(rc, end="", flush=True)
-
-                    if content and not tcc:
-                        if thinking_shown:
-                            thinking_shown = False
-                            print()  # newline separator
-                        if not response_shown:
-                            logger.info("🤖 Assistant:")
-                            response_shown = True
-                        print(content, end="", flush=True)
-                        full_response += content
-
-                    for tc in tcc:
-                        name = tc.get("name", "") or ""
-                        args_str = str(tc.get("args", "") or "")
-                        tid = tc.get("id", "") or ""
-                        if name:
-                            args_data = args_str
-                            if args_str:
-                                try:
-                                    parsed = json.loads(args_str)
-                                    args_data = (
-                                        parsed
-                                        if isinstance(parsed, dict)
-                                        else {"value": parsed}
-                                    )
-                                except json.JSONDecodeError:
-                                    args_data = {}
-                            else:
-                                args_data = {}
-                            tool_call_accumulated_args[name] = args_data
-                            logger.info(f"🔧 Tool: {name} | Args: {args_data}")
-                        elif tid and tid in tool_call_accumulated_args:
-                            if args_str:
-                                try:
-                                    parsed = json.loads(args_str)
-                                    if isinstance(parsed, dict):
-                                        tool_call_accumulated_args[
-                                            list(tool_call_accumulated_args.keys())[-1]
-                                        ] = parsed
-                                except json.JSONDecodeError:
-                                    pass
-
-                elif isinstance(chunk, ToolMessage):
-                    tool_name = getattr(chunk, "name", "") or ""
-                    result = parse_mcp_content(chunk.content) if chunk.content else ""
-                    truncate_len = getattr(
-                        self.config.tools, "result_log_truncate", 200
-                    )
-                    logger.info(f"📊 Result [{tool_name}]: {result[:truncate_len]}")
-
-            if thinking_shown or response_shown:
-                print()  # final newline
-
-            elapsed = time.time() - start_time
-            logger.info(f"⏱️  Completed in {elapsed:.2f}s")
-
-        except Exception as e:
-            error_msg = f"Agent execution failed: {e}"
-            logger.error(f"❌ {error_msg}")
-            self.logger.log_response(content="", finish_reason="error")
-            return error_msg
-
-        self.logger.log_response(content=full_response, finish_reason="stop")
-        return full_response

@@ -5,7 +5,6 @@ ModelCallLimit → ToolCallLimit → ApprovalAudit。
 摘要中间件需绑定建图时的 model/backend，在 EasyAgent._create_agent 中按同名原位替换。
 """
 
-import inspect
 import logging
 from functools import lru_cache
 
@@ -18,8 +17,8 @@ def framework_provides_todolist() -> bool:
     try:
         import deepagents.graph as graph_module
 
-        return "TodoListMiddleware" in inspect.getsource(graph_module)
-    except Exception:  # noqa: BLE001 - 无源码环境按未内置处理
+        return hasattr(graph_module, "TodoListMiddleware")
+    except Exception:  # noqa: BLE001
         return False
 
 
