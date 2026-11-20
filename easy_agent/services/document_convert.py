@@ -1,16 +1,9 @@
-"""文档转换兼容重导出（实现已下沉至 ``easy_agent.utils.document_convert`` 以符合分层门禁）。"""
+"""文档转换兼容别名（实现已下沉至 ``easy_agent.utils.document_convert`` 以符合分层门禁）。"""
 
-from easy_agent.utils.document_convert import (  # noqa: F401 - 兼容旧导入路径
-    CACHE_DIR,
-    SUPPORTED_EXT,
-    _find_soffice,
-    convert_office_document,
-    convert_to_pdf,
-)
+import sys
 
-__all__ = [
-    "CACHE_DIR",
-    "SUPPORTED_EXT",
-    "convert_office_document",
-    "convert_to_pdf",
-]
+from easy_agent.utils import document_convert as _impl
+
+# 保持模块对象身份一致，使既有测试对 easy_agent.services.document_convert.* 的
+# monkeypatch 直接作用于 easy_agent.utils.document_convert。
+sys.modules[__name__] = _impl
