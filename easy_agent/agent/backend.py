@@ -15,7 +15,6 @@ from easy_agent.agent.graph_cache import SessionContext
 from easy_agent.agent.builtin_skills import BUILTIN_VIRTUAL_ROOT
 from easy_agent.backends.artifacts import AGENT_ARTIFACTS_ROOT, AgentArtifactsBackend
 from easy_agent.backends.builtin_skills import BuiltinSkillsBackend
-from easy_agent.backends.langsmith_sandbox import create_langsmith_backend, sandbox_mode
 from easy_agent.backends.scoped_skills import ScopedSkillsBackend
 from easy_agent.backends.shell import _PathTranslatingShell
 from easy_agent.bootstrap.config import Config
@@ -325,18 +324,7 @@ def _build_context_shell(
     shell_env: dict[str, str],
     sid: str,
 ):
-    """按 ``EASY_SANDBOX_MODE`` 选择执行后端：远端 LangSmith 或本地 bwrap/Landlock。"""
-    if sandbox_mode() == "langsmith":
-        # opt-in：仅 execute 走远端 LangSmith Sandbox；文件工具仍走上面的本地路由。
-        # 该 backend 由 ContextBackend 按 context 缓存，不会每次工具调用新建。
-        return create_langsmith_backend(
-            workspace_dir=ws_real,
-            path_mappings=path_mappings,
-            workspace_virtual_path=workspace_virtual_path,
-            timeout=120,
-            env=shell_env,
-            sid=sid,
-        )
+    """构建本地 bwrap/Landlock 执行后端。"""
     return _build_local_shell(
         config,
         ws_str=ws_str,
