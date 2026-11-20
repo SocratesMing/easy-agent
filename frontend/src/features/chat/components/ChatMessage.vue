@@ -237,6 +237,29 @@
       </template>
       <MessageError :error="message.error" />
       <MessageFallbackNote v-if="message.role === 'assistant'" :note="message.fallback_note" />
+      <div v-if="citationSourcesList.length" class="citation-sources-bar">
+        <button type="button" class="citation-sources-toggle" @click="showSourcesBar = !showSourcesBar">
+          <span>参考来源 ({{ citationSourcesList.length }})</span>
+          <svg class="citation-sources-arrow" :class="{ open: showSourcesBar }" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </button>
+        <div v-if="showSourcesBar" class="citation-sources-list">
+          <button
+            v-for="(src, idx) in citationSourcesList"
+            :key="src.key || idx"
+            type="button"
+            class="citation-source-pill ke-cite-number"
+            :data-cite="idx + 1"
+            :title="(src.metadata && src.metadata.report_title) || src.document_name"
+          >
+            <span class="citation-source-idx">{{ idx + 1 }}</span>
+            <span class="citation-source-name">{{ (src.metadata && src.metadata.report_title) || src.document_name }}</span>
+            <span class="citation-source-kind">{{ sourceLabel(src) }}</span>
+          </button>
+        </div>
+      </div>
+
       <KnowledgeEvidence
         v-if="message.role === 'assistant' && (citationPresentation !== 'popover' || (message.knowledge_warnings || []).length)"
         ref="knowledgeEvidence"
@@ -272,6 +295,7 @@ import MarkdownBody from './MarkdownBody.vue'
 import UserMessageText from './UserMessageText.vue'
 import { citationFooterOffsets } from '../../../shared/markdown/sourceFooter.js'
 import { relatedEvidence, inlineCitationMap } from '../../../shared/markdown/citations.js'
+import { sourceLabel } from '../../../shared/citations/sources.js'
 import KnowledgeEvidence from '../../knowledge/KnowledgeEvidence.vue'
 import FileReferenceTag from './FileReferenceTag.vue'
 import FileIcon from '../../../shared/components/FileIcon.vue'
@@ -398,6 +422,12 @@ function citationFooterFor(block) {
 const citeNumberMap = computed(() => {
   if (props.citationPresentation === 'popover') return relatedEvidence(props.message).numberMap
   return inlineCitationMap(citationSourceText.value, (props.message.knowledge_evidence || []).length)
+})
+
+const showSourcesBar = ref(false)
+const citationSourcesList = computed(() => {
+  if (props.citationPresentation !== 'popover' || props.message.role !== 'assistant' || props.message.loading) return []
+  return relatedEvidence(props.message).items || []
 })
 
 // 正文里的 [知识依据N] 锚点：事件委托展开证据面板并定位到对应卡片
@@ -2517,6 +2547,17 @@ html[data-theme="dark"] .tool-status-text.executing {
 }
 
 .reference-history { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.citation-sources-bar { margin-top: 8px; }
+.citation-sources-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border: 1px solid var(--border-color, #e2e8f0); border-radius: 999px; background: var(--bg-secondary, #f8fafc); color: var(--text-secondary, #64748b); font-size: 12px; cursor: pointer; }
+.citation-sources-toggle:hover { color: var(--text-primary, #1e293b); border-color: var(--accent-color, #94a3b8); }
+.citation-sources-arrow { width: 12px; height: 12px; transition: transform 0.15s ease; }
+.citation-sources-arrow.open { transform: rotate(180deg); }
+.citation-sources-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.citation-source-pill { display: inline-flex; align-items: center; gap: 6px; max-width: 260px; height: auto; min-width: 0; margin: 0; padding: 4px 10px; border: 1px solid var(--border-color, #e2e8f0); border-radius: 8px; background: var(--bg-secondary, #fff); color: var(--text-primary, #1e293b); font-size: 12px; line-height: 1.4; cursor: pointer; }
+.citation-source-pill:hover { border-color: var(--accent-color, #2563eb); background: var(--bg-tertiary, #f8fafc); }
+.citation-source-idx { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 999px; background: var(--bg-tertiary, #edf2ff); color: var(--accent-color, #2563eb); font-size: 11px; font-weight: 600; }
+.citation-source-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.citation-source-kind { flex-shrink: 0; color: var(--text-secondary, #64748b); font-size: 11px; }
 </style>
 
 <style scoped src="./citationNumbers.css"></style>

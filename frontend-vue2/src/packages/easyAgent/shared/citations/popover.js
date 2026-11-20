@@ -40,7 +40,7 @@ export function citationPosition(anchor, card, viewport) {
 
 export default {
   data() {
-    return { citationPreview: null, citationAnchor: null, citationTimer: null,
+    return { citationPreview: null, citationAnchor: null, citationTimer: null, citationPinned: false,
       citationStyle: {}, citationPopoverId: `citation-preview-${++nextId}`, citationRestoringFocus: false }
   },
   watch: {
@@ -96,17 +96,30 @@ export default {
       const style = Object.fromEntries(Object.entries(position).map(([key, value]) => [key, `${value}px`]))
       if (Object.keys(style).some(key => style[key] !== this.citationStyle[key]) || this.citationStyle.visibility) this.citationStyle = style
     },
+    toggleCitation(event) {
+      const anchor = this.citationTrigger(event)
+      if (!anchor || !this.$el.contains(anchor)) return
+      if (this.citationAnchor === anchor && this.citationPinned) {
+        this.closeCitation()
+        return
+      }
+      this.citationPinned = true
+      this.previewCitation(event)
+    },
     leaveCitation(event) {
+      if (this.citationPinned) return
       const anchor = this.citationTrigger(event)
       if (anchor && (!event.relatedTarget || !anchor.contains(event.relatedTarget))) this.deferCitationClose()
     },
     keepCitation() { clearTimeout(this.citationTimer) },
     deferCitationClose() {
+      if (this.citationPinned) return
       this.keepCitation()
       this.citationTimer = setTimeout(() => this.closeCitation(), 180)
     },
     closeCitation() {
       this.keepCitation()
+      this.citationPinned = false
       if (this.citationAnchor) {
         this.citationAnchor.removeAttribute('aria-describedby')
       }

@@ -99,7 +99,7 @@ export default {
       if (md.scheduler) md.scheduler.queue()
     },
     render(partial) {
-      this.md.blocks = renderMarkdownBlocks(linkKnowledgeCitations(this.md.pending, this.citeMap, this.compactCitations, this.citationFooterStart === null ? {} : { footerStart: this.citationFooterStart }), { partial, streaming: this.streaming })
+      this.md.blocks = renderMarkdownBlocks(linkKnowledgeCitations(this.md.pending, this.citeMap, this.compactCitations, this.citationFooterStart === null ? { hideMatchedFooter: this.compactCitations } : { footerStart: this.citationFooterStart, hideMatchedFooter: this.compactCitations }), { partial, streaming: this.streaming })
       this.flush()
     },
     flush() {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { citationPreviewText, externalSources, sourceUrl, toolResultText } from './sources.js'
+import { citationPreviewText, externalSources, sourceLabel, sourceUrl, toolResultText } from './sources.js'
 import { relatedEvidence, linkKnowledgeCitations } from '../markdown/citations.js'
 import { citationFooterOffsets, sourceFooterStart } from '../markdown/sourceFooter.js'
 import { createMarkdownRenderer, renderMarkdown } from '../markdown/index.js'
@@ -378,4 +378,60 @@ test('MCP、知识库和联网来源共享一套连续编号，同一来源重�
   })
   const html = renderMarkdown(linkKnowledgeCitations(message.content, result.numberMap, true), createMarkdownRenderer({}))
   assert.deepEqual([...html.matchAll(/data-cite="(\d+)"/g)].map(match => Number(match[1])), [1, 2, 3, 1])
+})
+
+test('MCP JSON 片段自动格式化并附带查询参数摘要；上传文件纳入统一引用', () => {
+  const jsonMcp = {
+    type: 'tool_call',
+    tool_call_id: 'mcp-json',
+    tool_name: 'query',
+    arguments: { city: '北京', limit: 10 },
+    success: true,
+    result: '[MCP source: finance/query; fetched_at=2026-11-13T01:00:00Z; ok=true; truncated=false; is_error=false]\n{"total":1,"items":[{"name":"门店A"}]}',
+  }
+  const uploadCall = {
+    type: 'tool_call',
+    tool_call_id: 'up-1',
+    tool_name: 'read_uploaded_file',
+    arguments: { filename: '财报.pdf' },
+    success: true,
+    result: '第一季度营收同比增长 12%。',
+  }
+  const message = {
+    content: '数据如[连接器依据 finance/query]，详情见文档（来源：上传文件《财报.pdf》）。',
+    blocks: [jsonMcp, uploadCall],
+  }
+  const { items, numberMap } = relatedEvidence(message)
+  assert.deepEqual(numberMap, { 'mcp:finance/query': 1, 'upload:财报.pdf': 2 })
+  assert.equal(sourceLabel(items[0]), '外部数据')
+  assert.equal(sourceLabel(items[1]), '上传文件')
+  assert.match(items[0].snippet, /查询参数：city=北京, limit=10/)
+  assert.match(items[0].snippet, /"items": \[/)
+  assert.match(items[1].snippet, /同比增长 12%/)
+})
+
+test('popover 模式下正文末尾与参考来源重复的尾注可自动隐藏', () => {
+  const call = { ...mcp, result: mcp.result.replace('finance/query', 'fuyao-a-share/get_a_share_prices_historical') }
+  const content = '已获取行情[连接器依据 fuyao-a-share/get_a_share_prices_historical]：\n- data.json\n来源：外部连接器（同花顺 A 股行情 fuyao-a-share）[连接器依据 fuyao-a-share/get_a_share_prices_historical]'
+  const { numberMap } = relatedEvidence({ content, blocks: [call] })
+  const footerStart = sourceFooterStart(content)
+  const rendered = linkKnowledgeCitations(content, numberMap, true, { footerStart, hideMatchedFooter: true })
+  const html = renderMarkdown(rendered, createMarkdownRenderer({}))
+  assert.doesNotMatch(rendered, /来源：外部连接器/)
+  assert.match(html, /data-cite="1"/)
+  assert.match(rendered, /data\.json/)
+})
+
+test('相邻重复连接器标注合并为单个编号，表格下独立来源行自动隐藏', () => {
+  const call = { ...mcp, result: mcp.result.replace('finance/query', 'fuyao-a-share/get_a_share_prices_historical') }
+  const inlineContent = '营收 100 万元（来源：外部连接器（fuyao-a-share））[连接器依据 fuyao-a-share/get_a_share_prices_historical]。'
+  const inlineMap = relatedEvidence({ content: inlineContent, blocks: [call] }).numberMap
+  const inlineHtml = renderMarkdown(linkKnowledgeCitations(inlineContent, inlineMap, true), createMarkdownRenderer({}))
+  assert.equal([...inlineHtml.matchAll(/data-cite="1"/g)].length, 1)
+
+  const midContent = '| 指标 | 数值 |\n| --- | --- |\n| 成交额 | 35.29亿元 |\n\n来源：外部连接器（同花顺 A 股行情 fuyao-a-share）[连接器依据 fuyao-a-share/get_a_share_prices_historical]\n\n要点：\n- 缩量阴线'
+  const midMap = relatedEvidence({ content: midContent, blocks: [call] }).numberMap
+  const midRendered = linkKnowledgeCitations(midContent, midMap, true, { hideMatchedFooter: true })
+  assert.doesNotMatch(midRendered, /EACNUM/)
+  assert.match(midRendered, /35\.29亿元[\s\S]*要点：/)
 })

@@ -1,6 +1,6 @@
 <template>
   <div class="chat-container" :class="{ 'is-sidebar': isSidebar }" @ea-visual-prompt="onVisualPrompt"
-    @mouseover="previewCitation" @mouseout="leaveCitation" @focusin="previewCitation" @focusout="leaveCitation">
+    @mouseover="previewCitation" @mouseout="leaveCitation" @focusin="previewCitation" @focusout="leaveCitation" @click="toggleCitation">
     <div class="chat-main">
     <div class="chat-content" :class="composerMode === 'center' ? 'is-center' : 'is-bottom'">
       <!-- 会话时间与操作区共用顶部信息行 -->

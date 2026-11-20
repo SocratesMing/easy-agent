@@ -3,6 +3,9 @@
     @mouseenter="$emit('keep')" @mouseleave="$emit('leave')" @focusin="$emit('keep')" @focusout="handleFocusOut">
     <header class="citation-preview-header">
       <span>{{ sourceType }}<template v-if="metadata.base_name"> · {{ metadata.base_name }}</template></span>
+      <button v-if="previewText" type="button" class="citation-copy-btn" @click="copySnippet" :title="copied ? '已复制' : '复制来源片段'">
+        {{ copied ? '已复制' : '复制' }}
+      </button>
     </header>
     <h3 :title="metadata.report_title || item.document_name">{{ metadata.report_title || item.document_name }}</h3>
     <p v-if="previewText" class="citation-preview-snippet" tabindex="0" aria-label="来源内容">{{ previewText }}</p>
@@ -22,6 +25,9 @@ export default {
     popoverId: { type: String, required: true },
     position: { type: Object, default: () => ({}) },
   },
+  data() {
+    return { copied: false, copyTimer: null }
+  },
   mounted() {
     // 浏览器顶层让卡片不受聊天区 overflow、宿主 transform 和工作区层级裁切。
     if (typeof this.$el.showPopover === 'function') this.$el.showPopover()
@@ -30,6 +36,7 @@ export default {
   },
   beforeUnmount() {
     if (this.citationResizeObserver) this.citationResizeObserver.disconnect()
+    clearTimeout(this.copyTimer)
   },
   computed: {
     previewText() { return citationPreviewText(this.item) },
@@ -44,6 +51,15 @@ export default {
   methods: {
     handleFocusOut(event) {
       if (!event.relatedTarget || !this.$el.contains(event.relatedTarget)) this.$emit('leave')
+    },
+    async copySnippet() {
+      if (!this.previewText) return
+      try {
+        await navigator.clipboard.writeText(this.previewText)
+        this.copied = true
+        clearTimeout(this.copyTimer)
+        this.copyTimer = setTimeout(() => { this.copied = false }, 1500)
+      } catch { /* 剪贴板权限受限时静默忽略 */ }
     },
   },
 }
@@ -71,8 +87,10 @@ export default {
   font-size: 13px;
   line-height: 1.6;
 }
-.citation-preview-header { flex-shrink: 0; display: flex; align-items: center; gap: 8px; color: var(--text-secondary, #64748b); font-size: 12px; }
+.citation-preview-header { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-secondary, #64748b); font-size: 12px; }
 .citation-preview-header > span { min-width: 0; overflow-wrap: anywhere; }
+.citation-copy-btn { flex-shrink: 0; padding: 2px 8px; border: 1px solid var(--border-color, #e2e8f0); border-radius: 6px; background: transparent; color: var(--text-secondary, #64748b); font-size: 11px; cursor: pointer; }
+.citation-copy-btn:hover { background: var(--bg-tertiary, #f1f5f9); color: var(--text-primary, #1e293b); }
 .citation-preview-link { flex-shrink: 0; align-self: flex-start; color: var(--accent-color, #2563eb); overflow-wrap: anywhere; }
 .citation-popover h3 { flex-shrink: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin: 0; font-size: 15px; font-weight: 600; line-height: 1.6; overflow-wrap: anywhere; }
 .citation-preview-snippet { min-height: 0; overflow: auto; overscroll-behavior: contain; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -299,7 +299,7 @@ def test_mcp_routes_moved_off_settings(client):
 # ── 随包发布的公共 MCP 配置（防止 config/mcp.json 被改坏） ──────────────
 
 #: 内置目录里的示例连接器（允许增删，但这批 demo 必须齐）
-REQUIRED_DEMO_IDS = {"mysql"}
+REQUIRED_DEMO_IDS = {"sqlite"}
 VALID_TRANSPORTS = {"stdio", "sse", "streamable_http", "streamable-http", "http", "websocket"}
 
 

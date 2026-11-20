@@ -8,7 +8,7 @@ const TOOL = /^[^\s\[\]（）()，,；;`]+(?:\s*\/\s*[^\s\[\]（）()，,；;`]+
 const REFERENCE = new RegExp([
   /\[知识(?:库)?依据\s*(\d+)\]/.source,
   /\[连接器依据\s*[:：]?\s*([^\]\n]+)\]/.source,
-  /([（(]\s*(?:来源\s*[:：]\s*(?:外部连接器|知识库)|外部连接器|连接器依据)|(?:来源\s*[:：]\s*)?外部连接器|连接器依据(?=\s|[:：（(]))/.source,
+  /([（(]\s*(?:来源\s*[:：]\s*(?:外部连接器|知识库|上传文件)|外部连接器|连接器依据)|(?:来源\s*[:：]\s*)?外部连接器|连接器依据(?=\s|[:：（(]))/.source,
   /\[模型知识\]/.source,
   CODE.source,
 ].join('|'), 'g')
@@ -46,7 +46,8 @@ function sourceAnnotation(text, start, prefix) {
   const note = (outer ? raw.slice(1, -1) : raw).trim()
   const connector = note.match(/^(?:来源\s*[:：]\s*)?(?:外部连接器|连接器依据)\s*[:：]?\s*([\s\S]+)/)
   const knowledge = note.match(/^来源\s*[:：]\s*知识库\s*《([^》\n]+)》/)
-  return { end, note, connector: connector?.[1], knowledge: knowledge?.[1] }
+  const upload = note.match(/^来源\s*[:：]\s*上传文件\s*《([^》\n]+)》/)
+  return { end, note, connector: connector?.[1], knowledge: knowledge?.[1], upload: upload?.[1] }
 }
 
 /** 同一遍扫描用于分配编号与渲染；围栏/缩进代码仍整体保护。 */
@@ -95,7 +96,8 @@ export function rewriteReferences(content, reference, webLink, { footerStart = s
           const source = sourceAnnotation(rawText, match.index, match[0])
           const raw = restore(rawText.slice(match.index, source.end))
           const key = source.connector ? `mcp:${toolName(source.connector)}`
-            : source.knowledge ? `knowledge:${source.knowledge.trim()}` : null
+            : source.knowledge ? `knowledge:${source.knowledge.trim()}`
+            : source.upload ? `upload:${source.upload.trim()}` : null
           const note = source.note?.replace(CODE, (_, index) => codes[index]?.text ?? _)
           output += key ? reference(key, raw, note) : raw
           cursor = source.end

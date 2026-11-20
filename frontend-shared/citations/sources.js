@@ -44,6 +44,33 @@ function webSources(text) {
   return items
 }
 
+const MAX_SNIPPET_CHARS = 6000
+
+/** 格式化 JSON 片段并控制超长文本，提升外部数据浮层可读性。 */
+export function formatSnippetText(raw) {
+  const text = typeof raw === 'string' ? raw.trim() : ''
+  if (!text) return ''
+  let formatted = text
+  if (/^[\[{]/.test(text)) {
+    try {
+      formatted = JSON.stringify(JSON.parse(text), null, 2)
+    } catch { /* 非标准 JSON 保持原文 */ }
+  }
+  return formatted.length > MAX_SNIPPET_CHARS
+    ? `${formatted.slice(0, MAX_SNIPPET_CHARS)}\n...（内容较长，已截断显示）`
+    : formatted
+}
+
+function summarizeArgs(args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return ''
+  const parts = Object.entries(args)
+    .filter(([, v]) => v !== undefined && v !== null && v !== '')
+    .slice(0, 3)
+    .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
+  const joined = parts.join(', ')
+  return joined.length > 80 ? `${joined.slice(0, 77)}...` : joined
+}
+
 export function externalSources(message) {
   const sources = new Map()
   // blocks 是流式与历史的共同载体；tool_calls 为旧数据和部分恢复场景兜底。
@@ -62,22 +89,35 @@ export function externalSources(message) {
     const header = text.match(/^\[MCP source: ([^;\]\n]+); fetched_at=([^;\]\n]+); ok=true; truncated=(true|false); is_error=false\]\s*/)
     if (header) {
       const key = `mcp:${header[1]}`
-      const snippet = text.slice(header[0].length).trim()
-      if (!snippet) continue
+      const rawSnippet = text.slice(header[0].length).trim()
+      if (!rawSnippet) continue
+      const snippet = formatSnippetText(rawSnippet)
+      const querySummary = summarizeArgs(call.arguments || call.args)
       const previous = sources.get(key)
-      const part = `${snippet}${header[3] === 'true' ? '\n（工具返回内容已截断）' : ''}`
+      const part = `${querySummary ? `查询参数：${querySummary}\n` : ''}${snippet}${header[3] === 'true' ? '\n（工具返回内容已截断）' : ''}`
       sources.set(key, { key, source_type: 'mcp', document_name: header[1],
         snippet: previous ? `${previous.snippet}\n\n${part}` : part,
-        metadata: { base_name: header[1].split('/')[0], fetched_at: header[2] } })
+        metadata: { base_name: header[1].split('/')[0], fetched_at: header[2],
+          ...(querySummary ? { query_summary: querySummary } : {}) } })
     } else if (name === 'web_search' && !/^(?:错误[:：]|Error\b)/i.test(text.trim())) {
       for (const item of webSources(text)) if (!sources.has(item.key)) sources.set(item.key, item)
+    } else if (name === 'read_uploaded_file') {
+      const args = call.arguments || call.args || {}
+      const filename = String(args.filename || args.file_name || args.name || '').trim()
+      if (!filename) continue
+      const key = `upload:${filename}`
+      const part = formatSnippetText(text)
+      const previous = sources.get(key)
+      sources.set(key, { key, source_type: 'upload', document_name: filename,
+        snippet: previous ? `${previous.snippet}\n\n${part}` : part,
+        metadata: { base_name: '会话上传' } })
     }
   }
   return sources
 }
 
 export function sourceLabel(item) {
-  return ({ web: '互联网', mcp: 'MCP' })[item.source_type] || '知识库'
+  return ({ web: '互联网', mcp: '外部数据', upload: '上传文件' })[item.source_type] || '知识库'
 }
 
 /** 来源说明与原始片段放在同一滚动区，完整保留口径且不修改工具结果。 */

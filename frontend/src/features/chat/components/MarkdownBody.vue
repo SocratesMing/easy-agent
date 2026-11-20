@@ -63,7 +63,7 @@ function flush() {
 }
 
 function render(partial) {
-  blocks = renderMarkdownBlocks(linkKnowledgeCitations(pending, props.citeMap, props.compactCitations, props.citationFooterStart === null ? {} : { footerStart: props.citationFooterStart }), {
+  blocks = renderMarkdownBlocks(linkKnowledgeCitations(pending, props.citeMap, props.compactCitations, props.citationFooterStart === null ? { hideMatchedFooter: props.compactCitations } : { footerStart: props.citationFooterStart, hideMatchedFooter: props.compactCitations }), {
     partial,
     streaming: props.streaming,
   })

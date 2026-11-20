@@ -43,11 +43,33 @@ export function linkKnowledgeCitations(content, citeMap, compact = false, option
   if (typeof content !== 'string') return content
   const map = citeMap || {}
   if (compact) {
+    let source = content
+    if (options.hideMatchedFooter && typeof options.footerStart === 'number' && options.footerStart >= 0) {
+      const footer = source.slice(options.footerStart)
+      const keys = Object.keys(map)
+      const hasMatchedConnector = [...footer.matchAll(/\[连接器依据\s*[:：]?\s*([^\]\n]+)\]/g)]
+        .some(m => Boolean(map[resolveReferenceKey(`mcp:${m[1].trim()}`, keys)]))
+      const hasMatchedKnowledge = [...footer.matchAll(/\[知识(?:库)?依据\s*(\d+)\]/g)]
+        .some(m => Boolean(map[m[1]]))
+      if (hasMatchedConnector || hasMatchedKnowledge) {
+        source = source.slice(0, options.footerStart).replace(/\n+$/, '')
+      }
+    }
     const replace = (key, raw) => {
       const resolved = resolveReferenceKey(key, Object.keys(map))
       return map[resolved] ? citationMarker(map[resolved], true) : raw
     }
-    return rewriteReferences(content, replace, replace, options)
+    let rewritten = rewriteReferences(source, replace, replace, options)
+    // 合并相邻重复编号（如模型同时输出「来源：外部连接器（...）[连接器依据 ...]」时只保留一个 [1]）
+    rewritten = rewritten.replace(/\uE000EACNUM:([^\uE001]+)\uE001(?:\s*\uE000EACNUM:\1\uE001)+/g, '\uE000EACNUM:$1\uE001')
+    if (options.hideMatchedFooter) {
+      // 表格/段落之间独立成行的「来源：...」若整行都已转为编号，直接隐藏（底部「参考来源」已有汇总）
+      rewritten = rewritten
+        .replace(/^[ \t]*(?:\uE000EACNUM:[^\uE001]+\uE001[ \t]*)+(?:\r?\n|$)/gm, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trimEnd()
+    }
+    return rewritten
   }
   return protectCodeRegions(content, text =>
     text.replace(CITATION, (match, digits) => {
