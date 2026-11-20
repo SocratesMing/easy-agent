@@ -330,6 +330,7 @@ def _parse_word(path: Path) -> str:
         text = "\n".join(line.strip() for line in "".join(parser.parts).splitlines() if line.strip())
         if not text.strip():
             raise ValueError("未能提取正文（文档为空或仅包含图片）")
+        logger.info("Word 正文解析成功 | %s | LibreOffice | %d 字符", path, len(text))
         return text
     except Exception as e:
         logger.warning("Word 文档解析失败 | %s | %s", path, e)

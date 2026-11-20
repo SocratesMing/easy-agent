@@ -1,5 +1,6 @@
 """Office 转换：目标格式隔离、失败处理及并发输出完整性。"""
 
+import hashlib
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -48,8 +49,54 @@ def test_word_html_conversion_uses_separate_cache(conversion):
     source, calls, _ = conversion
     html = dc.convert_office_document(source, "html")
     assert html.read_bytes() == b"complete html"
-    assert "html:XHTML Writer File" in calls[0]
+    assert "html:HTML (StarWriter)" in calls[0]
     assert dc.convert_to_pdf(source).parent != html.parent
+
+
+def test_html_conversion_works_without_xslt_filter(conversion, monkeypatch):
+    source, _, run = conversion
+
+    def without_xslt(command, **kwargs):
+        if "html:XHTML Writer File" in command:
+            return subprocess.CompletedProcess(
+                command, 0, stdout=b"", stderr=b"Error: Please verify input parameters (0x81a)"
+            )
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(dc.subprocess, "run", without_xslt)
+    assert dc.convert_office_document(source, "html").read_bytes() == b"complete html"
+
+
+def test_html_does_not_reuse_previous_xhtml_cache(conversion):
+    source, calls, _ = conversion
+    resolved = source.resolve()
+    stat = resolved.stat()
+    old_key = hashlib.sha256(
+        f"{resolved}:{stat.st_mtime_ns}:{stat.st_size}:html".encode()
+    ).hexdigest()[:24]
+    old_cached = dc.CACHE_DIR / old_key / f"{source.stem}.html"
+    old_cached.parent.mkdir(parents=True)
+    old_cached.write_bytes(b"previous XHTML output")
+
+    converted = dc.convert_office_document(source, "html")
+
+    assert converted.read_bytes() == b"complete html"
+    assert converted != old_cached
+    assert len(calls) == 1
+
+
+def test_conversion_error_preserves_stdout_diagnostic(conversion, monkeypatch, caplog):
+    source, _, _ = conversion
+
+    def fail(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command, 0, stdout=b"Error: source file could not be loaded", stderr=b""
+        )
+
+    monkeypatch.setattr(dc.subprocess, "run", fail)
+    with pytest.raises(RuntimeError, match="source file could not be loaded"):
+        dc.convert_office_document(source, "html")
+    assert "HTML (StarWriter)" in caplog.text
 
 
 def test_valid_cache_does_not_require_installed_converter(conversion, monkeypatch):

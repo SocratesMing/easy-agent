@@ -1,4 +1,4 @@
-"""使用 LibreOffice 转换 Office 文档，供在线预览及旧版 DOC 正文解析使用。
+"""使用 LibreOffice 转换 Office 文档，供在线预览及 DOC/DOCX 正文解析使用。
 
 相比前端 @vue-office/* 系列组件，LibreOffice 转换能稳定处理含图片/复杂排版的
 pptx/xlsx/docx，输出为标准 PDF，由浏览器内置查看器渲染（多页、缩略图、搜索）。
@@ -54,6 +54,13 @@ def _find_soffice() -> str | None:
     return None
 
 
+def _conversion_error_detail(stdout: bytes | None, stderr: bytes | None) -> str:
+    raw = b"\n".join(part for part in (stderr, stdout) if part).decode("utf-8", "replace")
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    picked = [line for line in lines if line.lower().startswith("error")] or lines
+    return " / ".join(picked)[:500]
+
+
 def convert_office_document(src: str | Path, target: str = "pdf") -> Path:
     """转换为 PDF、DOCX 或 HTML，返回完整生成并缓存的文件路径。
 
@@ -68,11 +75,20 @@ def convert_office_document(src: str | Path, target: str = "pdf") -> Path:
     allowed = SUPPORTED_EXT if target == "pdf" else {".doc", ".docx", ".dotx", ".odt"}
     if ext not in allowed:
         raise ValueError(f"不支持转换为 {target.upper()} 的文件类型: {ext}")
+    output_format = {
+        "docx": "docx:Office Open XML Text",
+        # Writer 原生 HTML 导出；XHTML Writer File 依赖额外的 XSLT
+        # 组件，旧版本或精简安装可能返回 0x81a 且不生成文件。
+        "html": "html:HTML (StarWriter)",
+        "pdf": "pdf",
+    }[target]
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     stat = src.stat()
+    # HTML 切换滤镜后重新生成，避免继续读取旧 XHTML 结果。
+    cache_format = output_format if target == "html" else target
     cache_key = hashlib.sha256(
-        f"{src}:{stat.st_mtime_ns}:{stat.st_size}:{target}".encode()
+        f"{src}:{stat.st_mtime_ns}:{stat.st_size}:{cache_format}".encode()
     ).hexdigest()[:24]
     out_dir = CACHE_DIR / cache_key
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -93,11 +109,6 @@ def convert_office_document(src: str | Path, target: str = "pdf") -> Path:
         with TemporaryDirectory(prefix=".convert-", dir=out_dir) as temp_dir:
             work_dir = Path(temp_dir).resolve()
             profile_uri = (work_dir / "lo_profile").as_uri()
-            output_format = {
-                "docx": "docx:Office Open XML Text",
-                "html": "html:XHTML Writer File",
-                "pdf": "pdf",
-            }[target]
             result = subprocess.run(
                 [
                     soffice,
@@ -115,18 +126,22 @@ def convert_office_document(src: str | Path, target: str = "pdf") -> Path:
             )
             generated = work_dir / f"{src.stem}.{target}"
             if not generated.is_file() or generated.stat().st_size == 0:
-                raw = (result.stderr or b"").decode("utf-8", "replace").strip()
-                lines = [line.strip() for line in raw.splitlines() if line.strip()]
-                picked = [line for line in lines if line.lower().startswith("error")] or lines
-                detail = " / ".join(picked)[:200]
-                logger.error("LibreOffice 未生成有效目标文件 | %s | %s", src, detail)
+                detail = _conversion_error_detail(result.stdout, result.stderr)
+                logger.error(
+                    "LibreOffice 未生成有效目标文件 | %s | filter=%s | %s",
+                    src, output_format, detail,
+                )
                 suffix = f"（{detail}）" if detail else ""
                 raise RuntimeError(f"文档转换未生成有效目标文件{suffix}")
             generated.replace(cached)
+            logger.info(
+                "LibreOffice 转换成功 | %s | filter=%s | 输出: %s | %d bytes",
+                src, output_format, cached, cached.stat().st_size,
+            )
     except subprocess.CalledProcessError as e:
-        stderr = e.stderr.decode("utf-8", "ignore") if e.stderr else ""
-        logger.error(f"LibreOffice 转换失败 | {src} | {stderr}")
-        raise RuntimeError(f"文档转换失败: {stderr[:200] or e}") from e
+        detail = _conversion_error_detail(e.stdout, e.stderr)
+        logger.error("LibreOffice 转换失败 | %s | filter=%s | %s", src, output_format, detail)
+        raise RuntimeError(f"文档转换失败: {detail or e}") from e
     except subprocess.TimeoutExpired as e:
         logger.error(f"LibreOffice 转换超时 | {src} | {e}")
         raise RuntimeError("文档转换超时（请稍后重试）") from e
