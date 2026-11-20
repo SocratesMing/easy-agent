@@ -329,11 +329,8 @@ watch(() => props.message.id, () => {
   expandedRuns.value = {}
 })
 
-// 本次回答使用的专家：优先用消息自身的 expert（发送时由 handleSendMessage 写在
-// assistant 占位消息上，发送瞬间即显示）；回答完成/刷新后消息由服务端历史回填，
-// 该字段不存在，回退到「本轮用户消息携带的专家」（Chat.vue 传入的 userExpert，随
-// 消息落库，因此刷新后仍在）。两者都没有（未选专家 / 改版前的旧历史）返回 null，
-// 走通用样式。
+// 本次回答使用的专家：优先用消息自身的 expert（发送时写在占位消息上），
+// 没有则回退到「本轮用户消息携带的专家」（随消息落库，刷新后仍在）；都没有返回 null。
 const expertInfo = computed(() => {
   const own = props.message && props.message.expert
   if (own && own.name) return own
@@ -351,10 +348,8 @@ const hasAnyContent = computed(() => {
   return false
 })
 
-// 用户消息的技能标签与正文拆分：优先读结构化的 message.skills（技能目录名，后端落库），
-// 展示名 / 图标按目录名反查技能目录；老数据（改造前的消息、用户手打的 /技能名）没有该
-// 字段，仍按正文开头的 /目录名 令牌解析还原（目录名不匹配时不解析，避免把 /usr/bin
-// 这类路径误当技能）。
+// 用户消息的技能标签与正文拆分：优先读结构化的 message.skills；老数据仍按正文开头的
+// /目录名 令牌解析还原（目录名不匹配时不解析，避免把 /usr/bin 这类路径误当技能）。
 const userSkillSplit = computed(() => {
   const content = props.message.content
   if (props.message.role !== 'user') return { skills: [], body: content }
@@ -425,10 +420,8 @@ function handleContentClick(event) {
 const sortedBlocks = computed(() => {
   // 从 blocks 字段构建（优先使用）
   if (props.message.blocks && props.message.blocks.length > 0) {
-    // 严格按大模型返回顺序（创建顺序 order）展示，不做按 step/类型的二次重排：
-    // 旧数据 content 块无 step，按 step 重排会把它排到顶部；按 order 原序则正文
-    //（创建最晚、order 最大）自然落在最后。同一 step「先思考后工具」由创建顺序保证
-    //（reopen 时思考晚于工具创建的极端情况，已在 addBlock 中用更小的 order 纠正）。
+    // 严格按创建顺序 order 展示，不做按 step/类型的二次重排（旧数据无 step，
+    // 按 step 重排会把正文排到顶部）；同一 step「先思考后工具」由创建顺序保证。
     const sorted = [...props.message.blocks].sort((a, b) => (a.order || 0) - (b.order || 0))
     // 兼容数据：blocks 存在但没有 content 类型的 block 时，从 message.content 补充。
     // 正文是模型最终输出的回答，应排在所有思考/工具块之后（与实时流式中 content

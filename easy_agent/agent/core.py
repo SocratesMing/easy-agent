@@ -405,36 +405,24 @@ class EasyAgent(AgentWorkspaceMixin):
         system_prompt_extra: str = "",
         skill_whitelist: list[str] | None = None,
     ):
-        """初始化 EasyAgent 实例，配置工作区隔离和运行时上下文。
-
-        根据用户名和会话 ID 构建隔离的工作区目录，设置记忆文件路径，
+        """初始化 EasyAgent 实例：构建隔离工作区、设置记忆文件路径，
         拼接 DeepAgents 无法自动得知的运行时上下文，最终调用
         _create_agent() 创建 DeepAgents 智能体实例。
 
-        Args:
-            config: 应用配置对象，包含 LLM、agent、tools 等配置。
-            system_prompt: 基础系统提示词，将追加用户、机构、工作区与系统信息。
+        非显然参数：
             skills_root: 公共技能根目录路径，当前版本仅用于参考，不自动加载。
-            username: 用户名，用于工作区路径隔离和记忆文件定位。
-            session_id: 会话 ID，用作工作区子目录名。
-            workspace_dir: 自定义工作区目录路径。提供时优先使用，覆盖自动生成的路径。
-            workspace_name: 自定义工作区目录名（如 '20260501_143022_a1b2c'）。
+            workspace_name: 自定义工作区目录名（如 '20260501_143022_a1b2c'），
                 提供时替代 session_id 作为目录名。
-            mcp_tools: MCP 工具列表，作为额外工具注入智能体。
-            organization_id: 用户所属机构ID，注册后不可更改，将注入系统提示词。
             enable_user_interaction: 是否允许 ``ask_user`` 中断；定时任务等无人值守
                 执行传 False，交互式聊天保持默认 True。
-            enable_web_search: 是否开启联网搜索。为 True 时在系统提示词中加入
-                联网搜索行为约束（web_search 工具本身由 agent_manager 注入，
-                仅在 web_search 配置了 api_key 时才为 True）。
+            enable_web_search: 为 True 时在系统提示词中加入联网搜索行为约束
+                （web_search 工具本身由 agent_manager 注入，仅在配置了 api_key 时才为 True）。
             approval_mode: 用户级审批模式（``manual`` / ``auto``）。``auto`` 把
-                ``AUTO_APPROVED_APPROVAL_TOOLS``（execute / delete / save_expert /
-                create_scheduled_task / access_knowledge_original 与 MCP 工具）全部从审批
-                名单里摘掉，**不改** ``enable_hitl``——总开关一关，定时任务工具注入与
-                恢复语义都会变。
-            skill_whitelist: 技能作用域（专家技能硬隔离）。``None``（默认）= 全量可见，
-                与改造前逐字一致；``[]`` = 显式无技能；非空 = 只有这些技能目录进技能
-                清单、且其内容可读（``backends/scoped_skills.py``）。
+                ``AUTO_APPROVED_APPROVAL_TOOLS`` 全部从审批名单里摘掉，**不改**
+                ``enable_hitl``——总开关一关，定时任务工具注入与恢复语义都会变。
+            skill_whitelist: 技能作用域（专家技能硬隔离）。``None`` = 全量可见；
+                ``[]`` = 显式无技能；非空 = 只有这些技能目录进技能清单、
+                且其内容可读（``backends/scoped_skills.py``）。
         """
         self.config = config
         self.username = username

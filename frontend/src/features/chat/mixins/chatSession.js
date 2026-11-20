@@ -270,8 +270,6 @@ export default {
 
       // 正在生成中的回复应是消息列表的最后一条：最后一条是 assistant 则原位替换为
       // 空占位由回放重建（避免重复）；最后一条仍是用户消息则末尾追加占位。
-      // 此前按「倒数第一条 assistant」查找，会把上一轮历史 assistant 误替换，导致
-      // 正文渲染在最后一次用户输入的上方。
       const attachId = `assistant-attach-${Date.now()}-${String(sessionId).slice(-5)}`
       if (displayed) {
         const lastMsg = this.messages[this.messages.length - 1]
@@ -437,10 +435,8 @@ export default {
       // 空会话（含「选了专家但没发消息就切走」的新窗口）：不恢复任何专家
       this.selectedExpert = null
     },
-    // ── 会话级流式隔离 ──────────────────────────────────────────────────
-    // 流事件只写入「所属会话」的数据，避免多会话并行流式（A 流式中新建/切换到 B）串台。
-    // 展示中的会话（sid === loadedSessionId）直接用组件数据；后台会话临时把组件数据
-    // 指向其 sessionStates 缓冲，处理完立即还原（全程同步，不会触发中途渲染）。
+    // 会话级流式隔离：流事件只写所属会话的数据，避免多会话并行时串台。
+    // 展示中的会话直接用组件数据；后台会话临时指向其 sessionStates 缓冲，处理完立即还原。
     ensureSessionState(sid) {
       let st = this.sessionStates[sid]
       if (!st) {
@@ -666,10 +662,8 @@ export default {
         return
       }
 
-      // 缓存中没有，从服务器加载历史
-      // 保留 context_length（全局上下文窗口），仅清空用量计数；
-      // 若服务器返回了 context_length 则以其为准（见下方恢复逻辑）
-      // sessionLoading 门控：加载期间不渲染空欢迎页，避免"先闪空会话页再出历史"
+      // 缓存中没有，从服务器加载历史：保留 context_length（全局窗口）仅清空用量，
+      // 服务器返回了 context_length 则以其为准；sessionLoading 门控避免闪出空欢迎页。
       this.sessionLoading = true
       this.sessionUsage = { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, context_length: this.sessionUsage.context_length, auto_compress_tokens: null, context_tokens: 0 }
       this.sessionDuration = 0

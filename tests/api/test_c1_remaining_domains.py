@@ -44,9 +44,7 @@ DOMAINS = {
     "sessions.py": ("get_session_repository", "SessionRepository", 13),
 }
 
-# C1b 之后每个 API 文件仍保留的 `repo.database` 调用点数；C1b 的每一条都在
-# docs/archive/audit-reports/2026-10-18-increment61-c1b-report.md「仍保留边界」有登记，
-# Phase 2B 新增的 run 登记 ×2 见 docs/archive/audit-reports/2026-10-18-increment63-phase2b-report.md。
+# C1b 之后每个 API 文件仍保留的 `repo.database` 调用点数（只允许减少）。
 RETAINED_DATABASE_BOUNDARIES = {
     # 2026-11-10：公共空间管理员白名单废弃后，auth.py 不再持有 repo.database。
     "auth.py": 0,

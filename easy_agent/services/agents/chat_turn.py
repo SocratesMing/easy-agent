@@ -258,17 +258,14 @@ def validate_file_references(
 async def reject_concurrent_stream(session_id: str, runtime) -> None:
     """同一会话已有流式生成在跑时返回 409（``ConflictError`` → HTTP 409）。
 
-    两条流会共享 agent、last-assistant 行与 hub，互相覆盖 / EOF（实测新流 0 条内容即结束）。
-    要在用户消息落库之前调用：``_detached_event_stream`` 里也有同样的兜底，但走到那里时
-    用户消息已经落库，会话里会多出一条没有回复的消息。
+    两条流会共享 agent、last-assistant 行与 hub，互相覆盖 / EOF；必须在用户消息
+    落库之前调用，否则会话里会多出一条没有回复的消息。
 
     **跨副本**：进程内的 ``is_session_streaming`` 只看当前 Pod，多副本下必须再查
-    ``session_runtime.stream_until``（``is_stream_active``）。两者都命中才拒，进程内那步
-    只是省一次 DB 往返。
+    ``session_runtime.stream_until``（``is_stream_active``）。两者都命中才拒。
 
-    局限（已知且接受）：这是"早失败"，不是权威判定——`prepare_turn` 后续还有技能解析、
-    意图闸、建 Agent/MCP 等耗时动作，期间锁可能被别人抢走。权威判定仍是后台任务里的
-    ``acquire_stream``，所以那边失败时必须推明确的错误帧（见 ``api/chat.py``）。
+    局限（已知且接受）：这是"早失败"，不是权威判定——权威判定是后台任务里的
+    ``acquire_stream``，那边失败时必须推明确的错误帧（见 ``api/chat.py``）。
     """
     if agent_manager.is_session_streaming(session_id):
         raise ConflictError("本会话正在生成回复，请等待完成或先取消当前生成")
@@ -368,13 +365,12 @@ def build_turn_uploads(
     """把本轮上传的文件转成模型上下文。
 
     默认机制（config.file_context.enabled=true）：解析正文在上传时已落到会话工作区
-    uploads/，文件清单 uploads/index.md 作为记忆文件注入系统提示词，之后每一轮模型都
-    知道本会话传过哪些文件、正文在哪，按需用内置 grep / read_file 检索，不必每轮把全文
-    塞进上下文。这里只在模型输入前补一小段本轮上传文件的开头预览，让「传完立刻提问」
-    少一次工具往返。
+    uploads/，文件清单 uploads/index.md 作为记忆文件注入系统提示词，模型按需用内置
+    grep / read_file 检索；这里只在模型输入前补一小段本轮上传文件的开头预览，让
+    「传完立刻提问」少一次工具往返。
 
-    回退模式（enabled=false）保持改造前的行为：首轮把解析全文放进系统提示词，之后的
-    轮次把全文拼在用户消息前面（「第二轮起看不到文件内容」的老问题就出在这里）。
+    回退模式（enabled=false）：首轮把解析全文放进系统提示词，之后的轮次把全文拼在
+    用户消息前面。
     """
     sid = session_id[-5:]
     if not files:

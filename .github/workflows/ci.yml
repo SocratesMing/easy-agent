@@ -45,6 +45,10 @@ jobs:
       # async def 里的同步数据库调用会占住事件循环（并发 SSE 流跟着停）：基线只减不增。
       - name: Blocking database calls in async code
         run: python scripts/quality/check_async_blocking.py --check
+      # 注释卫生（只减不增）：日期戳 / 沿革叙事 / 失效文档引用不得回流，
+      # 基线在 scripts/quality/comment_hygiene_baseline.json，有意放宽需 --write 重建并评审。
+      - name: Comment hygiene baseline (dates / changelog notes / dead doc refs)
+        run: python scripts/quality/check_comment_hygiene.py --check
 
   backend-tests:
     name: Backend tests (pytest)

@@ -1,6 +1,6 @@
 """专家 Agent API：创建 / 修改 / 列表 / 删除。
 
-设计要点（见 ``docs/expert-agent-solution.md`` §5、§6）：
+设计要点：
 
 - **鉴权**：全部 ``Depends(get_current_username)``，再用 ``user_id`` 做归属校验；
   非本人资源一律返回 **404**（不泄露存在性），与 ``chat.py`` 现有做法一致；

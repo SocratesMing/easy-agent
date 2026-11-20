@@ -16,8 +16,6 @@
 本模块顶层**不 import 任何包内模块**，是 import 图的叶子节点，因此不会扩大
 SCC。未注册时 fail-closed（``RuntimeError``，端点转 503），不会在 import 阶段
 制造新的反向依赖。
-
-设计文档：``docs/archive/design/2026-10-18-a1-knowledge-streaming.md``。
 """
 
 from __future__ import annotations

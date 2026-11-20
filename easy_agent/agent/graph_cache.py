@@ -19,8 +19,7 @@
 4. **无法安全共享时显式降级**：模型请求头里含 ``{session_id}``、或
    checkpointer 是按 session 创建的进程内 ``MemorySaver``（``shared_checkpointer_active()``
    为假）时，
-   ``EasyAgent._create_agent`` 不写缓存、按会话建图，并在日志中给出原因
-   （见 docs/archive/design/2026-10-18-d2-graph-reuse.md）。
+   ``EasyAgent._create_agent`` 不写缓存、按会话建图，并在日志中给出原因。
 
 官方依据（deepagents 0.7）
 --------------------------

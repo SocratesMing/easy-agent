@@ -6,7 +6,6 @@
  * - 会话、技能、MCP 均来自 Easy Agent 后端，与主站共用同一份数据。
  *
  * 构建：npm run build:sdk（见 scripts/build-sdk.mjs），产物在 dist-sdk/。
- * 用法与配置项：docs/AI侧边栏SDK集成指南.md
  */
 import Vue from "vue";
 // 复用业务模块的同一份实现（packages/easyAgent），经其 SDK 专用入口引用，不直接引 feature 私有文件
@@ -118,7 +117,7 @@ function withQueryParam(url, key, value) {
 /**
  * 初始化并挂载侧边栏。
  *
- * @param {Object} options 见 docs/AI侧边栏SDK集成指南.md「配置项」
+ * @param {Object} options 配置项
  * @returns {Object} 实例 API：open / close / toggle / send / setPageContext / setToken / destroy …
  */
 export async function init(options = {}) {

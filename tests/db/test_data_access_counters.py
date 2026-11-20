@@ -1,7 +1,6 @@
 """T3 数据访问层收敛：``check_double_write`` 的四个只减不增计数。
 
-对应 docs/design/2026-11-01-backend-improvement-backlog.md 的 T3 与
-``scripts/quality/double_write_allowlists.py`` 里的 ``MAX_*`` 上限：
+对应 ``scripts/quality/double_write_allowlists.py`` 里的 ``MAX_*`` 上限：
 
 - ``Database`` 方法总数 / 纯委托方法数；
 - ``easy_agent/db/`` 之外 ``get_database()`` 调用数；

@@ -42,17 +42,16 @@ APPROVAL_MODE_AUTO = "auto"
 APPROVAL_MODES: tuple[str, ...] = (APPROVAL_MODE_MANUAL, APPROVAL_MODE_AUTO)
 
 #: 自动审批放行的审批项（按工具名）。
-#: * ``execute``：沙箱内的全部 Shell 命令，含 ``rm`` / ``del`` 等删除类命令
-#:   （2026-11-12 调整：删除类命令不再单独审批）。
+#: * ``execute``：沙箱内的全部 Shell 命令，含 ``rm`` / ``del`` 等删除类命令。
 #: * ``delete``：删除文件或目录（含递归）。``rm -r`` / ``rmdir`` 仍由
 #:   ``backends/shell.py`` 在策略层直接拒绝，删目录请走本工具。
 #: * ``save_expert``：在对话内新建 / 修改**自己的**专家。修改他人专家由文件系统
 #:   permission 的 deny 规则拦住，与审批开关无关。
-#: * ``create_scheduled_task``：创建定时任务（2026-11-12 调整：不再要求二次确认）。
-#: * ``access_knowledge_original``：知识库原文落盘（``action=materialize``）。
-#:   写入目标是自己的工作区，属于「新增文件」范围（2026-11-13 调整：不再保留审批）。
+#: * ``create_scheduled_task``：创建定时任务。
+#: * ``access_knowledge_original``：知识库原文落盘（``action=materialize``），
+#:   写入目标是自己的工作区，属于「新增文件」范围。
 #:
-#: 覆盖了 :data:`DEFAULT_APPROVAL_TOOLS` 的全部审批项（2026-11-13 起知识库原文落盘也放行），
+#: 覆盖了 :data:`DEFAULT_APPROVAL_TOOLS` 的全部审批项，
 #: 因此 auto 模式构造出的 ``interrupt_on`` 是空字典——DeepAgents 的
 #: ``_merge_fs_interrupt_on`` 会把空配置归并成 ``None`` 并**不安装**
 #: ``HumanInTheLoopMiddleware``（等于没有审批节点，但 ``enable_hitl`` 仍为 True，

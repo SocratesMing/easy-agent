@@ -164,16 +164,11 @@ class MySQLCheckpointError(RuntimeError):
 def _patch_aiomysql_bytes_escaping(aiomysql) -> None:
     """修 aiomysql 0.3.2 与 PyMySQL ≥ 1.2.3 的字节转义不兼容（真库实测必现）。
 
-    PyMySQL 1.2.3 把 ``converters.escape_bytes_prefixed`` 换成了一个字符串哨兵
-    ``'DO NOT IMPORT THIS!!!'``，而 aiomysql 的 ``connection.escape()`` 仍然直接调用它，
-    于是**只要参数里出现 bytes 就会 TypeError: 'str' object is not callable**。
-
-    本模块传的参数里有两类 bytes，必然踩到：``BINARY(16)`` 的 ``ns_hash`` 与
-    ``LONGBLOB`` 的 ``payload``。PyMySQL 1.2.3 提供了等价的 ``escape_bytes``
-    （``_binary X'hex'``），补上即可，不必把业务依赖 pymysql 钉死在 1.2.2 以下。
-
-    做成"检查后再补"，所以 pymysql 侧以后若再改名字，这里只会失效一次、日志里能立刻看到，
-    而不是在每个请求上随机报错。
+    PyMySQL 1.2.3 把 ``converters.escape_bytes_prefixed`` 换成了字符串哨兵，
+    而 aiomysql 的 ``connection.escape()`` 仍直接调用它——参数里出现 bytes
+    （``BINARY(16)`` 的 ns_hash、``LONGBLOB`` 的 payload）就会 TypeError。
+    补上等价的 ``escape_bytes`` 即可；做成"检查后再补"，pymysql 侧改名字时
+    只会失效一次、日志立刻可见。
     """
     try:
         import pymysql.converters as _conv

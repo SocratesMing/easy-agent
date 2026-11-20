@@ -1,0 +1,225 @@
+{
+  "comment": "注释卫生基线：按 文件 → 规则 → 数量 记录，只允许下调；有意放宽时运行 python scripts/quality/check_comment_hygiene.py --write 重建。",
+  "files": {
+    "e2e/scripts/api-ext/api-ext/regress-smoke.js": {
+      "DATE": 1
+    },
+    "e2e/scripts/lead/lead/lead-regression-ui.js": {
+      "DATE": 1
+    },
+    "e2e/scripts/ui-core/ui-core/recheck2.js": {
+      "DATE": 2
+    },
+    "e2e/scripts/ui-core/ui-core/recheck3.js": {
+      "DATE": 1
+    },
+    "e2e/scripts/ui-core/ui-core/recheck4.js": {
+      "DATE": 1
+    },
+    "e2e/scripts/ui-features/finalize-results.js": {
+      "DATE": 1
+    },
+    "e2e/scripts/ui-features/ui-features/finalize-results.js": {
+      "DATE": 2
+    },
+    "e2e/scripts/ui-features/ui-features/run-ui-features.js": {
+      "DATE": 1
+    },
+    "easy_agent/agent/graph_cache.py": {
+      "DATE": 2
+    },
+    "easy_agent/agent/hitl.py": {
+      "DATE": 2
+    },
+    "easy_agent/agent/thinking_loop.py": {
+      "DATE": 1
+    },
+    "easy_agent/app.py": {
+      "DATE": 2
+    },
+    "easy_agent/bootstrap/config_models.py": {
+      "DATE": 2
+    },
+    "easy_agent/bootstrap/initialization/log.py": {
+      "DATE": 2
+    },
+    "easy_agent/db/schema.py": {
+      "DATE": 1
+    },
+    "easy_agent/knowledges/core/schema.py": {
+      "DATE": 1
+    },
+    "easy_agent/knowledges/runtime/source_sync/support.py": {
+      "DATE": 2
+    },
+    "easy_agent/sandboxing/sandbox.py": {
+      "DATE": 1
+    },
+    "easy_agent/services/streaming/persistence.py": {
+      "DATE": 1
+    },
+    "easy_agent/tools/registry.py": {
+      "DATE": 1
+    },
+    "easy_agent/tools/web_search.py": {
+      "DATE": 1
+    },
+    "frontend-shared/markdown/index.js": {
+      "DATE": 3
+    },
+    "frontend-shared/markdown/sanitize.js": {
+      "DATE": 1
+    },
+    "frontend-shared/preview/textLines.js": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/features/chat/components/ChatInput.vue": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/features/chat/components/ExpertSubpanelList.vue": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/features/chat/components/ModelPicker.vue": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/features/chat/components/PlusList.vue": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/features/chat/components/PlusMenu.vue": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/features/chat/components/PlusSubpanelHeader.vue": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/features/chat/mixins/chatSession.js": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/features/chat/services/streamResume.js": {
+      "DATE": 2
+    },
+    "frontend-vue2/src/packages/easyAgent/features/chat/services/streamResume.test.js": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/shared/markdown/highlight.js": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/shared/markdown/index.js": {
+      "DATE": 3
+    },
+    "frontend-vue2/src/packages/easyAgent/shared/markdown/render.js": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/shared/markdown/sanitize.js": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/shared/preview/textLines.js": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/utils/format.js": {
+      "DATE": 2
+    },
+    "frontend-vue2/src/packages/easyAgent/utils/format.test.js": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/utils/hitlApproval.js": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/utils/markdownCjk.test.js": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/utils/relativeTime.test.js": {
+      "DATE": 1
+    },
+    "frontend-vue2/src/packages/easyAgent/utils/skillSlash.js": {
+      "DATE": 1
+    },
+    "frontend-vue2/tests/hitlApprovalPending.test.js": {
+      "DATE": 1
+    },
+    "frontend-vue2/tests/streamResume.test.js": {
+      "DATE": 1
+    },
+    "frontend-vue2/tests/structure.test.js": {
+      "DATE": 1,
+      "RATCHET_HISTORY": 1
+    },
+    "frontend/src/features/chat/components/ChatInput.vue": {
+      "DATE": 1
+    },
+    "frontend/src/features/chat/components/ModelPicker.vue": {
+      "DATE": 1
+    },
+    "frontend/src/features/chat/components/SkillPicker.vue": {
+      "DATE": 1
+    },
+    "frontend/src/features/chat/composables/useMarkdownRenderer.js": {
+      "DATE": 1
+    },
+    "frontend/src/features/chat/composables/useStreamChunks.test.js": {
+      "DATE": 1
+    },
+    "frontend/src/features/chat/services/streamResume.js": {
+      "DATE": 2
+    },
+    "frontend/src/features/chat/services/streamResume.test.js": {
+      "DATE": 1
+    },
+    "frontend/src/shared/markdown/index.js": {
+      "DATE": 3
+    },
+    "frontend/src/shared/markdown/sanitize.js": {
+      "DATE": 1
+    },
+    "frontend/src/shared/preview/textLines.js": {
+      "DATE": 1
+    },
+    "frontend/src/utils/format.js": {
+      "DATE": 2
+    },
+    "frontend/src/utils/format.test.js": {
+      "DATE": 1
+    },
+    "frontend/src/utils/hitlApproval.js": {
+      "DATE": 1
+    },
+    "frontend/src/utils/hitlApproval.test.js": {
+      "DATE": 1
+    },
+    "frontend/src/utils/skillSlash.js": {
+      "DATE": 1
+    },
+    "frontend/src/utils/structure.test.js": {
+      "RATCHET_HISTORY": 1
+    },
+    "scripts/quality/double_write_allowlists.py": {
+      "DATE": 1
+    },
+    "tests/agent/test_agent_modules.py": {
+      "DATE": 1
+    },
+    "tests/agent/test_builtin_skills_agent.py": {
+      "DATE": 1
+    },
+    "tests/agent/test_token_usage.py": {
+      "DATE": 1
+    },
+    "tests/agent/test_tool_progress.py": {
+      "DATE": 5
+    },
+    "tests/api/test_c1_remaining_domains.py": {
+      "DATE": 6
+    },
+    "tests/api/test_deps.py": {
+      "DATE": 4
+    },
+    "tests/db/test_expert_store.py": {
+      "DATE": 1
+    },
+    "tests/services/test_hitl_resume.py": {
+      "DATE": 1
+    },
+    "tests/services/test_stream_processor.py": {
+      "DATE": 1
+    }
+  }
+}

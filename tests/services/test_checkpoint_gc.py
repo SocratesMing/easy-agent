@@ -1,7 +1,6 @@
 """删除会话后的 checkpoint 对账：补删本进程 SQLite 文件里「会话已不存在」的 thread。
 
-删除会话时只有处理请求的进程能当场删；多副本下其余 pod 文件里的残留由后台对账补删
-（``docs/design/2026-10-21-per-pod-sqlite-checkpoints.md`` §4.9）。
+删除会话时只有处理请求的进程能当场删；多副本下其余 pod 文件里的残留由后台对账补删。
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """专家 Agent 的生成与版本目录管理。
 
-职责（见 ``docs/expert-agent-solution.md`` §4、§6）：
+职责：
 
 1. **LLM 生成**专家配置：输入「引导词模板（含分类标签候选）+ 用户描述」，输出严格
    JSON（``scenario`` / ``capabilities`` / ``workflow`` / ``boundaries`` /

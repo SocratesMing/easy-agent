@@ -374,8 +374,6 @@ export default {
 
       // 正在生成中的回复应是消息列表的最后一条：最后一条是 assistant 则原位替换为
       // 空占位由回放重建（避免重复）；最后一条仍是用户消息则末尾追加占位。
-      // 此前按「倒数第一条 assistant」查找，会把上一轮历史 assistant 误替换，导致
-      // 正文渲染在最后一次用户输入的上方。
       const attachId = `assistant-attach-${Date.now()}-${String(
         sessionId,
       ).slice(-5)}`;
@@ -547,16 +545,8 @@ export default {
     },
     /**
      * 刷新后兜底：这一轮若停在半途（末尾是用户提问、或只剩一个空 assistant 占位），
-     * 就在后台一直盯着，直到界面上真的出现这一轮的答复为止。
-     *
-     * 2026-11-07 加强（第二次）：旧版按 1s→2s→4s→8s→15s→25s 退避 6 轮，并且
-     * 「一挂上实时流就收手」。但挂上 ≠ 有内容：attach 成功而事件没渲染出来（或中间层
-     * 把 SSE 掐了）时，页面就永久停在「只有提问、下面一片空白」，只能再刷新一次——
-     * 实测这一轮 18:55:03 提问、18:55:16 答复就落库了，界面却一直空着。
-     * 现在两条腿并行、谁先到算谁的，且不会因为「已挂载」而停止：
-     *   1) 每轮先问服务端要历史：答复一落库立刻回填，完全不依赖 SSE；
-     *   2) 顺手探一次 /stream/status，还在跑就挂一次实时流接回增量；
-     *   3) 直到 awaitingAnswer() 为假为止，最长盯 5 分钟，单轮异常不影响下一轮。
+     * 就在后台轮询历史并尝试挂实时流，直到界面上真的出现这一轮的答复为止（最长 5 分钟）。
+     * 历史回填不依赖 SSE；挂上流不等于有内容，所以两条路并行、不会因「已挂载」而停止。
      */
     async resumeInterruptedTurn() {
       const sid = this.loadedSessionId || this.currentSessionId;
@@ -686,10 +676,8 @@ export default {
       // 空会话（含「选了专家但没发消息就切走」的新窗口）：不恢复任何专家
       this.selectedExpert = null;
     },
-    // ── 会话级流式隔离 ──────────────────────────────────────────────────
-    // 流事件只写入「所属会话」的数据，避免多会话并行流式（A 流式中新建/切换到 B）串台。
-    // 展示中的会话（sid === loadedSessionId）直接用组件数据；后台会话临时把组件数据
-    // 指向其 sessionStates 缓冲，处理完立即还原（全程同步，不会触发中途渲染）。
+    // 会话级流式隔离：流事件只写所属会话的数据，避免多会话并行时串台。
+    // 展示中的会话直接用组件数据；后台会话临时指向其 sessionStates 缓冲，处理完立即还原。
     ensureSessionState(sid) {
       let st = this.sessionStates[sid];
       if (!st) {
@@ -1048,10 +1036,8 @@ export default {
         return;
       }
 
-      // 缓存中没有，从服务器加载历史
-      // 保留 context_length（全局上下文窗口），仅清空用量计数；
-      // 若服务器返回了 context_length 则以其为准（见下方恢复逻辑）
-      // sessionLoading 门控：加载期间不渲染空欢迎页，避免"先闪空会话页再出历史"
+      // 缓存中没有，从服务器加载历史：保留 context_length（全局窗口）仅清空用量，
+      // 服务器返回了 context_length 则以其为准；sessionLoading 门控避免闪出空欢迎页。
       this.sessionLoading = true;
       this.sessionUsage = {
         input_tokens: 0,

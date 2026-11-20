@@ -2307,9 +2307,7 @@ function handleKnowledgeScopeChange(baseIds) {
 const SUBPANEL_WIDTH = 480;
 // 子面板与主菜单之间的水平间隙；CSS 里的 ::before 热桥按「间隙 + 1px 重叠」覆盖这段空白
 const SUBPANEL_GAP = 6;
-// 子面板高度上限。面板整体底边贴主菜单底边、向上生长，可视空间有多大就长多高，
-// 但封顶在这个值——否则技能多的用户会顶到屏幕顶端，观感像「整个页面被面板占住」。
-// 按行高约 44px 算，560px ≈ 列表能露出 10 行，比原来的 320px 一屏 5 行舒服很多。
+// 子面板高度上限 560px（约 10 行列表）：底边贴主菜单底边、向上生长，避免顶到屏幕顶端。
 const SUBPANEL_MAX_HEIGHT = 560;
 
 // 「+」→ 专家：上区「我的专家」走服务端分页（后端 /agent/list 支持 keyword/status/page），
@@ -2772,23 +2770,10 @@ const filteredSkillList = computed(() => {
 });
 
 /**
- * 打开二级浮动面板（主菜单常驻），并给首帧一个占位尺寸。
- *
- * 真正的尺寸与位置由 syncSubpanelBox 负责。这里只做四件事：
- * 算左右锚点、记住一级菜单的 top/bottom、写一个预估值占位（同帧就会被 sync 覆盖，
- * 基本不会上屏）、复位「悬停 / 聚焦」两个关闭保护标志与高度基准。
- *
- * 垂直方向的规则（2026-10-24 定稿）：
- * 1. **打开时两个面板底部齐平** —— 子面板底边 = 一级菜单底边。
- * 2. 内容（被搜索）变少时**顶边不动、底边随之上收**，最多收到与一级菜单**顶边**齐平，
- *    此时面板整个落在菜单上方，左下角正好咬住菜单右上角。
- * 详见 syncSubpanelBox。
- *
- * 为什么不用 `bottom: 固定值`：底边钉住时内容变矮会让顶边（含搜索框）往下移，
- * 鼠标原地掉出面板 → mouseleave → 面板关闭。现在允许变矮，靠「搜索框聚焦期间
- * 不自动关闭」兜住（见 schedulePlusClose）。
- *
- * 也不能退回「按假设高度 420px 判断上下翻转」的老办法：这里用真实高度算。
+ * 打开二级浮动面板（主菜单常驻），并给首帧一个占位尺寸；真实尺寸与位置由
+ * syncSubpanelBox 负责。垂直规则：打开时底边与一级菜单齐平，内容变少时顶边不动、
+ * 底边随之上收（最多收到菜单顶边）。不用固定 bottom：内容变矮会让搜索框掉出面板，
+ * 由「聚焦期间不自动关闭」兜住（见 schedulePlusClose）。
  */
 function openSubpanel(category, event, fromHover = false) {
   // hover 触发时同面板已打开则保持（避免鼠标在项与面板间移动导致闪烁）；
@@ -3248,11 +3233,8 @@ function formatTokens(n) {
 }
 
 /**
- * 确保会话存在并返回 sessionId（并行上传共享同一个创建 Promise，
- * 避免一次选择多个文件时重复触发 createSession）。
- *
- * 仅在“发送”阶段调用：新对话选附件时不再提前建会话，附件先以待上传状态
- * 留在前端，用户点发送后才创建会话并上传。
+ * 确保会话存在并返回 sessionId：并行上传共享同一个创建 Promise，避免重复建会话。
+ * 仅在发送阶段调用：附件先以待上传状态留在前端，点发送才创建会话并上传。
  */
 function ensureSessionId() {
   if (props.sessionId) return Promise.resolve(props.sessionId);
@@ -3286,10 +3268,7 @@ function ensureSessionId() {
 
 /**
  * 长文本转附件：正文写进会话工作区的 txt，输入框只留开头一段 + 文件引用。
- *
- * 引用走 file_references：后端以「本轮用户明确引用以下对象」注入 /workspace 路径，
- * agent 再用 read_file(limit/offset) / grep 分块读取，单轮输入就不会把整段塞进 prompt。
- * 压缩历史（/compact）对「本轮输入过长」无效，所以这条路是独立入口。
+ * 引用走 file_references（agent 按需分块读取）；/compact 压缩不了本轮输入，故走独立入口。
  */
 async function offloadLongMessage() {
   if (offloadingLongMessage.value || !needsOffload(message.value)) return;

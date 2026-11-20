@@ -1,4 +1,4 @@
-"""Pydantic 配置模型（2026-10-18 批次 1A 从 config.py 拆出）。
+"""Pydantic 配置模型（从 config.py 拆出）。
 
 配置字段名与默认值的唯一来源：``Config.from_yaml`` 把 YAML 各段直接交给这里的模型校验，
 已知键列表（``config_validation``）也由模型字段生成。本模块只依赖 pydantic，**不 import
@@ -336,7 +336,6 @@ class AgentConfig(BaseModel):
     """一个会话一个 LangGraph thread（DA-03 P1）：``thread_id = session_id``，每轮只输入本轮消息，
     历史与摘要状态由 checkpointer 保存。默认开启，与 DeepAgents/LangGraph 的 thread 语义一致；
     显式设为 ``false`` 可退回每条消息一个 thread、每轮从 DB 重建历史的兼容模式。
-    见 ``docs/archive/design/2026-10-19-da03-session-thread.md``。
     """
 
     @field_validator("prompt_path", "skill_write", mode="before")

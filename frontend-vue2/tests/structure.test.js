@@ -25,77 +25,19 @@ const MOD = 'packages/easyAgent/'
 /** 新文件的行数上限 */
 const MAX_NEW_FILE_LINES = 800
 
-/**
- * 现存超大文件的行数预算（= 2026-10-20 实测值，只允许往下调）。
- * 2026-10-28 合并 audit-improvements / rag-1018 分支后按实测值更新。
- * 2026-11-03 合并 audit-improvements 预览修复（Office → PDF）后按实测值更新。
- * 2026-11-04 知识库搜索改为输入即检索（300ms 防抖）后按实测值更新：1909 → 1911。
- * 2026-11-05 知识库上传前过滤 PPT/PPTX 后按实测值更新：1911 → 1912。
- * 2026-11-05 权限管理人员搜索后按实测值更新：1912 → 1918。
- * 2026-11-05 合并 audit-improvements（本站不挂载悬浮 AI 侧边栏）后 EasyAgentPage 按实测值更新：2035 → 2036。
- * 2026-11-07 会话列表按服务端 pending_approval 水合「待审批」徽标后 chatSession.js 按实测值更新：1217 → 1225。
- * 2026-11-07 刷新后兜底补回「刷新过早」丢失的这一轮（resumeInterruptedTurn）后按实测值更新：
- *   EasyAgentPage 2045 → 2050、chatSession 1226 → 1277。
- * 2026-11-05 文件夹操作按钮移至文件夹行尾部后按实测值更新：1918 → 1921。
- * 2026-11-06 联网开关镜像（重试路径带上 enableWebSearch）后按实测值更新：
- *   EasyAgentPage 2036 → 2045、ChatInput 3613 → 3622、Chat 1122 → 1123、
- *   AiSidebar 1725 → 1726；chatSession 原 1205 已被既有改动突破，一并按实测校正为 1217。
- * 2026-11-06 「我的专家」改服务端分页（+ 关键字下推接口）后按实测值更新：
- *   ChatInput 3622 → 3688（新增 loadMyExpertsPage / loadMoreMyExperts / 防抖 watcher，
- *   同时删掉了走不到的 expert 分支与本地 slice 逻辑）、ExpertListPanel 2152 → 2253
- *   （新增 loadMinePage / loadMoreMine / onContentScroll，删掉了 refreshSilently）。
- * 拆分这些文件时同步删掉条目，避免预算变成"合法上限"。
- *
- * 2026-11-07 刷新续接根因修复（候选漏传「当前会话」、会话还没建好时不等待、
- * 回填不再覆盖本地刚发的提问）后按实测值更新：EasyAgentPage 2050 → 2057、
- * chatSession 1277 → 1321。
- * 2026-11-07 「挂上实时流就收手」导致永久空白（attach 成功但事件没渲染）后改为
- * 历史轮询兜底 + force 回填，按实测值更新：chatSession 1321 → 1364。
- * 2026-11-09 普通异常也落 fallback_note，awaitingAnswer 据此判定「本轮已收尾」
- * （+4 行注释与判据），按实测值更新：chatSession 1364 → 1368。
- * 2026-11-11 打开会话时探一次流状态（shouldAttachOnOpen / probeLiveStream，§14.4-D）
- * 后按实测值更新：chatSession 1368 → 1733。
- * 2026-11-11 存量校正（合并后即为实测值、预算一直没同步）：
- *   KnowledgeWorkbench 1921 → 1926、PersonnelManagement 1145 → 1165。
- * 2026-11-13 同一批上传分多次选择时过滤重复文件（pickAcceptable 先去重再校验限额）
- * 后按实测值更新：ChatInput 3688 → 3721。
- * 2026-11-13 知识库工作台精简（抽权限树/导入菜单组件 + 清理死代码）：
- *   KnowledgeWorkbench 1926 → 1782。
- * 2026-11-15 合并 feature/1128 后按实测值更新：PersonnelManagement 1165 → 1194。
- * 2026-11-16 解决文件引用与交互模式的双分支冲突，按合并实测重建基线：
- *   ChatInput 3721 → 3722、ChatMessage 2616 → 2620。
- *   SettingsPanel 当前实为 1185 行，冲突两侧的 1128 / 1178 均已过时，校正为 1185；
- *   本次未修改设置页源码。此次合并基线之后仍只允许下调预算。
- * 2026-11-16 会话列表改为滚动分页（首屏一页 + 滚动到底续取，不再预取全量）后按实测值更新：
- *   SessionList 1072 → 1106、AiSidebar 1726 → 1755、chatSession 1740 → 1744。
- * 2026-11-16 超长输入另存为工作区 txt 并改为文件引用（压缩历史对它无效）后按实测值更新：
- *   ChatInput 3722 → 3806。
- * 2026-11-16 该提示改为中性内嵌单行样式（图标 + 万为单位的字数 + 可关闭），
- *   并把图标/按钮描边收成主色点缀后按实测值更新：ChatInput 3806 → 3874。
- * 2026-11-16 长文本判断改为按模型窗口 token 预算（131072 扣除用量/输出/技能开销），
- *   提示条改为琥珀强调样式后按实测值更新：ChatInput 3874 → 3909。
- * 2026-11-17 合并 origin/feature/1128 后按实测值校正远端未同步的预算：
- *   ChatInput 3909 → 4420、AiSidebar 1726 → 1755、chatSession 1744 → 1745。
- * 2026-11-17 会话结束后若工作区有新文件则自动展开：WorkspacePanel 954 → 970。
- * 2026-11-17 知识库问答支持后台续流（离开页面不再取消后端任务，重进面板挂
- *   /stream/live 回放）后按实测值更新：KnowledgeWorkbench 1782 → 1820。
+/** 现存超大文件的行数预算（当前实测值，只允许下调）。
+ * 改动导致行数变化时按实测值更新；拆分文件后同步删除条目。
  */
 const LINE_BUDGET = {
-  // 2026-10-30 原 App.vue 移为模块根组件，页面级深色覆盖拆到 styles/theme-dark.css：3182 → 2035
-  // 2026-11-05 合并 audit-improvements（注释停用 AiSidebar）后按实测值更新：2035 → 2036
   [`${MOD}EasyAgentPage.vue`]: 2057,
   [`${MOD}features/chat/components/ChatInput.vue`]: 4420,
-  // 2026-11-12 执行过程容器改为正文常显 + 过程分段折叠（分段逻辑移到 shared/chat）：2644 → 2616
-  // 2026-11-16 HITL 批次审批面板（一个中断多项操作只给一个审批入口）后按实测值更新：2620 → 2647
   [`${MOD}features/chat/components/ChatMessage.vue`]: 2647,
   [`${MOD}features/chat/components/AiSidebar.vue`]: 1755,
   [`${MOD}features/experts/components/ExpertListPanel.vue`]: 2253,
-  // 2026-11-12 存量校正：mysql_saver / 跨 Pod 挂载修复后实为 1740 行，按实测值更新（本次改动未触及）
   [`${MOD}features/chat/mixins/chatSession.js`]: 1745,
   [`${MOD}features/connectors/components/ConnectorListPanel.vue`]: 1504,
   [`${MOD}features/skills/components/SkillListPanel.vue`]: 1260,
   [`${MOD}shared/preview/FilePreview.vue`]: 1164,
-  // 2026-11-16 恢复被合并丢失的「权限设置」tab（导航项 + ApprovalPanel 挂载）：1184 → 1190
   [`${MOD}features/settings/components/SettingsPanel.vue`]: 1190,
   [`${MOD}features/chat/components/Chat.vue`]: 1123,
   [`${MOD}features/chat/components/SessionList.vue`]: 1106,

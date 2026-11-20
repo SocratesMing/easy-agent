@@ -36,7 +36,7 @@ logger = logging.getLogger("easy-agent")
 DEFAULT_MAX_CONTENT_CHARS = 20000
 # 截断提示必须说清「截断≠数据量」并给出正确出路（分页），否则模型会把
 # truncated=true 读成「数据还有更多」，转而用缩小时间窗口反复查询来数总数——
-# 那是探索型死循环的主要驱动之一。详见 docs/design/2026-11-05-tool-loop-termination-plan.md。
+# 那是探索型死循环的主要驱动之一。
 _TRUNCATION_NOTICE = (
     "\n...[MCP output truncated: {omitted} chars omitted]"
     "（此截断由平台输出长度上限造成，与数据总量无关。需要完整数据时，"

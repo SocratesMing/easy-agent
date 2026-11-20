@@ -1,4 +1,4 @@
-"""checkpoint 按 pod 隔离时的审批恢复（``docs/design/2026-10-21-per-pod-sqlite-checkpoints.md`` §4.5）。
+"""checkpoint 按 pod 隔离时的审批恢复。
 
 - 审批记下所在的实例，恢复请求落到别的 pod 时拒绝，提示两个实例名；
 - 本进程的 checkpointer 里没有这条审批的 checkpoint 时拒绝，不再把决策直传给空 thread；

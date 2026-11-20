@@ -557,11 +557,9 @@ def verify_schema_current(db) -> None:
 def _init_tables_locked(db):
     """幂等地初始化库表结构。
 
-    启动性能：MySQL 场景下完整建表流程要 40+ 次网络往返（建表建索引 +
-    每张表 SHOW COLUMNS + ALTER MODIFY 改列 + 全量消息修复扫描），多副本
-    部署时每个 pod 启动都要跑一遍，是「连接 MySQL 很久」的主因。这里加一层
-    schema 版本快速路径：库里记录的结构版本与代码一致、且期望的表都在时，
-    只发 3 条探测 SQL 就返回，不再重复建表/补列/扫描。
+    带 schema 版本快速路径：库里记录的结构版本与代码一致、且期望的表都在时，
+    只发 3 条探测 SQL 就返回，不再重复建表/补列/扫描（完整流程要 40+ 次网络往返，
+    是多副本下「连接 MySQL 很久」的主因）。
 
     **改动任何表结构后必须把 SCHEMA_VERSION +1**，否则旧库不会走完整迁移。
     """
@@ -652,7 +650,7 @@ def _create_token_usage_table(db, cursor):
     _create_index(db, cursor, "idx_token_usage_user_session", "token_usage", "user_id, session_id")
 
 def _create_expert_tables(db, cursor):
-    """专家 Agent 表 expert_agents（见 docs/expert-agent-solution.md §3.1）。
+    """专家 Agent 表 expert_agents。
 
     建表口径：
     - ``export_run_file_path`` 按需求「（删除）」不建；
@@ -763,13 +761,10 @@ def _schema_tables_present(db, cursor) -> bool:
     return all(t in names for t in EXPECTED_TABLES)
 
 def _repair_missing_message_rows(db, cursor):
-    """启动数据自愈：只补不删，见 :mod:`easy_agent.db.legacy_messages`。
+    """启动数据自愈：只补不删（只删会丢掉 A2 之后未回写 JSON 的消息），
+    见 :mod:`easy_agent.db.legacy_messages`。
 
-    原实现在 JSON 条数与行数不等时删掉整个会话的行再按 JSON 重建。A2 之后旧会话的 JSON
-    不再更新，继续对话的旧会话每次重启都会丢掉 A2 之后的消息。
-
-    迁移 6 在第一次启动的末尾才执行：还没执行过，说明这是升级后的第一次启动，对不上的会话
-    打 warning 留给人工核对；之后每次启动只记 debug。
+    升级后的第一次启动对不上的会话打 warning 留给人工核对；之后每次启动只记 debug。
     """
     try:
         first_start = CLEAR_LEGACY_BLOBS_VERSION not in applied_versions(db, cursor)

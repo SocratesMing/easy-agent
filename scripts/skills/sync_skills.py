@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """技能单一安装源：仓库根 ``skills/``（canonical）→ 包内 ``easy_agent/skills/``（生成副本）。
 
-设计（A3，见 ``docs/archive/design/2026-10-18-a3-skills-single-source.md``）：
+设计（A3）：
 
 * 唯一可编辑源是仓库根 ``skills/``；包内树由本脚本**单向生成**，禁止反向同步。
 * 判定基于 sha256 全量清单（xlsx 保留的 12 个 office 脚本、schema、LICENSE、

@@ -1,6 +1,6 @@
 """公共（预置）专家 Agent 的目录发现与读取。
 
-与「我的专家」的关系（见 ``docs/expert-agent-solution.md``）：
+与「我的专家」的关系：
 
 - **我的专家**：用户在界面里创建，落库（``expert_agents`` 表）+ 版本目录
   （``workspace/{username}/experts/{id}/v{n}/``），可改可删；

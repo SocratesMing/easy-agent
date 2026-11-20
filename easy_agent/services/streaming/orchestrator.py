@@ -244,9 +244,8 @@ def resolve_chat_context(agent) -> tuple[int | None, int | None, int]:
 def resolve_resume_context(agent) -> tuple[int, int]:
     """恢复流的上下文窗口/自动压缩点。
 
-    与 chat 流口径一致：取「本次实际使用的模型」的窗口，并按阈值折算自动压缩点。
-    原实现读的是并不存在的 EasyAgent.context_length / auto_compress_tokens 属性，
-    恒为 0，导致 HITL 恢复后前端拿不到窗口值（上下文占用率显示为 0/N）。
+    与 chat 流口径一致：取「本次实际使用的模型」的窗口，并按阈值折算自动压缩点；
+    取不到时返回 0（前端上下文占用率会显示为 0/N）。
     """
     context_length = resolve_context_length(
         getattr(agent, "config", None), getattr(agent, "model_name", None)
@@ -468,11 +467,6 @@ def _log_token_usage(sid: str, proc, stats: _FinalizeStats) -> None:
 
 def _log_stream_diagnostics(sid: str, proc) -> None:
     """把「这一轮模型是怎么结束的」记成三行日志（纯观测，不改变任何行为）。
-
-    起因：新建专家时偶发「正文/思考输出一半就没了」——工具没执行、界面也没报错。
-    最常见成因是模型写到一半就停了（正文写到一半，或工具调用的 arguments 只写了
-    半截）：token 已经真实消耗，但没有任何一处内容完整。此前日志只有 token 汇总，
-    只能靠「↓1697(思考243) 但可见内容才 200 字」反推；这三行把结论直接写进日志。
 
     三行分别是：
     1. 结束原因 + 合法/非法工具调用计数与最后一轮参数长度（``finish_reason=length``

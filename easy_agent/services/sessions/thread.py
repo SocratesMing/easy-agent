@@ -14,8 +14,6 @@
   （改造前从 DB 重建历史时也会回灌这段正文）。
 - 给前端的审批句柄仍是 ``{session_id}-{turn_id}``：前端靠这个格式还原 message_id，
   服务端再映射到真正的 thread（:func:`resolve_resume_thread`）。
-
-见 docs/archive/design/2026-10-19-da03-session-thread.md §6。
 """
 
 from __future__ import annotations

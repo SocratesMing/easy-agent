@@ -1,6 +1,6 @@
 """专家 Agent 的持久化层（``expert_agents`` 表）。
 
-设计约束（见 ``docs/expert-agent-solution.md`` §3、§7.1）：
+设计约束：
 
 - **只接收 ``Database`` 实例**，复用其 ``get_connection()`` / ``_execute()``，
   不往 ``database.py`` 的 2000+ 行里塞业务方法；
