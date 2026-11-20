@@ -757,14 +757,17 @@
 /* 预设问题卡片：样式全部走语义化令牌（--bg-secondary / --text-primary ...），
    深浅主题自动适配，这里无需额外覆盖。 */
 
-/* 滚动按钮 */
-.easy-agent-root[data-theme="dark"] .scroll-btn {
-  background: var(--bg-secondary) !important;
-  border-color: var(--border-color) !important;
-}
-
-.easy-agent-root[data-theme="dark"] .scroll-btn svg {
-  color: var(--text-primary) !important;
+/* 用户消息左侧刻度导航 */
+.easy-agent-root[data-theme="dark"] .user-message-nav {
+  --user-nav-tick-default: rgba(148, 163, 184, 0.28);
+  --user-nav-tick-near-2: rgba(148, 163, 184, 0.42);
+  --user-nav-tick-near-1: rgba(148, 163, 184, 0.58);
+  --user-nav-tick-hovered: #cbd5e1;
+  --user-nav-tick-active: var(--text-primary);
+  --user-nav-card-bg: var(--bg-secondary);
+  --user-nav-card-border: var(--border-color);
+  --user-nav-prompt-color: var(--text-primary);
+  --user-nav-reply-color: var(--text-secondary);
 }
 
 /* 下拉菜单与弹窗 */
@@ -1176,16 +1179,6 @@
 }
 .easy-agent-root[data-theme="dark"] .welcome-screen h2 {
   color: var(--text-primary) !important;
-}
-.easy-agent-root[data-theme="dark"] .scroll-btn {
-  background: var(--bg-secondary) !important;
-  color: var(--text-secondary) !important;
-}
-.easy-agent-root[data-theme="dark"] .scroll-btn:hover {
-  background: var(--bg-tertiary) !important;
-}
-.easy-agent-root[data-theme="dark"] .scroll-btn svg {
-  color: var(--text-secondary) !important;
 }
 .easy-agent-root[data-theme="dark"] .generated-files-header-btn {
   background: rgba(34, 197, 94, 0.15) !important;

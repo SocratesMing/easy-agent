@@ -449,50 +449,6 @@ html[data-theme="dark"] .preset-deck:hover .preset-card {
   background: color-mix(in srgb, var(--preset-accent) 10%, transparent);
 }
 
-/* 相对聊天容器定位（而非视口）：工作区分栏后聊天区会收窄，用 fixed 会飘到
-   工作区上面；用 absolute 则始终贴聊天区右边缘，工作区拖拽改宽时无需避让。 */
-.scroll-btn {
-  position: absolute;
-  right: 24px;
-  width: 40px;
-  height: 40px;
-  border: none;
-  background: white;
-  border-radius: 50%;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: all 0.2s;
-  z-index: 10;
-}
-
-.scroll-btn.prev {
-  bottom: 120px;
-}
-
-.scroll-btn.next {
-  bottom: 170px;
-}
-
-/* 不再需要按面板宽度做避让（原 260px 硬编码在可拖拽后必然错位）：
-   按钮已改为相对 .chat-container 定位，聊天区收窄时自动跟随。 */
-.scroll-btn:hover {
-  background: #f1f5f9;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-}
-
-.scroll-btn svg {
-  width: 20px;
-  height: 20px;
-  color: #64748b;
-}
-
-.scroll-btn:hover svg {
-  color: #0ea5e9;
-}
-
 .loading-container {
   display: flex;
   flex-direction: column;

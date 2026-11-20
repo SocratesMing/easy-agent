@@ -448,50 +448,6 @@
   background: color-mix(in srgb, var(--preset-accent) 10%, transparent);
 }
 
-/* 相对聊天容器定位（而非视口）：工作区分栏后聊天区会收窄，用 fixed 会飘到
-   工作区上面；用 absolute 则始终贴聊天区右边缘，工作区拖拽改宽时无需避让。 */
-.easy-agent-root .scroll-btn {
-  position: absolute;
-  right: 24px;
-  width: 40px;
-  height: 40px;
-  border: none;
-  background: white;
-  border-radius: 50%;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: all 0.2s;
-  z-index: 10;
-}
-
-.easy-agent-root .scroll-btn.prev {
-  bottom: 120px;
-}
-
-.easy-agent-root .scroll-btn.next {
-  bottom: 170px;
-}
-
-/* 不再需要按面板宽度做避让（原 260px 硬编码在可拖拽后必然错位）：
-   按钮已改为相对 .chat-container 定位，聊天区收窄时自动跟随。 */
-.easy-agent-root .scroll-btn:hover {
-  background: #f1f5f9;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-}
-
-.easy-agent-root .scroll-btn svg {
-  width: 20px;
-  height: 20px;
-  color: #64748b;
-}
-
-.easy-agent-root .scroll-btn:hover svg {
-  color: #0ea5e9;
-}
-
 .easy-agent-root .loading-container {
   display: flex;
   flex-direction: column;
@@ -584,23 +540,13 @@
   justify-content: center;
 }
 
-.easy-agent-root .chat-container.is-sidebar .scroll-btn {
-  right: 14px;
-  width: 32px;
-  height: 32px;
+.easy-agent-root .chat-container.is-sidebar ::v-deep .user-message-nav {
+  left: 4px;
 }
 
-.easy-agent-root .chat-container.is-sidebar .scroll-btn svg {
-  width: 16px;
-  height: 16px;
-}
-
-.easy-agent-root .chat-container.is-sidebar .scroll-btn.prev {
-  bottom: 150px;
-}
-
-.easy-agent-root .chat-container.is-sidebar .scroll-btn.next {
-  bottom: 192px;
+.easy-agent-root .chat-container.is-sidebar ::v-deep .user-message-preview {
+  width: 230px;
+  max-width: calc(100vw - 60px);
 }
 
 .easy-agent-root .chat-container.is-sidebar ::v-deep .chat-input-container {

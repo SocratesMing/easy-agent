@@ -67,16 +67,11 @@
         </div>
       </div>
       </div>
-      <button v-if="canGoToNextUserMessage" @click="goToNextUserMessage" class="scroll-btn next" title="回到下一个用户问题">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="6 9 12 15 18 9"></polyline>
-        </svg>
-      </button>
-      <button v-if="canGoToPrevUserMessage" @click="goToPrevUserMessage" class="scroll-btn prev" title="回到上一个用户问题">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="18 15 12 9 6 15"></polyline>
-        </svg>
-      </button>
+      <UserMessageNavigator
+        :items="userNavItems"
+        :active-index="activeUserNavIndex"
+        @select="scrollToUserMessage"
+      />
 
       <!-- 空会话的预置问题卡片 -->
       <div
@@ -160,13 +155,15 @@ import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
 import PlanInteractionPanel from './PlanInteractionPanel.vue'
 import TodoListPanel from './TodoListPanel.vue'
+import UserMessageNavigator from './UserMessageNavigator.vue'
 import { getRuntime } from '../../../runtime/config.js'
 import { pendingInteractionActions } from '../../../shared/chat/planInteraction.js'
+import { buildUserMessageNavItems, findActiveUserNavIndex } from '../../../shared/chat/userMessageNav.js'
 // 预置问题卡片最多展示几张（一张卡片一条问题，多配的部分按顺序截断）
 const MAX_PRESET_CARDS = 6
 export default {
   mixins: [contextCompactionMixin, citationPopoverMixin],
-  components: { CitationPopover, ChatInput, ChatMessage, PlanInteractionPanel, TodoListPanel },
+  components: { CitationPopover, ChatInput, ChatMessage, PlanInteractionPanel, TodoListPanel, UserMessageNavigator },
   props: {
   messages: {
     type: Array,
@@ -266,8 +263,7 @@ export default {
       composerMode: 'center',
       deckTop: 0,
       deckVisibleCount: 3, // keep
-      currentUserMessageIndex: -1,
-      userMessageIndices: [],
+      activeUserNavIndex: -1,
       // 是否贴底：用户位于滚动容器底部时为 true，向上滚动查看历史时为 false。
       // 流式更新仅在贴底时自动滚动，避免抢占用户阅读上方内容；用户滚回底部后自动恢复跟随。
       isAtBottom: true,
@@ -319,13 +315,8 @@ export default {
         ? last
         : null
     },
-    canGoToPrevUserMessage() {
-      return this.userMessageIndices.length > 0 && this.currentUserMessageIndex < this.userMessageIndices.length - 1
-    },
-    canGoToNextUserMessage() {
-      // 未滚动到底部时持续显示“回到下一个用户问题”按钮，
-      // 让用户能逐条向下跳转，最后再回到会话底部
-      return this.userMessageIndices.length > 0 && !this.isAtBottom
+    userNavItems() {
+      return buildUserMessageNavItems(this.messages)
     }
   },
   watch: {
@@ -346,7 +337,7 @@ export default {
             this.scrollToBottom()
           }
           this.$nextTick(() => {
-            this.updateUserMessageIndices()
+            this.syncActiveUserNav()
           })
         }
       }
@@ -359,10 +350,13 @@ export default {
       // 切换/加载会话时强制贴底
       this.isAtBottom = true
       this.scrollToBottom(true)
+      this.$nextTick(() => {
+        this.syncActiveUserNav()
+      })
     }
   },
   mounted() {
-    this.updateUserMessageIndices()
+    this.syncActiveUserNav()
   },
   beforeDestroy() {
   },
@@ -392,46 +386,37 @@ export default {
       const min = String(d.getMinutes()).padStart(2, '0')
       return `${y}-${m}-${day} ${h}:${min}`
     },
-    updateUserMessageIndices() {
-      this.userMessageIndices = this.messages
-        .map((msg, index) => msg.role === 'user' ? index : -1)
-        .filter(index => index !== -1)
-        .reverse()
-      this.currentUserMessageIndex = -1
-    },
-    goToPrevUserMessage() {
-      if (this.userMessageIndices.length === 0) return
-
-      if (this.currentUserMessageIndex === -1) {
-        this.currentUserMessageIndex = 0
-      } else if (this.currentUserMessageIndex < this.userMessageIndices.length - 1) {
-        this.currentUserMessageIndex++
-      }
-
-      const targetIndex = this.userMessageIndices[this.currentUserMessageIndex]
+    getMessageEl(messageIndex) {
       const els = this.$refs.messageEls || []
-
-      if (targetIndex !== undefined && els[targetIndex]) {
-        els[targetIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
+      const direct = els[messageIndex]
+      if (direct && direct.dataset && Number(direct.dataset.messageIndex) === messageIndex) {
+        return direct
       }
-    },
-    goToNextUserMessage() {
-      if (this.currentUserMessageIndex > 0) {
-        // 还有更靠后的用户问题：逐条向下跳转
-        this.currentUserMessageIndex--
-        const targetIndex = this.userMessageIndices[this.currentUserMessageIndex]
-        const els = this.$refs.messageEls || []
-        if (targetIndex !== undefined && els[targetIndex]) {
-          els[targetIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
+      for (let i = 0; i < els.length; i++) {
+        const el = els[i]
+        if (el && el.dataset && Number(el.dataset.messageIndex) === messageIndex) {
+          return el
         }
-      } else {
-        // 已到最后一个用户问题（或未经过导航）：直接滚动到会话底部
-        this.currentUserMessageIndex = -1
-        this.$nextTick(() => {
-          const el = this.$refs.messagesRef
-          if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-        })
       }
+      return direct || null
+    },
+    syncActiveUserNav() {
+      this.activeUserNavIndex = findActiveUserNavIndex(
+        this.userNavItems,
+        this.getMessageEl,
+        this.$refs.messagesRef,
+        this.isAtBottom
+      )
+    },
+    scrollToUserMessage(payload) {
+      const messageIndex = payload && typeof payload === 'object' ? payload.messageIndex : payload
+      const navIndex = payload && typeof payload === 'object' ? payload.navIndex : -1
+      const el = this.getMessageEl(messageIndex)
+      if (!el) return
+      if (navIndex >= 0) {
+        this.activeUserNavIndex = navIndex
+      }
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
     },
     handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = [], fileReferences = [], interactionMode = 'normal') {
       this.$emit('send-message', message, files, signal, enableDeepThink, enableWebSearch, skills, expertEditId, knowledgeBaseIds, fileReferences, interactionMode)
@@ -501,12 +486,7 @@ export default {
       const threshold = 80
       const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
       this.isAtBottom = atBottom
-      // 手动滚动回到最底部时，同步复位「上一个/下一个问题」导航索引：
-      // 此前索引停留在历史问题位置，会导致回到底部后「回到上一个问题」按钮
-      // 按旧索引计算而消失（按钮状态与真实滚动位置脱节）。
-      if (atBottom && this.currentUserMessageIndex !== -1) {
-        this.currentUserMessageIndex = -1
-      }
+      this.syncActiveUserNav()
     },
     scrollToBottom(force = false) {
       this.$nextTick(() => {

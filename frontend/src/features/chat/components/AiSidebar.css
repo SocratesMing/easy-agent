@@ -874,23 +874,13 @@
   justify-content: center;
 }
 
-.ais-body :deep(.chat-container.is-sidebar .scroll-btn) {
-  right: 14px;
-  width: 32px;
-  height: 32px;
+.ais-body :deep(.chat-container.is-sidebar .user-message-nav) {
+  left: 4px;
 }
 
-.ais-body :deep(.chat-container.is-sidebar .scroll-btn svg) {
-  width: 16px;
-  height: 16px;
-}
-
-.ais-body :deep(.chat-container.is-sidebar .scroll-btn.prev) {
-  bottom: 150px;
-}
-
-.ais-body :deep(.chat-container.is-sidebar .scroll-btn.next) {
-  bottom: 192px;
+.ais-body :deep(.chat-container.is-sidebar .user-message-preview) {
+  width: 230px;
+  max-width: calc(100vw - 60px);
 }
 
 .ais-body :deep(.chat-container.is-sidebar .chat-input-container) {

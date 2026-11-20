@@ -67,16 +67,11 @@
         </div>
       </div>
       </div>
-      <button v-if="canGoToNextUserMessage" @click="goToNextUserMessage" class="scroll-btn next" title="回到下一个用户问题">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="6 9 12 15 18 9"></polyline>
-        </svg>
-      </button>
-      <button v-if="canGoToPrevUserMessage" @click="goToPrevUserMessage" class="scroll-btn prev" title="回到上一个用户问题">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="18 15 12 9 6 15"></polyline>
-        </svg>
-      </button>
+      <UserMessageNavigator
+        :items="userNavItems"
+        :active-index="activeUserNavIndex"
+        @select="scrollToUserMessage"
+      />
 
       <!-- 预置问题卡片：仅在首页（居中模式）展示，位置在欢迎语与输入框之间。
            一张卡片一条预置问题，问题内容直接展示在卡片里，不堆叠、不悬浮切换；
@@ -171,8 +166,10 @@ import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
 import PlanInteractionPanel from './PlanInteractionPanel.vue'
 import TodoListPanel from './TodoListPanel.vue'
+import UserMessageNavigator from './UserMessageNavigator.vue'
 import { APP_WELCOME_TITLE } from '../../../config.js'
 import { pendingInteractionActions } from '../../../shared/chat/planInteraction.js'
+import { buildUserMessageNavItems, findActiveUserNavIndex } from '../../../shared/chat/userMessageNav.js'
 // 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
 const composerMode = ref('center')
 
@@ -273,69 +270,43 @@ function formatSessionTime(isoStr) {
   return `${y}-${m}-${day} ${h}:${min}`
 }
 const messageRefs = ref({})
-const currentUserMessageIndex = ref(-1)
-const userMessageIndices = ref([])
+const activeUserNavIndex = ref(-1)
+const userNavItems = computed(() => buildUserMessageNavItems(props.messages))
 
 function setMessageRef(el, index) {
   if (el) {
     messageRefs.value[index] = el
+  } else {
+    delete messageRefs.value[index]
   }
 }
 
-function updateUserMessageIndices() {
-  userMessageIndices.value = props.messages
-    .map((msg, index) => msg.role === 'user' ? index : -1)
-    .filter(index => index !== -1)
-    .reverse()
-  currentUserMessageIndex.value = -1
+function getMessageEl(messageIndex) {
+  return messageRefs.value[messageIndex] || null
 }
 
-const canGoToPrevUserMessage = computed(() => {
-  return userMessageIndices.value.length > 0 && currentUserMessageIndex.value < userMessageIndices.value.length - 1
-})
-
-const canGoToNextUserMessage = computed(() => {
-  // 未滚动到底部时持续显示“回到下一个用户问题”按钮，
-  // 让用户能逐条向下跳转，最后再回到会话底部
-  return userMessageIndices.value.length > 0 && !isAtBottom.value
-})
+function syncActiveUserNav() {
+  activeUserNavIndex.value = findActiveUserNavIndex(
+    userNavItems.value,
+    getMessageEl,
+    messagesRef.value,
+    isAtBottom.value
+  )
+}
 
 onMounted(() => {
-  updateUserMessageIndices()
+  syncActiveUserNav()
 })
 
-function goToPrevUserMessage() {
-  if (userMessageIndices.value.length === 0) return
-  
-  if (currentUserMessageIndex.value === -1) {
-    currentUserMessageIndex.value = 0
-  } else if (currentUserMessageIndex.value < userMessageIndices.value.length - 1) {
-    currentUserMessageIndex.value++
+function scrollToUserMessage(payload) {
+  const messageIndex = payload && typeof payload === 'object' ? payload.messageIndex : payload
+  const navIndex = payload && typeof payload === 'object' ? payload.navIndex : -1
+  const el = getMessageEl(messageIndex)
+  if (!el) return
+  if (navIndex >= 0) {
+    activeUserNavIndex.value = navIndex
   }
-  
-  const targetIndex = userMessageIndices.value[currentUserMessageIndex.value]
-  
-  if (targetIndex !== undefined && messageRefs.value[targetIndex]) {
-    messageRefs.value[targetIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
-  }
-}
-
-function goToNextUserMessage() {
-  if (currentUserMessageIndex.value > 0) {
-    // 还有更靠后的用户问题：逐条向下跳转
-    currentUserMessageIndex.value--
-    const targetIndex = userMessageIndices.value[currentUserMessageIndex.value]
-    if (targetIndex !== undefined && messageRefs.value[targetIndex]) {
-      messageRefs.value[targetIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
-    }
-  } else {
-    // 已到最后一个用户问题（或未经过导航）：直接滚动到会话底部
-    currentUserMessageIndex.value = -1
-    nextTick(() => {
-      const el = messagesRef.value
-      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-    })
-  }
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 function handleSend(message, files, signal, enableDeepThink = true, enableWebSearch = false, skills = [], expertEditId = '', knowledgeBaseIds = [], fileReferences = [], interactionMode = 'normal') {
@@ -428,12 +399,7 @@ function handleScroll() {
   const threshold = 80
   const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
   isAtBottom.value = atBottom
-  // 手动滚动回到最底部时，同步复位「上一个/下一个问题」导航索引：
-  // 此前索引停留在历史问题位置，会导致回到底部后「回到上一个问题」按钮
-  // 按旧索引计算而消失（按钮状态与真实滚动位置脱节）。
-  if (atBottom && currentUserMessageIndex.value !== -1) {
-    currentUserMessageIndex.value = -1
-  }
+  syncActiveUserNav()
 }
 
 function scrollToBottom(force = false) {
@@ -452,7 +418,7 @@ watch(() => props.messages, (newMessages, oldMessages) => {
     scrollToBottom()
   }
   nextTick(() => {
-    updateUserMessageIndices()
+    syncActiveUserNav()
   })
 }, { deep: true })
 
@@ -460,6 +426,9 @@ watch(() => props.scrollTrigger, () => {
   // 切换/加载会话时强制贴底
   isAtBottom.value = true
   scrollToBottom(true)
+  nextTick(() => {
+    syncActiveUserNav()
+  })
 })
 
 defineExpose({
