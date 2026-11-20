@@ -1,5 +1,7 @@
 import { API_BASE_URL } from '../config.js'
-import { getAuthHeaders, authFetch, getStoredToken } from './auth.js'
+import { getAuthHeaders } from './auth.js'
+import request, { requestBlob } from './request.js'
+import { buildUploadLimitError, createFilesApi } from '../shared/api/files.js'
 
 export async function uploadFile(sessionId, file, onProgress, xhrHolder) {
   return new Promise((resolve, reject) => {
@@ -7,8 +9,6 @@ export async function uploadFile(sessionId, file, onProgress, xhrHolder) {
     formData.append('file', file)
 
     const xhr = new XMLHttpRequest()
-
-    // 把 xhr 交给调用方，用户点 × 删除"上传中"的文件时可在外部 abort()
     if (xhrHolder) xhrHolder.xhr = xhr
 
     xhr.upload.addEventListener('progress', (progressEvent) => {
@@ -18,7 +18,6 @@ export async function uploadFile(sessionId, file, onProgress, xhrHolder) {
       }
     })
 
-    // 用户主动取消：以"取消"结束 Promise，避免调用方永久挂起
     xhr.addEventListener('abort', () => {
       reject(new Error('上传已取消'))
     })
@@ -26,23 +25,17 @@ export async function uploadFile(sessionId, file, onProgress, xhrHolder) {
     xhr.addEventListener('load', () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
-          const response = JSON.parse(xhr.responseText)
-          resolve(response)
-        } catch (error) {
+          resolve(JSON.parse(xhr.responseText))
+        } catch {
           reject(new Error('Invalid response format'))
         }
       } else {
         try {
           const payload = JSON.parse(xhr.responseText)
           const detail = payload.detail
-          // 限额类错误：后端 detail 是结构化对象（code/message/limit_mb/actual_mb），
-          // 归一成带 code 的 Error，便于卡片展示原因并决定是否给「重试」
-          if (detail && typeof detail === 'object' && detail.message) {
-            const err = new Error(detail.message)
-            err.code = detail.code || ''
-            err.limitMb = detail.limit_mb
-            err.actualMb = detail.actual_mb
-            reject(err)
+          const normalized = buildUploadLimitError(detail)
+          if (normalized) {
+            reject(normalized)
             return
           }
           reject(new Error(typeof detail === 'string' && detail ? detail : '文件上传失败'))
@@ -67,96 +60,11 @@ export async function uploadFile(sessionId, file, onProgress, xhrHolder) {
   })
 }
 
-export async function deleteFile(sessionId, file) {
-  // 后端只提供按文件记录 id 删除的接口（DELETE /agent/files/{id}）；
-  // 没有 id 的历史消息/未落库文件只做本地移除，避免请求落到 SPA catch-all 得到 405。
-  // 只有后端 session_files 的数字主键才可删；历史消息可能携带前端生成的字符串 id，
-  // 直接拼进 /agent/files/{id} 会被 FastAPI int 校验拒绝（422），这里统一跳过远端删除。
-  const fileId = Number(file && file.id)
-  if (!Number.isInteger(fileId) || fileId <= 0) {
-    return { status: 'skipped' }
-  }
-  const response = await authFetch(`${API_BASE_URL}/agent/files/${fileId}`, {
-    method: 'DELETE',
-  })
-
-  if (!response.ok) {
-    throw new Error('删除文件失败')
-  }
-
-  return await response.json()
-}
-
-export async function getUserProfile() {
-  const response = await authFetch(`${API_BASE_URL}/agent/auth/profile`)
-
-  if (!response.ok) {
-    throw new Error('获取用户资料失败')
-  }
-
-  return await response.json()
-}
-
-export async function getSessionGeneratedFiles(sessionId) {
-  const response = await authFetch(`${API_BASE_URL}/agent/files/session/${sessionId}`)
-
-  if (!response.ok) {
-    throw new Error('获取生成的文件失败')
-  }
-
-  return await response.json()
-}
-
-export async function getWorkspaceTree(path = '', sessionId = null) {
-  const params = new URLSearchParams()
-  if (path) params.set('path', path)
-  if (sessionId) params.set('session_id', sessionId)
-  const url = `${API_BASE_URL}/agent/files/workspace/tree${params.toString() ? '?' + params.toString() : ''}`
-  const response = await authFetch(url)
-
-  if (!response.ok) {
-    throw new Error('获取工作区文件树失败')
-  }
-
-  return await response.json()
-}
-
-export async function downloadFile(filePath, fileName) {
-  const token = getStoredToken()
-  const url = `${API_BASE_URL}/agent/files/download/${filePath}`
-
-  const response = await fetch(url, {
-    headers: token ? { 'Authorization': `Bearer ${token}` } : {},
-  })
-
-  if (!response.ok) {
-    throw new Error('下载失败')
-  }
-
-  const blob = await response.blob()
-  const blobUrl = window.URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = blobUrl
-  link.download = fileName || filePath.split('/').pop()
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  window.URL.revokeObjectURL(blobUrl)
-}
-
-export async function updateUserProfile(data) {
-  const response = await authFetch(`${API_BASE_URL}/agent/auth/profile`, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(data)
-  })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '更新用户资料失败')
-  }
-
-  return await response.json()
-}
+export const {
+  deleteFile,
+  getUserProfile,
+  getSessionGeneratedFiles,
+  getWorkspaceTree,
+  downloadFile,
+  updateUserProfile,
+} = createFilesApi(request, requestBlob)
