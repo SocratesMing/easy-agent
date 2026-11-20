@@ -544,13 +544,17 @@ html[data-theme="dark"] .theme-check {
   color: var(--accent-color) !important;
 }
 
-/* ========== 悬浮按钮 ========== */
-html[data-theme="dark"] .expand-sidebar-btn {
+/* ========== 顶栏折叠/展开按钮 ========== */
+html[data-theme="dark"] .expand-sidebar-btn,
+html[data-theme="dark"] .expand-sidebar-inline,
+html[data-theme="dark"] .expand-workspace-inline {
   background: var(--bg-secondary) !important;
   border-color: var(--border-color) !important;
 }
 
-html[data-theme="dark"] .expand-sidebar-btn svg {
+html[data-theme="dark"] .expand-sidebar-btn svg,
+html[data-theme="dark"] .expand-sidebar-inline svg,
+html[data-theme="dark"] .expand-workspace-inline svg {
   color: var(--text-secondary) !important;
 }
 

@@ -8,6 +8,20 @@
            空会话（无消息、无任务）时只有右侧一个工作区按钮，这一行改为浮层不占位，
            否则会在欢迎页上方压出一条 44px 白带 + 分隔线，破坏垂直居中。 -->
       <div v-if="showTopbar" class="chat-topbar" :class="{ 'is-float': topbarFloating }">
+        <transition name="topbar-sidebar-btn">
+          <div v-if="showExpandSidebarBtn" class="chat-topbar-left">
+            <button
+              class="expand-sidebar-inline"
+              @click="$emit('toggleSidebar')"
+              title="展开侧边栏"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                <line x1="9" y1="3" x2="9" y2="21"></line>
+              </svg>
+            </button>
+          </div>
+        </transition>
         <div v-if="showSessionTime" class="session-created-time">
           <span class="session-time-pill">
             <svg class="session-time-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -245,18 +259,17 @@ const displayedPresetCards = computed(() => {
 // 顶部信息行：会话时间（居中）+ 操作区（任务规划、展开工作区，贴右）。
 // 三者中任意一个需要展示时，这一行才占位 —— 首页（无会话）保持干净，
 // 否则会破坏 .chat-content.is-center 的垂直居中。
+const showExpandSidebarBtn = computed(() => !isSidebar.value && props.sidebarCollapsed)
 const showSessionTime = computed(() => !isSidebar.value && !!props.sessionCreatedAt && props.messages.length > 0)
 const showWorkspaceBtn = computed(() => !isSidebar.value && !!props.currentSessionId && !props.workspaceExpanded)
 const showTopbar = computed(() =>
-  showSessionTime.value || props.todos.length > 0 || showWorkspaceBtn.value
+  showExpandSidebarBtn.value || showSessionTime.value || props.todos.length > 0 || showWorkspaceBtn.value
 )
-// 这一行只剩「展开工作区」按钮（空会话：没有会话时间、没有任务）时改为浮层不占位：
-// 有会话时间或任务胶囊的行才是真顶栏，需要占住 44px 与工作区头部对齐。
 const topbarFloating = computed(
-  () => !showSessionTime.value && props.todos.length === 0 && showWorkspaceBtn.value
+  () => !showSessionTime.value && props.todos.length === 0 && (showWorkspaceBtn.value || showExpandSidebarBtn.value)
 )
 
-const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'edit', 'respond', 'retry', 'update:selectedModel', 'toggleWorkspace', 'clearExpert', 'selectExpert', 'expertPromptApplied', 'openPanel', 'openKnowledge', 'webSearchChange'])
+const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'edit', 'respond', 'retry', 'update:selectedModel', 'toggleSidebar', 'toggleWorkspace', 'clearExpert', 'selectExpert', 'expertPromptApplied', 'openPanel', 'openKnowledge', 'webSearchChange'])
 const messagesRef = ref(null)
 
 function formatSessionTime(isoStr) {

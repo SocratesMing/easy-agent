@@ -549,13 +549,17 @@
   color: var(--accent-color) !important;
 }
 
-/* ========== 悬浮按钮 ========== */
-.easy-agent-root[data-theme="dark"] .expand-sidebar-btn {
+/* ========== 顶栏折叠/展开按钮 ========== */
+.easy-agent-root[data-theme="dark"] .expand-sidebar-btn,
+.easy-agent-root[data-theme="dark"] .expand-sidebar-inline,
+.easy-agent-root[data-theme="dark"] .expand-workspace-inline {
   background: var(--bg-secondary) !important;
   border-color: var(--border-color) !important;
 }
 
-.easy-agent-root[data-theme="dark"] .expand-sidebar-btn svg {
+.easy-agent-root[data-theme="dark"] .expand-sidebar-btn svg,
+.easy-agent-root[data-theme="dark"] .expand-sidebar-inline svg,
+.easy-agent-root[data-theme="dark"] .expand-workspace-inline svg {
   color: var(--text-secondary) !important;
 }
 

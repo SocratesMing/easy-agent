@@ -5,6 +5,20 @@
     <div class="chat-content" :class="composerMode === 'center' ? 'is-center' : 'is-bottom'">
       <!-- 会话时间与操作区共用顶部信息行 -->
       <div v-if="showTopbar" class="chat-topbar" :class="{ 'is-float': topbarFloating }">
+        <transition name="topbar-sidebar-btn">
+          <div v-if="showExpandSidebarBtn" class="chat-topbar-left">
+            <button
+              class="expand-sidebar-inline"
+              @click="$emit('toggle-sidebar')"
+              title="展开侧边栏"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                <line x1="9" y1="3" x2="9" y2="21"></line>
+              </svg>
+            </button>
+          </div>
+        </transition>
         <div v-if="showSessionTime" class="session-created-time">
           <span class="session-time-pill">
             <svg class="session-time-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -295,6 +309,9 @@ export default {
     // 顶部信息行：会话时间（居中）+ 操作区（任务规划、展开工作区，贴右）。
     // 三者中任意一个需要展示时，这一行才占位 —— 首页（无会话）保持干净，
     // 否则会破坏 .chat-content.is-center 的垂直居中。
+    showExpandSidebarBtn() {
+      return !this.isSidebar && this.sidebarCollapsed
+    },
     showSessionTime() {
       return !this.isSidebar && !!this.sessionCreatedAt && this.messages.length > 0
     },
@@ -302,12 +319,10 @@ export default {
       return !this.isSidebar && !!this.currentSessionId && !this.workspaceExpanded
     },
     showTopbar() {
-      return this.showSessionTime || this.todos.length > 0 || this.showWorkspaceBtn
+      return this.showExpandSidebarBtn || this.showSessionTime || this.todos.length > 0 || this.showWorkspaceBtn
     },
-    // 这一行只剩「展开工作区」按钮（空会话：没有会话时间、没有任务）时改为浮层不占位：
-    // 有会话时间或任务胶囊的行才是真顶栏，需要占住 44px 与工作区头部对齐。
     topbarFloating() {
-      return !this.showSessionTime && this.todos.length === 0 && this.showWorkspaceBtn
+      return !this.showSessionTime && this.todos.length === 0 && (this.showWorkspaceBtn || this.showExpandSidebarBtn)
     },
     pendingPlanMessage() {
       const last = this.messages[this.messages.length - 1]

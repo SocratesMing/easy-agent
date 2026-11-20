@@ -146,8 +146,34 @@
   pointer-events: none;
 }
 
+.easy-agent-root .chat-topbar.is-float .chat-topbar-left,
 .easy-agent-root .chat-topbar.is-float .chat-topbar-actions {
   pointer-events: auto;
+}
+
+.easy-agent-root .chat-topbar-left {
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.easy-agent-root .topbar-sidebar-btn-enter-active {
+  transition: opacity 0.22s ease 0.06s, transform 0.22s cubic-bezier(0.22, 1, 0.36, 1) 0.06s;
+}
+
+.easy-agent-root .topbar-sidebar-btn-leave-active {
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.easy-agent-root .topbar-sidebar-btn-enter,
+.easy-agent-root .topbar-sidebar-btn-leave-to {
+  opacity: 0;
+  transform: translate(-8px, -50%) scale(0.92);
 }
 
 /* 右侧操作区：绝对定位以免影响时间的真正居中。
@@ -172,33 +198,32 @@
   user-select: none;
 }
 
-/* 展开工作区：与任务规划胶囊同排、位于最右。
-   原先 fixed 在视口右上角，与时间行不在同一区域（工作区展开时会浮在工作区面板上）。 */
+.easy-agent-root .expand-sidebar-inline,
 .easy-agent-root .expand-workspace-inline {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
-  border-radius: 999px;
-  /* 图标为展开箭头（‹），与工作区头部的收起箭头（›）成对；
-     配色改用中性灰，不再沿袭原先文件夹图标的黄色 hover。 */
+  border-radius: 8px;
   color: #64748b;
   cursor: pointer;
   transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
 
+.easy-agent-root .expand-sidebar-inline:hover,
 .easy-agent-root .expand-workspace-inline:hover {
   background: #eef2f7;
   border-color: #cbd5e1;
   color: #1f2937;
 }
 
+.easy-agent-root .expand-sidebar-inline svg,
 .easy-agent-root .expand-workspace-inline svg {
-  width: 14px;
-  height: 14px;
+  width: 15px;
+  height: 15px;
 }
 
 .easy-agent-root .session-time-pill {

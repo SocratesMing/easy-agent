@@ -29,47 +29,59 @@
     </div>
 
     <template v-else-if="!isBootstrapping">
-      <SessionList
-        v-show="!isSidebarCollapsed"
-        :style="{ width: sidebarWidth + 'px', flexShrink: 0 }"
-        :sessions="sessions"
-        :currentSessionId="currentSessionId"
-        :streamingSessionIds="streamingSessions"
-        :pendingApprovalSessionIds="pendingApprovalSessions"
-        :username="userProfile.username"
-        :organizationId="userProfile.organization_id"
-        :email="userProfile.email"
-        :knowledgeEnabled="knowledgeEnabled"
-        :showKnowledge="showKnowledge"
-        :sessions-has-more="sessionsHasMore"
-        :sessions-loading="sessionsLoading"
-        @load-more-sessions="loadMoreSessions"
-        @show-knowledge="handleShowKnowledge"
-        @create-session="handleCreateSession"
-        @select-session="handleSelectSession"
-        @delete-session="handleDeleteSession"
-        @rename-session="handleRenameSession"
-        @toggle-pin="handleTogglePin"
-        @toggle-sidebar="toggleSidebar"
-        @show-skill-center="handleShowSkillCenter"
-        @show-scheduled-tasks="handleShowScheduledTasks"
-        @show-settings="showSettingsPanel = true"
-        @show-user-management="handleShowUserManagement"
-        @logout="handleLogout"
-      />
-      <SidebarResizeHandle v-if="!isSidebarCollapsed" v-model="sidebarWidth" />
-      
-      <button 
-        v-if="isSidebarCollapsed"
-        class="expand-sidebar-btn"
-        @click="toggleSidebar"
-        title="展开侧边栏"
+      <div
+        class="sidebar-shell"
+        :class="{ 'is-collapsed': isSidebarCollapsed, 'is-resizing': isSidebarResizing }"
+        :style="{ width: isSidebarCollapsed ? '0px' : sidebarWidth + 'px' }"
       >
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-          <line x1="9" y1="3" x2="9" y2="21"></line>
-        </svg>
-      </button>
+        <SessionList
+          class="sidebar-shell-inner"
+          :style="{ width: sidebarWidth + 'px', minWidth: sidebarWidth + 'px', flexShrink: 0 }"
+          :sessions="sessions"
+          :currentSessionId="currentSessionId"
+          :streamingSessionIds="streamingSessions"
+          :pendingApprovalSessionIds="pendingApprovalSessions"
+          :username="userProfile.username"
+          :organizationId="userProfile.organization_id"
+          :email="userProfile.email"
+          :knowledgeEnabled="knowledgeEnabled"
+          :showKnowledge="showKnowledge"
+          :sessions-has-more="sessionsHasMore"
+          :sessions-loading="sessionsLoading"
+          @load-more-sessions="loadMoreSessions"
+          @show-knowledge="handleShowKnowledge"
+          @create-session="handleCreateSession"
+          @select-session="handleSelectSession"
+          @delete-session="handleDeleteSession"
+          @rename-session="handleRenameSession"
+          @toggle-pin="handleTogglePin"
+          @toggle-sidebar="toggleSidebar"
+          @show-skill-center="handleShowSkillCenter"
+          @show-scheduled-tasks="handleShowScheduledTasks"
+          @show-settings="showSettingsPanel = true"
+          @show-user-management="handleShowUserManagement"
+          @logout="handleLogout"
+        />
+      </div>
+      <SidebarResizeHandle
+        v-if="!isSidebarCollapsed"
+        v-model="sidebarWidth"
+        @resizing="isSidebarResizing = $event"
+      />
+      
+      <transition name="topbar-sidebar-btn">
+        <button 
+          v-if="isSidebarCollapsed && (showKnowledge || showUserManagementPanel || showSkillCenter || showScheduledTasks)"
+          class="expand-sidebar-btn"
+          @click="toggleSidebar"
+          title="展开侧边栏"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="9" y1="3" x2="9" y2="21"></line>
+          </svg>
+        </button>
+      </transition>
       
       <SkillCenter
         v-if="showSkillCenter"
@@ -125,6 +137,7 @@
         @clear-expert="selectedExpert = null"
         @expert-prompt-applied="expertPrompt = ''"
         @update:selectedModel="selectedModel = $event"
+        @toggle-sidebar="toggleSidebar"
         @toggle-workspace="isWorkspaceCollapsed = false"
         @send-message="handleSendMessage"
         @web-search-change="handleWebSearchChange"
@@ -273,6 +286,7 @@ export default {
       duplicateInstance: false,
       presetQuestions: [],
       isSidebarCollapsed: false,
+      isSidebarResizing: false,
       isWorkspaceCollapsed: true,
       knowledgeEnabled: false,
       showKnowledge: false,
@@ -542,13 +556,9 @@ export default {
     /**
      * 「专家 Tab -> 召唤」（列表卡片 / 详情弹窗 / 示例问题）：**始终新开会话**。
      *
-     * 2026-10-28 口径调整：从专家面板发起的召唤不再跳回该专家的历史会话，
-     * 一律给一个干净的新窗口（会话记忆、历史消息、工作区交付物都绑定在会话上，
-     * 沿用旧会话会让上次对话的上下文渗进本轮）。
-     * 例外：当前已是空白会话（没有任何消息）则就地复用，避免连点召唤堆出空会话。
-     *
-     * 「+」号面板的召唤走 handleSummonExpertInPlace，不再进入本函数。
-     * 与 frontend/src/App.vue 的同名函数同构，改动需同步两处。
+     * 会话记忆、历史消息、工作区交付物都绑定在会话上，沿用旧会话会让上次上下文渗进本轮。
+     * 例外：当前已是空白会话则就地复用，避免连点召唤堆出空会话。
+     * 「+」号面板的召唤走 handleSummonExpertInPlace。
      */
     async handleUseExpert(expert, prompt) {
       if (!expert || !expert.export_agent_id) return
@@ -570,11 +580,7 @@ export default {
     },
     /**
      * 「+」号面板 -> 专家行的召唤：**留在当前会话**，只挂专家胶囊。
-     *
-     * 2026-10-28 口径调整：+ 面板召唤不再跳转/新建会话；唯一例外是当前会话
-     * 已经召唤了**另一位**专家——换专家 = 换会话（避免两位专家共享同一份
-     * 会话记忆互相污染），此时新建一个干净窗口再挂载。
-     * 与 frontend/src/App.vue 的同名函数同构，改动需同步两处。
+     * 例外：当前会话已召唤另一位专家时新开会话，避免两位专家共享同一份会话记忆。
      */
     async handleSummonExpertInPlace(expert) {
       if (!expert || !expert.export_agent_id) return
@@ -1499,28 +1505,74 @@ export default {
   color: #0ea5e9;
 }
 
+.sidebar-shell {
+  height: 100%;
+  flex-shrink: 0;
+  overflow: hidden;
+  opacity: 1;
+  visibility: visible;
+  transition: width 0.26s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease, visibility 0s linear 0s;
+  will-change: width, opacity;
+}
+
+.sidebar-shell.is-resizing {
+  transition: none;
+}
+
+.sidebar-shell.is-collapsed {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: width 0.26s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.18s ease, visibility 0s linear 0.26s;
+}
+
+.sidebar-shell-inner {
+  transform: translateX(0);
+  transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.sidebar-shell.is-resizing .sidebar-shell-inner {
+  transition: none;
+}
+
+.sidebar-shell.is-collapsed .sidebar-shell-inner {
+  transform: translateX(-14px);
+}
+
 .expand-sidebar-btn {
   position: absolute;
   left: 16px;
-  top: 16px;
-  width: 40px;
-  height: 40px;
-  background: white;
+  top: 8px;
+  width: 28px;
+  height: 28px;
+  background: #f8fafc;
   border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   z-index: 100;
-  transition: all 0.2s ease;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.topbar-sidebar-btn-enter-active {
+  transition: opacity 0.22s ease 0.06s, transform 0.22s cubic-bezier(0.22, 1, 0.36, 1) 0.06s;
+}
+
+.topbar-sidebar-btn-leave-active {
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.topbar-sidebar-btn-enter,
+.topbar-sidebar-btn-leave-to {
+  opacity: 0;
+  transform: translateX(-8px) scale(0.92);
 }
 
 .expand-sidebar-btn:hover {
-  background: #f8fafc;
+  background: #eef2f7;
   border-color: #cbd5e1;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
 /* 工作区参与 Flex 分栏：原先是 position:fixed 的浮层，会盖住聊天区右侧内容。
@@ -1542,8 +1594,8 @@ export default {
 }
 
 .expand-sidebar-btn svg {
-  width: 20px;
-  height: 20px;
+  width: 15px;
+  height: 15px;
   color: #64748b;
 }
 

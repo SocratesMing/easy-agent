@@ -22,13 +22,17 @@ export default {
       if (event.button !== 0) return
       this.startX = event.clientX
       this.startWidth = this.value
+      this.$emit('resizing', true)
       window.addEventListener('pointermove', this.move)
       window.addEventListener('pointerup', this.finish)
       window.addEventListener('pointercancel', this.finish)
     },
     move(event) { if (this.startX !== null) this.update(this.startWidth + event.clientX - this.startX) },
     finish() {
-      if (this.startX !== null) this.save()
+      if (this.startX !== null) {
+        this.save()
+        this.$emit('resizing', false)
+      }
       this.startX = null
       window.removeEventListener('pointermove', this.move)
       window.removeEventListener('pointerup', this.finish)
