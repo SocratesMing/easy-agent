@@ -1,9 +1,8 @@
 """技能中心 API：公共技能列表、用户技能列表、添加/移除技能"""
 
+import asyncio
 import io
 import logging
-import shutil
-import uuid
 import zipfile
 from pathlib import Path
 from typing import Annotated
@@ -23,6 +22,20 @@ from easy_agent.services.skills import (
     categories as skill_categories,
     library as skill_library,
 )
+from easy_agent.services.skills.zip_import import (  # noqa: F401 - 兼容测试导出
+    MAX_EXTRACT_SIZE,
+    MAX_FILE_COUNT,
+    MAX_ZIP_SIZE,
+    extract_skill_zip as _extract_skill_zip,
+    has_skill_doc as _has_skill_doc,
+    import_skill_zip_bytes,
+    install_skill_dir as _install_skill_dir,
+    is_unsafe_zip_path as _is_unsafe_zip_path,
+    locate_skill_root as _locate_skill_root,
+    open_skill_zip as _open_skill_zip,
+    validate_skill_dir_name as _validate_skill_dir_name,
+)
+from easy_agent.models.exceptions import BadRequestError, ConflictError
 from easy_agent.services.agents.manager import get_agent_config, invalidate_user_agents
 
 logger = logging.getLogger(__name__)
@@ -571,143 +584,6 @@ async def remove_skill_from_user(
 
 # ── 导入技能（zip） ─────────────────────────────────────────────────────
 
-MAX_ZIP_SIZE = 50 * 1024 * 1024  # 压缩包上限 50MB
-MAX_EXTRACT_SIZE = 200 * 1024 * 1024  # 解压后上限 200MB
-MAX_FILE_COUNT = 1000  # 压缩包内条目上限
-
-
-def _is_unsafe_zip_path(name: str) -> bool:
-    """路径穿越 / 绝对路径 / Windows 盘符。"""
-    return (
-        name.startswith(("/", "\\"))
-        or (len(name) >= 2 and name[1] == ":")
-        or ".." in Path(name).parts
-    )
-
-
-def _open_skill_zip(content: bytes) -> zipfile.ZipFile:
-    """校验上传内容并打开 zip：大小、条目数上限与条目路径安全。"""
-    if not content:
-        raise HTTPException(status_code=400, detail="压缩包为空")
-    if len(content) > MAX_ZIP_SIZE:
-        raise HTTPException(
-            status_code=400,
-            detail=f"压缩包过大，上限 {MAX_ZIP_SIZE // 1024 // 1024}MB",
-        )
-    try:
-        zf = zipfile.ZipFile(io.BytesIO(content))
-    except zipfile.BadZipFile:
-        raise HTTPException(status_code=400, detail="无效的 zip 文件")
-
-    names = zf.namelist()
-    if len(names) > MAX_FILE_COUNT:
-        raise HTTPException(status_code=400, detail=f"压缩包内条目过多，上限 {MAX_FILE_COUNT}")
-    for name in names:
-        if name and _is_unsafe_zip_path(name):
-            raise HTTPException(status_code=400, detail=f"压缩包含非法路径: {name}")
-    return zf
-
-
-def _extract_skill_zip(zf: zipfile.ZipFile, tmp_dir: Path) -> None:
-    """解压到临时目录：累计解压后大小防 zip bomb，并清理 macOS 压缩产生的垃圾。"""
-    total_size = 0
-    for info in zf.infolist():
-        if info.is_dir():
-            continue
-        total_size += info.file_size
-        if total_size > MAX_EXTRACT_SIZE:
-            raise HTTPException(status_code=400, detail="解压后内容过大")
-        zf.extract(info, tmp_dir)
-
-    for junk in list(tmp_dir.iterdir()):
-        if junk.name == "__MACOSX" or junk.name.startswith("._"):
-            if junk.is_dir():
-                shutil.rmtree(str(junk), ignore_errors=True)
-            else:
-                junk.unlink(missing_ok=True)
-
-
-def _has_skill_doc(path: Path) -> bool:
-    return (path / "SKILL.md").exists() or (path / "README.md").exists()
-
-
-def _locate_skill_root(tmp_dir: Path, zip_filename: str) -> tuple[Path, str]:
-    """在解压结果里找技能目录，返回 (目录, 技能名)。
-
-    - 顶层只有一个目录：技能名取该目录名；
-    - 顶层直接含 SKILL.md / README.md（扁平结构）：技能名取 zip 文件名；
-    - 多个顶层目录：取唯一含 SKILL.md / README.md 的那个。
-    """
-    top = [p for p in tmp_dir.iterdir() if not p.name.startswith(".")]
-    dirs = [p for p in top if p.is_dir()]
-    if len(dirs) == 1 and len(top) == 1:
-        skill_src, skill_name = dirs[0], dirs[0].name
-    elif any(p.name in ("SKILL.md", "README.md") for p in top):
-        skill_src, skill_name = tmp_dir, Path(zip_filename).stem
-    else:
-        valid = [p for p in dirs if _has_skill_doc(p)]
-        if len(valid) != 1:
-            raise HTTPException(
-                status_code=400,
-                detail="未找到有效技能目录（需包含 SKILL.md 或 README.md）",
-            )
-        skill_src, skill_name = valid[0], valid[0].name
-
-    if not _has_skill_doc(skill_src):
-        raise HTTPException(
-            status_code=400,
-            detail="技能目录必须包含 SKILL.md 或 README.md",
-        )
-    return skill_src, skill_name
-
-
-def _validate_skill_dir_name(skill_name: str) -> str:
-    """校验落库的技能目录名，返回去空白后的名字；不合规直接 400。
-
-    规则与官方 Agent Skills 规范（`easy_agent/agent/skills.py::SKILL_NAME_RE`）及前端
-    `utils/skillZip.js` 保持一致：只允许小写字母、数字与单个连字符。
-    """
-    name = (skill_name or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="技能目录名无效")
-    if len(name) > MAX_SKILL_NAME_CHARS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"技能目录名「{name}」超过 {MAX_SKILL_NAME_CHARS} 个字符",
-        )
-    if not SKILL_NAME_RE.match(name):
-        raise HTTPException(
-            status_code=400,
-            detail=f"技能目录名「{name}」只能包含小写字母、数字和单个连字符（-）",
-        )
-    return name
-
-
-def _install_skill_dir(
-    user_skills_dir: Path, skill_src: Path, skill_name: str, tmp_dir: Path
-) -> tuple[str, Path]:
-    """把技能目录落到用户技能库，返回 (规范化后的目录名, 目标目录)；同名已存在时 409。"""
-    # 不合规就拒绝，不再静默改名：旧实现会把中文/大写替换成 `_`，用户拿到一个自己没起过的目录名
-    safe_name = _validate_skill_dir_name(skill_name)
-
-    target_dir = user_skills_dir / safe_name
-    if target_dir.exists():
-        raise HTTPException(
-            status_code=409,
-            detail=f"技能 '{safe_name}' 已存在，请先移除或重命名压缩包",
-        )
-
-    if skill_src == tmp_dir:
-        # 扁平结构：逐项移动到目标目录
-        target_dir.mkdir(parents=True, exist_ok=True)
-        for item in tmp_dir.iterdir():
-            if item.name.startswith("."):
-                continue
-            shutil.move(str(item), str(target_dir / item.name))
-    else:
-        skill_src.rename(target_dir)
-    return safe_name, target_dir
-
 
 @router.post("/import-skill", summary="导入技能压缩包(zip)")
 async def import_skill_zip(
@@ -723,24 +599,17 @@ async def import_skill_zip(
     filename = file.filename or ""
     if not filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="仅支持 .zip 压缩包")
-    zf = _open_skill_zip(await file.read())
-
+    content = await file.read()
     user_skills_dir = _get_user_skills_dir(username)
-    user_skills_dir.mkdir(parents=True, exist_ok=True)
-    tmp_dir = user_skills_dir / f".tmp_import_{uuid.uuid4().hex[:8]}"
 
     try:
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        _extract_skill_zip(zf, tmp_dir)
-        skill_src, skill_name = _locate_skill_root(tmp_dir, filename)
-        safe_name, target_dir = _install_skill_dir(
-            user_skills_dir, skill_src, skill_name, tmp_dir
+        safe_name, target_dir = await asyncio.to_thread(
+            import_skill_zip_bytes, user_skills_dir, filename, content
         )
-
         # 与「添加公共技能」保持一致：导入后让缓存 Agent 失效，并自动归类
         invalidate_user_agents(username)
-        category_id = skill_categories.auto_assign_skill_dir(
-            username, safe_name, target_dir
+        category_id = await asyncio.to_thread(
+            skill_categories.auto_assign_skill_dir, username, safe_name, target_dir
         )
 
         logger.info(
@@ -753,14 +622,15 @@ async def import_skill_zip(
             "message": f"技能 '{safe_name}' 导入成功",
         }
 
+    except BadRequestError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"技能导入失败 | 用户: {username} | 错误: {e}")
         raise HTTPException(status_code=500, detail=f"导入技能失败: {e}")
-    finally:
-        if tmp_dir.exists():
-            shutil.rmtree(str(tmp_dir), ignore_errors=True)
 
 
 # ── 下载技能（zip） ─────────────────────────────────────────────────────

@@ -112,12 +112,44 @@ def normalize_date_folder_names(db, cursor) -> None:
         logger.info("日期目录补零完成 | renamed=%d", renamed)
 
 
+def _table_columns(db, cursor, table: str) -> set[str]:
+    """返回表的所有列名（同一轮初始化内缓存，避免重复 SHOW COLUMNS / PRAGMA）。"""
+    cached = db._column_cache.get(table)
+    if cached is not None:
+        return cached
+    if db.db_type == "sqlite":
+        cursor.execute(f"PRAGMA table_info({table})")
+        columns = {col[1] for col in cursor.fetchall()}
+    else:
+        cursor.execute(f"SHOW COLUMNS FROM {table}")
+        rows = cursor.fetchall()
+        columns = set()
+        types: dict[str, str] = {}
+        for col in rows:
+            if isinstance(col, dict):
+                name = col.get("Field", "")
+                types[name] = str(col.get("Type", ""))
+            else:
+                name = col[0]
+                types[name] = str(col[1]) if len(col) > 1 else ""
+            columns.add(name)
+        db._column_type_cache[table] = types
+    db._column_cache[table] = columns
+    return columns
+
+
+def _ensure_column(db, cursor, table: str, column: str, col_def: str) -> None:
+    """幂等补列（MySQL / SQLite 通用，与 db/schema.py 共用）。"""
+    columns = _table_columns(db, cursor, table)
+    if column not in columns:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+        columns.add(column)
+
+
 def ensure_users_systems_column(db, cursor) -> None:
     """幂等补 users.systems 列（MySQL / SQLite 通用）。"""
     if not table_exists(db, cursor, "users"):
         return
-    from easy_agent.db.schema import _ensure_column
-
     _ensure_column(db, cursor, "users", "systems", "VARCHAR(255) DEFAULT ''")
 
 
@@ -125,8 +157,6 @@ def ensure_users_role_systems_column(db, cursor) -> None:
     """幂等补 users.role_systems 列（MySQL / SQLite 通用）。"""
     if not table_exists(db, cursor, "users"):
         return
-    from easy_agent.db.schema import _ensure_column
-
     _ensure_column(db, cursor, "users", "role_systems", "VARCHAR(1000) DEFAULT ''")
 
 

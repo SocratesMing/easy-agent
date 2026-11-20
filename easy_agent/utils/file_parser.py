@@ -322,7 +322,7 @@ class _WordHTMLText(HTMLParser):
 
 def _parse_word(path: Path) -> str:
     try:
-        from easy_agent.services.document_convert import convert_office_document
+        from easy_agent.utils.document_convert import convert_office_document
 
         converted = convert_office_document(path, "html")
         parser = _WordHTMLText()

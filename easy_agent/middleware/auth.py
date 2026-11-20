@@ -36,6 +36,25 @@ def verify_token_sso(
         return None
 
 
+def resolve_username_from_request(
+    request: HTTPConnection,
+    db: UserActivityStore,
+    token: Optional[str] = None,
+) -> Optional[str]:
+    """优先从 Authorization Bearer Header、其次从 query ``token`` 解析并校验用户名。
+
+    统一供 iframe/img 文件预览、定时任务文件预览等无法走标准 Bearer Header 依赖的场景复用。
+    """
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        username = verify_token_sso(auth_header[7:], db, request)
+        if username:
+            return username
+    if token:
+        return verify_token_sso(token, db, request)
+    return None
+
+
 def get_user_repository(
     db: Annotated[Database, Depends(get_database)],
 ) -> UserRepository:

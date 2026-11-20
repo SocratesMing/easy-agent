@@ -14,6 +14,8 @@ from easy_agent.db.migrations import (
     BASELINE_VERSION,
     CLEAR_LEGACY_BLOBS_VERSION,
     META_TABLE,
+    _ensure_column,
+    _table_columns,
     applied_versions,
     apply_pending_migrations,
     ensure_meta_table,
@@ -801,41 +803,6 @@ def _find_mismatched_sessions(db, cursor) -> set[str]:
     db._execute(cursor, sql)
     rows = cursor.fetchall()
     return {r["session_id"] if isinstance(r, dict) else r[0] for r in rows}
-
-def _ensure_column(db, cursor, table: str, column: str, col_def: str):
-    columns = _table_columns(db, cursor, table)
-    if column not in columns:
-        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
-        columns.add(column)
-
-def _table_columns(db, cursor, table: str) -> set[str]:
-    """返回表的所有列名（同一轮初始化内缓存，避免重复 SHOW COLUMNS / PRAGMA）。
-
-    users 一张表历史上要探测 8 次列，缓存后每张表最多查一次；MySQL 下每次
-    SHOW COLUMNS 都是一次网络往返，这是启动慢的次要来源之一。
-    """
-    cached = db._column_cache.get(table)
-    if cached is not None:
-        return cached
-    if db.db_type == "sqlite":
-        cursor.execute(f"PRAGMA table_info({table})")
-        columns = {col[1] for col in cursor.fetchall()}
-    else:
-        cursor.execute(f"SHOW COLUMNS FROM {table}")
-        rows = cursor.fetchall()
-        columns = set()
-        types: dict[str, str] = {}
-        for col in rows:
-            if isinstance(col, dict):
-                name = col.get("Field", "")
-                types[name] = str(col.get("Type", ""))
-            else:
-                name = col[0]
-                types[name] = str(col[1]) if len(col) > 1 else ""
-            columns.add(name)
-        db._column_type_cache[table] = types
-    db._column_cache[table] = columns
-    return columns
 
 def _column_type(db, cursor, table: str, column: str) -> str:
     """返回列类型（小写，仅 MySQL 有意义）；缓存未命中时先填充表的列信息。"""

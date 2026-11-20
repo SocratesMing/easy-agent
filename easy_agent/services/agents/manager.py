@@ -4,10 +4,6 @@ import asyncio
 import logging
 from easy_agent.bootstrap.env import env_str
 import platform
-from collections import OrderedDict
-from collections.abc import MutableMapping
-from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Callable
 
 from easy_agent.agent import EasyAgent
@@ -32,6 +28,38 @@ from easy_agent.utils.blocking import run_blocking
 from easy_agent.services.mcp.tools import get_mcp_tools as load_mcp_tools_for_user
 from easy_agent.services.mcp.policy import filter_server_names
 from easy_agent.services.approval_settings import read_approval_mode
+from easy_agent.services.agents.state import (  # noqa: F401 - 公开与测试兼容 re-export
+    DropScope,
+    SessionState,
+    _EDIT_TARGETS_VIEW,
+    _SCOPE_UNSPECIFIED,
+    _SessionFieldView,
+    _TURN_SKILLS_VIEW,
+    _cached_agent_count,
+    _clear_agent_fields,
+    _create_lock,
+    _prune_if_empty,
+    _reset_session_state,
+    _sessions,
+    _state_for,
+    _touch_agent_cache,
+    bind_sessions_getter,
+    drop,
+)
+bind_sessions_getter(lambda: _sessions)
+from easy_agent.services.agents.stream_tasks import (  # noqa: F401 - 公开与测试兼容 re-export
+    _acquire_stream_lock,
+    _forget_stream_task,
+    _release_stream_lock,
+    _remember_stream_task,
+    aregister_stream_task,
+    aunregister_stream_task,
+    cancel_stream_task,
+    drain_stream_tasks,
+    is_session_streaming,
+    register_stream_task,
+    unregister_stream_task,
+)
 
 logger = logging.getLogger("easy-agent.chat_service")
 
@@ -45,197 +73,13 @@ logger = logging.getLogger("easy-agent.chat_service")
 # 注册表本身是 OrderedDict，承担 Agent 缓存的 LRU：只统计真正有缓存 Agent 的会话，
 # 上限 _AGENT_CACHE_MAX；只有附属状态（锁 / 流任务 / 连接器）的会话不参与淘汰计数。
 
-#: ``get_or_create_agent_for_session(skill_whitelist=...)`` 的「未指定」哨兵：
-#: 传 None 表示「显式全量可见」，不传才表示「沿用该会话上次的作用域」（HITL 恢复等
-#: 不带本轮选择的路径），两者语义不同，不能用同一个 None 表示。
-#: ``SessionState.skill_scope`` 也用它区分「从未指定」与「显式 None（全量可见）」。
-_SCOPE_UNSPECIFIED = object()
-
 #: ``approval_mode`` 的「未指定」哨兵：
 #: * 不传 → 每轮读一次用户设置（设置页保存后下一条消息生效）；
 #: * 传 ``None`` → 沿用缓存的 Agent（HITL 审批恢复 / 定时任务：此时用户可能刚改过设置，
 #:   若按新值重建 Agent 会丢掉 checkpointer 里的中断态，恢复直接 409）。
 #: 与 ``enable_web_search=None``「跟随缓存」的约定同构。
 _APPROVAL_UNSPECIFIED = object()
-
-
-class DropScope(str, Enum):
-    """``drop(session_id, scope)`` 的三种清理范围。"""
-
-    #: 只丢 Agent：清「随 Agent」的字段（Agent、专家、技能作用域、本轮技能、待修改
-    #: 专家绑定），保留连接器 / 流任务 / 创建锁。用于记忆更新、取消生成、定时任务
-    #: 结束等「会话还在、只是重建 Agent」的场景。
-    AGENT = "agent"
-    #: 会话终结：清空全部字段并移除注册表项。用于删除会话。
-    SESSION = "session"
-    #: 用户级失效：只清 Agent 与专家（改了 mcp.json / 专家后按新配置重建），保留
-    #: 用户显式设置的连接器开关与其余会话内状态。
-    USER = "user"
-
-
-@dataclass
-class SessionState:
-    """单个会话在本进程内的全部状态（清理范围见 DropScope）。"""
-
-    #: 随 Agent：本会话缓存的 Agent 实例；None = 未缓存（LRU 淘汰 / 参数变化驱逐）。
-    agent: EasyAgent | None = None
-    #: 随 Agent：当前生效的专家 Agent ID（"" = 通用 Agent）。专家变更判定与 HITL
-    #: 恢复复用缓存都靠它，必须与 agent 同生共死。
-    expert_key: str = ""
-    #: 落库缓存（session_runtime 表，load_connectors / save_connectors）：本会话启用的
-    #: 连接器（mcp.json server 名），进程内只是缓存，丢了从库重新读回。
-    #: None = 尚未设置（注入全部启用连接器）；() = 用户显式全部关闭。
-    connectors: tuple[str, ...] | None = None
-    #: 落库缓存（session_runtime.edit_target，save_edit_target 写入）：会话级「待修改
-    #: 专家」绑定，save_expert 工具按它确定修改目标。进程内值随 Agent 驱逐一并失效
-    #: （不清库），下一次点编辑会重新写入。
-    edit_target: str = ""
-    #: 随 Agent：技能作用域白名单；_SCOPE_UNSPECIFIED = 从未指定（全量可见），
-    #: None = 显式全量，tuple = 只挂这些技能目录。随 Agent 清理。
-    skill_scope: tuple[str, ...] | None | object = _SCOPE_UNSPECIFIED
-    #: 随 Agent：本轮输入框选中的技能目录名，供同轮 save_expert 落库；随 Agent 清理。
-    turn_skills: list[str] = field(default_factory=list)
-    #: 随会话：本进程内运行中的流式任务（跨副本流锁在 session_runtime 表）。
-    stream_task: asyncio.Task[None] | None = None
-    #: 随会话：Agent 创建锁（防同一会话并发创建），空闲且无等待者时随 LRU 淘汰释放。
-    create_lock: asyncio.Lock | None = None
-
-
-#: session_id -> SessionState。顺序 = 有缓存 Agent 的会话的 LRU 顺序。
-_sessions: OrderedDict[str, SessionState] = OrderedDict()
 _AGENT_CACHE_MAX = 100
-
-
-def _reset_session_state() -> None:
-    """清空注册表里的全部会话状态（测试与重新初始化专用，生产路径不调用）。"""
-    _sessions.clear()
-
-
-def _state_for(session_id: str) -> SessionState:
-    """取会话状态；不存在时创建（不改变已有会话的 LRU 顺序）。"""
-    state = _sessions.get(session_id)
-    if state is None:
-        state = SessionState()
-        _sessions[session_id] = state
-    return state
-
-
-def _prune_if_empty(session_id: str, state: SessionState) -> None:
-    """所有字段都回到默认值时移除注册表项，避免长期累积空状态。"""
-    if (
-        state.agent is None
-        and not state.expert_key
-        and state.connectors is None
-        and not state.edit_target
-        and state.skill_scope is _SCOPE_UNSPECIFIED
-        and not state.turn_skills
-        and state.stream_task is None
-        and state.create_lock is None
-    ):
-        _sessions.pop(session_id, None)
-
-
-def _clear_agent_fields(state: SessionState) -> None:
-    """清「随 Agent」的字段（AGENT scope 的核心；落库缓存与流任务 / 锁保留）。"""
-    state.agent = None
-    state.expert_key = ""
-    state.edit_target = ""
-    state.skill_scope = _SCOPE_UNSPECIFIED
-    state.turn_skills = []
-
-
-def drop(session_id: str, scope: DropScope) -> None:
-    """按 scope 清理会话状态；三种 scope 的清理矩阵：
-
-    | 字段         | AGENT（只丢 Agent） | SESSION（会话终结） | USER（用户级失效） |
-    | agent        | 清                  | 清                  | 清                 |
-    | expert_key   | 清                  | 清                  | 清                 |
-    | skill_scope  | 清                  | 清                  | 保留               |
-    | turn_skills  | 清                  | 清                  | 保留               |
-    | edit_target  | 清                  | 清                  | 保留               |
-    | connectors   | 保留                | 清                  | 保留               |
-    | stream_task  | 保留                | 清                  | 保留               |
-    | create_lock  | 保留                | 清                  | 保留               |
-    | 注册表项     | 空则删              | 删除                | 空则删             |
-    """
-    state = _sessions.get(session_id)
-    if state is None:
-        return
-    if scope == DropScope.AGENT:
-        _clear_agent_fields(state)
-    elif scope == DropScope.SESSION:
-        _clear_agent_fields(state)
-        state.connectors = None
-        state.stream_task = None
-        state.create_lock = None
-        _sessions.pop(session_id, None)
-        return
-    elif scope == DropScope.USER:
-        state.agent = None
-        state.expert_key = ""
-    else:
-        raise ValueError(f"未知的会话状态清理范围: {scope!r}")
-    _prune_if_empty(session_id, state)
-
-
-def _cached_agent_count() -> int:
-    """有缓存 Agent 的会话数（= 改造前 _session_agents 的长度）。"""
-    return sum(1 for state in _sessions.values() if state.agent is not None)
-
-
-class _SessionFieldView(MutableMapping):
-    """``{session_id: SessionState.某个字段}`` 的实时视图，取代原先直接交给工具的字典。
-
-    ``save_expert`` 工具在**调用时**才读取绑定表 / 本轮技能（Agent 会被复用，值常常
-    在工具装配之后才写入），所以不能传快照；视图每次读写都转发到 ``_sessions``。
-    """
-
-    __slots__ = ("_factory", "_field")
-
-    def __init__(self, field_name: str, factory: Callable[[], Any]) -> None:
-        self._field = field_name
-        self._factory = factory
-
-    def __getitem__(self, session_id: str) -> Any:
-        state = _sessions.get(session_id)
-        if state is None:
-            raise KeyError(session_id)
-        return getattr(state, self._field)
-
-    def __setitem__(self, session_id: str, value: Any) -> None:
-        setattr(_state_for(session_id), self._field, value)
-
-    def __delitem__(self, session_id: str) -> None:
-        state = _sessions.get(session_id)
-        if state is None:
-            raise KeyError(session_id)
-        setattr(state, self._field, self._factory())
-        _prune_if_empty(session_id, state)
-
-    def __iter__(self):
-        return iter(list(_sessions))
-
-    def __len__(self) -> int:
-        return len(_sessions)
-
-
-#: 工具侧持有的两张实时表（``save_expert`` 的「待修改专家」与「本轮输入的技能」）。
-_EDIT_TARGETS_VIEW = _SessionFieldView("edit_target", str)
-_TURN_SKILLS_VIEW = _SessionFieldView("turn_skills", list)
-
-
-def _create_lock(session_id: str) -> asyncio.Lock:
-    """取会话创建锁（不存在则创建），防止同一会话并发创建 Agent。"""
-    state = _state_for(session_id)
-    if state.create_lock is None:
-        state.create_lock = asyncio.Lock()
-    return state.create_lock
-
-
-def _touch_agent_cache(session_id: str) -> None:
-    """命中 / 新建即移到注册表末尾（LRU）。"""
-    if session_id in _sessions:
-        _sessions.move_to_end(session_id)
 
 
 def _evict_agent_cache(keep_session_id: str) -> None:
@@ -524,6 +368,15 @@ def _try_reuse_cached_agent(
     scope_changed = cached_scope_key != current_scope
     cached_interaction = bool(getattr(cached, "enable_user_interaction", True))
     interaction_changed = cached_interaction != enable_user_interaction
+    # 提示词补充（专家人设 / 技能公告 / 上传提示）变化时同样驱逐缓存：
+    # 避免多副本或热更新专家后静默沿用旧提示词；HITL 恢复（approval_mode=None）跳过校验以保留中断态。
+    extra_fp = prompt_fingerprint(system_prompt_extra)
+    cached_extra_fp = getattr(state, "system_prompt_extra_fp", "")
+    prompt_extra_changed = (
+        approval_mode is not None
+        and bool(cached_extra_fp)
+        and extra_fp != cached_extra_fp
+    )
     if (
         effective_model != getattr(cached, "model_name", None)
         or not search_matches
@@ -531,6 +384,7 @@ def _try_reuse_cached_agent(
         or scope_changed
         or interaction_changed
         or approval_changed
+        or prompt_extra_changed
     ):
         logger.info(
             f"[{session_id[-5:]}] Agent 参数变化 | "
@@ -687,6 +541,7 @@ def _register_created_agent(
     state.agent = agent
     _touch_agent_cache(session_id)
     state.expert_key = expert_key
+    state.system_prompt_extra_fp = prompt_fingerprint(system_prompt_extra)
     _evict_agent_cache(session_id)
     logger.info(
         f"[{session_id[-5:]}] Agent 实例创建成功 | workspace: {agent.workspace_dir} | "
@@ -1010,181 +865,6 @@ def clear_session_connectors(session_id: str) -> None:
     state.connectors = None
     _prune_if_empty(session_id, state)
     logger.info(f"[{session_id[-5:]}] 会话连接器开关记录已清除")
-
-
-def register_stream_task(session_id: str, task: asyncio.Task[None]) -> None:
-    """注册会话的流式输出任务，使其可被取消。
-
-    若该会话已存在未完成的流式任务（通常不应发生），先取消旧的，
-    避免多个 astream 协程并发写同一会话。
-    """
-    _acquire_stream_lock(session_id)
-    _remember_stream_task(session_id, task)
-
-
-async def aregister_stream_task(session_id: str, task: asyncio.Task[None]) -> None:
-    """:func:`register_stream_task` 的异步版本：获取跨实例流锁的写库放进线程。"""
-    await run_blocking(_acquire_stream_lock, session_id)
-    _remember_stream_task(session_id, task)
-
-
-def _acquire_stream_lock(session_id: str) -> None:
-    """获取 DB 流锁；会话已被占用时抛 ``SessionBusyError``，其它错误只记日志。"""
-    from easy_agent.services.sessions.runtime import SessionBusyError, acquire_stream  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
-
-    try:
-        acquire_stream(get_session_runtime_repository(), session_id)
-    except SessionBusyError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"[{session_id[-5:]}] 会话流锁获取失败: {exc}")
-
-
-def _remember_stream_task(session_id: str, task: asyncio.Task[None]) -> None:
-    from easy_agent.services.sessions.runtime import SessionBusyError  # 延迟导入：与同模块其它 session_runtime 函数保持同一导入时序
-    state = _state_for(session_id)
-    old = state.stream_task
-    if old and not old.done() and old is not task:
-        # 旧实现直接 old.cancel()：旧任务的 hub.close() 会把 EOF 发给新订阅者，
-        # 造成「新流 0 条内容即结束、旧流被静默取消」。改为显式拒绝并发。
-        raise SessionBusyError(
-            f"会话 {session_id} 正在生成回复，请等待完成或先取消当前生成"
-        )
-    state.stream_task = task
-
-
-def is_session_streaming(session_id: str) -> bool:
-    """该会话当前是否有本进程内运行中的流式任务（用于并发互斥/409）。"""
-    state = _sessions.get(session_id)
-    task = state.stream_task if state is not None else None
-    return bool(task and not task.done())
-
-
-def unregister_stream_task(
-    session_id: str, task: asyncio.Task[None] | None = None
-) -> None:
-    """流式任务结束后注销自身。
-
-    传入 task 时仅当注册的仍是该 task 才移除：客户端断开后后台任务会继续运行，
-    若用户随后对同一会话发起新流，新任务会先 register；旧任务结束时的 finally
-    若无条件 pop 会误删新任务的注册，导致 /cancel 失效。
-    """
-    _forget_stream_task(session_id, task)
-    _release_stream_lock(session_id)
-
-
-async def aunregister_stream_task(
-    session_id: str, task: asyncio.Task[None] | None = None
-) -> None:
-    """:func:`unregister_stream_task` 的异步版本：释放跨实例流锁的写库放进线程。"""
-    _forget_stream_task(session_id, task)
-    await run_blocking(_release_stream_lock, session_id)
-
-
-def _forget_stream_task(session_id: str, task: asyncio.Task[None] | None) -> None:
-    state = _sessions.get(session_id)
-    if state is None:
-        return
-    if task is None or state.stream_task is task:
-        state.stream_task = None
-        _prune_if_empty(session_id, state)
-
-
-def _release_stream_lock(session_id: str) -> None:
-    try:
-        from easy_agent.services.sessions.runtime import release_stream  # 延迟导入：测试按 session_runtime 模块属性 monkeypatch 写库函数
-        release_stream(get_session_runtime_repository(), session_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"[{session_id[-5:]}] 会话流锁释放失败: {exc}")
-
-
-async def cancel_stream_task(session_id: str) -> bool:
-    """取消会话正在运行的流式任务。
-
-    通过 task.cancel() 向 astream 协程注入 CancelledError，
-    streaming.py 的 except CancelledError 分支会保存已生成的部分回复。
-    Returns:
-        True 表示确实取消了一个正在运行的任务。
-    """
-    import time as _time
-
-    try:
-        from easy_agent.services.sessions.runtime import request_cancel  # 延迟导入：测试按 session_runtime 模块属性 monkeypatch 写库函数
-        await run_blocking(
-            request_cancel, get_session_runtime_repository(), session_id
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"[{session_id[-5:]}] 写入跨实例取消标记失败: {exc}")
-
-    state = _sessions.get(session_id)
-    task = state.stream_task if state is not None else None
-    if state is not None:
-        state.stream_task = None
-        _prune_if_empty(session_id, state)
-    if not task:
-        logger.warning(
-            f"[{session_id[-5:]}] 取消流式任务 | 未找到注册的任务（可能已结束或未注册）"
-        )
-        return False
-    if task.done():
-        logger.info(
-            f"[{session_id[-5:]}] 取消流式任务 | 任务已完成（done=True），无需取消"
-        )
-        return False
-
-    task_name = task.get_name() if hasattr(task, "get_name") else "?"
-    logger.info(
-        f"[{session_id[-5:]}] 取消流式任务 | 正在取消 task={task_name} | "
-        f"cancelled={task.cancelled()} | "
-        f"当前事件循环任务数={len(asyncio.all_tasks())}"
-    )
-
-    # 注入 CancelledError
-    cancelled_flag = task.cancel()
-    logger.info(
-        f"[{session_id[-5:]}] 取消流式任务 | task.cancel() 返回 {cancelled_flag}（True=成功请求取消）"
-    )
-
-    # 等待任务真正终止，以便 CancelledError 分支完成持久化
-    t0 = _time.time()
-    try:
-        await asyncio.wait_for(task, timeout=3.0)
-        logger.info(
-            f"[{session_id[-5:]}] 取消流式任务 | 任务已终止 | 耗时 {_time.time() - t0:.2f}s"
-        )
-    except asyncio.CancelledError:
-        logger.info(
-            f"[{session_id[-5:]}] 取消流式任务 | 任务收到 CancelledError 已终止 | "
-            f"耗时 {_time.time() - t0:.2f}s"
-        )
-    except asyncio.TimeoutError:
-        logger.warning(
-            f"[{session_id[-5:]}] 取消流式任务 | 等待任务终止超时（3s），任务可能仍在后台运行"
-        )
-    except Exception as e:
-        logger.warning(
-            f"[{session_id[-5:]}] 取消流式任务 | 任务终止时抛出异常: {type(e).__name__}: {e}"
-        )
-    return True
-
-
-async def drain_stream_tasks(
-    timeout: float = 20.0,  # noqa: ASYNC109 - timeout 传给 asyncio.wait，不阻塞
-) -> None:
-    """Wait for in-flight SSE/astream tasks on shutdown, then cancel leftovers."""
-    tasks = [
-        state.stream_task
-        for state in list(_sessions.values())
-        if state.stream_task is not None and not state.stream_task.done()
-    ]
-    if not tasks:
-        return
-    logger.info("关闭前等待 %s 个流式任务结束（最多 %.0fs）", len(tasks), timeout)
-    _done, pending = await asyncio.wait(tasks, timeout=timeout)
-    for task in pending:
-        task.cancel()
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
 
 
 def get_agent_config() -> dict:

@@ -63,8 +63,9 @@ STATUS_ACTIVE = "active"
 def _ensure_experts_root_config() -> str:
     """读取 ``config.yaml`` 的 ``tools.experts_dir``（读不到返回空串）。"""
     try:
-        from easy_agent.services.agents.manager import get_agent_config  # 延迟导入：测试 monkeypatch 语义 + 避免导入期重依赖
-        cfg = get_agent_config()
+        from easy_agent.bootstrap.runtime_config import get_runtime_agent_config
+
+        cfg = get_runtime_agent_config()
         if cfg and cfg.get("config"):
             return (getattr(cfg["config"].tools, "experts_dir", "") or "").strip()
     except Exception as exc:  # noqa: BLE001

@@ -12,7 +12,11 @@ from easy_agent.db.repositories.scheduled_task_repository import (
 )
 from easy_agent.db.repositories.user_repository import UserRepository
 from easy_agent.middleware import get_current_username
-from easy_agent.middleware.auth import get_user_repository
+from easy_agent.middleware.auth import (
+    get_user_repository,
+    resolve_username_from_request,
+    verify_token_sso,  # noqa: F401 - 兼容测试 monkeypatch
+)
 from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     as_scheduled_task_repository as _as_scheduled_task_repository,
     get_scheduled_task_repository,
@@ -33,7 +37,6 @@ from easy_agent.api.files import (
 )
 from easy_agent.bootstrap.config import Config
 from easy_agent.utils.task_logger import log_task_event
-from easy_agent.middleware.auth import verify_token_sso
 from easy_agent.services.scheduler import _execute_task
 
 logger = logging.getLogger(__name__)
@@ -255,14 +258,7 @@ def get_task_workspace_file(
     # 认证：优先 Authorization Header，其次查询参数 token（iframe/img 预览场景），
     # 均走单点登录 token_version 校验
     repo = _as_scheduled_task_repository(db)
-    username = None
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-
-        username = verify_token_sso(auth_header[7:], user_repo, request)
-    if not username and token:
-
-        username = verify_token_sso(token, user_repo, request)
+    username = resolve_username_from_request(request, user_repo, token)
     if not username:
         raise HTTPException(status_code=401, detail="登录已过期或未登录，请重新登录")
 

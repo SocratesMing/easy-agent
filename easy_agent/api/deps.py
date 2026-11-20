@@ -26,7 +26,7 @@ from easy_agent.db.repositories.file_repository import FileRepository
 from easy_agent.db.repositories.scheduled_task_repository import ScheduledTaskRepository
 from easy_agent.db.repositories.user_repository import UserRepository
 from easy_agent.db.repositories.token_usage import TokenUsageRepository
-from easy_agent.db.session_repository import SessionRepository
+from easy_agent.db.repositories.session_repository import SessionRepository
 from easy_agent.middleware.auth import get_user_repository
 
 __all__ = [

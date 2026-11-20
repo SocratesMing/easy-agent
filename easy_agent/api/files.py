@@ -20,7 +20,11 @@ from easy_agent.models.api import (
     UploadFileResponse,
 )
 from easy_agent.middleware import get_current_username
-from easy_agent.middleware.auth import get_user_repository
+from easy_agent.middleware.auth import (
+    get_user_repository,
+    resolve_username_from_request,
+    verify_token_sso,  # noqa: F401 - 兼容测试 monkeypatch
+)
 from easy_agent.api.deps import (  # noqa: F401 - 旧模块级名字 re-export
     as_file_repository as _as_file_repository,
     get_file_repository,
@@ -42,7 +46,6 @@ from easy_agent.services.sessions.upload_storage import (
     save_upload_to_store,
     store_mode_enabled,
 )
-from easy_agent.middleware.auth import verify_token_sso
 
 logger = logging.getLogger(__name__)
 
@@ -563,14 +566,9 @@ async def preview_file(
     """
     repo = _as_file_repository(db)
     # 认证：优先 Header，其次查询参数 token（均走单点登录 version 校验）
-    username = None
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-
-        username = await asyncio.to_thread(verify_token_sso, auth_header[7:], user_repo, request)
-    if not username and token:
-
-        username = await asyncio.to_thread(verify_token_sso, token, user_repo, request)
+    username = await asyncio.to_thread(
+        resolve_username_from_request, request, user_repo, token
+    )
     if not username:
         # SEC-07：删除 get_or_create_default_user 回退，未登录不能再读默认用户工作区。
         # iframe 等无法设置 Header 的场景仍可用 token 查询参数（同样走 SSO 校验）。
