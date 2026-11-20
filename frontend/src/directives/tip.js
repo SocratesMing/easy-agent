@@ -42,6 +42,9 @@ const TIP_STYLE = `
   opacity: 1;
   transform: translateY(0);
 }
+.ea-tip:empty {
+  display: none;
+}
 @media (prefers-reduced-motion: reduce) {
   .ea-tip { transition: none; }
 }
@@ -51,6 +54,7 @@ let tipLayer = null
 let currentEl = null
 let currentText = ''
 let hideTimer = null
+let showRaf = null
 // 触摸设备（hover:none）没有悬停，按钮类元素点击后获得焦点即可触发提示；
 // 文本输入类元素（.hover 修饰符）在触摸设备上不弹提示，避免遮挡软键盘输入
 const finePointer =
@@ -81,6 +85,13 @@ function clearHideTimer() {
   }
 }
 
+function clearShowRaf() {
+  if (showRaf !== null && typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(showRaf)
+  }
+  showRaf = null
+}
+
 function place(el) {
   const tip = ensureLayer()
   const rect = el.getBoundingClientRect()
@@ -97,6 +108,7 @@ function place(el) {
 
 function showTip(el) {
   clearHideTimer()
+  clearShowRaf()
   const tip = ensureLayer()
   if (currentEl && currentEl !== el) currentEl.removeAttribute('aria-describedby')
   currentEl = el
@@ -106,7 +118,10 @@ function showTip(el) {
   el.setAttribute('aria-describedby', TIP_ID)
   place(el)
   // 下一帧再加 show，确保从隐藏态过渡（淡入 + 上滑）
-  requestAnimationFrame(() => tip.classList.add('show'))
+  showRaf = requestAnimationFrame(() => {
+    showRaf = null
+    if (currentEl === el && tip.textContent) tip.classList.add('show')
+  })
   if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
     // 文本框获得焦点后一旦开始输入即收起，避免遮挡输入内容
     const hideOnInput = () => {
@@ -119,6 +134,7 @@ function showTip(el) {
 
 function hideTip(el) {
   clearHideTimer()
+  clearShowRaf()
   if (!tipLayer) return
   if (el && currentEl === el) {
     el.removeAttribute('aria-describedby')

@@ -153,7 +153,7 @@
             ref="textareaRef"
             v-model="message"
             spellcheck="false"
-            v-tip:hover="
+            v-tip.hover="
               '输入消息，Enter 发送 · Shift+Enter 换行 · 输入 / 选择技能 · 输入 @ 引用会话文件'
             "
             @keydown="onKeydown"

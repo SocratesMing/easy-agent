@@ -492,8 +492,10 @@ async def chat_resume(
             runs=repo.runs,
             run_id=plan.run_id,
             outcome=plan.outcome,
-            # 恢复是同一轮的延续：保留中断前的思考过程，跨 Pod 打开时才能回放完整过程
-            keep_events=True,
+            # 普通 HITL 恢复沿用同一条 assistant 消息，保留中断前的思考过程以便回放；
+            # 规划确认（split_assistant=True）已把中断前消息收尾并追加了用户确认消息，
+            # 续写是全新的 assistant 消息，必须清掉旧事件，避免刷新后重放已作答的 approval_required。
+            keep_events=not plan.split_assistant,
         )
     )
 

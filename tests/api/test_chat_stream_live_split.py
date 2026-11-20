@@ -239,3 +239,61 @@ def test_stream_live_does_not_synthesize_done_while_approval_pending(client, db,
     body = response.text
     assert '"type": "approval_required"' in body
     assert '"type": "done"' not in body, "待审批收尾补 done 会清掉前端审批状态"
+
+
+def test_chat_resume_clears_stream_events_for_split_plan_confirmation(client, db, monkeypatch):
+    """规划确认（split_assistant=True）恢复时清掉旧 stream_events，避免刷新重放已作答的确认项。"""
+    import easy_agent.api.chat as chat_api
+    from easy_agent.services.agents.chat_turn import ResumePlan
+    from easy_agent.services.streaming.emitter import StreamOutcome
+
+    _seed_session(db)
+    captured: list[bool] = []
+
+    async def _empty_stream():
+        if False:
+            yield ""
+
+    async def _fake_prepare_resume(*, request, repo, username):
+        return ResumePlan(
+            session_id=request.session_id,
+            sid=request.session_id[-5:],
+            agent=None,
+            resume_thread=request.thread_id,
+            run_id="run-1",
+            event_stream=_empty_stream(),
+            outcome=StreamOutcome(),
+            usage_identity=None,
+            split_assistant=request.split_assistant_message,
+        )
+
+    async def _fake_detached(event_stream, *args, keep_events: bool = False, **kwargs):
+        captured.append(keep_events)
+        yield _frame("done", session_id=SESSION_ID)
+
+    monkeypatch.setattr(chat_api, "prepare_resume", _fake_prepare_resume)
+    monkeypatch.setattr(chat_api, "_detached_event_stream", _fake_detached)
+
+    res_split = client.post(
+        "/agent/chat/resume",
+        json={
+            "session_id": SESSION_ID,
+            "thread_id": f"{SESSION_ID}-m1",
+            "decisions": [{"type": "respond", "message": "{}"}],
+            "split_assistant_message": True,
+        },
+    )
+    assert res_split.status_code == 200
+    assert captured[-1] is False
+
+    res_normal = client.post(
+        "/agent/chat/resume",
+        json={
+            "session_id": SESSION_ID,
+            "thread_id": f"{SESSION_ID}-m1",
+            "decisions": [{"type": "approve"}],
+            "split_assistant_message": False,
+        },
+    )
+    assert res_normal.status_code == 200
+    assert captured[-1] is True

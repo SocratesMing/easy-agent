@@ -198,6 +198,23 @@ export function createStreamChunkHandler(vm, ctx, adapters) {
     const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success } = data
 
     if (eventType === 'start') {
+      if (ctx.attachMode) {
+        // 回放进行中的 HITL 恢复流时，旧的 approval_required 之后会紧跟恢复流的 start；
+        // 收到后续 start 说明之前的中断已被作答，清掉残留的待审批状态，避免刷新后重复弹出确认框。
+        const idx = findIdx()
+        if (idx !== -1 && vm.messages[idx].pending_approval) {
+          const blocks = (vm.messages[idx].blocks || []).map(b => (
+            b && b.pending_approval ? { ...b, pending_approval: false } : b
+          ))
+          setReactive(vm.messages, idx, { ...vm.messages[idx], pending_approval: null, blocks })
+          if (vm.pendingApproval && vm.pendingApproval.assistantMsgId === ctx.assistantMsgId) {
+            vm.pendingApproval = null
+          }
+          if (typeof vm.syncPendingApprovalFlag === 'function' && ctx.streamSessionId) {
+            vm.syncPendingApprovalFlag(ctx.streamSessionId, false)
+          }
+        }
+      }
       if (!ctx.isResume) {
         vm.currentTodos = []
         // 仅「本次请求就是当前展示会话的新建」时才认领 session_id；

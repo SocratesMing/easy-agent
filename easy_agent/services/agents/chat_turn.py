@@ -557,6 +557,7 @@ class ResumePlan:
     event_stream: AsyncGenerator[str, None]
     outcome: StreamOutcome
     usage_identity: UsageIdentity | None
+    split_assistant: bool = False
 
 
 async def _prepare_expert_context(
@@ -855,20 +856,16 @@ async def prepare_turn(
         open_turn_session, repo, session_id, username, request.message, request.files
     )
     await reject_concurrent_stream(session_id, repo.runtime)
-    identity = await resolve_usage_identity(username, session_id)
-
-    turn = await asyncio.to_thread(
-        resolve_request_skills, request.skills, request.message, username, sid
+    identity, turn, (expert_id, expert_prompt, skill_notice, expert_skills) = await asyncio.gather(
+        resolve_usage_identity(username, session_id),
+        asyncio.to_thread(resolve_request_skills, request.skills, request.message, username, sid),
+        _prepare_expert_context(repo, request, username, sid),
     )
     if turn.fallback_name and not request.message.strip() and not request.files:
         await asyncio.to_thread(
             open_turn_session, repo, session_id, username, request.message,
             request.files, turn.fallback_name,
         )
-
-    expert_id, expert_prompt, skill_notice, expert_skills = await _prepare_expert_context(
-        repo, request, username, sid
-    )
 
     scope = tool_scope.resolve_tool_scope(
         username,
@@ -902,18 +899,19 @@ async def prepare_turn(
     if refusal_plan is not None:
         return refusal_plan
 
-    await _bind_pending_expert_if_owned(repo, session_id, username, request.pending_expert_id, sid)
-
-    knowledge_chat = await prepare_knowledge_chat(
-        request=http_request,
-        db=repo.database,
-        session_id=session_id,
-        question=request.message,
-        metadata_filter=request.knowledge_metadata_filter,
-        knowledge_base_ids=request.knowledge_base_ids,
-    )
-    uploads = await asyncio.to_thread(
-        build_turn_uploads, repo, session_id, username, request.files, request.message
+    _, knowledge_chat, uploads = await asyncio.gather(
+        _bind_pending_expert_if_owned(repo, session_id, username, request.pending_expert_id, sid),
+        prepare_knowledge_chat(
+            request=http_request,
+            db=repo.database,
+            session_id=session_id,
+            question=request.message,
+            metadata_filter=request.knowledge_metadata_filter,
+            knowledge_base_ids=request.knowledge_base_ids,
+        ),
+        asyncio.to_thread(
+            build_turn_uploads, repo, session_id, username, request.files, request.message
+        ),
     )
     parsed_content, system_prompt_extra, page_context = _assemble_turn_inputs(
         request=request,
@@ -925,27 +923,28 @@ async def prepare_turn(
         sid=sid,
     )
 
-    session_logger = await _persist_and_log_user_turn(
-        repo=repo,
-        session_id=session_id,
-        message_id=message_id,
-        username=username,
-        request=request,
-        expert_id=expert_id,
-        turn=turn,
-        references=references,
-        page_context=page_context,
-    )
-
-    agent = await get_or_create_agent_for_session(
-        session_id,
-        username,
-        workspace_name,
-        model_name=request.model,
-        system_prompt_extra=system_prompt_extra,
-        enable_web_search=request.enable_web_search,
-        expert_agent_id=expert_id or None,
-        skill_whitelist=None if scope.skill_whitelist is None else list(scope.skill_whitelist),
+    session_logger, agent = await asyncio.gather(
+        _persist_and_log_user_turn(
+            repo=repo,
+            session_id=session_id,
+            message_id=message_id,
+            username=username,
+            request=request,
+            expert_id=expert_id,
+            turn=turn,
+            references=references,
+            page_context=page_context,
+        ),
+        get_or_create_agent_for_session(
+            session_id,
+            username,
+            workspace_name,
+            model_name=request.model,
+            system_prompt_extra=system_prompt_extra,
+            enable_web_search=request.enable_web_search,
+            expert_agent_id=expert_id or None,
+            skill_whitelist=None if scope.skill_whitelist is None else list(scope.skill_whitelist),
+        ),
     )
 
     run_id = run_registry.new_run_id(session_id, message_id)
@@ -1209,6 +1208,7 @@ async def prepare_resume(
 
     identity = await resolve_usage_identity(username, session_id)
     outcome = StreamOutcome()
+    split_assistant = bool(confirmation_message and request.split_assistant_message)
     event_stream = resume_stream_generator(
         db=repo.database,
         agent=agent,
@@ -1219,7 +1219,7 @@ async def prepare_resume(
         message_id=request.message_id,
         handle=thread_id,
         outcome=outcome,
-        split_assistant=bool(confirmation_message and request.split_assistant_message),
+        split_assistant=split_assistant,
         usage_identity=identity,
     )
     return ResumePlan(
@@ -1231,4 +1231,5 @@ async def prepare_resume(
         event_stream=event_stream,
         outcome=outcome,
         usage_identity=identity,
+        split_assistant=split_assistant,
     )

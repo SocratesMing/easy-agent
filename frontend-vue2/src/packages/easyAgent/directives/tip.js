@@ -6,7 +6,7 @@
  *
  * 用法：
  *   v-tip="'发送（Enter）'"            悬停 + 键盘焦点触发
- *   v-tip:hover="'……'"               仅悬停触发（适合 textarea/input，避免打字干扰）
+ *   v-tip.hover="'……'"               仅悬停触发（适合 textarea/input，避免打字干扰）
  *
  * 实现要点：单例浮层（role="tooltip"）复用 DOM；显隐走 opacity + translateY 的
  * CSS 过渡；定位优先上方、放不下落下方并水平 clamp 视口内；显示时给目标元素
@@ -43,6 +43,9 @@ const TIP_STYLE = `
   opacity: 1;
   transform: translateY(0);
 }
+.ea-tip:empty {
+  display: none;
+}
 @media (prefers-reduced-motion: reduce) {
   .ea-tip { transition: none; }
 }
@@ -51,6 +54,7 @@ const TIP_STYLE = `
 let tipLayer = null
 let currentEl = null
 let hideTimer = null
+let showRaf = null
 // 触摸设备（hover:none）没有悬停：按钮类元素点击后获得焦点即可触发提示；
 // 文本输入类元素（:hover 修饰符）在触摸设备上不弹提示，避免遮挡软键盘输入
 const finePointer =
@@ -81,6 +85,13 @@ function clearHideTimer() {
   }
 }
 
+function clearShowRaf() {
+  if (showRaf !== null && typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(showRaf)
+  }
+  showRaf = null
+}
+
 function place(el) {
   const tip = ensureLayer()
   const rect = el.getBoundingClientRect()
@@ -96,6 +107,7 @@ function place(el) {
 
 function showTip(el) {
   clearHideTimer()
+  clearShowRaf()
   const tip = ensureLayer()
   if (currentEl && currentEl !== el) currentEl.removeAttribute('aria-describedby')
   currentEl = el
@@ -103,7 +115,10 @@ function showTip(el) {
   tip.textContent = el.__tipText
   el.setAttribute('aria-describedby', TIP_ID)
   place(el)
-  requestAnimationFrame(() => tip.classList.add('show'))
+  showRaf = requestAnimationFrame(() => {
+    showRaf = null
+    if (currentEl === el && tip.textContent) tip.classList.add('show')
+  })
   if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
     const hideOnInput = () => {
       hideTip(el)
@@ -116,6 +131,7 @@ function showTip(el) {
 /** 隐藏提示；不传 el 时隐藏当前正在显示的提示（页面被 keep-alive 缓存 / 卸载时调用） */
 export function hideTip(el) {
   clearHideTimer()
+  clearShowRaf()
   if (!tipLayer) return
   const target = el === undefined ? currentEl : el
   if (target && currentEl === target) {
@@ -170,7 +186,10 @@ function unbindEl(el) {
 
 export default {
   bind(el, binding) {
-    bindEl(el, binding.value, binding.modifiers && binding.modifiers.hover)
+    const hoverOnly = Boolean(
+      (binding.modifiers && binding.modifiers.hover) || binding.arg === 'hover',
+    )
+    bindEl(el, binding.value, hoverOnly)
   },
   update(el, binding) {
     if (binding.value !== binding.oldValue) {
