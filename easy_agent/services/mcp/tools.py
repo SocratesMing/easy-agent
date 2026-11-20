@@ -270,6 +270,9 @@ def normalize_servers_mapping(
 # 选中连接器（见 get_mcp_tools 的 server_names），两种取法复用同一份缓存、只补差量。
 _mcp_tools_cache: dict[str, tuple[float, dict[str, list]]] = {}
 _mcp_clients: dict[str, MultiServerMCPClient] = {}
+# 按 scope（mcp.json 路径）记录归属的 _mcp_clients key，使单用户失效只回收其自身客户端，
+# 避免误杀全站其他用户的全局 MCP 客户端与持久会话。
+_mcp_client_scopes: dict[str, set[str]] = {}
 
 # deepagents 内建工具名：MCP 工具同名时会静默覆盖内建实现（实测一个叫 delete 的
 # MCP 工具会顶掉 0.7 新增的内建 delete），而 HITL 审批按工具名匹配 → 必须显式拒绝冲突。
@@ -277,13 +280,17 @@ _mcp_clients: dict[str, MultiServerMCPClient] = {}
 _BUILTIN_TOOL_NAMES = frozenset(builtin_tool_names())
 
 
-def _client_for(servers: dict[str, dict[str, Any]]) -> MultiServerMCPClient:
+def _client_for(
+    servers: dict[str, dict[str, Any]], scope: str = ""
+) -> MultiServerMCPClient:
     key = json.dumps(servers, sort_keys=True, ensure_ascii=False, default=str)
     client = _mcp_clients.get(key)
     if client is None:
         client = MultiServerMCPClient(servers)
         _mcp_clients[key] = client
         logger.info("复用 MCP 客户端已建立 | servers=%s", ",".join(servers))
+    if scope:
+        _mcp_client_scopes.setdefault(scope, set()).add(key)
     return client
 
 
@@ -400,7 +407,7 @@ async def _refresh_server_cache(
     missing = [name for name in wanted if name not in cached_servers]
     if missing:
         missing_config = {name: config[name] for name in missing}
-        client = _client_for(missing_config)
+        client = _client_for(missing_config, scope=path_key)
         cached_servers = {
             **cached_servers,
             **await _load_server_tools(
@@ -515,34 +522,29 @@ async def get_mcp_tools(
 def invalidate_mcp_cache(username: str | None = None) -> None:
     """Invalidate cached MCP tools.
 
-    With ``username``, drops the cache entry for that user's mcp.json (and the
-    global cache when falling back). Without ``username``, clears the entire
-    cache. Call after writing a new mcp.json to force a reload on next use.
+    With ``username``, drops only the cache entries, clients, and persistent
+    sessions scoped to that user's mcp.json, leaving global and other users'
+    MCP sessions intact. Without ``username``, clears the entire cache.
     """
     if username is None:
         _mcp_tools_cache.clear()
         _mcp_clients.clear()
+        _mcp_client_scopes.clear()
         mcp_sessions.close_mcp_sessions_sync()
         logger.info("MCP tools cache cleared (all entries)")
         return
 
-    # client 缓存按「配置 JSON 子集」为 key，无法按用户精确回收；整体清空以
-    # 防止配置反复修改导致对象无界泄漏（有 miss 时会自动重建）。
-    _mcp_clients.clear()
-
     user_path = Config.get_user_mcp_path(username)
     key = str(user_path)
-    scopes = [key]
     if key in _mcp_tools_cache:
         _mcp_tools_cache.pop(key, None)
         logger.info(f"MCP tools cache invalidated for user {username} ({key})")
-    # Also drop global cache so a fallback reload is fresh.
-    global_path = _find_mcp_config()
-    if global_path:
-        gkey = str(global_path)
-        scopes.append(gkey)
-        if gkey in _mcp_tools_cache:
-            _mcp_tools_cache.pop(gkey, None)
-            logger.info(f"MCP tools cache invalidated for global ({gkey})")
 
-    mcp_sessions.close_mcp_scopes_sync(scopes)
+    # 仅回收不再被任何其他 scope 引用的客户端，避免单用户编辑配置打断全局 MCP 连接。
+    user_client_keys = _mcp_client_scopes.pop(key, set())
+    if user_client_keys:
+        still_referenced = set().union(*_mcp_client_scopes.values()) if _mcp_client_scopes else set()
+        for client_key in user_client_keys - still_referenced:
+            _mcp_clients.pop(client_key, None)
+
+    mcp_sessions.close_mcp_scopes_sync([key])

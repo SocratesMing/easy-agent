@@ -434,6 +434,8 @@ class _TaskRun:
     agent: Any = None
     thread_id: str | None = None
     final_content: str = ""
+    thinking: str = ""
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 async def _acquire_task_lock(task: ScheduledTaskModel):
@@ -531,21 +533,81 @@ async def _create_task_run(
     )
 
 
+def _content_to_text(content: Any) -> str:
+    """将 LangChain 消息内容（str 或多模态/结构化块列表）安全归一为纯文本。"""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+        return "\n".join(parts)
+    return str(content)
+
+
 def _extract_final_content(messages: list) -> str:
-    """取本次运行的最终 assistant 文本（无副作用）。
+    """取本次运行的最终 assistant 文本（无副作用，兼容多模态/结构化块）。
 
     优先最后一条有内容的 AI 消息；都没有时兜底最后一条消息的内容。
     """
     final_content = ""
     for msg in reversed(messages):
-        content = getattr(msg, "content", None)
-        if content and getattr(msg, "type", "") == "ai":
-            final_content = content
-            break
+        if getattr(msg, "type", "") == "ai":
+            text = _content_to_text(getattr(msg, "content", None))
+            if text:
+                final_content = text
+                break
     if not final_content and messages:
         last = messages[-1]
-        final_content = getattr(last, "content", "") or str(last)
+        final_content = _content_to_text(getattr(last, "content", None)) or str(last)
     return final_content
+
+
+def _extract_execution_trace(messages: list) -> tuple[str, list[dict[str, Any]]]:
+    """从定时任务运行的 LangChain 消息列表中提取思考过程与工具调用轨迹。
+
+    使前端打开定时任务会话时可完整回放工具调用与思考内容，而不是仅剩纯文本。
+    """
+    thinking_parts: list[str] = []
+    tool_calls_by_id: dict[str, dict[str, Any]] = {}
+    tool_calls: list[dict[str, Any]] = []
+
+    for msg in messages:
+        msg_type = getattr(msg, "type", "")
+        if msg_type == "ai":
+            extra = getattr(msg, "additional_kwargs", None) or {}
+            reasoning = extra.get("reasoning_content") if isinstance(extra, dict) else None
+            if isinstance(reasoning, str) and reasoning.strip():
+                thinking_parts.append(reasoning.strip())
+            for tc in getattr(msg, "tool_calls", None) or ():
+                if not isinstance(tc, dict):
+                    continue
+                tc_id = str(tc.get("id") or "")
+                entry = {
+                    "id": tc_id,
+                    "name": str(tc.get("name") or ""),
+                    "args": tc.get("args") if isinstance(tc.get("args"), dict) else {},
+                    "status": "completed",
+                }
+                tool_calls.append(entry)
+                if tc_id:
+                    tool_calls_by_id[tc_id] = entry
+        elif msg_type == "tool":
+            tc_id = str(getattr(msg, "tool_call_id", "") or "")
+            if tc_id and tc_id in tool_calls_by_id:
+                result_text = _content_to_text(getattr(msg, "content", None))
+                tool_calls_by_id[tc_id]["result"] = result_text[:4000]
+                if getattr(msg, "status", "") == "error":
+                    tool_calls_by_id[tc_id]["status"] = "error"
+
+    return "\n\n".join(thinking_parts), tool_calls
 
 
 async def _invoke_task_agent(
@@ -588,6 +650,7 @@ async def _invoke_task_agent(
     _raise_if_waiting_for_approval(result)
     messages = result.get("messages", []) if isinstance(result, dict) else []
     execution.final_content = _extract_final_content(messages)
+    execution.thinking, execution.tool_calls = _extract_execution_trace(messages)
 
 
 async def _commit_task_success(
@@ -609,12 +672,16 @@ async def _commit_task_success(
         )
         return True
 
-    # 保存 assistant 消息
-    assistant_msg = {
+    # 保存 assistant 消息（附带思考与工具调用轨迹，与普通聊天会话结构对齐）
+    assistant_msg: dict[str, Any] = {
         "role": "assistant",
         "content": execution.final_content,
         "timestamp": datetime.now().isoformat(),
     }
+    if execution.thinking:
+        assistant_msg["thinking"] = execution.thinking
+    if execution.tool_calls:
+        assistant_msg["tool_calls"] = execution.tool_calls
     await run_blocking(message_repo.add_message, execution.session_id, assistant_msg)
 
     finished_at = datetime.now().isoformat()

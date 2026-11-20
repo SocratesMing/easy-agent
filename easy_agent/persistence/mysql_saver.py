@@ -536,6 +536,26 @@ class AsyncMySQLSaver(BaseCheckpointSaver[str]):
             await self._write_meta(conn, "last_gc_at", value)
 
     # ── GC：清理「会话已删除」与「过期的会话」 ──────────────────────
+    async def list_distinct_session_threads(
+        self, *, limit: int = 500
+    ) -> list[tuple[str, str]]:
+        """仅查询 checkpoint 表返回 ``(session_id, thread_id)`` 列表（不依赖业务表）。
+
+        供独立 checkpoint 分库部署时的应用层孤儿对账使用。
+        """
+        pool = await self._ensure_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"SELECT DISTINCT session_id AS session_id, thread_id AS thread_id "
+                    f"FROM {self.table_checkpoints} "
+                    "WHERE session_id <> '' "
+                    "LIMIT %s",
+                    (int(limit),),
+                )
+                rows = await cur.fetchall() or []
+        return [(str(r["session_id"]), str(r["thread_id"])) for r in rows]
+
     async def list_orphan_threads(self, *, limit: int = 500) -> list[str]:
         """``sessions`` 表里已经不存在的会话，它的 thread 就是孤儿。
 

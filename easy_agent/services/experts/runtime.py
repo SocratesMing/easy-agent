@@ -346,6 +346,10 @@ def _persist_user_turn(
     # 结构化技能目录名：气泡按它渲染技能标签，不再需要从消息文本里反扒 `/目录名`
     if turn_skill_dirs:
         user_message["skills"] = turn_skill_dirs
+    if getattr(request, "page_context", None):
+        user_message["page_context"] = request.page_context.model_dump() if hasattr(request.page_context, "model_dump") else request.page_context
+    if getattr(request, "interaction_mode", None):
+        user_message["interaction_mode"] = request.interaction_mode
     # DA-03：会话 thread 下新输入会丢弃上一轮挂起的中断，DB 里的待审批同步标为拒绝
     if session_thread_in_use(get_agent_config()):
         abandon_pending_approval(repo, session_id)

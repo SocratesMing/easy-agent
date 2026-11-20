@@ -43,6 +43,11 @@ async def with_session_token_totals(stream, identity: UsageIdentity | None):
     last_totals = {"input_tokens": 0, "output_tokens": 0}
     async with aclosing(stream):
         async for frame in stream:
+            # 高频 text_delta / thinking_delta 帧无需反序列化 JSON：仅在可能为
+            # token_usage 或 done 帧时再解析，显著降低流式事件循环 CPU 占用。
+            if isinstance(frame, str) and "token_usage" not in frame and "done" not in frame:
+                yield frame
+                continue
             event = parse_sse_frame(frame)
             event_type = event.get("type")
             payload = event if event_type == "token_usage" else event.get("usage")

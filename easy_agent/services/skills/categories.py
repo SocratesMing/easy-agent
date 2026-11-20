@@ -215,15 +215,16 @@ def load_store(username: str) -> dict[str, Any]:
     return _normalize_store(raw)
 
 
+from easy_agent.services.memory.locks import atomic_write_text, memory_lock
+
+
 def save_store(username: str, store: dict[str, Any]) -> None:
-    """原子写入类别文件（先写临时文件再 rename，避免半截 JSON）。"""
+    """原子加锁写入类别文件（先写临时文件再 rename，避免并发写坏 JSON）。"""
     path = store_path(username)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(
-        json.dumps(store, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    tmp.replace(path)
+    serialized = json.dumps(store, ensure_ascii=False, indent=2) + "\n"
+    with memory_lock(path):
+        atomic_write_text(path, serialized)
 
 
 # ── 类别读取 ──────────────────────────────────────────────────────────

@@ -88,6 +88,12 @@ def request_cancel(db, session_id: str) -> None:
     db.upsert_session_runtime(session_id, cancel_requested=1)
 
 
+def is_cancel_requested(db, session_id: str) -> bool:
+    """检查跨副本取消标记（``session_runtime.cancel_requested``）。"""
+    row = db.get_session_runtime(session_id)
+    return bool(row and row.get("cancel_requested"))
+
+
 def load_connectors(db, session_id: str) -> tuple[str, ...] | None:
     row = db.get_session_runtime(session_id)
     if not row or row.get("connectors") is None:

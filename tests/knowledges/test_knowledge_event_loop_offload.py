@@ -253,6 +253,6 @@ async def test_chat_stream_generator_persists_metadata_in_thread(monkeypatch):
     ]
 
     assert frames == [done_frame]
-    # 终态时落一次、finally 再落一次：每次 get_session + 两处双写 = 3 次库调用
-    assert len(db_calls) == 6
+    # 终态时幂等落一次（get_session + update_last_assistant_message = 2 次库调用），finally 不重复写库
+    assert len(db_calls) == 2
     assert all(db_calls)

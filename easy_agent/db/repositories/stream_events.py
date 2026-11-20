@@ -31,6 +31,21 @@ def append_stream_event(db, session_id: str, payload: str) -> int:
     return int(event_id or 0)
 
 
+def append_stream_events_batch(db, session_id: str, payloads: list[str]) -> int:
+    """在单次事务中批量追加多条 SSE frame，显著降低流式写库往返与事务提交开销。"""
+    if not payloads:
+        return 0
+    created_at = datetime.now().isoformat()
+    sql = "INSERT INTO stream_events (session_id, payload, created_at) VALUES (?, ?, ?)"
+    if getattr(db, "db_type", "") == "mysql":
+        sql = sql.replace("?", "%s")
+    rows = [(session_id, payload, created_at) for payload in payloads]
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.executemany(sql, rows)
+    return len(rows)
+
+
 def list_stream_events(
     db, session_id: str, after_id: int = 0, limit: int = DEFAULT_LIST_LIMIT
 ) -> list[dict]:
@@ -153,6 +168,10 @@ class StreamEventRepository:
         """追加一条完整 SSE frame，返回库级 ``event_id``。"""
         return append_stream_event(self._db, session_id, payload)
 
+    def append_stream_events_batch(self, session_id: str, payloads: list[str]) -> int:
+        """在单次事务中批量追加多条 SSE frame，返回写入条数。"""
+        return append_stream_events_batch(self._db, session_id, payloads)
+
     def list_stream_events(
         self, session_id: str, after_id: int = 0, limit: int = DEFAULT_LIST_LIMIT
     ) -> list[dict]:
@@ -180,6 +199,7 @@ __all__ = [
     "DEFAULT_LIST_LIMIT",
     "StreamEventRepository",
     "append_stream_event",
+    "append_stream_events_batch",
     "clear_stream_events",
     "delete_stream_events_before",
     "latest_stream_event",

@@ -21,7 +21,10 @@ import asyncio
 import json
 import logging
 
-from easy_agent.db.repositories.stream_events import append_stream_event
+from easy_agent.db.repositories.stream_events import (
+    append_stream_event,
+    append_stream_events_batch,
+)
 from easy_agent.services.streaming.sse import is_terminal_event
 from easy_agent.db import database as database_module
 
@@ -306,10 +309,17 @@ class StreamEventWriter:
             )
 
     def _write_batch(self, store, batch: list[str]) -> None:
+        append_batch = getattr(store, "append_stream_events_batch", None)
+        if callable(append_batch):
+            append_batch(self.session_id, batch)
+            return
         append = getattr(store, "append_stream_event", None)
         if callable(append):
             for payload in batch:
                 append(self.session_id, payload)
+            return
+        if hasattr(store, "get_connection"):
+            append_stream_events_batch(store, self.session_id, batch)
             return
         for payload in batch:
             append_stream_event(store, self.session_id, payload)

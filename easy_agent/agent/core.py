@@ -13,7 +13,7 @@ import json
 import logging
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from deepagents import create_deep_agent
@@ -222,6 +222,8 @@ class _GraphInputs:
     raw_tools: list
     subagents: list[dict]
     store: object | None
+    declared_gated_tools: frozenset[str] = frozenset()
+    skill_gaps: dict = field(default_factory=dict)
 
 
 class EasyAgent(AgentWorkspaceMixin):
@@ -710,6 +712,13 @@ class EasyAgent(AgentWorkspaceMixin):
             f"实际路径: {self.memory_file} / {self.long_term_memory_file} | "
             f"记忆源: {memory_list}"
         )
+        # 技能目录预扫描一次，同时供 _compute_graph_key 与 _make_graph_builder 复用，
+        # 避免缓存未命中时在事件循环上重复同步扫描磁盘两遍。
+        declared_gated_tools = frozenset(
+            declared_include_tools([self.builtin_skills_dir, self.user_skills_dir])
+        )
+        skill_gaps = self._skill_gaps(raw_tools)
+
         return _GraphInputs(
             skills_paths=skills_paths,
             permissions=permissions,
@@ -719,6 +728,8 @@ class EasyAgent(AgentWorkspaceMixin):
             raw_tools=raw_tools,
             subagents=subagents,
             store=store,
+            declared_gated_tools=declared_gated_tools,
+            skill_gaps=skill_gaps,
         )
 
     def _make_graph_builder(self, inputs: "_GraphInputs"):
@@ -760,7 +771,7 @@ class EasyAgent(AgentWorkspaceMixin):
             # 例外：_ALWAYS_AVAILABLE_TOOLS 常驻，旧版技能副本的声明缺失不会把它们锁死
             gated_names = (
                 set(skill_gated_tool_names())
-                | declared_include_tools([self.builtin_skills_dir, self.user_skills_dir])
+                | set(inputs.declared_gated_tools)
             ) - _ALWAYS_AVAILABLE_TOOLS
             # D4：开启 MCP 前缀后，技能里写的仍是原始工具名，这里按后缀唯一匹配解析
             gated_resolved, gated_unresolved = resolve_tool_names(
@@ -774,11 +785,9 @@ class EasyAgent(AgentWorkspaceMixin):
             gated_tools = [t for t in graph_tools if getattr(t, "name", "") in gated_actual]
             graph_tools = [t for t in graph_tools if getattr(t, "name", "") not in gated_actual]
 
-            # P0-1 技能数据通道预检（2026-11-19）：技能正文点名了取数工具、但本会话
-            # 一个都没注入时，直接把结论写进技能清单——否则模型只能"读完 274 行
-            # 文档才发现无工具可调"，随后反复重读同一份文档（思考逐字相同）。
-            # 不新增配置：清单来自技能自身，可用集来自本会话工具。
-            skill_gaps = self._skill_gaps([*graph_tools, *gated_tools])
+            # P0-1 技能数据通道预检（2026-11-19）：复用 _prepare_graph_inputs 已计算的差集，
+            # 避免与 _compute_graph_key 重复扫描技能目录。
+            skill_gaps = inputs.skill_gaps
             # 差集按**全部**技能算，不按本会话的技能作用域裁剪：编译图是跨会话共享的，
             # 提示只渲染给真正出现在该会话清单里的技能（skills_metadata 由 runtime
             # 路由决定），所以映射必须是全集，否则先建图的会话会把别人的提示吃掉。
@@ -866,13 +875,11 @@ class EasyAgent(AgentWorkspaceMixin):
 
     def _compute_graph_key(self, actual_llm_cfg, inputs: "_GraphInputs", shared_checkpointer):
         """编译图缓存键：技能门控工具集合也参与指纹（frontmatter 变化要重编译）。"""
-        # 门控工具集合参与编译图指纹：技能 frontmatter 的 include_tools 变了要重编译
-        gated_names = set(skill_gated_tool_names()) | declared_include_tools(
-            [self.builtin_skills_dir, self.user_skills_dir]
-        )
+        # 门控工具集合参与编译图指纹：复用 _prepare_graph_inputs 已扫描的结果
+        gated_names = set(skill_gated_tool_names()) | set(inputs.declared_gated_tools)
         # 技能正文里的工具清单变化同样要重编译：差集提示会写进系统提示词，
         # 沿用旧图会一直挂着上一次的「工具未就位」，属于会误导模型的错误信息。
-        skill_tools_fp = [*sorted(gated_names), *gap_fingerprint(self._skill_gaps(inputs.raw_tools))]
+        skill_tools_fp = [*sorted(gated_names), *gap_fingerprint(inputs.skill_gaps)]
         return build_graph_key(
             model=model_fingerprint(actual_llm_cfg),
             model_key=resolve_model_key(self.config, self.model_name),

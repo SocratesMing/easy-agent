@@ -44,6 +44,10 @@ from easy_agent.services.agents.manager import (
     get_agent_config,
     remove_session_agent,
 )
+from easy_agent.services.sessions.upload_storage import (
+    delete_stored_upload,
+    is_store_uri,
+)
 from easy_agent.services.sessions.uploads import (
     UploadTooLargeError,
     append_manifest,
@@ -355,7 +359,7 @@ async def delete_session(
     # 查库和删文件都放进线程；Agent 缓存、连接器开关和 checkpoint thread 留在事件循环上处理
     session = await asyncio.to_thread(repo.get_owned_session, session_id, username)
 
-    await asyncio.to_thread(_delete_session_uploads, repo, session_id)
+    await asyncio.to_thread(_delete_session_uploads, repo, session_id, username)
 
     # 先移除缓存 Agent 实例，避免后台记忆更新线程在删除后用 mkdir 重建工作区目录
     try:
@@ -390,10 +394,22 @@ async def delete_session(
     return DeleteSessionResponse(session_id=session_id)
 
 
-def _delete_session_uploads(repo: SessionRepository, session_id: str) -> None:
-    """删除会话上传的文件（查库 + 文件 IO，调用方放进线程执行）。"""
+def _delete_session_uploads(
+    repo: SessionRepository, session_id: str, username: str = ""
+) -> None:
+    """删除会话上传的文件（兼容本地路径与 ``store://`` 对象存储，调用方放进线程执行）。"""
     for f in repo.get_session_files(session_id):
-        file_path = Path(f["file_path"])
+        raw_path = str(f.get("file_path") or "")
+        if not raw_path:
+            continue
+        if is_store_uri(raw_path):
+            try:
+                delete_stored_upload(raw_path, username)
+                logger.info(f"删除会话对象存储文件 | URI: {raw_path}")
+            except Exception as e:
+                logger.warning(f"删除会话对象存储文件失败: {raw_path} | {e}")
+            continue
+        file_path = Path(raw_path)
         if file_path.exists():
             try:
                 file_path.unlink()

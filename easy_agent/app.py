@@ -445,6 +445,12 @@ async def _shutdown_services(app) -> None:
     # 没启动过 worker / 客户端时是空操作
     await shutdown_knowledge(app)
     await shutdown_source_sync(app)
+    try:
+        from easy_agent.services.streaming.side_effects import shutdown_memory_executor
+
+        shutdown_memory_executor(wait=False)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"关闭记忆更新线程池失败: {exc}")
     _shutdown_app(app)
 
 

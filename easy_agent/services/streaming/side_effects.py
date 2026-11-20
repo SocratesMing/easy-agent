@@ -60,11 +60,20 @@ def _session_port(db):
         return SessionRepository(db)
     return db
 
+from easy_agent.bootstrap.env import env_int
+
 # 记忆更新会同步调用 LLM（每次 1~2 次），不能占用默认 executor（默认线程池
 # 同时服务文件解析/终端 select 等，慢 LLM 调用会拖住其它 to_thread 任务）。
+# 默认并发 4（可通过 EASY_MEMORY_WORKERS 调整），避免 2 次慢调用阻塞全站用户的记忆提炼。
+_MEMORY_UPDATE_WORKERS = max(1, env_int("EASY_MEMORY_WORKERS", 4))
 _MEMORY_UPDATE_EXECUTOR = ThreadPoolExecutor(
-    max_workers=2, thread_name_prefix="memory-update"
+    max_workers=_MEMORY_UPDATE_WORKERS, thread_name_prefix="memory-update"
 )
+
+
+def shutdown_memory_executor(*, wait: bool = False) -> None:
+    """应用优雅停机时关闭记忆更新线程池，避免残留非守护线程。"""
+    _MEMORY_UPDATE_EXECUTOR.shutdown(wait=wait, cancel_futures=not wait)
 
 #: 每份记忆最后一个已提交的更新任务（键见 ``submit_memory_updates``）。
 _MEMORY_JOB_TAILS: dict[str, Future] = {}

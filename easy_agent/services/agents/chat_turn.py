@@ -934,6 +934,26 @@ async def prepare_turn(
     )
 
 
+def _recover_resume_expert_id(repo: ChatRepository, session_id: str, turn_id: str) -> str:
+    """跨 Pod 或缓存驱逐后，从原 run 的 request_json 恢复 expert_agent_id。"""
+    runs = getattr(repo, "runs", None)
+    get_run = getattr(runs, "get_run", None)
+    if not callable(get_run) or not turn_id:
+        return ""
+    try:
+        run_id = run_registry.new_run_id(session_id, turn_id)
+        row = get_run(run_id)
+        raw_req = (row or {}).get("request_json") if isinstance(row, dict) else ""
+        if not raw_req:
+            return ""
+        payload = json.loads(raw_req)
+        if isinstance(payload, dict):
+            return str(payload.get("expert_agent_id") or "").strip()
+    except Exception:  # noqa: BLE001 - 恢复提示失败不阻断审批流程
+        return ""
+    return ""
+
+
 async def prepare_resume(
     *,
     request: ResumeRequest,
@@ -961,7 +981,8 @@ async def prepare_resume(
     # 审批句柄由后端固定生成 ``f"{session_id}-{message_id}"``；绝不信任前端
     # 传入的任意 thread_id：官方 SQLite checkpointer 是全局共享的，否则可读取/
     # 续跑他人会话的 checkpoint（跨用户隔离绕过）。
-    if session_thread.handle_turn_id(session_id, thread_id) is None:
+    turn_id = session_thread.handle_turn_id(session_id, thread_id)
+    if turn_id is None:
         logger.warning(
             f"[{sid}] 拒绝非法的 HITL thread_id | session={session_id} | thread={thread_id}"
         )
@@ -979,12 +1000,13 @@ async def prepare_resume(
         raise ConflictError(str(exc)) from exc
 
     # 复用缓存的 Agent 实例（保留 checkpointer 中的 interrupt 状态）。
-    # 必须带上该会话当前生效的专家 ID，否则「在专家会话里触发 HITL 审批 -> 恢复」
-    # 会被判定为「专家变更」而驱逐缓存，重建出通用 Agent（人设丢失）。
-    # 取值安全性：SessionState.expert_key 与 SessionState.agent 同生共死（只在 Agent
-    # 创建成功后一起写入、清理时一起删除），因此这里取到的值要么与缓存中的专家一致 —— 命中缓存
-    # 原样复用、人设保留；要么为 ""（缓存已失效）—— 等价于通用 Agent 重建，
-    # 行为与引入专家模块之前逐字一致。
+    # 优先取进程内缓存的专家 ID；若缓存已驱逐或跨 Pod 恢复（如共享 MySQL checkpointer），
+    # 回退到 agent_runs.request_json 恢复原专家 ID，避免静默退化为通用 Agent 丢失人设。
+    expert_agent_id = agent_manager.get_session_expert(session_id)
+    if not expert_agent_id:
+        expert_agent_id = await asyncio.to_thread(
+            _recover_resume_expert_id, repo, session_id, turn_id
+        )
     # 连接器无需传参：agent_manager 直接读该会话的开关记录，缓存失效时按同一套集合重建。
     # 不刷新 checkpointer：saver 是进程级共享对象，resume 直接读同一份 checkpoint。
     # approval_mode=None：本轮的审批模式**沿用缓存 Agent**，不重新读用户设置。
@@ -994,7 +1016,7 @@ async def prepare_resume(
         session_id,
         username,
         workspace_name,
-        expert_agent_id=agent_manager.get_session_expert(session_id),
+        expert_agent_id=expert_agent_id,
         # 审批恢复沿用原 Agent 的审批模式；新设置下一条普通消息再生效。
         approval_mode=None,
     )

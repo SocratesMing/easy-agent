@@ -1,6 +1,7 @@
 """Chat routes - streaming and non-streaming"""
 
 import asyncio
+from functools import partial
 import logging
 from datetime import datetime
 from typing import Annotated
@@ -32,7 +33,7 @@ from easy_agent.services.streaming.sse import (
     SSE_HEARTBEAT_FRAME,
     heartbeat_interval_seconds,
 )
-from easy_agent.services.sessions.runtime import SessionBusyError
+from easy_agent.services.sessions.runtime import SessionBusyError, is_cancel_requested
 from easy_agent.services.usage import with_session_token_totals
 from easy_agent.services.streaming.runs import finish_run, renew_run
 from easy_agent.services.streaming.hub import (  # noqa: F401 - 兼容旧导入路径
@@ -95,6 +96,8 @@ _detached_bg_tasks: "set[asyncio.Task]" = set()
 # 反过来 TTL 不能太长：Pod 崩溃后锁要挂到过期才失效，这期间任何 Pod 的
 # ``/stream/status`` 都报 active，用户刷新后会一直看到"生成中"。
 _STREAM_HEARTBEAT_SECONDS = 60.0
+# 跨副本取消轮询间隔：与 60s 租约续约分离，使另一 Pod 发起 /cancel 后在数秒内生效并正确记为 cancelled。
+_CANCEL_POLL_SECONDS = 5.0
 
 # 流锁租约丢失时给客户端的终态文案：不暴露内部细节，只说明"被接走了、要重连"。
 _LEASE_LOST_MESSAGE = "本轮生成的会话锁已失效（可能已在其它实例上重新生成），请刷新页面继续"
@@ -133,6 +136,22 @@ async def _renew_stream_lock(renew_stream, session_id: str, sid: str) -> bool:
     return bool(renewed)
 
 
+def _make_cancel_checker(db):
+    """构造跨副本取消检查回调（交由 _stream_heartbeat 在线程池中调用）。"""
+    if db is None or not hasattr(db, "get_session_runtime"):
+        return None
+    return partial(is_cancel_requested, db)
+
+
+async def _check_cancel_requested(check_cancel, session_id: str, sid: str) -> bool:
+    """检查跨副本取消标记；查库异常时保守返回 False，避免误杀正常流。"""
+    try:
+        return bool(await asyncio.to_thread(check_cancel, session_id))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[{sid}] 检查跨副本取消标记异常（忽略本次）: {exc}")
+        return False
+
+
 async def _stream_heartbeat(
     session_id: str,
     sid: str,
@@ -141,18 +160,39 @@ async def _stream_heartbeat(
     run_id,
     owner_task: "asyncio.Task | None" = None,
     lease_lost: "asyncio.Event | None" = None,
+    check_cancel=None,
 ) -> None:
-    """每隔 ``_STREAM_HEARTBEAT_SECONDS`` 续约一次：run 租约与流锁同频。
+    """每隔 ``_STREAM_HEARTBEAT_SECONDS`` 续约一次：run 租约与流锁同频；
+    同时在 ``check_cancel`` 可用时按 ``_CANCEL_POLL_SECONDS`` 轮询跨副本取消标记。
 
     **续约失败 = 租约已丢，必须终止本轮**。旧实现只是停止续约、让流继续跑，于是：
     Pod1 因网络抖动丢锁 → Pod2 在 TTL 到点后接管并清空事件表 → Pod1 还在往同一会话
     写事件和 checkpoint，构成双写。租约丢了就不该继续写，这是租约的字面语义。
 
-    终止方式：置 ``lease_lost``（让 ``_drive_stream`` 把 run 记成 failed 而不是
-    cancelled）并 cancel 持有流的那条任务。
+    终止方式：
+    - 跨副本 ``/cancel``（``cancel_requested=1``）：不置 ``lease_lost``，直接 cancel 持有任务，
+      让 ``_drive_stream`` 记为 ``cancelled``；
+    - 租约真正丢失：置 ``lease_lost``（记为 ``failed``）并 cancel 持有任务。
     """
     while True:
-        await asyncio.sleep(_STREAM_HEARTBEAT_SECONDS)
+        if check_cancel is None or _CANCEL_POLL_SECONDS >= _STREAM_HEARTBEAT_SECONDS:
+            await asyncio.sleep(_STREAM_HEARTBEAT_SECONDS)
+            if check_cancel is not None and await _check_cancel_requested(check_cancel, session_id, sid):
+                logger.info(f"[{sid}] 检测到跨副本取消请求，终止本轮生成")
+                if owner_task is not None and not owner_task.done():
+                    owner_task.cancel()
+                return
+        else:
+            remaining = _STREAM_HEARTBEAT_SECONDS
+            while remaining > 0:
+                step = min(_CANCEL_POLL_SECONDS, remaining)
+                await asyncio.sleep(step)
+                remaining -= step
+                if await _check_cancel_requested(check_cancel, session_id, sid):
+                    logger.info(f"[{sid}] 检测到跨副本取消请求，终止本轮生成")
+                    if owner_task is not None and not owner_task.done():
+                        owner_task.cancel()
+                    return
         if run_id is not None and runs is not None:
             await _renew_run_lease(runs, run_id, sid)
         if renew_stream is None:
@@ -221,10 +261,12 @@ async def _drive_stream(
         registered = True
         if (db is not None or stream_events is not None) and not keep_events:
             await _clear_previous_events(stream_events, db, session_id, sid)
-        if renew_stream is not None or (run_id is not None and runs is not None):
+        check_cancel = _make_cancel_checker(db)
+        if renew_stream is not None or (run_id is not None and runs is not None) or check_cancel is not None:
             heartbeat = asyncio.create_task(
                 _stream_heartbeat(
-                    session_id, sid, renew_stream, runs, run_id, bg, lease_lost
+                    session_id, sid, renew_stream, runs, run_id, bg, lease_lost,
+                    check_cancel=check_cancel,
                 )
             )
         async for chunk in gen:

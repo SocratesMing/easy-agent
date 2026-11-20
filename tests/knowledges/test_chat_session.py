@@ -185,8 +185,8 @@ async def test_knowledge_chat_stream_injects_evidence_and_persists_metadata(
     # 知识证据帧与注册表/序列化器输出逐字节一致
     assert frames[1] == format_sse(initial_events[0])
     assert stream.closed is True
-    # done 时落一次 + finally 再落一次（blob+row 双写）
-    assert len(db.updates) == 4
+    # done 时落一次，finally 幂等跳过（单写行表，不再重复 4 次更新）
+    assert len(db.updates) == 1
     assert db.updates[0] == (
         "blob",
         {

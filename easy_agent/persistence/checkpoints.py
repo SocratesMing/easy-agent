@@ -782,7 +782,7 @@ async def prune_deleted_session_threads(db=None) -> int:
       不再把几十万 thread 拉到应用层解析。
     """
     if _mysql_saver is not None:
-        return await _prune_orphans_mysql()
+        return await _prune_orphans_mysql(db=db)
     saver = _sqlite_saver
     if saver is None:
         return 0
@@ -826,15 +826,42 @@ async def prune_deleted_session_threads(db=None) -> int:
     return deleted
 
 
-async def _prune_orphans_mysql() -> int:
+async def _prune_orphans_mysql(db=None) -> int:
     saver = _mysql_saver
     if saver is None:
         return 0
     try:
         thread_ids = await saver.list_orphan_threads(limit=500)
-    except Exception as exc:  # noqa: BLE001 - 查不到就不删，下一轮再来
-        logger.warning("checkpoint 对账：查询孤儿 thread 失败，本轮跳过 | %s", exc)
-        return 0
+    except Exception as exc:  # noqa: BLE001 - 独立 checkpoint 分库无 sessions 表时退回应用层对账
+        list_distinct = getattr(saver, "list_distinct_session_threads", None)
+        if not callable(list_distinct):
+            logger.warning("checkpoint 对账：查询孤儿 thread 失败，本轮跳过 | %s", exc)
+            return 0
+        try:
+            pairs = await list_distinct(limit=500)
+            by_session: dict[str, list[str]] = {}
+            for session_id, thread_id in pairs:
+                if session_id:
+                    by_session.setdefault(session_id, []).append(thread_id)
+            if not by_session:
+                return 0
+            target_db = db if db is not None else _resolve_db()
+            existing = await run_blocking(
+                sessions_repo.existing_session_ids, target_db, list(by_session)
+            )
+            thread_ids = [
+                tid
+                for sid, tids in by_session.items()
+                if sid not in existing
+                for tid in tids
+            ]
+        except Exception as fallback_exc:  # noqa: BLE001
+            logger.warning(
+                "checkpoint 对账：查询孤儿 thread 失败（含分库回退），本轮跳过 | %s | %s",
+                exc,
+                fallback_exc,
+            )
+            return 0
     deleted = 0
     for thread_id in thread_ids:
         if _mysql_saver is not saver:
