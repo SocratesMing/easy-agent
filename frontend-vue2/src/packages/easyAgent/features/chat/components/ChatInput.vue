@@ -714,53 +714,23 @@ import FileIcon from "../../../shared/components/FileIcon.vue";
 import SkillIcon from "../../../shared/components/SkillIcon.vue";
 import KnowledgeScopeSelector from "../../knowledge/KnowledgeScopeSelector.vue";
 import tip from "../../../directives/tip.js";
-
-// 镜像层为画出技能芯片的外扩留白，把裁剪盒向外扩了这么多 px（见 .input-mirror 的 padding/margin）：
-// 补滚动条占位时要一起加上，否则镜像内容比 textarea 窄、换行位置对不上。
-const MIRROR_BLEED = 6;
-
-// 「+」子面板的尺寸与贴边间距：JS 定位与 CSS 宽度必须同源，否则面板放大后会溢出视口。
-// 单行布局（名称 + 描述同排）需要更宽的面板，380px 下描述只剩 130px 左右不够看。
-const SUBPANEL_WIDTH = 480;
-// 子面板与主菜单之间的水平间隙；CSS 里的 ::before 热桥按「间隙 + 2px 重叠」覆盖这段空白
-const SUBPANEL_GAP = 6;
-// 子面板高度上限。面板整体底边贴主菜单底边、向上生长，可视空间有多大就长多高，
-// 但封顶在这个值——否则技能多的用户会顶到屏幕顶端，观感像「整个页面被面板占住」。
-// 按行高约 44px 算，560px ≈ 列表能露出 10 行，比原来的 300px 一屏 5 行舒服很多。
-const SUBPANEL_MAX_HEIGHT = 560;
-
-// 输入草稿持久化：页面刷新后恢复用户尚未发送的输入内容（“输入框的状态不变”）
-const DRAFT_KEY = "easy_agent_input_draft";
-
-// 待选技能：由技能中心「创建技能」等入口写入，本组件挂载时恢复成技能标签
-const PENDING_SKILL_KEY = "easy_agent_pending_skill";
-
-// 待修改专家：由专家面板「编辑」写入（{expert_agent_id, export_name_cn}）。
-// 专家 ID 不进消息正文（防篡改），挂载时消费为组件状态，发送时随请求的
-// pending_expert_id 字段上行；发送后清空。与后端 save_expert 的 edit_targets 绑定配套。
-const PENDING_EXPERT_EDIT_KEY = "easy_agent_pending_expert_edit";
-
-// 输入框最大高度：5 行（行高 1.6 × 15px = 24px）。文本再长就在框内滚动（右侧滚动条），
-// 输入框不再无限增高——与 CSS 的 max-height 保持一致，两处改要一起改。
-const TEXTAREA_MAX_ROWS = 5;
-const TEXTAREA_LINE_HEIGHT = 24;
-const TEXTAREA_MAX_HEIGHT = TEXTAREA_MAX_ROWS * TEXTAREA_LINE_HEIGHT;
-
 import promptEnhancementMixin from "../mixins/promptEnhancementMixin.js";
 import contextUsageMixin from "../mixins/contextUsageMixin.js";
 import { commandItems } from "../../../shared/compaction/state.js";
-
-// 「+」→ 专家：上区「我的专家」走服务端分页（后端 /agent/list 已支持 keyword/status/page），
-// 一页 5 条，首屏取第 1 页，之后点「点击加载更多」再取下一页。
-// 不再用「一次拉全量 + 本地 slice」：库里第 N 页的专家从来没被请求过，
-// 关键字再准也搜不到（这是原来的缺陷）。
-const PLUS_EXPERTS_PAGE_SIZE = 5;
-// 下区「公共专家」是随发行包内置的目录（只有个位数），继续本地过滤 + 本地分页：
-// 首屏 6 行，点「还有 N 位」再放 3 行。
-const PUBLIC_EXPERTS_PAGE_SIZE = 6;
-const PUBLIC_EXPERTS_MORE_STEP = 3;
-// 专家搜索防抖：连续输入时只在停手后打一次接口
-const EXPERT_SEARCH_DEBOUNCE_MS = 300;
+import {
+  DRAFT_KEY,
+  EXPERT_SEARCH_DEBOUNCE_MS,
+  MIRROR_BLEED,
+  PENDING_EXPERT_EDIT_KEY,
+  PENDING_SKILL_KEY,
+  PLUS_EXPERTS_PAGE_SIZE,
+  PUBLIC_EXPERTS_MORE_STEP,
+  PUBLIC_EXPERTS_PAGE_SIZE,
+  SUBPANEL_GAP,
+  SUBPANEL_MAX_HEIGHT,
+  SUBPANEL_WIDTH,
+  TEXTAREA_MAX_HEIGHT,
+} from "./chatInputConstants.js";
 
 export default {
   mixins: [promptEnhancementMixin, contextUsageMixin, fileReferenceInputMixin],
