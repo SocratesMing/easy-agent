@@ -1488,19 +1488,6 @@ async def _resume_stream_impl(
         f"已有 blocks {len(blocks)} | decisions={decisions}"
     )
     if decisions:
-        decision_labels = {
-            "approve": "批准",
-            "edit": "修改后继续",
-            "reject": "拒绝",
-            "respond": "提交确认",
-        }
-        def _decision_text(decision) -> str:
-            if not isinstance(decision, dict):
-                return str(decision)
-            kind = decision.get("type")
-            return decision_labels.get(kind, "拒绝") if isinstance(kind, str) else "拒绝"
-
-        decision_desc = "、".join(_decision_text(d) for d in decisions)
         # 人工审批结论逐条落日志：带工具名与参数，和 auto 模式的
         # 「用户已选择自动审批，跳过人工审批」形成对照——两者都含「审批」关键词，
         # 排查时按「用户已人工审批」/「用户已选择自动审批」即可区分是谁放行的。
@@ -1516,7 +1503,7 @@ async def _resume_stream_impl(
                 action_name(action) or "-",
                 brief_args(action_args(action)),
             )
-        if decisions and not approval_pairs:
+        if not approval_pairs:
             # 取不到待审批载荷（旧记录 / 字段缺失）时保留改造前的汇总日志
             decision_desc = "、".join(
                 ("批准" if (d or {}).get("type") == "approve" else "拒绝")

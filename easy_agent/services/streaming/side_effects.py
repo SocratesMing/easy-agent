@@ -351,6 +351,8 @@ def _memory_llm(agent):
 
         fallback = _llm_instance
     config = getattr(agent, "config", None)
+    if config is None:
+        return fallback
     key = str(getattr(getattr(config, "agent", None), "memory_model", "") or "").strip()
     if not key:
         return fallback
@@ -366,8 +368,6 @@ def _memory_llm(agent):
         try:
             from easy_agent.agent.model import create_model  # 延迟导入：测试 monkeypatch 语义：按模块属性替换，函数内导入才能取到替换后的对象
 
-            if config is None:
-                return fallback
             _MEMORY_MODELS[key] = create_model(config, model_name=key)
         except Exception as exc:  # noqa: BLE001 - 建不出来就回落，不影响对话
             _MEMORY_MODEL_WARNED.add(key)
