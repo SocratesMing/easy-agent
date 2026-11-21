@@ -934,58 +934,7 @@ export default {
   opacity: 0.45;
 }
 
-/* 拖拽把手：贴在面板左边缘，hover 时高亮提示可拖动 */
-.wp-resizer {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 5px;
-  cursor: col-resize;
-  z-index: 2;
-  background: transparent;
-  transition: background 0.15s ease;
-}
-
-.wp-resizer:hover,
-.workspace-panel.is-resizing .wp-resizer {
-  background: #0ea5e9;
-}
-
-/* 拖拽中：禁止整页选中文字；同时关掉宽度过渡，否则拖动会有明显的延迟跟随感 */
-.workspace-panel.is-resizing {
-  user-select: none;
-  transition: none;
-}
-
-.wp-empty-hint {
-  max-width: 200px;
-  font-size: 12px;
-  line-height: 1.5;
-  text-align: center;
-  color: var(--text-secondary);
-  opacity: 0.75;
-}
-/* 展开时内容淡入，避免宽度到位后内容「啪」地一下出现 */
-@keyframes wp-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-.wp-header,
-.wp-content {
-  animation: wp-fade-in 0.22s ease both;
-}
-
-/* 尊重系统的「减少动态效果」设置 */
-@media (prefers-reduced-motion: reduce) {
-  .workspace-panel {
-    transition: none;
-  }
-
-  .wp-header,
-  .wp-content {
-    animation: none;
-  }
-}
+/* 拖拽把手样式已拆至 wpResizer.css */
 </style>
+
+<style scoped src="./wpResizer.css"></style>

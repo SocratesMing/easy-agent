@@ -808,24 +808,10 @@ onMounted(() => {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
-.toast.success {
-  background: #22c55e;
-  color: white;
-}
-
-.toast.error {
-  background: #ef4444;
-  color: white;
-}
-
-.toast-enter-active, .toast-leave-active {
-  transition: opacity 0.3s, transform 0.3s;
-}
-
-.toast-enter-from, .toast-leave-to {
-  opacity: 0;
-  transform: translateX(-50%) translateY(20px);
-}
+.toast.success { background: #22c55e; color: white; }
+.toast.error { background: #ef4444; color: white; }
+.toast-enter-active, .toast-leave-active { transition: opacity 0.3s, transform 0.3s; }
+.toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(-50%) translateY(20px); }
 </style>
 
 <style>

@@ -122,7 +122,7 @@ class FakeGraph:
         self.astream_calls = []
         self.state_calls = 0
 
-    async def astream(self, payload, stream_mode=None, config=None):
+    async def astream(self, payload, stream_mode=None, config=None, **kwargs):
         self.astream_calls.append(
             {"payload": payload, "stream_mode": stream_mode, "config": config}
         )

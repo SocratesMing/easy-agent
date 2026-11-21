@@ -1,0 +1,54 @@
+:where(.easy-agent-root) .wp-resizer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  z-index: 2;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+:where(.easy-agent-root) .wp-resizer:hover,
+:where(.easy-agent-root) .workspace-panel.is-resizing .wp-resizer {
+  background: #0ea5e9;
+}
+
+/* 拖拽中：禁止整页选中文字；同时关掉宽度过渡，否则拖动会有明显的延迟跟随感 */
+:where(.easy-agent-root) .workspace-panel.is-resizing {
+  user-select: none;
+  transition: none;
+}
+
+:where(.easy-agent-root) .wp-empty-hint {
+  max-width: 200px;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--text-secondary);
+  opacity: 0.75;
+}
+
+/* 展开时内容淡入，避免宽度到位后内容「啪」地一下出现 */
+@keyframes wp-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+:where(.easy-agent-root) .wp-header,
+:where(.easy-agent-root) .wp-content {
+  animation: wp-fade-in 0.22s ease both;
+}
+
+/* 尊重系统的「减少动态效果」设置 */
+@media (prefers-reduced-motion: reduce) {
+  :where(.easy-agent-root) .workspace-panel {
+    transition: none;
+  }
+
+  :where(.easy-agent-root) .wp-header,
+  :where(.easy-agent-root) .wp-content {
+    animation: none;
+  }
+}
