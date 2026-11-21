@@ -177,6 +177,7 @@ import { getRuntime } from '../../../runtime/config.js'
 import { pendingInteractionActions } from '../../../shared/chat/planInteraction.js'
 import { extractSubagentTasks } from '../../../shared/chat/subagentMonitor.js'
 import { buildUserMessageNavItems, findActiveUserNavIndex } from '../../../shared/chat/userMessageNav.js'
+import { lastMessageRevisionKey } from '../../../shared/chat/freezeMessage.js'
 // 预置问题卡片最多展示几张（一张卡片一条问题，多配的部分按顺序截断）
 const MAX_PRESET_CARDS = 6
 export default {
@@ -339,31 +340,30 @@ export default {
     },
     userNavItems() {
       return buildUserMessageNavItems(this.messages)
+    },
+    messageRevisionKey() {
+      return lastMessageRevisionKey(this.messages)
     }
   },
   watch: {
-    messages: [
-      {
-        immediate: true,
-        handler(newMessages) {
-          // 空会话显示居中输入框；有消息时输入框贴底。
-          // 正在拉取历史时按「有会话」处理（贴底），避免先居中再跳到贴底。
-          this.composerMode = (newMessages.length === 0 && !this.sessionLoading && !this.isSidebar) ? 'center' : 'bottom'
-        }
-      },
-      {
-        deep: true,
-        handler(newMessages, oldMessages) {
-          // 流式更新或新增消息时，仅在用户贴底时自动滚动；用户向上查看历史时不打断
-          if (this.isStreaming || (newMessages?.length || 0) > (oldMessages?.length || 0)) {
-            this.scrollToBottom()
-          }
-          this.$nextTick(() => {
-            this.syncActiveUserNav()
-          })
-        }
+    messages: {
+      immediate: true,
+      handler(newMessages, oldMessages) {
+        // 空会话显示居中输入框；有消息时输入框贴底。
+        // 正在拉取历史时按「有会话」处理（贴底），避免先居中再跳到贴底。
+        this.composerMode = (newMessages.length === 0 && !this.sessionLoading && !this.isSidebar) ? 'center' : 'bottom'
+        const grew = (newMessages?.length || 0) > (oldMessages?.length || 0)
+        this.scheduleScrollAndNav(this.isStreaming || grew)
       }
-    ],
+    },
+    messageRevisionKey(newKey, oldKey) {
+      if (newKey === oldKey) return
+      if (this.isStreaming) {
+        this.scheduleScrollAndNav(true)
+      } else {
+        this.scheduleScrollAndNav(false)
+      }
+    },
     sessionLoading(loading) {
       // 加载历史期间贴底，避免居中布局随后跳动
       this.composerMode = (this.messages.length === 0 && !loading && !this.isSidebar) ? 'center' : 'bottom'
@@ -381,6 +381,10 @@ export default {
     this.syncActiveUserNav()
   },
   beforeDestroy() {
+    if (this._scrollNavRafId != null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(this._scrollNavRafId)
+      this._scrollNavRafId = null
+    }
   },
   methods: {
     // 交互组件里的 sendPrompt(text)（shared/visual/mount.js 派发的冒泡事件）：写进输入框，不自动发送
@@ -508,7 +512,27 @@ export default {
       const threshold = 80
       const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
       this.isAtBottom = atBottom
-      this.syncActiveUserNav()
+      this.scheduleScrollAndNav(false)
+    },
+    scheduleScrollAndNav(shouldScroll = false) {
+      if (shouldScroll) this._pendingScrollToBottom = true
+      if (typeof requestAnimationFrame !== 'function') {
+        if (this._pendingScrollToBottom) {
+          this._pendingScrollToBottom = false
+          this.scrollToBottom()
+        }
+        this.syncActiveUserNav()
+        return
+      }
+      if (this._scrollNavRafId != null) return
+      this._scrollNavRafId = requestAnimationFrame(() => {
+        this._scrollNavRafId = null
+        if (this._pendingScrollToBottom) {
+          this._pendingScrollToBottom = false
+          this.scrollToBottom()
+        }
+        this.syncActiveUserNav()
+      })
     },
     scrollToBottom(force = false) {
       this.$nextTick(() => {

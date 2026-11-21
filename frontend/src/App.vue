@@ -166,6 +166,7 @@ const SettingsPanel = defineAsyncComponent(() => import('./features/settings/com
 import { createSession, getChatHistory, deleteSession, sendMessage, resumeStream, renameSession, togglePinSession, getStreamStatus, attachStream } from './api/chat.js'
 import { applyApprovalRequests, buildApprovalResumePlan, derivePendingApproval, isNewApprovalEvent, markApprovalDecision } from './utils/hitlApproval.js'
 import { buildPlanContinuationTurn } from './shared/chat/planConfirmationTurn.js'
+import { freezeHistoryMessages } from './shared/chat/freezeMessage.js'
 import { createStreamChunkHandler, resumeUsageBase } from './features/chat/composables/useStreamChunks.js'
 import { clearStreamFlight, hasAssistantReply, markStreamFlight, probeStreamState, readStreamFlight, resolveResumeTargets } from './features/chat/services/streamResume.js'
 import { uploadFile, deleteFile, getUserProfile, getSessionGeneratedFiles } from './api/files.js'
@@ -865,7 +866,7 @@ async function syncSessionFromServer(sessionId, preloaded, opts) {
 
   const usage = history.usage || null
   if (currentSessionId.value === sessionId && loadedSessionId.value === sessionId) {
-    messages.value = history.messages || []
+    messages.value = freezeHistoryMessages(history.messages || [])
     currentTodos.value = history.todos || []
     // 按最后一轮对话恢复专家芯片（最后一轮用了专家则召唤态，否则清空）
     syncExpertChipFromMessages()
@@ -881,7 +882,7 @@ async function syncSessionFromServer(sessionId, preloaded, opts) {
     scrollTrigger.value++
   } else {
     const st = ensureSessionState(sessionId)
-    st.messages = history.messages || []
+    st.messages = freezeHistoryMessages(history.messages || [])
     st.todos = history.todos || []
     if (usage) {
       st.sessionUsage = {
@@ -1143,7 +1144,7 @@ async function restoreInitialSession() {
         const history = await getChatHistory(initialSessionId)
         // 加载期间用户可能已切换会话，丢弃过期响应（正常 bootstrap 期间 UI 门控，不会发生）
         if (currentSessionId.value === initialSessionId) {
-          messages.value = history.messages || []
+          messages.value = freezeHistoryMessages(history.messages || [])
           currentTodos.value = history.todos || []
           syncExpertChipFromMessages()
           if (history.usage) {
@@ -1466,7 +1467,7 @@ async function handleSelectSession(sessionId) {
     // 加载期间用户可能又切换到了其他会话：丢弃过期响应，
     // 避免覆盖当前显示的数据（token 用量、消息等）
     if (currentSessionId.value !== sessionId) return
-    messages.value = history.messages || []
+    messages.value = freezeHistoryMessages(history.messages || [])
     currentTodos.value = history.todos || []
     // 按最后一轮对话恢复专家芯片（最后一轮用了专家则召唤态，否则清空）
     syncExpertChipFromMessages()

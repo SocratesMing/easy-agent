@@ -188,6 +188,7 @@ import { APP_WELCOME_TITLE } from '../../../config.js'
 import { pendingInteractionActions } from '../../../shared/chat/planInteraction.js'
 import { extractSubagentTasks } from '../../../shared/chat/subagentMonitor.js'
 import { buildUserMessageNavItems, findActiveUserNavIndex } from '../../../shared/chat/userMessageNav.js'
+import { lastMessageRevisionKey } from '../../../shared/chat/freezeMessage.js'
 // 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
 const composerMode = ref('center')
 
@@ -411,13 +412,44 @@ function onSend(message, files, signal, enableDeepThink, enableWebSearch, skills
 // 流式更新仅在贴底时自动滚动，避免抢占用户阅读上方内容；用户滚回底部后自动恢复跟随。
 const isAtBottom = ref(true)
 
+let scrollNavRafId = null
+let pendingScrollToBottom = false
+
+function scheduleScrollAndNav(shouldScroll = false) {
+  if (shouldScroll) pendingScrollToBottom = true
+  if (typeof requestAnimationFrame !== 'function') {
+    if (pendingScrollToBottom) {
+      pendingScrollToBottom = false
+      scrollToBottom()
+    }
+    syncActiveUserNav()
+    return
+  }
+  if (scrollNavRafId !== null) return
+  scrollNavRafId = requestAnimationFrame(() => {
+    scrollNavRafId = null
+    if (pendingScrollToBottom) {
+      pendingScrollToBottom = false
+      scrollToBottom()
+    }
+    syncActiveUserNav()
+  })
+}
+
+onUnmounted(() => {
+  if (scrollNavRafId !== null && typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(scrollNavRafId)
+    scrollNavRafId = null
+  }
+})
+
 function handleScroll() {
   const el = messagesRef.value
   if (!el) return
   const threshold = 80
   const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
   isAtBottom.value = atBottom
-  syncActiveUserNav()
+  scheduleScrollAndNav(false)
 }
 
 function scrollToBottom(force = false) {
@@ -430,15 +462,16 @@ function scrollToBottom(force = false) {
   })
 }
 
-watch(() => props.messages, (newMessages, oldMessages) => {
-  // 流式更新或新增消息时，仅在用户贴底时自动滚动；用户向上查看历史时不打断
-  if (props.isStreaming || (newMessages?.length || 0) > (oldMessages?.length || 0)) {
-    scrollToBottom()
-  }
-  nextTick(() => {
-    syncActiveUserNav()
-  })
-}, { deep: true })
+const messageRevisionKey = computed(() => lastMessageRevisionKey(props.messages))
+
+watch(() => props.messages.length, (newLen, oldLen) => {
+  scheduleScrollAndNav(props.isStreaming || (newLen || 0) > (oldLen || 0))
+})
+
+watch(messageRevisionKey, (newKey, oldKey) => {
+  if (newKey === oldKey) return
+  scheduleScrollAndNav(props.isStreaming)
+})
 
 watch(() => props.scrollTrigger, () => {
   // 切换/加载会话时强制贴底

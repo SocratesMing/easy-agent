@@ -97,11 +97,25 @@
 .input-skill-pill::before {
   content: "";
   position: absolute;
-  inset: -3.75px 9px -2.25px -6px;
+  inset: -1.5px 9px -0.5px -5px;
   z-index: -1;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent-color) 24%, var(--bg-secondary));
-  transition: background 0.15s ease-out;
+  border-radius: 5px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent-color) 12%, var(--bg-secondary)),
+    color-mix(in srgb, var(--accent-color) 7%, var(--bg-secondary))
+  );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 24%, var(--border-color, rgba(15, 23, 42, 0.12)));
+  transition: background 0.15s ease-out, box-shadow 0.15s ease-out;
+}
+
+.input-skill-pill.is-command::before {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, #6366f1 16%, var(--bg-secondary)),
+    color-mix(in srgb, var(--accent-color) 10%, var(--bg-secondary))
+  );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #6366f1 36%, transparent);
 }
 
 /* 紧邻的两个标签：间隔全靠前一个标签尾随的全角空格（15px）。后一个沿用左侧 6px 外扩，
@@ -111,8 +125,10 @@
   right: 11px;
 }
 
-.input-skill-pill:hover::before {
-  background: color-mix(in srgb, var(--accent-color) 32%, var(--bg-secondary));
+.input-skill-pill:hover::before,
+.input-skill-pill.is-command:hover::before {
+  background: color-mix(in srgb, #ef4444 10%, var(--bg-secondary));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #ef4444 38%, transparent);
 }
 
 /* `／`（全角斜线）占位框：字形必须真的写在 mark 里（镜像文本是 textarea 文本的逐字拷贝，
@@ -140,10 +156,19 @@
   width: 0.86em;
   height: 0.86em;
   visibility: visible;
-  color: var(--text-primary) !important;
+  color: var(--accent-color) !important;
   border-radius: 0 !important;
   background: none !important;
   box-shadow: none !important;
+  transition: color 0.15s ease-out;
+}
+
+.input-skill-pill.is-command .input-skill-pill-mark .skill-icon {
+  color: #6366f1 !important;
+}
+
+.input-skill-pill:hover .input-skill-pill-mark .skill-icon {
+  color: #ef4444 !important;
 }
 
 .input-skill-pill .input-skill-pill-mark .skill-icon svg {
@@ -296,10 +321,14 @@ html[data-theme="dark"] .connector-switch.on {
   display: flex;
   flex-direction: column;
   max-height: min(320px, 42vh);
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  background: var(--bg-primary);
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+  border: 1px solid color-mix(in srgb, var(--border-color) 85%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg-primary) 94%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow:
+    0 12px 32px -4px rgba(15, 23, 42, 0.14),
+    0 2px 6px rgba(15, 23, 42, 0.06);
   overflow: hidden;
 }
 
@@ -346,13 +375,14 @@ html[data-theme="dark"] .connector-switch.on {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 8px;
-  border-radius: 8px;
+  padding: 7px 9px;
+  border-radius: 9px;
   cursor: pointer;
+  transition: background 0.12s ease-out;
 }
 
 .skill-picker-item.active {
-  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 11%, transparent);
 }
 
 .skill-picker-body {
@@ -391,7 +421,10 @@ html[data-theme="dark"] .connector-switch.on {
 
 .skill-picker-slash {
   flex-shrink: 0;
-  font-size: 11.5px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--bg-secondary) 85%, transparent);
+  font-size: 11px;
   color: var(--text-secondary);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }

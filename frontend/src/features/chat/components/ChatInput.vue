@@ -134,7 +134,7 @@
               }}</span
               ><span
                 v-else
-                class="input-skill-pill"
+                :class="['input-skill-pill', { 'is-command': seg.command }]"
                 :title="`${seg.name}（点击移除）`"
                 @click.stop.prevent="removeSkillToken(seg.dirName)"
                 ><span class="input-skill-pill-mark"
@@ -2931,10 +2931,7 @@ watch(
     const ownCreate = selfCreatedSession;
     selfCreatedSession = false;
     if (!ownCreate) subpanelCategory.value = null;
-    // 技能标签是文本的一部分：切会话时把标签从草稿里剥掉（等价于旧的「令牌复位」），
-    // 避免标签跟着草稿残留到历史会话的输入框里；本组件自己发起的建会话不算切换，保留标签。
-    if (!ownCreate)
-      message.value = stripSkillTokens(message.value, tokenMap.value);
+    // 保留草稿中已调用的技能/命令标签，切换会话后再切回时不丢失输入内容。
     // 切到其他会话/回到新对话：新对话暂存的知识选择不再适用
     if (!newVal || (oldVal && newVal !== oldVal))
       pendingKnowledgeBaseIds.value = [];

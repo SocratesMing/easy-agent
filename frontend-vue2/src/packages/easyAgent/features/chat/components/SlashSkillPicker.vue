@@ -129,10 +129,14 @@ export default {
   display: flex;
   flex-direction: column;
   max-height: min(320px, 42vh);
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  background: var(--bg-primary);
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+  border: 1px solid color-mix(in srgb, var(--border-color) 85%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg-primary) 94%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow:
+    0 12px 32px -4px rgba(15, 23, 42, 0.14),
+    0 2px 6px rgba(15, 23, 42, 0.06);
   overflow: hidden;
 }
 
@@ -193,13 +197,14 @@ export default {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 8px;
-  border-radius: 8px;
+  padding: 7px 9px;
+  border-radius: 9px;
   cursor: pointer;
+  transition: background 0.12s ease-out;
 }
 
 .skill-picker-item.active {
-  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 11%, transparent);
 }
 
 .skill-picker-item.unavailable {
@@ -245,7 +250,10 @@ export default {
 
 .skill-picker-slash {
   flex-shrink: 0;
-  font-size: 11.5px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--bg-secondary) 85%, transparent);
+  font-size: 11px;
   color: var(--text-secondary);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }

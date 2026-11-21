@@ -1,6 +1,7 @@
 import { sessionGuard } from '../sessionManagement/state.js'
 import { createStreamCheckpoint, STREAM_RECONNECTING_MESSAGE } from '../utils/chatStreamRecovery.js'
 import { applyStreamError } from './streamError.js'
+import { freezeReadonlyMessageParts } from './freezeMessage.js'
 
 // 只升级同 step 的临时占位。正式 ID 不同的同名并行调用始终是不同卡片。
 function findToolBlock(blocks, callId, toolName, step) {
@@ -25,6 +26,24 @@ export function createStreamChunkHandler(vm, ctx, adapters) {
   let currentContent = ''
   let currentToolCalls = []
   let blockOrderCounter = ctx.initialBlockOrder || 0
+  let textFlushRafId = null
+  let bufferedThinking = null
+  let bufferedContent = null
+
+  const runScoped = (fn) => (
+    typeof vm.runInSession === 'function'
+      ? vm.runInSession(ctx.streamSessionId, ctx, fn)
+      : fn()
+  )
+
+  const cancelScheduledTextFlush = () => {
+    if (textFlushRafId !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(textFlushRafId)
+    }
+    textFlushRafId = null
+    bufferedThinking = null
+    bufferedContent = null
+  }
 
   const findIdx = () => {
     return vm.messages.findIndex(m => m.id === ctx.assistantMsgId)
@@ -173,6 +192,85 @@ export function createStreamChunkHandler(vm, ctx, adapters) {
     vm.iterationCount = base.iterations
   })
 
+  const applyThinkingDelta = (targetStep, text, isFull) => {
+    if (isFull) {
+      currentThinking = text
+    } else {
+      currentThinking += text || ''
+    }
+    ensureMessage()
+    const idx = findIdx()
+    if (idx !== -1) {
+      // 按 step 定位思考块写入；若该 step 尚无思考块（thinking_start 被跳过或事件
+      // 乱序），按 step 新建一块，绝不回退到其他 step 的 currentBlock——否则会把
+      // 本步思考写入上一步卡片（覆盖其内容），造成一个 step 的思考被拆分/错位。
+      let blk = vm.messages[idx].blocks.find(b => b.type === 'thinking' && b.step === targetStep)
+      if (!blk) {
+        blk = addBlock('thinking', { content: '', step: targetStep })
+        if (!isFull) currentThinking = text || ''
+      }
+      if (blk) {
+        blk.content = currentThinking
+        currentBlock = blk
+        setReactive(vm.messages, idx, { ...vm.messages[idx] })
+      }
+    }
+  }
+
+  const applyContentDelta = (targetStep, text) => {
+    // 正文块必须带 step，否则按 step 排序时会落到顶部（step=0）。同一 step 的
+    // 正文分段到达（reopen）时复用已有正文块，避免同 step 产生多个正文块。
+    if (!currentBlock || currentBlock.type !== 'content' || currentBlock.step !== targetStep) {
+      const idx0 = findIdx()
+      let existing = null
+      if (idx0 !== -1) existing = vm.messages[idx0].blocks.find(b => b.type === 'content' && b.step === targetStep)
+      if (existing) {
+        currentContent = (existing.content || '') + (text || '')
+        currentBlock = existing
+      } else {
+        currentContent = text || ''
+        currentBlock = null
+        addBlock('content', { content: currentContent, step: targetStep })
+      }
+    } else {
+      currentContent += text || ''
+    }
+    if (currentBlock && currentBlock.type === 'content') currentBlock.content = currentContent
+    const idx = findIdx()
+    if (idx !== -1) {
+      if (ctx.isResume) vm.messages[idx].content = (vm.messages[idx].content || '') + (text || '')
+      touchBlocks()
+    }
+  }
+
+  const flushBufferedText = () => {
+    if (textFlushRafId !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(textFlushRafId)
+    }
+    textFlushRafId = null
+    const thinking = bufferedThinking
+    const content = bufferedContent
+    bufferedThinking = null
+    bufferedContent = null
+    if (thinking) applyThinkingDelta(thinking.step, thinking.text, thinking.isFull)
+    if (content) applyContentDelta(content.step, content.text)
+  }
+
+  const scheduleTextFlush = () => {
+    if (textFlushRafId !== null) return
+    textFlushRafId = requestAnimationFrame(() => {
+      textFlushRafId = null
+      if (!valid()) {
+        bufferedThinking = null
+        bufferedContent = null
+        return
+      }
+      runScoped(() => {
+        flushBufferedText()
+      })
+    })
+  }
+
   const onChunk = (data) => {
     if (data.type === 'stream_connection') {
       if (!ctx.streamSessionId || vm.currentSessionId === ctx.streamSessionId) {
@@ -182,6 +280,7 @@ export function createStreamChunkHandler(vm, ctx, adapters) {
       return
     }
     if (data.type === 'stream_replay') {
+      cancelScheduledTextFlush()
       checkpoint.restore()
       currentBlock = null
       currentThinking = ''
@@ -193,6 +292,9 @@ export function createStreamChunkHandler(vm, ctx, adapters) {
     }
     checkpoint.capture()
     const { type: eventType, content, duration, step, tool_name: toolName, tool_call_id: toolCallId, arguments: args, result, success } = data
+    if (eventType !== 'thinking' && eventType !== 'content') {
+      flushBufferedText()
+    }
 
     if (eventType === 'start') {
       if (ctx.attachMode) {
@@ -268,29 +370,19 @@ export function createStreamChunkHandler(vm, ctx, adapters) {
       }
     } else if (eventType === 'thinking') {
       const targetStep = step || 0
-      // 优先用后端 full_content（本 step 思考完整内容）采用 SET 语义覆盖——幂等，
-      // 重复/聚合增量也不会重复渲染；旧后端无 full_content 时回退到 append 增量。
-      if (data.full_content) {
-        currentThinking = data.full_content
+      const isFull = Boolean(data.full_content)
+      const text = isFull ? data.full_content : (content || '')
+      if (!replaying && typeof requestAnimationFrame === 'function') {
+        if (bufferedContent) flushBufferedText()
+        if (bufferedThinking && bufferedThinking.step !== targetStep) flushBufferedText()
+        if (bufferedThinking && !isFull) {
+          bufferedThinking.text += text
+        } else {
+          bufferedThinking = { step: targetStep, text, isFull }
+        }
+        scheduleTextFlush()
       } else {
-        currentThinking += content || ''
-      }
-      ensureMessage()
-      const idx = findIdx()
-      if (idx !== -1) {
-        // 按 step 定位思考块写入；若该 step 尚无思考块（thinking_start 被跳过或事件
-        // 乱序），按 step 新建一块，绝不回退到其他 step 的 currentBlock——否则会把
-        // 本步思考写入上一步卡片（覆盖其内容），造成一个 step 的思考被拆分/错位。
-        let blk = vm.messages[idx].blocks.find(b => b.type === 'thinking' && b.step === targetStep)
-        if (!blk) {
-          blk = addBlock('thinking', { content: '', step: targetStep })
-          if (!data.full_content) currentThinking = content || ''
-        }
-        if (blk) {
-          blk.content = currentThinking
-          currentBlock = blk
-          setReactive(vm.messages, idx, { ...vm.messages[idx] })
-        }
+        applyThinkingDelta(targetStep, text, isFull)
       }
     } else if (eventType === 'thinking_end') {
       touchBlocks()
@@ -329,28 +421,18 @@ export function createStreamChunkHandler(vm, ctx, adapters) {
       }
     } else if (eventType === 'content') {
       const targetStep = step || 0
-      // 正文块必须带 step，否则按 step 排序时会落到顶部（step=0）。同一 step 的
-      // 正文分段到达（reopen）时复用已有正文块，避免同 step 产生多个正文块。
-      if (!currentBlock || currentBlock.type !== 'content' || currentBlock.step !== targetStep) {
-        const idx0 = findIdx()
-        let existing = null
-        if (idx0 !== -1) existing = vm.messages[idx0].blocks.find(b => b.type === 'content' && b.step === targetStep)
-        if (existing) {
-          currentContent = (existing.content || '') + (content || '')
-          currentBlock = existing
+      const text = content || ''
+      if (!replaying && typeof requestAnimationFrame === 'function') {
+        if (bufferedThinking) flushBufferedText()
+        if (bufferedContent && bufferedContent.step !== targetStep) flushBufferedText()
+        if (bufferedContent) {
+          bufferedContent.text += text
         } else {
-          currentContent = content || ''
-          currentBlock = null
-          addBlock('content', { content: currentContent, step: targetStep })
+          bufferedContent = { step: targetStep, text }
         }
+        scheduleTextFlush()
       } else {
-        currentContent += content || ''
-      }
-      if (currentBlock && currentBlock.type === 'content') currentBlock.content = currentContent
-      const idx = findIdx()
-      if (idx !== -1) {
-        if (ctx.isResume) vm.messages[idx].content = (vm.messages[idx].content || '') + (content || '')
-        touchBlocks()
+        applyContentDelta(targetStep, text)
       }
     } else if (eventType === 'content_end') {
       currentContent = ''
@@ -500,6 +582,7 @@ export function createStreamChunkHandler(vm, ctx, adapters) {
         if ((vm.messages[idx].blocks || []).some(b => b.streaming)) {
           setReactive(vm.messages, idx, { ...vm.messages[idx], blocks: vm.messages[idx].blocks.map(b => (b.streaming ? { ...b, streaming: false } : b)) })
         }
+        freezeReadonlyMessageParts(vm.messages[idx])
         setReactive(vm.messages, idx, { ...vm.messages[idx] })
       }
       if (onDone) onDone(data)
@@ -517,9 +600,6 @@ export function createStreamChunkHandler(vm, ctx, adapters) {
   // 事件按「所属会话」路由：后台会话写入其自身缓冲，不污染当前展示
   return { onChunk: (data) => {
     if (!valid()) return
-    const dispatch = () => onChunk(data)
-    return typeof vm.runInSession === 'function'
-      ? vm.runInSession(ctx.streamSessionId, ctx, dispatch)
-      : dispatch()
+    return runScoped(() => onChunk(data))
   } }
 }

@@ -138,6 +138,7 @@ export function buildSegments(text, tokenMap, options) {
         dirName: skill.dir_name,
         name: skill.name || skill.dir_name,
         icon: skill.icon || '',
+        command: Boolean(skill.command),
         categoryId: skill.category_id == null ? null : skill.category_id,
         start: index,
         end: index + token.length,

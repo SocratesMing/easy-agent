@@ -137,7 +137,7 @@
               ><span
                 v-else
                 :key="index"
-                class="input-skill-pill"
+                :class="['input-skill-pill', { 'is-command': seg.command }]"
                 :title="`${seg.name}（点击移除）`"
                 @click.stop.prevent="removeSkillToken(seg.dirName)"
                 ><span class="input-skill-pill-mark"
@@ -1050,11 +1050,7 @@ export default {
         this.pendingKnowledgeBaseIds = [];
       }
       this.subpanelKeyword = "";
-      // 技能标签是文本的一部分：切会话时把标签从草稿里剥掉（等价于旧的「令牌复位」）。
-      // 本组件自己发起的建会话（上传文件）由上传链路标记，不算切换、保留标签，见 ensureSessionId。
-      if (!this.selfCreatedSession) {
-        this.message = stripSkillTokens(this.message, this.tokenMap);
-      }
+      // 保留草稿中已调用的技能/命令标签，切换会话后再切回时不丢失输入内容。
       this.selfCreatedSession = false;
     },
     message(val) {
@@ -2935,11 +2931,25 @@ export default {
 .input-skill-pill::before {
   content: "";
   position: absolute;
-  inset: -3.75px 9px -2.25px -6px;
+  inset: -1.5px 9px -0.5px -5px;
   z-index: -1;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent-color) 24%, var(--bg-secondary));
-  transition: background 0.15s ease-out;
+  border-radius: 5px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent-color) 12%, var(--bg-secondary)),
+    color-mix(in srgb, var(--accent-color) 7%, var(--bg-secondary))
+  );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 24%, var(--border-color, rgba(15, 23, 42, 0.12)));
+  transition: background 0.15s ease-out, box-shadow 0.15s ease-out;
+}
+
+.input-skill-pill.is-command::before {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, #6366f1 16%, var(--bg-secondary)),
+    color-mix(in srgb, var(--accent-color) 10%, var(--bg-secondary))
+  );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #6366f1 36%, transparent);
 }
 
 /* 紧邻的两个标签：间隔全靠前一个标签尾随的全角空格（15px）。后一个沿用左侧 6px 外扩，
@@ -2949,8 +2959,10 @@ export default {
   right: 11px;
 }
 
-.input-skill-pill:hover::before {
-  background: color-mix(in srgb, var(--accent-color) 32%, var(--bg-secondary));
+.input-skill-pill:hover::before,
+.input-skill-pill.is-command:hover::before {
+  background: color-mix(in srgb, #ef4444 10%, var(--bg-secondary));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #ef4444 38%, transparent);
 }
 
 /* `／`（全角斜线）占位框：字形必须真的写在 mark 里（镜像文本是 textarea 文本的逐字拷贝，
@@ -2978,10 +2990,19 @@ export default {
   width: 0.86em;
   height: 0.86em;
   visibility: visible;
-  color: var(--text-primary) !important;
+  color: var(--accent-color) !important;
   border-radius: 0 !important;
   background: none !important;
   box-shadow: none !important;
+  transition: color 0.15s ease-out;
+}
+
+.input-skill-pill.is-command .input-skill-pill-mark .skill-icon {
+  color: #6366f1 !important;
+}
+
+.input-skill-pill:hover .input-skill-pill-mark .skill-icon {
+  color: #ef4444 !important;
 }
 
 .input-skill-pill .input-skill-pill-mark .skill-icon svg {

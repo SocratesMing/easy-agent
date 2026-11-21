@@ -52,13 +52,10 @@ export default {
       if (this.md.scheduler) this.md.scheduler.cancel()
       this.render(false)
     },
-    citeMap: {
-      deep: true,
-      handler() {
-        if (!this.md.started) return
-        if (this.md.scheduler) this.md.scheduler.cancel()
-        this.render(false)
-      },
+    citeMap() {
+      if (!this.md.started) return
+      if (this.md.scheduler) this.md.scheduler.cancel()
+      this.render(false)
     },
     streaming(value) {
       if (!this.md.started || value) return

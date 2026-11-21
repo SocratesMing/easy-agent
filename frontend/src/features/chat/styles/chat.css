@@ -22,6 +22,12 @@
   overflow: hidden;
   min-width: 0;
   position: relative;
+  contain: style;
+}
+
+.message-wrapper {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
 }
 
 /* 内容列：任务条 + 消息区 + 滚动按钮 + 输入框 + 预设问题。

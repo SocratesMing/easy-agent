@@ -7,6 +7,7 @@ import {
   resetSessions, sessionDeleted, sessionGuard,
 } from '../src/packages/easyAgent/shared/sessionManagement/state.js'
 import { hasAssistantReply } from '../src/packages/easyAgent/features/chat/services/streamResume.js'
+import { freezeHistoryMessages } from '../src/packages/easyAgent/shared/chat/freezeMessage.js'
 
 const root = '../src/packages/easyAgent/'
 const page = 'EasyAgentPage.vue'
@@ -40,7 +41,7 @@ function historyHarness(getChatHistory, streaming = false) {
     ensureSessionState(sid) { return this.sessionStates[sid] ||= { sessionUsage: {} } },
   }
   return Object.assign(vm, methods(mixin, ['awaitingAnswer', 'syncSessionFromServer', 'syncIfServerAnswered'], {
-    isSessionDeleted, sessionGuard, getChatHistory, hasAssistantReply,
+    isSessionDeleted, sessionGuard, getChatHistory, hasAssistantReply, freezeHistoryMessages,
   }))
 }
 

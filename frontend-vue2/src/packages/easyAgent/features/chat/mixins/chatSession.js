@@ -1,4 +1,5 @@
 import { referenceMessage } from '../../../shared/fileReferences.js'
+import { freezeHistoryMessages } from '../../../shared/chat/freezeMessage.js'
 import { connectSessionView } from "../../../shared/sessionManagement/viewLifecycle.js";
 import {
   sessionGuard,
@@ -804,7 +805,7 @@ export default {
         this.currentSessionId === sessionId &&
         this.loadedSessionId === sessionId
       ) {
-        this.messages = history.messages || [];
+        this.messages = freezeHistoryMessages(history.messages || []);
         this.currentTodos = history.todos || [];
         this.syncExpertChipFromMessages();
         if (usage) {
@@ -820,7 +821,7 @@ export default {
         this.scrollTrigger++;
       } else {
         const st = this.ensureSessionState(sessionId);
-        st.messages = history.messages || [];
+        st.messages = freezeHistoryMessages(history.messages || []);
         st.todos = history.todos || [];
         if (usage) {
           st.sessionUsage = {
@@ -1055,7 +1056,7 @@ export default {
         // 加载期间用户可能又切换到了其他会话：丢弃过期响应，
         // 避免覆盖当前显示的数据（token 用量、消息等）
         if (this.currentSessionId !== sessionId) return;
-        this.messages = history.messages || [];
+        this.messages = freezeHistoryMessages(history.messages || []);
         this.currentTodos = history.todos || [];
         this.syncExpertChipFromMessages();
         // 从服务器返回的 usage 数据恢复 token 用量、会话耗时和迭代次数
