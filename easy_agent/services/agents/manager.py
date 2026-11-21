@@ -1,6 +1,5 @@
 """Agent lifecycle management - creation, caching, and cleanup"""
 
-import asyncio
 import logging
 from easy_agent.bootstrap.env import env_str
 import platform

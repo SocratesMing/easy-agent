@@ -132,7 +132,6 @@ async def test_scheduler_uses_owner_session_and_preserves_pause_callback(db):
 
 
 async def test_knowledge_ask_uses_trusted_principal_without_username_lookup(monkeypatch):
-    from easy_agent.knowledges import api
     from easy_agent.knowledges.api import chat as api_chat
     from easy_agent.knowledges.core.models import AskRequest, KnowledgePrincipal
 

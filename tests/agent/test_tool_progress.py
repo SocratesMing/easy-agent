@@ -484,8 +484,6 @@ def test_middleware_defaults_follow_config_models():
 
 from types import SimpleNamespace as _NS
 
-from easy_agent.agent.tool_progress import _fuse_text  # noqa: E402 - 测试文件末尾追加段
-
 
 def _fuse_request(name: str, args: dict, history: list, thread_id: str | None = None):
     """构造熔断检查用的 request：state 含历史 + 当前 AIMessage（生产形态）。
@@ -744,26 +742,6 @@ def test_fuse_counts_annotated_history():
         lambda _req: _tool_message("No matches found", "grep"),
     )
     assert "熔断" in result.content
-
-
-def test_non_envelope_result_on_mcp_tool_still_gets_hint():
-    # 口径统一回归：工具历史里有信封结果（已识别为 MCP 工具），本次返回
-    # 裸结果（无信封）——熔断在按 MCP 计数，提示也必须照给，否则模型会在
-    # 收不到任何警告的情况下被熔断拦截。
-    mw = ToolProgressMiddleware()
-    history = []
-    for i in range(5):
-        history += _pair(
-            "fx_bars", {"m": i}, _mcp(_mcp_body(page=i, rows=1)), i
-        )
-    result = mw.wrap_tool_call(
-        _fuse_request("fx_bars", {"m": 99}, history),
-        lambda _req: ToolMessage(  # 本次无信封
-            content=_mcp_body(99, rows=1), tool_call_id="cur", name="fx_bars"
-        ),
-    )
-    assert isinstance(result, ToolMessage)
-    assert "低价值" in result.content or "有效数据" in result.content
 
 
 def test_non_envelope_result_on_mcp_tool_still_gets_hint():

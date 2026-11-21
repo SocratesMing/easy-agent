@@ -154,24 +154,6 @@ def test_builtin_tool_declaration_is_not_a_gap(tmp_path):
     skill = tmp_path / "reader"
     skill.mkdir()
     (skill / "SKILL.md").write_text(
-        "---\nname: reader\ndescription: d\nmetadata:/n  include_tools: read_file grep\n---\n",
-        encoding="utf-8",
-    )
-    assert skill_tool_gaps([tmp_path], list(FRAMEWORK_BUILTIN_TOOLS)) == {}
-    assert "read_file" in FRAMEWORK_BUILTIN_TOOLS
-
-
-def test_builtin_tool_declaration_is_not_a_gap(tmp_path):
-    """技能用 include_tools 声明框架内置工具时不能判成"数据通道缺工具"。
-
-    内置工具永远在（不来自 MCP、也不进 raw_tools），core._skill_gaps 会把
-    ``FRAMEWORK_BUILTIN_TOOLS`` 并进可用集；这里锁住这条契约。
-    """
-    from easy_agent.agent.skill_readiness import FRAMEWORK_BUILTIN_TOOLS
-
-    skill = tmp_path / "reader"
-    skill.mkdir()
-    (skill / "SKILL.md").write_text(
         "---\nname: reader\ndescription: d\nmetadata:\n  include_tools: read_file grep\n---\n",
         encoding="utf-8",
     )

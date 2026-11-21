@@ -7,7 +7,6 @@ import asyncio
 import copy
 import json
 import logging
-from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -52,7 +51,6 @@ from easy_agent.services.mcp.tools import (
     _unpack_error,
     invalidate_mcp_cache,
     load_mcp_config,
-    normalize_servers_mapping,
 )
 from easy_agent.services.mcp.policy import (
     McpPolicyError,

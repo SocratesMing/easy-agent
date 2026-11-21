@@ -181,7 +181,6 @@ def test_disabled_middleware_is_noop():
 
 def test_broken_state_is_swallowed():
     # 守卫失败绝不阻断正常调用：state 异常吞掉后原样放行
-    mw = ThinkingLoopMiddleware()
     request = SimpleNamespace(
         messages=[],
         state=None,  # getattr(state, "messages") 走 None 分支

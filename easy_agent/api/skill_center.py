@@ -13,8 +13,6 @@ from pydantic import BaseModel
 
 from easy_agent.middleware import get_current_username
 from easy_agent.agent.skills import (
-    MAX_SKILL_NAME_CHARS,
-    SKILL_NAME_RE,
     discover_skills,
 )
 from easy_agent.agent import builtin_skills
