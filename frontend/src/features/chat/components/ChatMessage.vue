@@ -1090,18 +1090,21 @@ html[data-theme="dark"] .process-group-preview {
 .message-skill-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   max-width: 100%;
-  padding: 2px 8px 2px 3px;
-  border: 1px solid color-mix(in srgb, var(--accent-color, #0ea5e9) 40%, transparent);
-  border-radius: 999px;
-  /* 半透明底色：气泡底色深浅变化时都能自然贴合 */
-  background: color-mix(in srgb, var(--accent-color, #0ea5e9) 12%, transparent);
+  padding: 1px 6px 1px 4px;
+  border-radius: 5px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent-color, #0ea5e9) 12%, var(--bg-secondary, #fff)),
+    color-mix(in srgb, var(--accent-color, #0ea5e9) 7%, var(--bg-secondary, #fff))
+  );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color, #0ea5e9) 24%, var(--border-color, rgba(15, 23, 42, 0.12)));
 }
 
 .message-skill-chip-name {
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.35;
   color: var(--text-primary, #1e293b);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1109,20 +1112,24 @@ html[data-theme="dark"] .process-group-preview {
   max-width: 180px;
 }
 
-/* SkillIcon 的 xs 档（22px）在气泡里偏大：这里按标签比例缩到 18px */
+/* 与输入框胶囊图标对齐：无底色方块、强调色线条图标 */
 .message-skill-chip :deep(.skill-icon) {
-  width: 18px;
-  height: 18px;
-  border-radius: 6px;
+  width: 14px;
+  height: 14px;
+  border-radius: 0;
+  color: var(--accent-color, #0ea5e9) !important;
+  background: none !important;
+  box-shadow: none !important;
 }
 
 .message-skill-chip :deep(.skill-icon svg) {
-  width: 11px;
-  height: 11px;
+  width: 12px;
+  height: 12px;
 }
 
 .message-skill-chip :deep(.skill-icon .icon-emoji) {
   font-size: 11px;
+  line-height: 1;
 }
 
 /* 气泡内正文：行内流式排版——首行紧跟标签之后，换行回到气泡左边缘 */

@@ -38,30 +38,31 @@
       @click.stop
     >
       <div class="token-popup-title">会话信息</div>
-      <div class="token-popup-section">
-        <div class="token-popup-row">
-          <span class="token-popup-label">会话耗时</span>
-          <span class="token-popup-value duration-value">{{ formattedDuration }}</span>
+      <div class="token-popup-kpis">
+        <div class="token-popup-kpi">
+          <div class="token-popup-kpi-label">会话耗时</div>
+          <div class="token-popup-kpi-value">{{ formattedDuration }}</div>
         </div>
-        <div class="token-popup-row">
-          <span class="token-popup-label">迭代次数</span>
-          <span class="token-popup-value">{{ iterationCount }}</span>
+        <div class="token-popup-kpi">
+          <div class="token-popup-kpi-label">迭代次数</div>
+          <div class="token-popup-kpi-value">{{ iterationCount }}</div>
         </div>
       </div>
-      <div class="token-popup-divider"></div>
-      <div class="token-popup-section">
-        <div class="token-popup-row">
+      <div class="token-popup-context-card">
+        <div class="token-popup-context-head">
           <span class="token-popup-label">
-            本轮上下文占用{{ sessionUsage.context_estimated ? "（估算）" : "" }}
+            本轮上下文{{ sessionUsage.context_estimated ? "（估算）" : "" }}
           </span>
-        </div>
-        <div class="token-popup-context-row">
-          <span class="token-popup-context-value">
-            {{ formatTokens(sessionUsage.context_tokens) }}/{{ formatTokens(sessionUsage.context_length) }}
-          </span>
-          <span class="token-popup-context-percent" :style="{ color: contextColor }">
+          <span
+            class="token-popup-context-badge"
+            :style="{ color: contextColor, background: `color-mix(in srgb, ${contextColor} 14%, transparent)` }"
+          >
             {{ contextPercent }}%
           </span>
+        </div>
+        <div class="token-popup-context-nums">
+          <span class="token-popup-context-main">{{ formatTokens(sessionUsage.context_tokens) }}</span>
+          <span class="token-popup-context-total"> / {{ formatTokens(sessionUsage.context_length) }}</span>
         </div>
         <div class="token-popup-bar">
           <div class="token-popup-bar-inner">
@@ -72,18 +73,28 @@
           </div>
         </div>
       </div>
-      <div class="token-popup-divider"></div>
-      <div class="token-popup-row">
-        <span class="token-popup-label">输入 Token</span>
-        <span class="token-popup-value input">{{ formatTokens(sessionUsage.input_tokens) }}</span>
-      </div>
-      <div class="token-popup-row">
-        <span class="token-popup-label">输出 Token</span>
-        <span class="token-popup-value output">{{ formatTokens(sessionUsage.output_tokens) }}</span>
-      </div>
-      <div class="token-popup-row">
-        <span class="token-popup-label">思考 Token</span>
-        <span class="token-popup-value reasoning">{{ formatTokens(sessionUsage.reasoning_tokens) }}</span>
+      <div class="token-popup-legend">
+        <div class="token-popup-row">
+          <span class="token-popup-label-wrap">
+            <span class="token-dot dot-input"></span>
+            <span class="token-popup-label">输入 Token</span>
+          </span>
+          <span class="token-popup-num">{{ formatTokens(sessionUsage.input_tokens) }}</span>
+        </div>
+        <div class="token-popup-row">
+          <span class="token-popup-label-wrap">
+            <span class="token-dot dot-output"></span>
+            <span class="token-popup-label">输出 Token</span>
+          </span>
+          <span class="token-popup-num">{{ formatTokens(sessionUsage.output_tokens) }}</span>
+        </div>
+        <div class="token-popup-row">
+          <span class="token-popup-label-wrap">
+            <span class="token-dot dot-reasoning"></span>
+            <span class="token-popup-label">思考 Token</span>
+          </span>
+          <span class="token-popup-num">{{ formatTokens(sessionUsage.reasoning_tokens) }}</span>
+        </div>
       </div>
     </div>
   </div>
@@ -209,101 +220,162 @@ export default {
   position: fixed;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  border-radius: 14px;
+  box-shadow:
+    0 12px 32px -4px rgba(15, 23, 42, 0.14),
+    0 2px 6px rgba(15, 23, 42, 0.06);
   padding: 14px 16px;
-  min-width: 200px;
+  width: 248px;
+  box-sizing: border-box;
   z-index: 9999;
   cursor: default;
 }
 
 .token-popup-title {
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--text-primary);
   margin-bottom: 10px;
 }
 
-.token-popup-section {
+.token-popup-kpis {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.token-popup-kpi {
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-tertiary) 75%, transparent);
+}
+
+.token-popup-kpi-label {
+  font-size: 11px;
+  color: var(--text-secondary);
   margin-bottom: 2px;
 }
 
-.token-popup-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 3px 0;
-}
-
-.token-popup-label {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.token-popup-value {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.token-popup-value.input {
-  color: #4f46e5;
-}
-
-.token-popup-value.output {
-  color: #0e7490;
-}
-
-.token-popup-value.reasoning {
-  color: #7e22ce;
-}
-
-.token-popup-value.duration-value {
-  color: #4f46e5;
-  font-weight: 600;
-}
-
-.token-popup-context-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  padding: 2px 0 4px;
-}
-
-.token-popup-context-value {
-  font-size: 13px;
+.token-popup-kpi-value {
+  font-size: 14px;
   font-weight: 700;
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
+  line-height: 1.25;
 }
 
-.token-popup-context-percent {
-  font-size: 13px;
+.token-popup-context-card {
+  margin-top: 10px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-tertiary) 50%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+}
+
+.token-popup-context-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.token-popup-context-badge {
+  font-size: 11px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 7px;
+  border-radius: 999px;
+  line-height: 1.4;
+}
+
+.token-popup-context-nums {
+  margin-top: 4px;
+  display: flex;
+  align-items: baseline;
   font-variant-numeric: tabular-nums;
 }
 
-.token-popup-divider {
-  height: 1px;
-  background: var(--bg-tertiary);
-  margin: 6px 0;
+.token-popup-context-main {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.token-popup-context-total {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: pre;
 }
 
 .token-popup-bar {
-  margin-top: 4px;
+  margin-top: 7px;
 }
 
 .token-popup-bar-inner {
-  height: 5px;
-  border-radius: 3px;
+  height: 6px;
+  border-radius: 999px;
   overflow: hidden;
   background: var(--bg-tertiary);
 }
 
 .token-popup-bar-fill {
   height: 100%;
-  border-radius: 3px;
+  border-radius: 999px;
   transition: width 0.4s ease;
+}
+
+.token-popup-legend {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 75%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.token-popup-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1px 0;
+}
+
+.token-popup-label-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.token-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.token-dot.dot-input {
+  background: #6366f1;
+}
+
+.token-dot.dot-output {
+  background: #06b6d4;
+}
+
+.token-dot.dot-reasoning {
+  background: #a855f7;
+}
+
+.token-popup-label {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.token-popup-num {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
 }
 </style>
 

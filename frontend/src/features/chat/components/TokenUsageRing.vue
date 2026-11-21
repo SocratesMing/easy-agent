@@ -37,30 +37,31 @@
         @click.stop
       >
         <div class="token-popup-title">会话信息</div>
-        <div class="token-popup-section">
-          <div class="token-popup-row">
-            <span class="token-popup-label">会话耗时</span>
-            <span class="token-popup-value duration-value">{{ formattedDuration }}</span>
+        <div class="token-popup-kpis">
+          <div class="token-popup-kpi">
+            <div class="token-popup-kpi-label">会话耗时</div>
+            <div class="token-popup-kpi-value">{{ formattedDuration }}</div>
           </div>
-          <div class="token-popup-row">
-            <span class="token-popup-label">迭代次数</span>
-            <span class="token-popup-value">{{ iterationCount }}</span>
+          <div class="token-popup-kpi">
+            <div class="token-popup-kpi-label">迭代次数</div>
+            <div class="token-popup-kpi-value">{{ iterationCount }}</div>
           </div>
         </div>
-        <div class="token-popup-divider"></div>
-        <div class="token-popup-section">
-          <div class="token-popup-row">
+        <div class="token-popup-context-card">
+          <div class="token-popup-context-head">
             <span class="token-popup-label">
-              本轮上下文占用{{ sessionUsage.context_estimated ? "（估算）" : "" }}
+              本轮上下文{{ sessionUsage.context_estimated ? "（估算）" : "" }}
             </span>
-          </div>
-          <div class="token-popup-context-row">
-            <span class="token-popup-context-value">
-              {{ formatTokens(sessionUsage.context_tokens) }}/{{ formatTokens(sessionUsage.context_length) }}
-            </span>
-            <span class="token-popup-context-percent" :style="{ color: contextColor }">
+            <span
+              class="token-popup-context-badge"
+              :style="{ color: contextColor, background: `color-mix(in srgb, ${contextColor} 14%, transparent)` }"
+            >
               {{ contextPercent }}%
             </span>
+          </div>
+          <div class="token-popup-context-nums">
+            <span class="token-popup-context-main">{{ formatTokens(sessionUsage.context_tokens) }}</span>
+            <span class="token-popup-context-total"> / {{ formatTokens(sessionUsage.context_length) }}</span>
           </div>
           <div class="token-popup-bar">
             <div class="token-popup-bar-inner">
@@ -71,18 +72,28 @@
             </div>
           </div>
         </div>
-        <div class="token-popup-divider"></div>
-        <div class="token-popup-row">
-          <span class="token-popup-label">输入 Token</span>
-          <span class="token-popup-value input">{{ formatTokens(sessionUsage.input_tokens) }}</span>
-        </div>
-        <div class="token-popup-row">
-          <span class="token-popup-label">输出 Token</span>
-          <span class="token-popup-value output">{{ formatTokens(sessionUsage.output_tokens) }}</span>
-        </div>
-        <div class="token-popup-row">
-          <span class="token-popup-label">思考 Token</span>
-          <span class="token-popup-value reasoning">{{ formatTokens(sessionUsage.reasoning_tokens) }}</span>
+        <div class="token-popup-legend">
+          <div class="token-popup-row">
+            <span class="token-popup-label-wrap">
+              <span class="token-dot dot-input"></span>
+              <span class="token-popup-label">输入 Token</span>
+            </span>
+            <span class="token-popup-num">{{ formatTokens(sessionUsage.input_tokens) }}</span>
+          </div>
+          <div class="token-popup-row">
+            <span class="token-popup-label-wrap">
+              <span class="token-dot dot-output"></span>
+              <span class="token-popup-label">输出 Token</span>
+            </span>
+            <span class="token-popup-num">{{ formatTokens(sessionUsage.output_tokens) }}</span>
+          </div>
+          <div class="token-popup-row">
+            <span class="token-popup-label-wrap">
+              <span class="token-dot dot-reasoning"></span>
+              <span class="token-popup-label">思考 Token</span>
+            </span>
+            <span class="token-popup-num">{{ formatTokens(sessionUsage.reasoning_tokens) }}</span>
+          </div>
         </div>
       </div>
     </Teleport>
