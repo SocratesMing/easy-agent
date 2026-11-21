@@ -48,14 +48,11 @@
       "nodeEngines": null,
       "declaredIn": "dependencies",
       "specifiers": [
-        "element-ui/lib/button",
-        "element-ui/lib/dialog",
         "element-ui/lib/message-box"
       ],
       "usedBy": [
         "features/personnel/components/UserManagementPanel.vue",
-        "features/settings/components/SettingsPanel.vue",
-        "shared/components/ConfirmDialog.vue"
+        "features/settings/components/SettingsPanel.vue"
       ]
     },
     "exceljs": {

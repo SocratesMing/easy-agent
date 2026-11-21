@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { compileScript, parse } from '@vue/compiler-sfc'
 import { hasAssistantReply } from '../services/streamResume.js'
+import { freezeHistoryMessages } from '../../../shared/chat/freezeMessage.js'
 import {
   archiveChanged, isSessionDeleted, isStaleSessionError, loadDailySessions,
   resetSessions, sessionDeleted, sessionGuard,
@@ -26,7 +27,7 @@ const reply = content => ({ messages: [{ role: 'assistant', content }] })
 
 function historyHarness(getChatHistory, streaming = false) {
   const scope = {
-    isSessionDeleted, sessionGuard, getChatHistory, historyVersions: {}, hasAssistantReply,
+    isSessionDeleted, sessionGuard, getChatHistory, historyVersions: {}, hasAssistantReply, freezeHistoryMessages,
     isSessionStreaming: () => streaming,
     currentSessionId: ref('s1'), loadedSessionId: ref('s1'), messages: ref([]), currentTodos: ref([]),
     syncExpertChipFromMessages() {}, sessionUsage: ref({}), sessionDuration: ref(0),

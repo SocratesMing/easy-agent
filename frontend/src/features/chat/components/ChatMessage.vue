@@ -1070,73 +1070,6 @@ html[data-theme="dark"] .process-group-preview {
   display: block;
 }
 
-/* 用户气泡内的技能标签：与输入框「已选技能」同一套胶囊样式，但整体缩一档，
-   让标签高度（约 24px）落在正文行高（16px × 1.7 ≈ 27px）之内，居中后不突兀 */
-.message-skill-chips {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-}
-
-/* 气泡内的标签按行内元素排布，紧贴正文首行、不单独占宽；多个标签仍横排 */
-.user-bubble .message-skill-chips {
-  display: inline-flex;
-  vertical-align: middle;
-  margin-right: 6px;
-}
-
-.message-skill-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-  padding: 1px 6px 1px 4px;
-  border-radius: 5px;
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--accent-color, #0ea5e9) 12%, var(--bg-secondary, #fff)),
-    color-mix(in srgb, var(--accent-color, #0ea5e9) 7%, var(--bg-secondary, #fff))
-  );
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color, #0ea5e9) 24%, var(--border-color, rgba(15, 23, 42, 0.12)));
-}
-
-.message-skill-chip-name {
-  font-size: 13px;
-  line-height: 1.35;
-  color: var(--text-primary, #1e293b);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 180px;
-}
-
-/* 与输入框胶囊图标对齐：无底色方块、强调色线条图标 */
-.message-skill-chip :deep(.skill-icon) {
-  width: 14px;
-  height: 14px;
-  border-radius: 0;
-  color: var(--accent-color, #0ea5e9) !important;
-  background: none !important;
-  box-shadow: none !important;
-}
-
-.message-skill-chip :deep(.skill-icon svg) {
-  width: 12px;
-  height: 12px;
-}
-
-.message-skill-chip :deep(.skill-icon .icon-emoji) {
-  font-size: 11px;
-  line-height: 1;
-}
-
-/* 气泡内正文：行内流式排版——首行紧跟标签之后，换行回到气泡左边缘 */
-.user-bubble-body {
-  display: inline;
-}
-
 .message.assistant .message-content {
   align-items: flex-start;
   width: 100%;
@@ -2567,3 +2500,4 @@ html[data-theme="dark"] .tool-status-text.executing {
 </style>
 
 <style scoped src="./citationNumbers.css"></style>
+<style scoped src="./skillChips.css"></style>
