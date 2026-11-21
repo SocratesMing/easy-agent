@@ -1,7 +1,6 @@
-"""HITL 中断状态解析（ARCH-03 Phase 3 第一步抽取）。
+"""HITL 中断状态解析。
 
-这些函数只做纯数据解析，不依赖 DB/SSE/Agent 实例，从 streaming.py 拆出后
-便于独立单测，也是后续「编排器 + 纯处理器 + 持久化适配器」拆分的第一块。
+只做数据解析，不依赖数据库、SSE 或 Agent，可以单独测试。
 """
 
 from __future__ import annotations

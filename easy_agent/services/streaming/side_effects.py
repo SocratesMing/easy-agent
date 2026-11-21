@@ -1,7 +1,6 @@
-"""流式收尾副作用（C2 拆分第二步）：工作区重命名 / 技能入库 / 记忆更新。
+"""流式收尾副作用：工作区重命名、技能入库、记忆更新。
 
-这些动作会触碰文件系统、Agent 缓存与后台线程，和「纯投影」「DB 持久化」分开，
-便于单测时按需打桩（golden 测试通常只关心事件顺序与落库载荷）。
+这些动作会碰文件系统、Agent 缓存和后台线程，与纯投影、数据库持久化分开，便于单测打桩。
 """
 
 from __future__ import annotations
@@ -39,11 +38,9 @@ logger = logging.getLogger("easy_agent.chat_service")
 
 
 def _file_port(db):
-    """文件域数据端口：``FileRepository``、``Database`` 连接或测试替身。
+    """文件域数据端口：``FileRepository``、``Database`` 或测试替身。
 
-    T3c 起 orchestrator 以 ``db=`` 传入的 ``Database`` 在这里被包成领域
-    repository（它仍留在流式引擎边界，见 T3 遗留清单）；测试替身直接实现
-    同名方法时按 duck typing 使用，行为不变。
+    传入 ``Database`` 时包成 ``FileRepository``。测试替身实现同名方法即可。
     """
     if isinstance(db, FileRepository):
         return db

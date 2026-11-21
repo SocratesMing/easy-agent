@@ -768,8 +768,6 @@ class ToolProgressMiddleware(AgentMiddleware):
             ),
         )
 
-    # ── 原四件套（行为未改） ──────────────────────────────────────────
-
     def _read_note(self, request: Any, name: str, args: Any) -> str:
         """读取型工具的重复读软提示（第二次同参数读取就出现，第 4 次起熔断）。
 

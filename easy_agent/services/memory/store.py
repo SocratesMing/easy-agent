@@ -15,13 +15,12 @@ JSONL 布局（首行 meta，其后每条记忆一行）::
     {"type": "meta", "schema": 1, "revision": 3, "title": "会话记忆", ...}
     {"type": "entry", "id": "mem_...", "key": "...", "value": "...", ...}
 
-读取对损坏行、缺字段、缺失文件全部容错（best effort）；外部直接编辑 Markdown
-后，内容 hash 不一致会在下一次同步时以 Markdown 为准回灌 sidecar。
+读取对损坏行、缺字段、缺失文件全部容错；外部直接改了 Markdown 后，
+内容 hash 不一致时下一次同步以 Markdown 为准回灌 sidecar。
 
-实现拆分（批次 2A）：文件锁 / 原子写在 :mod:`easy_agent.services.memory.locks`，
-条目模型与 Markdown 编解码在 :mod:`easy_agent.services.memory.entries`；本模块保留
-:class:`MemoryStore`、写入/同步入口，并 re-export 拆分前的全部公开名字（对象身份
-不变），既有 ``from easy_agent.services.memory.store import ...`` 导入路径仍可用。
+文件锁在 :mod:`easy_agent.services.memory.locks`，条目模型在
+:mod:`easy_agent.services.memory.entries`。本模块 re-export 它们的公开名字，
+``from easy_agent.services.memory.store import ...`` 仍可用。
 """
 
 from __future__ import annotations
@@ -33,7 +32,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-# 以下导入同时是兼容 re-export：对象身份与子模块一致（纯移动，不改行为）。
+# 以下导入同时是兼容 re-export，对象身份与子模块一致。
 from easy_agent.services.memory.entries import (  # noqa: F401 - 兼容重导出（测试锁定）
     DEFAULT_CATEGORY,
     DEFAULT_SOURCE,
@@ -78,7 +77,7 @@ from easy_agent.services.memory.locks import (
     store_path_for,
 )
 
-# 沿用原模块 logger 名：既有日志过滤与测试断言依赖该名字（纯移动，不改行为）。
+# 日志名固定为 easy_agent.memory.store，过滤规则和测试断言依赖它。
 logger = logging.getLogger("easy_agent.memory.store")
 
 SCHEMA_VERSION = 1

@@ -1,8 +1,6 @@
 """连接器（MCP）API：内置目录、安装/卸载、mcp.json 原文编辑、自定义服务增删。
 
-连接器 = 一条可直接写入用户 ``mcp.json``（``workspace/{username}/mcp.json``）的
-MCP 服务配置。原先挂在 ``/agent/settings/mcp*`` 下的接口整体迁移到这里，
-原「公共市场」（全局 mcp.json）接口已下线。
+一条连接器就是写入用户 ``mcp.json``（``workspace/{username}/mcp.json``）的一条 MCP 配置。
 """
 
 import asyncio

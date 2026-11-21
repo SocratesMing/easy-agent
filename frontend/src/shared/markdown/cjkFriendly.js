@@ -1,19 +1,14 @@
 // ⚠️ 自动生成，请勿直接编辑。
 // 源文件：frontend-shared/markdown/cjkFriendly.js
 // 同步：npm run sync:shared（frontend-vue2 / frontend 各自目录下执行）
-// marked 扩展：强调（* _）与删除线（~~）的定界符紧挨中日韩文字时也能识别。
+// marked 扩展：强调（* _）与删除线（~~）紧挨中日韩文字时也能识别。
 //
-// 解决的问题：CommonMark 判断定界符能否开合时把汉字当普通字母，`**` 一侧是全角标点、另一侧是汉字时
-// 不算定界符——`**注意：**请勿删除`、`**收益率（年化）**为` 原样露出星号；`这是**“重点”**内容，
-// 以及**《标题》**后文` 更糟，会和后面的 `**` 错配，把「内容，以及」加粗。本扩展在定界符紧邻 CJK 字符
-// 时放宽判定（与 markdown-it-cjk-friendly / remark-cjk-friendly 同一套规则）。
+// CommonMark 把汉字当普通字母，`**注意：**请勿删除` 这类写法会露出星号，或和后面的 `**` 错配。
+// 定界符紧邻 CJK 时放宽判定，规则同 markdown-it-cjk-friendly / remark-cjk-friendly。
 //
-// 来源：marked-cjk-friendly@0.1.3 的 dist/index.js（https://github.com/tats-u/markdown-cjk-friendly），
-// 分隔线以下原样拷贝、未做改动；升级时整体替换为新版 dist/index.js，再跑 utils/markdownCjk.test.js。
-// 没有装成 npm 依赖：Vue2 业务模块要整体同步到内网宿主（Node 14 / npm 6），新增依赖需要宿主另行安装，
-// 而这个包只有约 200 行、没有依赖。
-// 依赖 marked 17 的内部规则名（rules.inline.emStrongLDelim / delLDelim / punctuation 等），
-// 升级 marked 大版本时必须回归上面的单测。
+// 来源：marked-cjk-friendly@0.1.3 的 dist/index.js（https://github.com/tats-u/markdown-cjk-friendly）。
+// 分隔线以下原样拷贝。未做成 npm 依赖：Vue 2 模块要同步到内网宿主（Node 14），这个包约 200 行且无依赖。
+// 依赖 marked 17 的内部规则名。升级本文件或 marked 大版本后跑 utils/markdownCjk.test.js。
 //
 // MIT License
 //

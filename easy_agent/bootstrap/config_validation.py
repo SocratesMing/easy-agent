@@ -1,8 +1,6 @@
-"""配置键校验与环境变量占位符展开（2026-10-18 批次 1A 从 config.py 拆出）。
+"""配置键校验与环境变量占位符展开。
 
-本模块**不 import config.py**：``Config.from_yaml`` 调用这里的校验与展开
-逻辑，``config.py`` 负责 re-export，保持既有导入路径与行为不变。已知键里能和
-``config_models`` 的模型一一对应的部分直接由模型字段生成，不再手写第二份。
+本模块不 import ``config.py``。已知键里能对应 ``config_models`` 字段的部分由模型字段生成。
 """
 
 import logging

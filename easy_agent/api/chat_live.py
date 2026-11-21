@@ -42,7 +42,7 @@ _LIVE_IDLE_ROUNDS = 2
 _LIVE_PAGE_LIMIT = 500
 
 
-# 批次 4：provider 统一从 ``api.deps`` 导入，本模块不再复制一份同形实现。
+# provider 从 api.deps 导入。
 
 
 def _frame_is_terminal(frame: str) -> bool:

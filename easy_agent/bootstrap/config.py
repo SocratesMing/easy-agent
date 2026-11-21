@@ -1,11 +1,7 @@
-"""Configuration management module
+"""配置加载。
 
-Provides unified configuration loading and management functionality.
-
-2026-10-18 批次 1A：Pydantic 模型拆分到 ``config_models.py``，配置键校验与
-``${VAR}`` 展开拆分到 ``config_validation.py``；本模块只保留 ``Config``
-（加载 / 解析 / 路径 helpers），并 re-export 原有公开名字与兼容私有名，
-保证 ``from easy_agent.bootstrap.config import ...`` 的既有导入路径与行为不变。
+Pydantic 模型在 ``config_models.py``，键校验和 ``${VAR}`` 展开在 ``config_validation.py``。
+本模块保留 ``Config``，并 re-export 原有公开名字。
 """
 
 import logging

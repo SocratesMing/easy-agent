@@ -1,19 +1,8 @@
-"""领域异常：数据层 / 服务层只抛这些异常，不依赖 FastAPI（T11）。
+"""领域异常。数据层和服务层只抛这些，不依赖 FastAPI。
 
-分层约定（L0）：``easy_agent.models`` 不 import 任何上层模块，也不 import web
-框架。数据库层（``easy_agent/db``）、服务层（``easy_agent/services``）遇到「资源
-不存在 / 状态冲突 / 参数不合法」时抛这里的异常，**不再直接抛 ``HTTPException``**，
-这样同一条业务逻辑可以被 HTTP 路由、后台任务、CLI 复用，不必为了非 HTTP 调用方
-构造一个带状态码的 web 异常。
-
-映射到 HTTP 的职责在 ``easy_agent/app.py`` 的异常处理器里（见
-``_DOMAIN_ERROR_STATUS``）：``NotFoundError`` → 404、``ConflictError`` → 409、
-``BadRequestError`` → 400，响应体与 ``StarletteHTTPException`` 处理器完全一致
-（``{"detail": ..., "code": "HTTP_<status>", "request_id": ...}``），因此除
-「异常类型」外，HTTP 层行为与迁移前完全一致。
-
-契约约束：``message`` 是**面向用户的文案**，路由层 / 处理器不得改写；迁移既有
-``HTTPException`` 时文案必须逐字保留，否则前端提示语会变。
+``easy_agent.models`` 不 import 上层模块，也不 import web 框架。
+HTTP 映射在 ``app.py`` 的 ``_DOMAIN_ERROR_STATUS``。
+``message`` 是给用户看的文案，路由和处理器不要改写。
 """
 
 from __future__ import annotations

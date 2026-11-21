@@ -1,13 +1,7 @@
-"""结构化记忆条目模型、校验与 Markdown 编解码（从 ``memory_store`` 拆出，纯移动）。
+"""结构化记忆的条目模型、校验和 Markdown 编解码。
 
-本模块只包含纯函数 / 数据模型，不触碰锁与文件写入：
-
-- 条目模型 ``MemoryEntry`` 与 ``MemoryValidationError``；
-- key / id 推导、校验、脱敏、同 key 合并（supersede）；
-- Markdown 解析 / 渲染与预算裁剪。
-
-依赖方向：本模块不 import ``memory_store``；``memory_store`` 反过来 re-export 这里
-的公开名字，保持既有导入路径与对象身份不变。
+纯函数和数据模型，不碰锁、也不写文件。本模块不 import ``memory_store``；
+``memory_store`` re-export 这里的公开名字。
 """
 
 from __future__ import annotations
@@ -21,7 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-# 沿用原模块 logger 名：既有日志过滤与测试断言依赖该名字（纯移动，不改行为）。
+# 日志名固定为 easy_agent.memory.store，过滤规则和测试断言依赖它。
 logger = logging.getLogger("easy_agent.memory.store")
 
 ENV_FLAG = "EASY_STRUCTURED_MEMORY"

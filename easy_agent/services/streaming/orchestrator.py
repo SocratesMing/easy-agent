@@ -1,4 +1,4 @@
-"""流式编排器（C2 第三步）：统一 chat / resume 的流式循环与收尾。
+"""流式编排器：统一 chat / resume 的流式循环与收尾。
 
 职责边界：
 
@@ -7,8 +7,7 @@
 - ``side_effects``：工作区重命名、技能入库、记忆更新；
 - 本模块：只保留「什么时候调用谁」的编排逻辑与对外生成器。
 
-对外契约（SSE 事件名/字段/顺序）与拆分前逐字保持一致；``streaming`` 包的
-``__init__`` 负责重导出，旧 ``streaming.py`` 文件保留为按路径加载的兼容垫片。
+SSE 事件名、字段和顺序是对外契约，见 ``docs/sse-events.md``。
 """
 
 from __future__ import annotations
@@ -645,7 +644,7 @@ def _build_done_payload(
     auto_compress_tokens,
     is_resume: bool,
 ) -> tuple[dict, dict]:
-    """组装 usage 与 done 字段（键序与迁移前字面量一致）。"""
+    """组装 usage 与 done 字段。键序是契约。"""
     usage_payload = build_usage_payload(
         last_usage=proc.last_usage,
         context_length=context_length,
@@ -654,7 +653,7 @@ def _build_done_payload(
         step_count=proc.current_step,
         elapsed_time=stats.elapsed_time if is_resume else None,
     )
-    # 键序契约（与迁移前字面量一致）：type → session_id → elapsed_time →
+# 键序是契约：type → session_id → elapsed_time →
     # usage；resume 的 blocks 必须排在 usage 之后（chat 不带 blocks）。
     done_fields = {
         "elapsed_time": round(stats.elapsed_time, 2),
@@ -701,7 +700,7 @@ async def finalize_stream(
     ``blocks``、usage 不含 ``elapsed_time``，并额外写调试快照与会话日志；
     ``mode="resume"`` 的 done 带权威 ``blocks``、usage 含 ``elapsed_time``。
     resume 特有的 ``merge_tool_call_records`` / ``finalize_blocks`` 由调用方完成后
-    传入。本函数只产出最后一帧 ``done``，字段与顺序同拆分前逐字一致。
+    传入。本函数只产出最后一帧 ``done``。
     """
     is_resume = mode == "resume"
     emitter = emitter or SSEEmitter(session_id)
@@ -1073,7 +1072,7 @@ async def _run_stream(run: StreamRun, stream_input) -> AsyncGenerator[str, None]
                     interruption.partial_message,
                 )
                 if is_resume:
-                    # 键序契约（与迁移前字面量一致）：type → thread_id → blocks →
+                    # 键序是契约：type → thread_id → blocks →
                     # action_requests。快捷方法把 action_requests 放在 blocks 之前，
                     # 故此处必须用 emit() 显式排序，不得改用 approval_required()。
                     yield run.emitter.emit(
@@ -1442,7 +1441,7 @@ async def _resume_stream_impl(
     # 与主生成器同一套 config（含按编译图节点数计算的 recursion_limit 兜底）。
     stream_config = build_run_config(agent, thread_id)
 
-    # 按 interrupt_id 规划恢复值（DA-02）；接口已前置校验，这里只处理并发竞态。
+    # 按 interrupt_id 规划恢复值。接口已校验过决策，这里只处理并发竞态。
     try:
         plan = await plan_resume_for_agent(
             agent=agent, stream_config=stream_config, decisions=decisions, sid=sid

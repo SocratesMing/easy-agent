@@ -1,7 +1,7 @@
-"""数据库结构定义与幂等迁移（ARCH-03 Phase 2 收尾）。
+"""数据库结构定义与幂等迁移。
 
-从 Database 抽出的 DDL/迁移逻辑：建表、补列、建索引、schema 版本快速路径、
-消息行自愈。连接/事务仍由传入的 db 对象提供；Database 保留同名薄委托。
+从 Database 抽出的 DDL：建表、补列、建索引、schema 版本快速路径、消息行自愈。
+连接和事务仍由传入的 db 提供；Database 保留同名薄委托。
 """
 
 from __future__ import annotations

@@ -462,7 +462,6 @@ export default {
       return relatedEvidence(this.message).items || []
     },
     sortedBlocks() {
-      // 从 blocks 字段构建（优先使用）
       if (this.message.blocks && this.message.blocks.length > 0) {
         // 严格按大模型返回顺序（创建顺序 order）展示，不做按 step/类型的二次重排：
         // 旧数据 content 块无 step，按 step 重排会把它排到顶部；按 order 原序则正文
@@ -480,7 +479,6 @@ export default {
             content: this.displayContent,
             order: sorted.length
           })
-          // 重新排列 order
           sorted.forEach((b, i) => { b.order = i })
         }
         // 防御性合并：将同一 step 的思考块合并为一张「思考过程」卡片。

@@ -1,10 +1,6 @@
-"""流事件投影（C2 拆分第一步）：chunk/状态 → 内部事件与持久化结构。
+"""流事件投影：chunk / 状态 → 内部事件与持久化结构。
 
-本模块是**纯函数**集合：只做数据整形，不依赖数据库、Agent 实例或 SSE 序列化，
-因此可以直接单测。编排器（``orchestrator``）负责调用顺序，``streaming`` 包
-``__init__`` 与同目录 ``streaming.py`` 兼容垫片负责对外重导出。
-
-对应审计项：C2（``services/streaming.py`` 1482 行单体拆分）。
+纯函数，不依赖数据库、Agent 或 SSE 序列化。调用顺序在 ``orchestrator``。
 """
 
 from __future__ import annotations

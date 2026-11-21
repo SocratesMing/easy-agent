@@ -12,11 +12,6 @@
   运行时逻辑在 ``services/experts/runtime.py``，本文件只保留 CRUD；
 - **专家提示词走 ``system_prompt_extra``**：不改 ``agent.py``，专家人设通过现成通道
   追加到系统提示词末尾（recency 最高，实际效果上主导通用人设）。
-
-批次 2B 起非路由辅助逻辑（用户/记录转换、配置读取、生成落库）移到
-``api/expert_helpers.py``；2026-10 起对话运行时（提示词加载与护栏、消息落库、相关性
-预检、短路拒答流）下沉到 ``services/experts/runtime.py``。旧内部名字经 ``__all__``
-re-export 继续可用。
 """
 
 import asyncio
@@ -74,9 +69,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Expert"])
 
-# 批次 2B：辅助逻辑的实现已移至 ``api/expert_helpers.py``，这里按旧名字 re-export，
-# 既有 ``from easy_agent.api.expert import _to_public`` / ``expert_api._expert_profile``
-# 之类的引用继续可用（同一对象，非拷贝）。
+# 辅助函数的实现在 api/expert_helpers.py，这里按原名 re-export（同一对象）。
 __all__ = [
     "_as_str_list",
     "_current_user_id",
@@ -101,7 +94,7 @@ __all__ = [
 ]
 
 
-# 批次 4：repository provider 统一在 ``api.deps``；旧名字在此 re-export。
+# repository provider 在 api.deps，这里 re-export 旧名字。
 
 
 # ── 请求模型 ──────────────────────────────────────────────────────────

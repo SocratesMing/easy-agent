@@ -21,7 +21,7 @@ from easy_agent.bootstrap.config import Config
 from easy_agent.sandboxing.fs_safety import _check_external_dir_safety
 from easy_agent.sandboxing.sandbox import host_safe_env
 
-# 纯移动：沿用拆分前的 logger 名称，保持日志路由/过滤行为不变。
+# 日志名固定为 easy_agent.agent，过滤规则依赖它。
 logger = logging.getLogger("easy_agent.agent")
 
 _UNSAFE_DIR_CHARS = re.compile(r"[^A-Za-z0-9_-]")

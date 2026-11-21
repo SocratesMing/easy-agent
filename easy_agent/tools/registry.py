@@ -1,4 +1,4 @@
-"""Agent 工具注册表：后端工具元数据的单一来源（D1）。
+"""Agent 工具注册表：后端工具元数据的单一来源。
 
 本模块只负责两件事：
 
@@ -7,7 +7,7 @@
 2. **装配**：按既有条件与顺序返回会话工具列表（``build_session_tools``），
    使 ``services/agents/manager.py`` 不再逐个工具写 ``if/append``。
 
-约束（与改造前逐项等价）：
+约束：
 
 - ``hitl.DEFAULT_INTERRUPT_TOOLS`` 由 :func:`default_interrupt_tool_names` 派生，
   内容与顺序保持 ``("save_expert", "create_scheduled_task")``；
@@ -187,7 +187,7 @@ class ToolBuildContext:
         return (self.session_id or "new")[-5:]
 
 
-# ── 注入条件（与改造前 agent_manager 中的 if 一一对应） ──────────────────
+# 注入条件。未满足的工具不进入本会话工具列表。
 
 
 def _scheduled_task_enabled(ctx: ToolBuildContext) -> bool:
@@ -195,10 +195,7 @@ def _scheduled_task_enabled(ctx: ToolBuildContext) -> bool:
 
 
 def _save_expert_enabled(ctx: ToolBuildContext) -> bool:
-    # 非专家会话都注入，且**不参与技能门控**：创建专家的入口是产品级的，不能依赖用户手里
-    # 那份 expert-creator 技能的 frontmatter 写成什么样。DA-13 曾把它交给技能带出，结果
-    # 升级前整份复制到用户目录的旧副本（frontmatter 没有 metadata.include_tools）永远
-    # 披露不出这个工具，「新建专家」直接不可用。见 agent/core.py 的 _ALWAYS_AVAILABLE_TOOLS。
+    # 非专家会话都注入，且不参与技能门控。原因见 agent/core.py 的 _ALWAYS_AVAILABLE_TOOLS。
     return not ctx.expert_session
 
 
@@ -216,14 +213,8 @@ def _user_interaction_enabled(ctx: ToolBuildContext) -> bool:
     return bool(ctx.enable_user_interaction)
 
 
-# ── 工具工厂（由装配根注入，注册表保持包内无 import 边） ─────────────────
-#
-# 这里不 ``import`` 任何 tools/knowledge 模块，工具工厂由
-# ``agent_manager._tool_factories()`` 经 ``ToolBuildContext.factories`` 注入，
-# 测试可以直接换成假工厂。最初这样做是为了不并进当年的
-# knowledge-chat-scheduler-core SCC；该环已在 A1 拆掉，2026-10-19 核对过：
-# 工厂所在模块都没有回到本模块的 import 路径，把工厂直接登记进 ToolSpec
-# 不会形成环（可作为后续简化，届时测试改为替换 builder）。
+# 工具工厂由 agent_manager 经 ToolBuildContext.factories 注入，本模块不 import 工具实现。
+# 测试可以直接换成假工厂。各工厂模块都没有回到本模块的 import，直接登记进 ToolSpec 也不会成环。
 
 
 def _get_factory(ctx: ToolBuildContext, name: str) -> Callable[..., Any]:

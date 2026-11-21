@@ -1,7 +1,4 @@
-"""会话文件/生成文件 repository（ARCH-03 Phase 2）。
-
-从 `Database` 抽出的 files 领域：session_files + generated_files。
-"""
+"""会话文件与生成文件：session_files、generated_files。"""
 
 from __future__ import annotations
 

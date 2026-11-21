@@ -1,9 +1,7 @@
 """EasyAgent 的 workspace / skills / permissions 辅助方法。
 
-从 ``easy_agent.agent`` 拆出的低耦合方法（纯移动，方法体逐字未改）。
-它们只使用 ``EasyAgent`` 上已有的运行时属性（config / safe_username /
-workspace_dir / user_skills_dir / sid 等），不引入额外状态；
-``EasyAgent`` 通过继承 :class:`AgentWorkspaceMixin` 继续暴露同名方法。
+只使用 ``EasyAgent`` 上已有的运行时属性，不另建状态。
+``EasyAgent`` 继承 :class:`AgentWorkspaceMixin` 后继续暴露同名方法。
 """
 
 import logging
@@ -19,7 +17,7 @@ from easy_agent.sandboxing.fs_safety import _check_external_dir_safety
 from easy_agent.agent.builtin_skills import BUILTIN_VIRTUAL_ROOT
 from easy_agent.agent.hitl import is_auto_approval
 
-# 纯移动：沿用拆分前的 logger 名称，保持日志路由/过滤行为不变。
+# 日志名固定为 easy_agent.agent，过滤规则依赖它。
 logger = logging.getLogger("easy_agent.agent")
 
 # 长期记忆（跨会话 AGENTS.md）在虚拟文件系统中的挂载点：
@@ -53,7 +51,7 @@ NO_UPLOADED_FILES_NOTE = """## 上传文件
 
 
 class AgentWorkspaceMixin:
-    """workspace / skills / permissions 相关方法（``EasyAgent`` 的纯移动部分）。"""
+    """workspace / skills / permissions 相关方法。"""
 
     def _load_memory_file(self, memory_path: Path, label: str) -> str:
         """读取记忆文件内容（不存在或读取失败时返回空字符串）。

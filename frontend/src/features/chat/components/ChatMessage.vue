@@ -448,7 +448,6 @@ function handleContentClick(event) {
 }
 
 const sortedBlocks = computed(() => {
-  // 从 blocks 字段构建（优先使用）
   if (props.message.blocks && props.message.blocks.length > 0) {
     // 严格按创建顺序 order 展示，不做按 step/类型的二次重排（旧数据无 step，
     // 按 step 重排会把正文排到顶部）；同一 step「先思考后工具」由创建顺序保证。
@@ -463,7 +462,6 @@ const sortedBlocks = computed(() => {
         content: displayContent.value,
         order: sorted.length
       })
-      // 重新排列 order
       sorted.forEach((b, i) => { b.order = i })
     }
     // 防御性合并：将同一 step 的思考块合并为一张「思考过程」卡片。

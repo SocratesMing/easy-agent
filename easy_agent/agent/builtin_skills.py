@@ -266,9 +266,6 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-# ── 迁移 S2 之前复制出来的副本 ────────────────────────────────────────
-
-
 def _tree_digest(root: Path) -> str:
     """目录内容指纹：相对路径 + 文件字节（跳过隐藏条目与 ``__pycache__``）。"""
     digest = hashlib.sha256()

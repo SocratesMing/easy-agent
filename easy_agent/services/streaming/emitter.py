@@ -1,7 +1,6 @@
-"""SSE 生产统一入口（C3）。
+"""SSE 生产统一入口。
 
-四个后端流式生产者（chat 编排器、`api/chat.py` 的孤立帧、专家拒答流、知识适配器）
-历史上各自手写 ``format_sse({"type": ...})``。本模块把它们收敛到一个入口：
+chat 编排器、``api/chat.py`` 的孤立帧、专家拒答流、知识适配器都从这里发事件：
 
 - :class:`SSEEmitter`：绑定默认 ``session_id``，提供 ``emit`` / 快捷事件方法；
 - :func:`sse_stream`：把「事件 dict 的同步/异步可迭代对象」转成 frame 流。
@@ -9,7 +8,7 @@
 约束（与 ``services/streaming/sse.py`` 的契约一致）：
 
 - **不改变 wire 格式**：``frame`` 委托 ``format_sse``，逐字节等价；
-- **不改变字段顺序**：dict 插入序即序列化序，快捷方法按迁移前字面量键序构造；
+- **不改变字段顺序**：dict 插入序即序列化序，快捷方法按契约键序构造；
 - **不自动补终态**：``done`` / ``error`` / ``approval_required`` 由生产者决定何时发送，
   自动补帧会改变知识适配器透传的事件序列；
 - **默认不校验**：``validate`` 仅测试/调试开启，生产路径不因新校验抛异常。
@@ -55,7 +54,7 @@ class SSEEmitter:
         """统一入口：``type`` 固定在前，``fields`` 保持调用方给出的顺序。"""
         return self.frame({"type": event_type, **fields})
 
-    # ── 高频事件快捷方法（键序与迁移前字面量逐键一致）──────────────────
+    # 高频事件快捷方法。键序是契约。
 
     def start(self, session_id: str | None = None) -> str:
         return self.emit(

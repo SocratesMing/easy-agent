@@ -51,7 +51,7 @@ router = APIRouter(
 )
 
 
-# 批次 4：``_as_user_repository`` 的兼容包装在 ``api.deps``；此处 re-export。
+# ``_as_user_repository`` 的兼容包装在 api.deps，这里 re-export。
 
 DEFAULT_RESET_PASSWORD = os.environ.get("EASY_DEFAULT_RESET_PASSWORD", "123456")
 

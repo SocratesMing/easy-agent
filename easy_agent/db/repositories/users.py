@@ -1,7 +1,6 @@
-"""用户相关 SQL repository（ARCH-03 Phase 2）。
+"""用户 SQL：注册、查询、更新、token_version、活跃时间、默认用户。
 
-从 Database 抽出的 users 领域：注册/查询/更新、token_version、活跃时间、
-默认用户/免密用户。personnel 字段扩展仍在函数内惰性 import，避免模块级循环。
+personnel 字段扩展在函数内惰性 import，避免模块级循环。
 """
 
 from __future__ import annotations

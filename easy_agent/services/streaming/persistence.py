@@ -1,8 +1,7 @@
-"""流式持久化适配器（C2 拆分第二步）：增量落库 / 最终消息 / 审批决策。
+"""流式持久化：增量落库、最终消息、审批决策。
 
-半纯模块：只依赖 ``Database`` 协议（duck typing）与 ``stream_messages`` 的
-消息构造函数，不 import Agent / SSE / 图状态。异常策略与原 ``streaming.py``
-保持一致：增量写入失败只记日志，不能中断流式输出。
+只依赖 ``Database`` 协议和消息构造函数，不 import Agent、SSE 或图状态。
+增量写入失败只记日志，不能中断流式输出。
 """
 
 from __future__ import annotations

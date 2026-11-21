@@ -1,4 +1,4 @@
-"""MCP API Key repository（ARCH-03 Phase 2）。"""
+"""MCP API Key。主应用签发，mcp-server 只读校验。"""
 
 from __future__ import annotations
 

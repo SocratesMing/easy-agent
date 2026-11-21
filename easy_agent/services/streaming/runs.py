@@ -1,4 +1,4 @@
-"""run 租约注册表（多副本 Phase 2B）。
+"""run 租约注册表。
 
 把「一次聊天/恢复 run」持久化到共享库，回答三个问题：
 
@@ -10,9 +10,8 @@
 
 周期恢复顺带清掉保留期之前的 ``stream_events``（:func:`purge_stale_stream_events`）。
 
-本模块所有方法都是**薄封装 + 异常只记日志**：run 登记是观测/恢复能力，
-绝不允许反过来打断聊天主链路。本增量**不做**自动重新执行 stale run（执行器
-属于 Phase 2C），恢复后只保证前端不再停在「执行中」。
+本模块的方法都是薄封装，异常只记日志，不能打断聊天。
+恢复只把陈旧 ``running`` 标成 ``interrupted``，不重新执行。
 """
 
 from __future__ import annotations

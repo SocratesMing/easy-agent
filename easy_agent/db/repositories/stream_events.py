@@ -1,4 +1,4 @@
-"""跨 Pod SSE 事件持久化 repository（多副本 Phase 2A）。
+"""跨 Pod SSE 事件持久化。
 
 ``stream_events`` 表只追加、不原地修改：``event_id`` 是库级自增主键，天然提供
 多副本并发写入下的全局顺序；回放端用 ``after_id`` 游标分页读取，逐条透传

@@ -1,8 +1,4 @@
-"""会话运行期状态 repository（ARCH-03 Phase 2 第一步）。
-
-从 `Database` 中抽出 session_runtime 相关 SQL：连接/事务仍由传入的 db 对象
-提供，repository 只负责该领域的读写，避免 `Database` 继续膨胀。
-"""
+"""会话运行期状态。连接和事务由传入的 db 提供。"""
 
 from __future__ import annotations
 

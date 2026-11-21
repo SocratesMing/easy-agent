@@ -331,9 +331,10 @@ def _discover_skills_root(config) -> str:
 
 
 def _register_execute_profiles(config) -> None:
-    """FW-04：execute 的 HITL 文案改由官方 HarnessProfile 注入（不再 monkeypatch
-    FilesystemMiddleware）。启动期为配置中的每个模型注册一次；失败只报错，不阻断启动
-    （首次建图前 agent.py 还会兜底重试）。"""
+    """启动时为每个模型注册 execute / delete 的 HarnessProfile。
+
+    失败只报错，不阻断启动。首次建图前 ``agent.py`` 还会再试一次。
+    """
 
     profile_keys = register_execute_description_profiles(config)
     if profile_keys:
@@ -669,10 +670,8 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     return JSONResponse(status_code=exc.status_code, content=jsonable_encoder(payload), headers=headers)
 
 
-# ── 领域异常 → HTTP 映射（T11）────────────────────────────────────────
-# 数据库层 / 服务层只抛 easy_agent.models.exceptions 里的领域异常，不再 import
-# fastapi。这里有唯一一张映射表；响应体直接复用 http_exception_handler，
-# 因此 detail 文案、code（HTTP_<status>）、request_id 与迁移前逐字一致。
+# 领域异常 → HTTP。数据库层和服务层不抛 HTTPException。
+# 响应体复用 http_exception_handler（detail、code、request_id）。
 _DOMAIN_ERROR_STATUS: dict[type[DomainError], int] = {
     BadRequestError: 400,
     NotFoundError: 404,

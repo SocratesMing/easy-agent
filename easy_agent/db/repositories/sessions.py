@@ -1,12 +1,8 @@
-"""会话与消息 SQL repository（ARCH-03 Phase 2 / T3）。
+"""会话与消息 SQL。
 
-从 Database 抽出的 sessions/messages 领域 SQL 函数：会话 CRUD、消息行、legacy
-JSON 只读回退与计数。session_messages 的行级 helper 仍由本模块惰性调用。
-
-T3 起 sanitize / JSON 修复等与连接无关的纯函数在
-:mod:`easy_agent.db.message_serialization`（本模块只 re-export
-``_sanitize_extra_data`` 供既有测试使用），用来打断
-``repositories.sessions`` ↔ ``session_messages`` 的循环导入。
+会话 CRUD、消息行、legacy JSON 只读回退与计数。与连接无关的 sanitize / JSON 修复在
+:mod:`easy_agent.db.message_serialization`，用来打断和 ``session_messages`` 的循环导入。
+本模块 re-export ``_sanitize_extra_data``。
 """
 
 from __future__ import annotations

@@ -1,12 +1,9 @@
-"""会话消息的序列化 / sanitize / JSON 修复（T3：从 repositories/sessions.py 纯移动）。
+"""会话消息的序列化、sanitize 与 JSON 修复。
 
-数据库读写仍在 ``db/repositories/sessions.py`` 与 ``db/session_messages.py`` 里；
-这里只放与数据库连接无关的纯函数。拆出来是为了打断
-``repositories.sessions`` ↔ ``session_messages`` 的模块级循环导入：两个模块都
-依赖本模块，import_graph 的 SCC 门禁要求 ``easy_agent`` 内 0 个强连通分量。
-
-函数签名与迁移前一致（``db`` 参数保留但当前实现不使用），A2 的消息 sanitize
-语义、长度上限与 JSON 修复策略都没有改动。
+数据库读写在 ``db/repositories/sessions.py`` 与 ``db/session_messages.py``。
+这里只有与连接无关的纯函数，用来打断
+``repositories.sessions`` ↔ ``session_messages`` 的循环导入。
+``db`` 参数保留，当前实现不使用。
 """
 
 from __future__ import annotations
@@ -59,10 +56,9 @@ def _sanitize_message_for_storage(db, message: dict) -> dict:
         ]
         other_blocks = [b for b in message["blocks"] if b.get("type") != "content"]
 
-        # 保留全部非 content blocks（原先仅保留前 30 个）：
-        # 长会话/HITL 恢复后产生的 thinking/tool_call 块 order 靠后，
-        # 截断会导致「切回历史会话时 HITL 之后的工具与思考过程不显示」。
-        # sessions.messages 列为 MEDIUMTEXT(16MB)，且各块 result/content 已做长度裁剪。
+        # 非 content blocks 全部保留（上限 1000）。只留前 30 个时，长会话里靠后的
+        # thinking/tool_call 会在切回历史时消失。sessions.messages 是
+        # MEDIUMTEXT(16MB)，各块 result/content 已做长度裁剪。
         sanitized_blocks = []
         for b in other_blocks[:1000] + content_blocks:
             block_type = b.get("type", "")

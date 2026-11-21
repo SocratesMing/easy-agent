@@ -1,9 +1,7 @@
-"""Pydantic 配置模型（从 config.py 拆出）。
+"""Pydantic 配置模型。
 
-配置字段名与默认值的唯一来源：``Config.from_yaml`` 把 YAML 各段直接交给这里的模型校验，
-已知键列表（``config_validation``）也由模型字段生成。本模块只依赖 pydantic，**不 import
-config.py**；``config.py`` re-export 本模块全部模型，``from easy_agent.bootstrap.config
-import LLMConfig`` 等既有导入路径不变。
+字段名和默认值的唯一来源。``Config.from_yaml`` 把 YAML 各段交给这里校验，
+已知键列表也由模型字段生成。本模块不 import ``config.py``；``config.py`` re-export 这些模型。
 """
 
 from typing import Any

@@ -1,4 +1,4 @@
-"""一次聊天/恢复 run 的持久化 repository（多副本 Phase 2B）。
+"""一次聊天或恢复 run 的持久化。
 
 ``agent_runs`` 记录「哪个 run 正在哪个 Pod 上跑」（``lease_owner`` /
 ``lease_until``）以及最终状态。租约是**恢复提示**而不是分布式锁：多 Pod 下

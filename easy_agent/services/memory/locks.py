@@ -1,13 +1,7 @@
-"""记忆文件跨进程锁与原子写（从 ``memory_store`` 拆出，纯移动）。
+"""记忆文件的跨进程锁与原子写。
 
-本模块只包含与记忆条目模型无关的基础设施：
-
-- ``store_path_for`` / ``memory_lock_path``：Markdown 与 JSONL sidecar 的路径推导；
-- ``memory_lock``：进程内可重入 + POSIX ``fcntl.flock`` 跨进程互斥（Windows 降级）；
-- ``atomic_write_text``：临时文件 + ``os.replace`` 原子写。
-
-依赖方向：本模块不 import ``memory_store``；``memory_store`` 反过来 re-export 这里
-的公开名字，保持既有导入路径与对象身份不变。
+与条目模型无关：路径推导、``fcntl.flock``（Windows 降级为进程内锁）、临时文件加 ``os.replace``。
+本模块不 import ``memory_store``；``memory_store`` re-export 这里的公开名字。
 """
 
 from __future__ import annotations
@@ -25,7 +19,7 @@ try:  # POSIX 跨进程文件锁；Windows 等平台没有 fcntl，走进程内�
 except ImportError:  # pragma: no cover - 平台分支
     _fcntl = None
 
-# 沿用原模块 logger 名：既有日志过滤与测试断言依赖该名字（纯移动，不改行为）。
+# 日志名固定为 easy_agent.memory.store，过滤规则和测试断言依赖它。
 logger = logging.getLogger("easy_agent.memory.store")
 
 STORE_SUFFIX = ".jsonl"

@@ -1,10 +1,7 @@
-"""LangGraph store 的持久化 repository（``langgraph_store`` 表）。
+"""LangGraph store 的持久化（``langgraph_store`` 表）。
 
-连接/事务由传入的 db 对象提供。
-
-HITL checkpoint 不在这个文件里：旧的 ``agent_checkpoints`` 全量快照后端已删除，
-现在由 ``easy_agent/persistence/mysql_saver.py``（共享 4 张 cp_* 表）与官方
-``AsyncSqliteSaver`` 承载，两者的生命周期都在 ``persistence/checkpoints.py``。
+连接和事务由传入的 db 提供。HITL checkpoint 不在这里，见
+``persistence/mysql_saver.py`` 与 ``persistence/checkpoints.py``。
 """
 
 from __future__ import annotations

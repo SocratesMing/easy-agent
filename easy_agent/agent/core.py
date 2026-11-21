@@ -99,29 +99,18 @@ def _deepagents_version() -> str:
 
 
 def framework_patch_status() -> dict[str, bool]:
-    """自检 execute 描述是否已通过官方 ``HarnessProfile`` 注册。
-
-    FW-04 起不再 monkeypatch ``FilesystemMiddleware.__init__``；这里反映的是
-    ``hitl.register_execute_description_profiles`` 是否已在当前进程生效。
-    """
+    """自检当前进程是否已通过 ``HarnessProfile`` 注册 execute 描述。"""
     return {"execute_tool": execute_description_installed()}
 
 
-#: 注册表 ``hitl_predicate`` 名称 → 实际 ``when`` 谓词。
-#: 谓词实现与绑定都在 ``hitl``（FW-12）；这里保留别名供既有自检/测试导入，
-#: 两边不一致时启动期日志会报错（测试也会失败）。
+#: 注册表 ``hitl_predicate`` 名称 → ``when`` 谓词。实现在 ``hitl``，这里只是别名。
+#: 两边不一致时启动期日志报错。
 _HITL_WHEN_PREDICATES = HITL_WHEN_PREDICATES
 
 
-#: 不参与技能门控的工具（DA-13 的例外清单）：这些是产品级入口，可用性不能取决于
-#: 用户手里那份 SKILL.md 的 frontmatter 写成什么样。
-#:
-#: ``save_expert`` 曾经完全靠 expert-creator 的 ``metadata.include_tools`` 带出，
-#: 但 S2 之前「添加技能」是整份复制到用户目录的：这些副本的 frontmatter 没有该字段，
-#: ``_find_skill_reads`` 因此认不出「读过这个技能」，工具永远不披露，模型只能回答
-#: 「本轮未注入 save_expert」，创建专家直接失败。公共版本再正确也救不了旧副本
-#: （同名时用户副本覆盖公共版本），而且这里扫 canonical 目录还会把它重新算进
-#: ``declared_include_tools``，所以必须显式排除，不能只靠注册表去掉 ``skill_gated``。
+#: 不走技能门控、始终可用的工具。
+#: ``save_expert`` 不能只看 SKILL.md 的 include_tools：用户目录里的旧副本可能没有该字段，
+#: 同名时还会盖住公共技能；扫 canonical 目录又会把它算回 ``declared_include_tools``。
 _ALWAYS_AVAILABLE_TOOLS = frozenset({"save_expert"})
 
 
@@ -561,18 +550,12 @@ class EasyAgent(AgentWorkspaceMixin):
         )
 
     def _build_interrupt_config(self):
-        """构造 HITL interrupt_on 配置（FW-12：按实际注入工具动态构造）。
+        """按本会话实际注入的工具构造 HITL interrupt_on。
 
-        改造前无论工具是否注入，都会把 ``execute`` / ``save_expert`` /
-        ``create_scheduled_task`` / ``access_knowledge_original`` 以及 MCP 写工具
-        写进 ``interrupt_on``；未注入的名字会被 DeepAgents 静默忽略（T1-14）。
-        现在交给 :func:`easy_agent.agent.hitl.build_interrupt_config` 过滤：审批名单取
-        config.yaml 的 ``hitl.tools``（不配时是注册表的全部 HITL 工具），注册表提供决策和
-        条件谓词，是否进入配置取决于本会话实际工具集。
-
-        ``self.mcp_tools`` 实际承载「MCP + 应用注入工具」全集（历史命名），
-        因此这里直接把它作为实际工具来源；``execute`` 等框架内置工具由
-        ``build_interrupt_config`` 内部补入。
+        审批名单取 config.yaml 的 ``hitl.tools``（不配时是注册表的全部 HITL 工具）。
+        未注入的名字不写入配置：DeepAgents 对不在工具表里的名字静默跳过。
+        ``self.mcp_tools`` 是「MCP + 应用注入工具」全集（历史命名）；
+        ``execute`` 等框架内置工具由 ``build_interrupt_config`` 补入。
         """
         hitl = getattr(getattr(self, "config", None), "hitl", None)
         return build_interrupt_config(

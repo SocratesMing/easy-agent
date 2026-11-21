@@ -17,10 +17,9 @@
 审批只能在记录它的那个 Pod 上恢复，靠 Ingress 粘性会话兜着。粘性一失效（清 cookie、换设备、
 Pod 重建、HPA 扩缩容）审批就丢。共享 saver 把状态放到库里，任意 Pod 都能接手，粘性不再必需。
 
-**sqlite 分支一行未改**，它是回滚目标（发布后出问题把 ``EASY_CHECKPOINT_BACKEND`` 改回
-``sqlite`` 即可，历史会话由 ``plan_turn`` 从 ``session_messages`` 水合，一条不少）。
-回滚的前提是保留 Ingress 的粘性 annotation 与路径里的 ``{pod}``（see
-``validate_checkpoint_deployment``）。
+**sqlite 是回滚目标**：把 ``EASY_CHECKPOINT_BACKEND`` 改回 ``sqlite`` 即可。历史会话由
+``plan_turn`` 从 ``session_messages`` 水合。回滚的前提是保留 Ingress 的粘性 annotation 与路径里的
+``{pod}``（见 ``validate_checkpoint_deployment``）。
 
 命名上的两件事容易搞混：
 

@@ -269,7 +269,7 @@ class Database:
         else:
             cursor.execute(sql)
 
-    # ARCH-03 Phase 2: DDL/迁移已抽到 db/schema.py
+    # DDL/迁移已抽到 db/schema.py
     def _create_index(self, *args, **kwargs):
         return schema._create_index(self, *args, **kwargs)
 
@@ -348,7 +348,7 @@ class Database:
     def _create_unique_index(self, *args, **kwargs):
         return schema._create_unique_index(self, *args, **kwargs)
 
-    # ARCH-03 Phase 2: sessions/messages SQL 已抽到 db/repositories/sessions.py
+    # sessions/messages SQL 已抽到 db/repositories/sessions.py
     def create_session(self, *args, **kwargs):
         return sessions_repo.create_session(self, *args, **kwargs)
 
@@ -361,7 +361,7 @@ class Database:
     def update_last_assistant_message(self, *args, **kwargs):
         return sessions_repo.update_last_assistant_message(self, *args, **kwargs)
 
-    # ARCH-03 Phase 2: users SQL 已抽到 db/repositories/users.py
+    # users SQL 已抽到 db/repositories/users.py
     # T3b 起用户的登录/资料/管理员接口走 UserRepository；下列方法保留给
     # knowledges/personnel（人员管理纵向切片，后续批次迁移）。
     def create_user(self, *args, **kwargs):
@@ -388,13 +388,13 @@ class Database:
     def update_user_password(self, *args, **kwargs):
         return users_repo.update_user_password(self, *args, **kwargs)
 
-    # ARCH-03 Phase 2: MCP API Key SQL 已抽到 db/repositories/mcp_api_keys.py
+    # MCP API Key SQL 已抽到 db/repositories/mcp_api_keys.py
 
-    # ARCH-03 Phase 2: 文件 SQL 已抽到 db/repositories/files.py
+    # 文件 SQL 已抽到 db/repositories/files.py
     # T3b 起上传/生成文件接口走 FileRepository；下列生成文件方法保留给
     # streaming/side_effects.py（T3c 迁移）。
 
-    # ARCH-03 Phase 2: 定时任务 SQL 已抽到 db/repositories/scheduled_tasks.py
+    # 定时任务 SQL 已抽到 db/repositories/scheduled_tasks.py
 
     def ping(self) -> bool:
         with self.get_connection() as conn:
@@ -403,11 +403,11 @@ class Database:
             cursor.fetchone()
         return True
 
-    # ARCH-03 Phase 2: store SQL 已抽到 db/repositories/agent_state.py（业务库不再存 checkpoint）
+    # store SQL 已抽到 db/repositories/agent_state.py（业务库不再存 checkpoint）
 
-    # ARCH-03 Phase 2: session_runtime SQL 已抽到 db/repositories/session_runtime.py
+    # session_runtime SQL 已抽到 db/repositories/session_runtime.py
 
-    # 多副本 Phase 2A: SSE 事件持久化已抽到 db/repositories/stream_events.py
+    # SSE 事件持久化在 db/repositories/stream_events.py
 
 _db_instance = None
 

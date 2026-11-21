@@ -173,7 +173,7 @@ router = APIRouter(
 )
 
 
-# 批次 4：repository provider 统一在 ``api.deps``；旧名字在此 re-export。
+# repository provider 在 api.deps，这里 re-export 旧名字。
 
 
 @router.post("", summary="创建新会话", response_model=CreateSessionResponse)

@@ -1,11 +1,8 @@
 """专家对话运行时：提示词加载、职责边界护栏、相关性预检、短路拒答。
 
-这些逻辑原先放在 ``api/expert_helpers.py``，但它们不属于 HTTP 层——聊天主链路
-（``api/chat.py::chat_stream`` 的专家分支）与专家接口（``api/expert.py``）都要用，
-放在 ``api`` 里会让路由模块互相 import。本模块只依赖 repository / services，
-不 import 任何 ``api`` 模块，方向是 api → services。
+聊天主链路和专家接口都用这里。本模块不 import 任何 ``api`` 模块。
 
-调用顺序（**不可颠倒**）：
+调用顺序（不可颠倒）：
 
 1. ``load_expert_prompt`` 取提示词（我的专家优先、公共专家兜底）并追加职责边界块；
 2. ``ensure_expert_skills``（见 ``services/skills/provision.py``）登记依赖技能；
@@ -610,9 +607,7 @@ async def _refusal_event_stream(session_id: str, repo: ExpertRepository, answer:
         },
     )
 
-# ── 公开别名（与 feat/frontend-guocl 的 services/experts/runtime.py 同名）──────
-# 内部实现保留下划线命名（与迁移来源 expert_helpers 一致），对外统一暴露无下划线的
-# 名字：调用方不必知道这段代码原来在 api 层。
+# 对外名字不带下划线。下面这些别名与内部函数是同一对象。
 current_user_id = _current_user_id
 expert_flags = _expert_flags
 with_guardrail = _with_guardrail

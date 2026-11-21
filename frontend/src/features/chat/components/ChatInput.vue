@@ -2583,12 +2583,7 @@ const filteredSkillList = computed(() => {
   return skillList.value.filter(s => s.desc.toLowerCase().includes(kw));
 });
 
-/**
- * 打开二级浮动面板（主菜单常驻），并给首帧一个占位尺寸；真实尺寸与位置由
- * syncSubpanelBox 负责。垂直规则：打开时底边与一级菜单齐平，内容变少时顶边不动、
- * 底边随之上收（最多收到菜单顶边）。不用固定 bottom：内容变矮会让搜索框掉出面板，
- * 由「聚焦期间不自动关闭」兜住（见 schedulePlusClose）。
- */
+/** 打开二级面板并摆一帧占位尺寸。真实位置由 syncSubpanelBox 按菜单底边对齐。 */
 function openSubpanel(category, event, fromHover = false) {
   // hover 触发时同面板已打开则保持（避免鼠标在项与面板间移动导致闪烁）；
   // click 触发保持翻转语义（再次点击同一项关闭）

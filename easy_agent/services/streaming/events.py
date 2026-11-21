@@ -1,4 +1,4 @@
-"""SSE 事件持久化写入器（多副本 Phase 2A）。
+"""SSE 事件持久化写入器。
 
 ``_StreamHub.broadcast`` 仍然同步更新内存历史/订阅者，保证同 Pod 低延迟；
 持久化走本模块的 ``StreamEventWriter``：``append`` 只做非阻塞入队，后台任务

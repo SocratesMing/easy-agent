@@ -30,33 +30,19 @@ DEFAULT_INTERRUPT_TOOLS = default_interrupt_tool_names()
 # config.hitl.tools 未配置时的默认安全审批名单（不含产品交互中断 ask_user）。
 DEFAULT_APPROVAL_TOOLS = tuple(spec.name for spec in approval_tool_specs())
 
-# ── 用户级审批模式（设置 → 权限设置） ────────────────────────────────────
-#
-# ``manual``：现状，名单里的工具全部要用户批准。
-# ``auto``：按 :data:`AUTO_APPROVED_APPROVAL_TOOLS` 从审批名单里摘掉这几项，**其余全保留**。
-# 注意 auto 不是 ``enable_hitl=False``：总开关一旦关掉，定时任务工具注入
-# （``registry._scheduled_task_enabled``）、提示词段落、恢复语义都会跟着变；
-# auto 只是把审批项一条条摘掉，摘空后 DeepAgents 不安装 HITL 中间件，其余机制原样保留。
+# 用户级审批模式（设置 → 权限设置）。
+# manual：名单里的工具都要用户批准。
+# auto：摘掉 AUTO_APPROVED_APPROVAL_TOOLS，其余保留。
+# auto 不是 enable_hitl=False。总开关关掉后，定时任务注入、提示词段落和恢复语义都会变。
+# 名单摘空后 DeepAgents 不安装审批中间件，enable_hitl 仍为 True。
 APPROVAL_MODE_MANUAL = "manual"
 APPROVAL_MODE_AUTO = "auto"
 APPROVAL_MODES: tuple[str, ...] = (APPROVAL_MODE_MANUAL, APPROVAL_MODE_AUTO)
 
-#: 自动审批放行的审批项（按工具名）。
-#: * ``execute``：沙箱内的全部 Shell 命令，含 ``rm`` / ``del`` 等删除类命令。
-#: * ``delete``：删除文件或目录（含递归）。``rm -r`` / ``rmdir`` 仍由
-#:   ``backends/shell.py`` 在策略层直接拒绝，删目录请走本工具。
-#: * ``save_expert``：在对话内新建 / 修改**自己的**专家。修改他人专家由文件系统
-#:   permission 的 deny 规则拦住，与审批开关无关。
-#: * ``create_scheduled_task``：创建定时任务。
-#: * ``access_knowledge_original``：知识库原文落盘（``action=materialize``），
-#:   写入目标是自己的工作区，属于「新增文件」范围。
-#:
-#: 覆盖了 :data:`DEFAULT_APPROVAL_TOOLS` 的全部审批项，
-#: 因此 auto 模式构造出的 ``interrupt_on`` 是空字典——DeepAgents 的
-#: ``_merge_fs_interrupt_on`` 会把空配置归并成 ``None`` 并**不安装**
-#: ``HumanInTheLoopMiddleware``（等于没有审批节点，但 ``enable_hitl`` 仍为 True，
-#: 定时任务工具注入与恢复语义都不受影响）。
-#: 要收回某一项（例如将来接入写能力 MCP），把它从这里删掉即可恢复审批。
+#: auto 模式下不再审批的工具，覆盖默认安全审批名单，因此 interrupt_on 为空。
+#: ask_user 不在这里，规划确认仍然要用户响应。
+#: delete 含递归删目录；rm -r / rmdir 仍由 backends/shell.py 拒绝。
+#: save_expert 只覆盖自己的专家，他人专家由文件系统 deny 拦住。
 AUTO_APPROVED_APPROVAL_TOOLS: frozenset[str] = frozenset(
     {
         "execute",
@@ -67,10 +53,8 @@ AUTO_APPROVED_APPROVAL_TOOLS: frozenset[str] = frozenset(
     }
 )
 
-#: 自动审批是否连 MCP / 动态注入工具一起放行。
-#: 2026-11-12 用户确认：当前接入的 MCP 服务只提供查询能力（无建表 / 删表 / 改表），
-#: 因此 auto 模式下 **不再** 走 names 启发式与 ``annotations`` 兜底给 MCP 工具加审批；
-#: manual 模式行为不变。若将来接入带写能力的 MCP，把这里改回 False 即可恢复审批。
+#: auto 模式下不对 MCP / 动态注入工具做名字启发式或 annotations 审批。
+#: manual 仍走这两条兜底。当前接入的 MCP 只有查询能力。
 AUTO_APPROVES_MCP_TOOLS = True
 
 # 名字启发式的豁免集合同样由注册表派生：已单独配置 HITL 的工具与只读内置工具
@@ -170,14 +154,12 @@ DELETE_HITL_TOOL_DESCRIPTION: str = (
 )
 
 
-# ── FW-04：execute / delete 描述通过官方 HarnessProfile 注入 ──────────────
+# execute / delete 的工具说明经 HarnessProfile 注入，不改 FilesystemMiddleware。
 #
-# DeepAgents 0.7 的公开 beta API（0.6.8 起已有）：
+# DeepAgents 0.7（0.6.8 起）：
 #   HarnessProfile(tool_description_overrides={"execute": ..., "delete": ...})
 #   register_harness_profile("provider:model", profile)
-# ``create_deep_agent`` 在模型已构建（本项目总是传模型实例）时，按
-# ``_get_ls_params()["ls_provider"]`` + 模型 identifier 解析 profile，并把
-# ``tool_description_overrides`` 传给真实 ``FilesystemMiddleware`` 实例。
+# create_deep_agent 传入模型实例时，按 ls_provider + 模型 identifier 取 profile。
 
 #: profile 中被替换描述的工具名（``tool_description_overrides`` 的键）。
 EXECUTE_TOOL_NAME = "execute"
@@ -305,8 +287,8 @@ def _configured_model_profile_keys(config) -> tuple[str, ...]:
 def register_execute_description_profiles(config=None) -> tuple[str, ...]:
     """为配置中的每个模型注册 execute / delete 描述的 ``HarnessProfile``（幂等）。
 
-    这是 FW-04 的主入口：用官方 beta API 替代对
-    ``FilesystemMiddleware.__init__`` 的 monkeypatch。注册是加性的：
+    用 HarnessProfile 注入 execute / delete 说明，不再改
+    ``FilesystemMiddleware.__init__``。注册是加性的：
     同一进程内重复调用只对尚未注册的键生效。
 
     Args:
@@ -407,13 +389,8 @@ def _is_destructive_command(request: ToolCallRequest) -> bool:
     return True
 
 
-# ── FW-12：按实际注入的工具动态构造 interrupt_on ─────────────────────────
-#
-# DeepAgents 的 HumanInTheLoopMiddleware 只按工具名匹配 interrupt_on；
-# 名字不在本会话工具表里时**静默跳过**（不建立中断、也不报错）。因此静态
-# 预置 execute / DEFAULT_INTERRUPT_TOOLS / access_knowledge_original 会让
-# 「知识库未启用」「expert-creator 未激活」等会话的配置看起来覆盖了工具、
-# 实际却不生效（T1-14）。本模块改为只消费实际工具集合。
+# interrupt_on 只按本会话实际注入的工具名构造。
+# HumanInTheLoopMiddleware 对不在工具表里的名字静默跳过，静态预置名单会看起来覆盖了、实际不生效。
 
 #: 注册表 ``hitl_predicate`` 名称 → 实际 ``when`` 谓词。
 #: 注册表是叶子模块（只登记名字），谓词实现与绑定都留在本模块。
@@ -513,42 +490,25 @@ def build_interrupt_config(
     sid: str = "",
     approval_mode: str = APPROVAL_MODE_MANUAL,
 ) -> dict[str, bool | InterruptOnConfig] | None:
-    """按「审批名单」和「实际注入到本会话的工具」构造 ``interrupt_on``。
+    """按审批名单和本会话实际注入的工具构造 ``interrupt_on``。
 
-    规则：
-
-    1. 产品交互工具（``ask_user``，只允许 ``respond``）只要实际注入就始终进入配置；
-       ``enable_hitl=False`` 只关闭安全审批，不会关闭规划确认；
-    2. ``approval_tools`` 是 config.yaml 的 ``hitl.tools``，不配时用注册表里的全部安全审批工具
-       （:data:`DEFAULT_APPROVAL_TOOLS`）。名单里**本会话实际存在**的工具进审批，按名单顺序；
-       没注入的名字记 debug 日志并跳过（DeepAgents 对 ``interrupt_on`` 里不存在的工具名静默
-       无效，见 T1-14）。框架内置工具（``execute`` / ``delete`` 等）始终存在；MCP 工具按注入名
-       或去掉 server 前缀的原始名匹配；
-    3. 名单里的注册表 HITL 工具沿用注册表的决策和条件谓词（``execute`` 只拦删除类命令、
-       ``access_knowledge_original`` 只拦 materialize）；谓词缺失时退化为无条件审批（宁可
-       多问，不可漏问）。其余工具按名字给决策：删除类不给编辑参数；
-    4. 名单外的 MCP / 动态工具（注册表里没有的名字）兜底：先看 MCP annotations
-       （:func:`mcp_annotation_decision`），没有可用标注再按名字启发式判定。注册表里的
-       内置 / 应用工具只看名单。
-    5. ``approval_mode="auto"``（设置 → 权限设置里的「允许自动审批」）额外做两件事：
-       从名单里摘掉 :data:`AUTO_APPROVED_APPROVAL_TOOLS`，并**跳过第 4 条兜底**——
-       MCP / 动态注入工具不再按名字或 annotations 加审批（见 :data:`AUTO_APPROVES_MCP_TOOLS`）。
-       默认安全审批名单被全部覆盖；但 ``ask_user`` 仍按第 1 条保留，因此规划确认不会被
-       自动审批关闭。只有本轮既没有安全审批项、也没有 ``ask_user`` 时才是空配置。
+    ``ask_user`` 只要注入就进入配置，``enable_hitl=False`` 关不掉它。
+    ``approval_tools`` 为 config.yaml 的 ``hitl.tools``，缺省用
+    :data:`DEFAULT_APPROVAL_TOOLS`；名单里本会话没有的工具跳过。
+    注册表工具沿用其决策和 ``when`` 谓词，谓词缺失时改为无条件审批。
+    名单外的 MCP / 动态工具先看 annotations，再按名字启发式；
+    ``approval_mode="auto"`` 时跳过这一步，并摘掉
+    :data:`AUTO_APPROVED_APPROVAL_TOOLS`。
+    没有任何可中断工具时返回 ``None``。
 
     Args:
-        tool_names: 本会话实际注入的非内置工具（工具对象或工具名）。
-            ``EasyAgent.mcp_tools`` 实际承载的是「MCP + 应用注入工具」全集。
-        enable_hitl: 是否启用人工审批（与 ``EasyAgent.enable_hitl`` 一致）。
-        approval_tools: 审批名单（config.yaml 的 ``hitl.tools``）；``None`` 用默认名单。
-        specs: 仅测试用；默认使用注册表的 ``hitl_tool_specs()``。
-        predicates: 仅测试/扩展用；默认使用本模块的
-            :data:`HITL_WHEN_PREDICATES`。
+        tool_names: 本会话注入的非内置工具（对象或名字）。
+        enable_hitl: 是否启用安全审批。
+        approval_tools: 审批名单；``None`` 用默认名单。
+        specs: 测试用，默认 ``hitl_tool_specs()``。
+        predicates: 测试用，默认 :data:`HITL_WHEN_PREDICATES`。
         sid: 日志用短会话 id。
-        approval_mode: 用户级审批模式（``manual`` / ``auto``），非法值按 ``manual`` 处理。
-
-    Returns:
-        工具名 → ``InterruptOnConfig`` 的字典；没有需要中断的工具时为 ``None``。
+        approval_mode: ``manual`` 或 ``auto``，非法值按 ``manual``。
     """
     tools = list(tool_names or ())
     ordered_names = [name for name in map(_tool_name, tools) if name]

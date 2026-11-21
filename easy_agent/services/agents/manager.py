@@ -63,15 +63,10 @@ from easy_agent.services.agents.stream_tasks import (  # noqa: F401 - 公开与�
 
 logger = logging.getLogger("easy-agent.chat_service")
 
-# ── 会话状态注册表 ──────────────────────────────────────────────────────
-#
-# 一个 session_id 对应一个 SessionState，取代原先按会话拆成 8 张模块级字典的状态。
-# 每类状态的生命周期不同（见 SessionState 字段注释），清理统一走
-# ``drop(session_id, scope)``：随 Agent 的状态 / 随会话的状态 / session_runtime 表的
-# 落库缓存各自有明确的清理范围，不再靠注释解释「哪个字典故意不清」。
-#
-# 注册表本身是 OrderedDict，承担 Agent 缓存的 LRU：只统计真正有缓存 Agent 的会话，
-# 上限 _AGENT_CACHE_MAX；只有附属状态（锁 / 流任务 / 连接器）的会话不参与淘汰计数。
+# 一个 session_id 对应一个 SessionState。
+# 各类状态的生命周期不同，清理统一走 ``drop(session_id, scope)``：
+# 随 Agent 的状态、随会话的状态、session_runtime 落库缓存各自有清理范围。
+# 注册表是 OrderedDict，只把真正缓存了 Agent 的会话计入 LRU（上限 _AGENT_CACHE_MAX）。
 
 #: ``approval_mode`` 的「未指定」哨兵：
 #: * 不传 → 每轮读一次用户设置（设置页保存后下一条消息生效）；
