@@ -5,9 +5,10 @@
     <div class="chat-content" :class="composerMode === 'center' ? 'is-center' : 'is-bottom'">
       <!-- 会话时间与操作区共用顶部信息行 -->
       <div v-if="showTopbar" class="chat-topbar" :class="{ 'is-float': topbarFloating }">
-        <transition name="topbar-sidebar-btn">
-          <div v-if="showExpandSidebarBtn" class="chat-topbar-left">
+        <div v-if="showExpandSidebarBtn || subagentTasks.length > 0" class="chat-topbar-left">
+          <transition name="topbar-sidebar-btn">
             <button
+              v-if="showExpandSidebarBtn"
               class="expand-sidebar-inline"
               @click="$emit('toggle-sidebar')"
               title="展开侧边栏"
@@ -17,8 +18,9 @@
                 <line x1="9" y1="3" x2="9" y2="21"></line>
               </svg>
             </button>
-          </div>
-        </transition>
+          </transition>
+          <SubagentMonitorPanel :tasks="subagentTasks" />
+        </div>
         <div v-if="showSessionTime" class="session-created-time">
           <span class="session-time-pill">
             <svg class="session-time-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -168,16 +170,18 @@ import contextCompactionMixin from '../../../shared/compaction/mixin.js'
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
 import PlanInteractionPanel from './PlanInteractionPanel.vue'
+import SubagentMonitorPanel from './SubagentMonitorPanel.vue'
 import TodoListPanel from './TodoListPanel.vue'
 import UserMessageNavigator from './UserMessageNavigator.vue'
 import { getRuntime } from '../../../runtime/config.js'
 import { pendingInteractionActions } from '../../../shared/chat/planInteraction.js'
+import { extractSubagentTasks } from '../../../shared/chat/subagentMonitor.js'
 import { buildUserMessageNavItems, findActiveUserNavIndex } from '../../../shared/chat/userMessageNav.js'
 // 预置问题卡片最多展示几张（一张卡片一条问题，多配的部分按顺序截断）
 const MAX_PRESET_CARDS = 6
 export default {
   mixins: [contextCompactionMixin, citationPopoverMixin],
-  components: { CitationPopover, ChatInput, ChatMessage, PlanInteractionPanel, TodoListPanel, UserMessageNavigator },
+  components: { CitationPopover, ChatInput, ChatMessage, PlanInteractionPanel, SubagentMonitorPanel, TodoListPanel, UserMessageNavigator },
   props: {
   messages: {
     type: Array,
@@ -318,11 +322,14 @@ export default {
     showWorkspaceBtn() {
       return !this.isSidebar && !!this.currentSessionId && !this.workspaceExpanded
     },
+    subagentTasks() {
+      return extractSubagentTasks(this.messages)
+    },
     showTopbar() {
-      return this.showExpandSidebarBtn || this.showSessionTime || this.todos.length > 0 || this.showWorkspaceBtn
+      return this.showExpandSidebarBtn || this.showSessionTime || this.todos.length > 0 || this.subagentTasks.length > 0 || this.showWorkspaceBtn
     },
     topbarFloating() {
-      return !this.showSessionTime && this.todos.length === 0 && (this.showWorkspaceBtn || this.showExpandSidebarBtn)
+      return !this.showSessionTime && this.todos.length === 0 && this.subagentTasks.length === 0 && (this.showWorkspaceBtn || this.showExpandSidebarBtn)
     },
     pendingPlanMessage() {
       const last = this.messages[this.messages.length - 1]

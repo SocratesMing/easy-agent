@@ -679,6 +679,7 @@ export default {
         filePaths: block.file_paths || [],
         allowedDecisions: block.allowed_decisions || [],
         streaming: !!block.streaming,
+        subagentSteps: Array.isArray(block.subagent_steps) ? block.subagent_steps : [],
       }
     },
     // 工具卡片上的审批按钮回答它所属的中断（DA-02）

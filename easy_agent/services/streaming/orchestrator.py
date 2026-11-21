@@ -97,6 +97,11 @@ from easy_agent.services.streaming.side_effects import (
     register_session_skills,
     submit_memory_updates,
 )
+from easy_agent.services.streaming.subagent_progress import (
+    SubagentProgressTracker,
+    astream_supports_subgraphs,
+    is_subagent_progress_event,
+)
 
 logger = logging.getLogger("easy_agent.chat_service")
 
@@ -286,12 +291,18 @@ async def pump_stream(
     }
     if context is not None:
         astream_kwargs["context"] = context
-    active_tasks: dict[str, tuple[str, float]] = {}
+    if astream_supports_subgraphs(agent.agent.astream):
+        astream_kwargs["subgraphs"] = True
+    subagent_tracker = SubagentProgressTracker()
     async for event in agent.agent.astream(stream_input, **astream_kwargs):
         if isinstance(event, tuple) and len(event) == 3:
             namespace, mode, data = event
             if namespace:
-                # 预留子图事件分流：避免子代理原始流混入主代理回复正文
+                # 子图事件只蒸馏为结构化 subagent_progress，绝不进入 proc.handle 污染主回复
+                for sub_ev in subagent_tracker.handle_subgraph_event(
+                    namespace, mode, data, proc=proc
+                ):
+                    yield sub_ev
                 continue
         else:
             mode, data = event if isinstance(event, tuple) else ("messages", event)
@@ -301,17 +312,18 @@ async def pump_stream(
                 call_id = str(ev.get("tool_call_id") or "")
                 args = ev.get("arguments") or {}
                 sub_type = str(args.get("subagent_type") or "general-purpose")
-                active_tasks[call_id] = (sub_type, time.monotonic())
+                subagent_tracker.register_task(call_id, sub_type)
                 logger.info(
                     f"[{sid}] 🤖 子代理任务开始 | subagent={sub_type} | call_id={call_id}"
                 )
             elif ev_type == "tool_result":
                 call_id = str(ev.get("tool_call_id") or "")
-                if call_id in active_tasks:
-                    sub_type, started_at = active_tasks.pop(call_id)
+                completed = subagent_tracker.complete_task(call_id)
+                if completed is not None:
+                    sub_type, elapsed_s = completed
                     logger.info(
                         f"[{sid}] 🤖 子代理任务完成 | subagent={sub_type} | "
-                        f"耗时={time.monotonic() - started_at:.2f}s | success={ev.get('success', True)}"
+                        f"耗时={elapsed_s:.2f}s | success={ev.get('success', True)}"
                     )
                 await run_blocking(
                     persist_tool_result_event,
@@ -798,6 +810,8 @@ def _continuation_tool_records(
 
 def _continuation_event_allowed(event: dict, step_boundary: int | None) -> bool:
     if step_boundary is None:
+        return True
+    if is_subagent_progress_event(event):
         return True
     step = event.get("step")
     if step is None:

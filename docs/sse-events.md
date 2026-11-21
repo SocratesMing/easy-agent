@@ -14,6 +14,7 @@
 | `tool_call` | 完整工具调用 | `tool_name`、`tool_call_id`、`arguments`、`step` | chat / expert |
 | `tool_call_delta` | 工具参数流 | `tool_name`、`tool_call_id`、`arguments`（可解析的分片快照，非 `delta` 字符串）、`step` | chat / SDK 侧边栏 |
 | `tool_result` | 工具结果 | `tool_name`、`tool_call_id`、`result`、`success`、`duration`、`step` | chat / expert |
+| `subagent_progress` | 子智能体实时进度 | `tool_call_id`、`subagent_type`、`stage`、`tool_name`、`summary`、`success`、`step` | chat |
 | `todo_list` | 待办更新 | `todos`、`step` | chat |
 | `token_usage` | 用量更新 | `input_tokens` / `output_tokens` / `reasoning_tokens` / `context_tokens` | chat |
 | `knowledge_evidence` | 知识库引用 | `evidence`、`warnings`（旧文档写的 `items` 仅为向后兼容的兼容字段） | knowledge / chat |

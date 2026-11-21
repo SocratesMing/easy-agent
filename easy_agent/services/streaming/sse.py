@@ -30,6 +30,7 @@ class SSEEvent:
     TOOL_CALL = "tool_call"
     TOOL_CALL_DELTA = "tool_call_delta"
     TOOL_RESULT = "tool_result"
+    SUBAGENT_PROGRESS = "subagent_progress"
     TODO_LIST = "todo_list"
     TOKEN_USAGE = "token_usage"
     KNOWLEDGE_EVIDENCE = "knowledge_evidence"
@@ -75,6 +76,17 @@ EVENT_SPECS: dict[str, SSEEventSpec] = {
     SSEEvent.TOOL_RESULT: SSEEventSpec(
         required=("tool_name", "tool_call_id"),
         optional=("result", "success", "duration", "step"),
+    ),
+    SSEEvent.SUBAGENT_PROGRESS: SSEEventSpec(
+        optional=(
+            "tool_call_id",
+            "subagent_type",
+            "stage",
+            "tool_name",
+            "summary",
+            "success",
+            "step",
+        )
     ),
     SSEEvent.TODO_LIST: SSEEventSpec(optional=("todos", "step")),
     SSEEvent.TOKEN_USAGE: SSEEventSpec(

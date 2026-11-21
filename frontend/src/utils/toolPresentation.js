@@ -105,6 +105,15 @@ export function toolCard(toolName, args, result, success = true) {
         error: success === false, raw: r,
       }
     }
+    case 'task': {
+      return {
+        card: 'task', kind: 'task',
+        title: short(oneLine(a.description) || '执行子任务', 64),
+        meta: a.subagent_type || 'general-purpose',
+        error: success === false,
+        body: r,
+      }
+    }
     default: {
       // 数据类工具的图表信封（chart 是现成的 ECharts option）：画成图表卡片，原始结果仍放在 body
       const envelope = parseChartEnvelope(result)

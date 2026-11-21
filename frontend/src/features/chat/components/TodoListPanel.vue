@@ -1,45 +1,47 @@
 <template>
   <div v-if="todos.length > 0" ref="rootRef" class="todo-root">
-    <!-- 收起态：悬浮胶囊。绝对定位在会话区右上角（与会话时间同一行），
-         脱离文档流 → 收起时纵向占用为 0，不再把会话内容往下推。 -->
     <button
+      type="button"
       class="todo-pill"
       :class="{ 'is-active': hasInProgress, 'is-open': expanded }"
       @click.stop="expanded = !expanded"
       :title="expanded ? '收起任务规划' : '展开任务规划'"
     >
-      <svg class="todo-pill-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect width="8" height="4" x="8" y="2" rx="1" ry="1"></rect>
-        <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
-        <path d="m9 14 2 2 4-4"></path>
+      <svg class="todo-pill-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="5" cy="7" r="1.5"></circle>
+        <line x1="10" y1="7" x2="20" y2="7"></line>
+        <circle cx="5" cy="12" r="1.5"></circle>
+        <line x1="10" y1="12" x2="20" y2="12"></line>
+        <circle cx="5" cy="17" r="1.5"></circle>
+        <line x1="10" y1="17" x2="20" y2="17"></line>
       </svg>
+      <span v-if="hasInProgress" class="todo-pill-spinner" aria-hidden="true"></span>
       <span class="todo-pill-text">{{ completedCount }}/{{ todos.length }}</span>
       <svg class="todo-pill-caret" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="6 9 12 15 18 9"></polyline>
       </svg>
     </button>
 
-    <!-- 展开态：浮层卡片。覆盖在消息之上而不是占据布局，点外部自动收起 -->
     <Transition name="todo-pop">
       <div v-if="expanded" class="todo-popup" @click.stop>
         <div class="todo-header">
           <div class="todo-title">
-            <svg class="todo-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect width="8" height="4" x="8" y="2" rx="1" ry="1"></rect>
-              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
-              <path d="m9 14 2 2 4-4"></path>
+            <svg class="todo-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="5" cy="7" r="1.5"></circle>
+              <line x1="10" y1="7" x2="20" y2="7"></line>
+              <circle cx="5" cy="12" r="1.5"></circle>
+              <line x1="10" y1="12" x2="20" y2="12"></line>
+              <circle cx="5" cy="17" r="1.5"></circle>
+              <line x1="10" y1="17" x2="20" y2="17"></line>
             </svg>
-            <span>任务规划</span>
-            <span class="todo-count">{{ completedCount }}/{{ todos.length }}</span>
+            <span class="todo-title-name">任务</span>
+            <span v-if="statusSummary" class="todo-summary">{{ statusSummary }}</span>
           </div>
-          <button class="todo-close" @click="expanded = false" title="收起">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <button type="button" class="todo-close" @click="expanded = false" title="收起">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="18 15 12 9 6 15"></polyline>
             </svg>
           </button>
-        </div>
-        <div class="todo-progress">
-          <div class="todo-progress-bar" :style="{ width: progressPercent + '%' }"></div>
         </div>
         <div class="todo-list">
           <div
@@ -49,18 +51,11 @@
             :class="todo.status"
           >
             <div class="todo-status-icon">
-              <svg v-if="todo.status === 'completed'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                <polyline points="22 4 12 14.01 9 11.01"></polyline>
-              </svg>
-              <div v-else-if="todo.status === 'in_progress'" class="todo-spinner">
-                <span></span><span></span><span></span>
-              </div>
-              <div v-else class="todo-pending-dot"></div>
+              <span v-if="todo.status === 'completed'" class="todo-done-dot" aria-hidden="true"></span>
+              <span v-else-if="todo.status === 'in_progress'" class="todo-ring-spinner" aria-hidden="true"></span>
+              <span v-else class="todo-pending-dot" aria-hidden="true"></span>
             </div>
-            <span class="todo-content">
-              {{ todo.content }}
-            </span>
+            <span class="todo-content">{{ todo.content }}</span>
           </div>
         </div>
       </div>
@@ -74,21 +69,25 @@ import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 const props = defineProps({
   todos: {
     type: Array,
-    default: () => []
-  }
+    default: () => [],
+  },
 })
 
-// 默认收起：展开态是浮层，收起时完全不占布局高度（此前默认展开会推挤会话内容）
 const expanded = ref(false)
 const rootRef = ref(null)
 
 const completedCount = computed(() => props.todos.filter(t => t.status === 'completed').length)
-const progressPercent = computed(() => {
-  if (props.todos.length === 0) return 0
-  return Math.round((completedCount.value / props.todos.length) * 100)
+const inProgressCount = computed(() => props.todos.filter(t => t.status === 'in_progress').length)
+const pendingCount = computed(() => props.todos.filter(t => t.status !== 'completed' && t.status !== 'in_progress').length)
+const hasInProgress = computed(() => inProgressCount.value > 0)
+const statusSummary = computed(() => {
+  const parts = []
+  if (inProgressCount.value > 0) parts.push(`${inProgressCount.value} 进行中`)
+  if (pendingCount.value > 0) parts.push(`${pendingCount.value} 待处理`)
+  if (completedCount.value > 0 && parts.length === 0) parts.push(`${completedCount.value} 已完成`)
+  else if (completedCount.value > 0 && inProgressCount.value === 0) parts.push(`${completedCount.value} 已完成`)
+  return parts.join(' · ')
 })
-// 有任务执行中时胶囊做呼吸提示 —— 收起态也能看出"还在跑"
-const hasInProgress = computed(() => props.todos.some(t => t.status === 'in_progress'))
 
 function onDocClick(e) {
   if (expanded.value && rootRef.value && !rootRef.value.contains(e.target)) {
@@ -100,95 +99,89 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 </script>
 
 <style scoped>
-/* 任务规划：悬浮在会话区右上角，与会话时间处于同一视觉行。
-   绝对定位使其脱离文档流 —— 收起态高度为 0，展开态只是覆盖在消息之上，
-   两种状态都不会改变会话内容的布局（此前顶部横条会把消息整体推下去）。 */
 .todo-root {
-  /* 位于 .chat-topbar-actions 内，参与该行的水平排列（不再是绝对定位的浮层） */
   position: relative;
   display: flex;
   align-items: center;
 }
 
-/* 收起态胶囊（点击展开） */
 .todo-pill {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  height: 28px;
+  padding: 0 10px;
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: 999px;
   cursor: pointer;
-  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  color: var(--text-secondary, #64748b);
+  transition: background 0.16s ease, color 0.16s ease;
   user-select: none;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
-.todo-pill:hover {
-  background: #7c6aef;
-  border-color: #7c6aef;
-  box-shadow: 0 2px 12px rgba(124, 106, 239, 0.25);
-}
-
-.todo-pill:hover .todo-pill-text,
-.todo-pill:hover .todo-pill-icon,
-.todo-pill:hover .todo-pill-caret {
-  color: #fff;
-}
-
-/* 有任务执行中：紫色描边 + 呼吸光晕，收起态也能看出还在跑 */
-.todo-pill.is-active {
-  border-color: #a5b4fc;
-  animation: todo-pulse 2.2s ease-in-out infinite;
-}
-
-@keyframes todo-pulse {
-  0%, 100% { box-shadow: 0 1px 2px rgba(124, 106, 239, 0.08); }
-  50% { box-shadow: 0 0 0 4px rgba(124, 106, 239, 0.14); }
+.todo-pill:hover,
+.todo-pill.is-open {
+  background: rgba(15, 23, 42, 0.05);
+  color: var(--text-primary, #1e293b);
 }
 
 .todo-pill-icon {
-  width: 14px;
-  height: 14px;
-  color: #7c6aef;
+  width: 15px;
+  height: 15px;
+  color: inherit;
   flex-shrink: 0;
-  transition: color 0.2s;
+  opacity: 0.85;
+}
+
+.todo-pill-spinner {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(15, 23, 42, 0.16);
+  border-top-color: var(--text-primary, #475569);
+  animation: todo-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes todo-spin {
+  to { transform: rotate(360deg); }
 }
 
 .todo-pill-text {
-  font-size: 12px;
-  font-weight: 600;
-  color: #4b5563;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: inherit;
   white-space: nowrap;
-  transition: color 0.2s;
+  font-variant-numeric: tabular-nums;
 }
 
 .todo-pill-caret {
   width: 12px;
   height: 12px;
-  color: #9ca3af;
+  color: inherit;
+  opacity: 0.7;
   flex-shrink: 0;
-  transition: transform 0.2s ease, color 0.2s;
+  transition: transform 0.2s ease;
 }
 
 .todo-pill.is-open .todo-pill-caret {
   transform: rotate(180deg);
 }
 
-/* 展开态浮层：锚定在胶囊下方，右对齐，覆盖在消息之上 */
 .todo-popup {
   position: absolute;
-  top: calc(100% + 8px);
+  top: calc(100% + 6px);
   right: 0;
-  width: 300px;
+  width: 340px;
+  max-width: calc(100vw - 32px);
   max-height: min(46vh, 420px);
   display: flex;
   flex-direction: column;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
+  background: var(--bg-secondary, #ffffff);
+  border: 1px solid var(--border-color, rgba(15, 23, 42, 0.08));
+  border-radius: 16px;
+  box-shadow: 0 12px 36px rgba(15, 23, 42, 0.1);
   overflow: hidden;
 }
 
@@ -196,48 +189,57 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px;
-  border-bottom: 1px solid #e5e7eb;
+  padding: 13px 16px 8px;
 }
 
 .todo-title {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #1f2937;
+  min-width: 0;
 }
 
 .todo-icon {
   width: 16px;
   height: 16px;
-  color: #7c6aef;
+  color: var(--text-secondary, #64748b);
+  flex-shrink: 0;
 }
 
-.todo-count {
-  font-size: 11px;
-  font-weight: 500;
-  color: #6b7280;
-  background: #e5e7eb;
-  padding: 1px 6px;
-  border-radius: 8px;
+.todo-title-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary, #111827);
+  flex-shrink: 0;
+}
+
+.todo-summary {
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--text-secondary, #6b7280);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .todo-close {
-  background: none;
-  border: none;
-  color: #6b7280;
-  cursor: pointer;
-  padding: 2px;
-  border-radius: 4px;
   display: flex;
   align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary, #9ca3af);
+  cursor: pointer;
+  flex-shrink: 0;
 }
 
 .todo-close:hover {
-  color: #1f2937;
-  background: #e5e7eb;
+  color: var(--text-primary, #111827);
+  background: rgba(15, 23, 42, 0.06);
 }
 
 .todo-close svg {
@@ -245,118 +247,93 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   height: 14px;
 }
 
-.todo-progress {
-  height: 3px;
-  background: #e5e7eb;
-}
-
-.todo-progress-bar {
-  height: 100%;
-  background: #7c6aef;
-  transition: width 0.4s ease;
-  border-radius: 0 2px 2px 0;
-}
-
 .todo-list {
-  padding: 8px 12px 12px;
+  padding: 2px 10px 12px;
   overflow-y: auto;
   flex: 1;
   min-height: 0;
-  /* 限高由 .todo-popup 的 max-height 统一控制，这里只负责内部滚动 */
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .todo-item {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 8px 6px;
-  border-radius: 6px;
-  transition: background 0.2s;
+  padding: 7px 8px;
+  border-radius: 8px;
+  transition: background 0.15s ease;
 }
 
 .todo-item:hover {
-  background: #e5e7eb;
-}
-
-.todo-item.in_progress {
-  background: rgba(124, 106, 239, 0.08);
+  background: rgba(15, 23, 42, 0.04);
 }
 
 .todo-status-icon {
   flex-shrink: 0;
-  width: 18px;
+  width: 16px;
   height: 18px;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-top: 1px;
+  padding-top: 2px;
 }
 
-.todo-status-icon svg {
-  width: 16px;
-  height: 16px;
-  color: #22c55e;
-}
-
-.todo-spinner {
-  width: 14px;
-  height: 14px;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.todo-spinner span {
-  width: 4px;
-  height: 4px;
+.todo-ring-spinner {
+  width: 13px;
+  height: 13px;
   border-radius: 50%;
-  background: #7c6aef;
-  animation: todo-bounce 1.4s infinite ease-in-out both;
+  border: 1.8px solid rgba(15, 23, 42, 0.14);
+  border-top-color: var(--text-primary, #374151);
+  animation: todo-spin 0.85s linear infinite;
 }
 
-.todo-spinner span:nth-child(1) { animation-delay: -0.32s; }
-.todo-spinner span:nth-child(2) { animation-delay: -0.16s; }
-
-@keyframes todo-bounce {
-  0%, 80%, 100% { transform: scale(0); }
-  40% { transform: scale(1); }
+.todo-done-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #22c55e;
 }
 
 .todo-pending-dot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  border: 2px solid #9ca3af;
+  background: #cbd5e1;
 }
 
 .todo-content {
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.5;
-  color: #4b5563;
+  color: var(--text-secondary, #6b7280);
   word-break: break-word;
 }
 
 .todo-item.in_progress .todo-content {
-  color: #1f2937;
+  color: var(--text-primary, #111827);
   font-weight: 500;
 }
 
-/* 浮层显隐：自胶囊下方轻微下落淡入 */
+.todo-item.completed .todo-content {
+  color: var(--text-secondary, #6b7280);
+}
+
 .todo-pop-enter-active,
 .todo-pop-leave-active {
-  transition: opacity 0.18s ease, transform 0.18s ease;
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  transform-origin: top right;
 }
 
 .todo-pop-enter-from,
 .todo-pop-leave-to {
   opacity: 0;
-  transform: translateY(-6px);
+  transform: translateY(-4px) scale(0.985);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .todo-pill,
-  .todo-pill.is-active,
-  .todo-spinner span {
+  .todo-pill-spinner,
+  .todo-ring-spinner {
     animation: none;
   }
   .todo-pop-enter-active,
@@ -365,7 +342,6 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   }
 }
 
-/* Scrollbar */
 .todo-list::-webkit-scrollbar {
   width: 4px;
 }
@@ -377,5 +353,24 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .todo-list::-webkit-scrollbar-thumb {
   background: #d1d5db;
   border-radius: 2px;
+}
+
+html[data-theme="dark"] .todo-pill:hover,
+html[data-theme="dark"] .todo-pill.is-open {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme="dark"] .todo-popup {
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.48);
+}
+
+html[data-theme="dark"] .todo-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme="dark"] .todo-ring-spinner,
+html[data-theme="dark"] .todo-pill-spinner {
+  border-color: rgba(255, 255, 255, 0.18);
+  border-top-color: var(--text-primary, #e2e8f0);
 }
 </style>

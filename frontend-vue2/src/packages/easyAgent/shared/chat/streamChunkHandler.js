@@ -422,6 +422,52 @@ export function createStreamChunkHandler(vm, ctx, adapters) {
       }
       touchBlocks()
       if (eventType === 'tool_result' && currentBlock?.type !== 'content') currentBlock = null
+    } else if (eventType === 'subagent_progress') {
+      ensureMessage()
+      const idx = findIdx()
+      if (idx !== -1) {
+        const blocks = vm.messages[idx].blocks || []
+        const targetId = data.tool_call_id || ''
+        let blockIdx = targetId
+          ? blocks.findIndex(b => b.type === 'tool_call' && (b.id === targetId || b.tool_call_id === targetId))
+          : -1
+        if (blockIdx === -1) {
+          for (let i = blocks.length - 1; i >= 0; i -= 1) {
+            if (blocks[i] && blocks[i].type === 'tool_call' && blocks[i].tool_name === 'task' && blocks[i].duration == null) {
+              blockIdx = i
+              break
+            }
+          }
+        }
+        if (blockIdx !== -1) {
+          const prev = blocks[blockIdx]
+          const nextSteps = Array.isArray(prev.subagent_steps) ? prev.subagent_steps.map(s => ({ ...s })) : []
+          const stage = data.stage || 'tool_call'
+          let merged = false
+          if (stage === 'tool_result') {
+            for (let i = nextSteps.length - 1; i >= 0; i -= 1) {
+              const s = nextSteps[i]
+              if (s.stage === 'tool_call' && s.success == null && (!data.tool_name || s.tool_name === data.tool_name)) {
+                nextSteps[i] = { ...s, stage: 'tool_result', success: data.success !== false }
+                merged = true
+                break
+              }
+            }
+          }
+          if (!merged) {
+            nextSteps.push({
+              stage,
+              tool_name: data.tool_name || '',
+              summary: data.summary || '',
+              success: stage === 'tool_call' ? null : (data.success !== false),
+              step: data.step || 0,
+            })
+            if (nextSteps.length > 20) nextSteps.splice(0, nextSteps.length - 20)
+          }
+          setReactive(blocks, blockIdx, { ...prev, subagent_steps: nextSteps })
+          touchBlocks()
+        }
+      }
     } else if (eventType === 'approval_required') {
       if (ctx.onApprovalRequired) ctx.onApprovalRequired(data)
     } else if (eventType === 'done') {

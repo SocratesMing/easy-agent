@@ -17,6 +17,9 @@
       <svg v-else-if="kindKey === 'edit'" class="tcc-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
       </svg>
+      <svg v-else-if="kindKey === 'task'" class="tcc-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline>
+      </svg>
       <svg v-else class="tcc-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
       </svg>
@@ -94,6 +97,23 @@
         <ul v-if="card.envelope.notes.length" class="tcc-visual-notes"><li v-for="(note, i) in card.envelope.notes" :key="i">{{ note }}</li></ul>
       </div>
 
+      <div v-else-if="card.card === 'task'" class="tcc-task">
+        <ul v-if="subagentSteps && subagentSteps.length" class="tcc-subagent-steps">
+          <li
+            v-for="(st, i) in subagentSteps"
+            :key="i"
+            class="tcc-subagent-step"
+            :class="st.success === false ? 'err' : (st.success === true ? 'ok' : 'running')"
+          >
+            <span class="tcc-subagent-mark" aria-hidden="true">{{ st.success === false ? '✕' : (st.success === true ? '✓' : '⋯') }}</span>
+            <span class="tcc-subagent-text">{{ st.summary || st.tool_name || '执行中' }}</span>
+          </li>
+        </ul>
+        <pre v-if="card.body" class="tcc-code" v-html="linkifyText(card.body)"></pre>
+        <div v-else-if="isRunning" class="tcc-streaming-hint">子智能体正在执行…</div>
+        <pre v-else class="tcc-code">(无内容)</pre>
+      </div>
+
       <!-- 参数已在标题的 meta 里，展开只看结果 -->
       <pre v-else class="tcc-code" v-html="linkifyText(card.body || '(无内容)')"></pre>
     </div>
@@ -119,6 +139,8 @@ const props = defineProps({
   allowedDecisions: { type: Array, default: () => [] },
   // 该卡片所在中断含多项操作：按钮统一收在批次审批面板里，卡片只提示（避免「点一次批整批」的误解）
   hideApprovalActions: { type: Boolean, default: false },
+  // 子智能体实时进度步骤（仅 task 工具卡片传入）
+  subagentSteps: { type: Array, default: () => [] },
 })
 
 const emit = defineEmits(['approve', 'reject', 'edit'])
@@ -134,7 +156,7 @@ const kindKey = computed(() => {
 const kindLabel = computed(() => ({
   // 写入/编辑的标题已含动作（「写入 xxx」/「编辑 xxx」），不再显示类型徽标，
   // 否则会渲染成「写入 写入 xxx」这类重复文案。
-  terminal: '命令', list: '列出', search: '搜索', read: '读取', edit: '', other: '工具', visual: '图表',
+  terminal: '命令', list: '列出', search: '搜索', read: '读取', edit: '', task: '子任务', other: '工具', visual: '图表',
 }[kindKey.value] ?? '工具'))
 // 参数流式写入期间自动展开，让用户实时看到正在生成的文件内容；
 // 一旦收到完整参数（streaming 转为 false）即释放自动展开，尊重用户手动折叠。
@@ -205,9 +227,13 @@ watch(() => props.streaming, (v) => {
 // 且当前没有待审批。三类工具（写入 / 命令 / 读取）此时展示一致的前缀与颜色，
 // 而不是「写入显示写入中 / 命令和读取直接显示执行中 / 流式写入自己再展示一条提示」。
 const isRunning = computed(() => props.duration == null && !props.pendingApproval)
-const runningLabel = computed(() =>
-  props.streaming ? '写入中…' : '执行中…'
-)
+const runningLabel = computed(() => {
+  if (card.value.card === 'task' && props.subagentSteps && props.subagentSteps.length) {
+    const latest = props.subagentSteps[props.subagentSteps.length - 1]
+    if (latest && latest.summary) return latest.summary
+  }
+  return props.streaming ? '写入中…' : '执行中…'
+})
 
 // diff 前缀：写入(全 add)不需要前缀，让文字与命令/读取从同一缩进起点开始；
 // 编辑(有 del/add)保留 +/- 前缀，表达「这一行来自哪个方向」。
@@ -327,4 +353,12 @@ const canEditDecision = computed(() => {
 .tcc-btn { padding: 4px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; border: 1px solid transparent; }
 .tcc-btn.approve { background: #16a34a; color: #fff; }
 .tcc-btn.reject { background: #fff; color: #dc2626; border-color: #fca5a5; }
+.tcc-subagent-steps { list-style: none; margin: 0 0 8px; padding: 6px 10px; border-radius: 6px; background: var(--bg-tertiary, #f1f5f9); font-size: 12px; line-height: 1.6; max-height: 200px; overflow: auto; }
+.tcc-subagent-step { display: flex; align-items: baseline; gap: 6px; color: var(--text-secondary, #475569); }
+.tcc-subagent-step.running { color: var(--text-primary, #1f2937); font-weight: 500; }
+.tcc-subagent-step.err { color: #dc2626; }
+.tcc-subagent-mark { flex-shrink: 0; width: 12px; text-align: center; font-weight: 600; }
+.tcc-subagent-step.ok .tcc-subagent-mark { color: #16a34a; }
+.tcc-subagent-step.err .tcc-subagent-mark { color: #dc2626; }
+.tcc-subagent-text { min-width: 0; overflow-wrap: anywhere; }
 </style>

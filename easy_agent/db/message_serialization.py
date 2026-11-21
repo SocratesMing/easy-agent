@@ -87,6 +87,18 @@ def _sanitize_message_for_storage(db, message: dict) -> dict:
                     s["pending_approval"] = True
                 if b.get("file_paths"):
                     s["file_paths"] = b["file_paths"]
+                if isinstance(b.get("subagent_steps"), list) and b["subagent_steps"]:
+                    s["subagent_steps"] = [
+                        {
+                            "stage": str(st.get("stage") or ""),
+                            "tool_name": str(st.get("tool_name") or ""),
+                            "summary": str(st.get("summary") or "")[:120],
+                            "success": st.get("success"),
+                            "step": int(st.get("step") or 0),
+                        }
+                        for st in b["subagent_steps"][-20:]
+                        if isinstance(st, dict)
+                    ]
             elif block_type == "content":
                 s["content"] = b.get("content", "") or ""
                 s["step"] = b.get("step", 0)
@@ -146,6 +158,18 @@ def _sanitize_blocks(db, blocks: list) -> list:
                 sanitized["pending_approval"] = True
             if b.get("file_paths"):
                 sanitized["file_paths"] = b["file_paths"]
+            if isinstance(b.get("subagent_steps"), list) and b["subagent_steps"]:
+                sanitized["subagent_steps"] = [
+                    {
+                        "stage": str(st.get("stage") or ""),
+                        "tool_name": str(st.get("tool_name") or ""),
+                        "summary": str(st.get("summary") or "")[:120],
+                        "success": st.get("success"),
+                        "step": int(st.get("step") or 0),
+                    }
+                    for st in b["subagent_steps"][-20:]
+                    if isinstance(st, dict)
+                ]
         elif block_type == "content":
             sanitized["content"] = b.get("content", "") or ""
         else:

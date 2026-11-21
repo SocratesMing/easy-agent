@@ -235,7 +235,14 @@ export function toolActionLabel(block) {
     case 'search': return `搜索 ${clip(firstLine(a.pattern || a.path), 40) || '文件'}`
     case 'web': return `联网搜索 ${clip(firstLine(a.query), 40)}`.trim()
     case 'knowledge': return '查阅知识库'
-    case 'task': return `执行子任务 ${clip(firstLine(a.description), 40)}`.trim()
+    case 'task': {
+      const steps = Array.isArray(block && block.subagent_steps) ? block.subagent_steps : []
+      const latest = steps.length ? steps[steps.length - 1] : null
+      if (latest && latest.summary && (block.duration == null || block.streaming)) {
+        return `子任务 · ${clip(firstLine(latest.summary), 36)}`.trim()
+      }
+      return `执行子任务 ${clip(firstLine(a.description), 40)}`.trim()
+    }
     default: return `调用 ${name || '工具'}`
   }
 }
@@ -250,6 +257,14 @@ function liveTextOf(block) {
     case 'write_file': return String(a.content || '')
     case 'edit_file': return String(a.new_string || '')
     case 'execute': return a.command ? `$ ${a.command}` : ''
+    case 'task': {
+      const steps = Array.isArray(block.subagent_steps) ? block.subagent_steps : []
+      if (!steps.length) return ''
+      return steps.slice(-5).map(s => {
+        const mark = s.success === false ? '✕' : (s.success === true ? '✓' : '⋯')
+        return `${mark} ${s.summary || s.tool_name || '执行中'}`
+      }).join('\n')
+    }
     default: return ''
   }
 }

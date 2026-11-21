@@ -8,9 +8,10 @@
            空会话（无消息、无任务）时只有右侧一个工作区按钮，这一行改为浮层不占位，
            否则会在欢迎页上方压出一条 44px 白带 + 分隔线，破坏垂直居中。 -->
       <div v-if="showTopbar" class="chat-topbar" :class="{ 'is-float': topbarFloating }">
-        <transition name="topbar-sidebar-btn">
-          <div v-if="showExpandSidebarBtn" class="chat-topbar-left">
+        <div v-if="showExpandSidebarBtn || subagentTasks.length > 0" class="chat-topbar-left">
+          <transition name="topbar-sidebar-btn">
             <button
+              v-if="showExpandSidebarBtn"
               class="expand-sidebar-inline"
               @click="$emit('toggleSidebar')"
               title="展开侧边栏"
@@ -20,8 +21,9 @@
                 <line x1="9" y1="3" x2="9" y2="21"></line>
               </svg>
             </button>
-          </div>
-        </transition>
+          </transition>
+          <SubagentMonitorPanel :tasks="subagentTasks" />
+        </div>
         <div v-if="showSessionTime" class="session-created-time">
           <span class="session-time-pill">
             <svg class="session-time-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -179,10 +181,12 @@ import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
 import ChatMessage from './ChatMessage.vue'
 import ChatInput from './ChatInput.vue'
 import PlanInteractionPanel from './PlanInteractionPanel.vue'
+import SubagentMonitorPanel from './SubagentMonitorPanel.vue'
 import TodoListPanel from './TodoListPanel.vue'
 import UserMessageNavigator from './UserMessageNavigator.vue'
 import { APP_WELCOME_TITLE } from '../../../config.js'
 import { pendingInteractionActions } from '../../../shared/chat/planInteraction.js'
+import { extractSubagentTasks } from '../../../shared/chat/subagentMonitor.js'
 import { buildUserMessageNavItems, findActiveUserNavIndex } from '../../../shared/chat/userMessageNav.js'
 // 首页布局模式：center=空会话时输入框居中，bottom=对话中输入框贴底
 const composerMode = ref('center')
@@ -262,11 +266,12 @@ const displayedPresetCards = computed(() => {
 const showExpandSidebarBtn = computed(() => !isSidebar.value && props.sidebarCollapsed)
 const showSessionTime = computed(() => !isSidebar.value && !!props.sessionCreatedAt && props.messages.length > 0)
 const showWorkspaceBtn = computed(() => !isSidebar.value && !!props.currentSessionId && !props.workspaceExpanded)
+const subagentTasks = computed(() => extractSubagentTasks(props.messages))
 const showTopbar = computed(() =>
-  showExpandSidebarBtn.value || showSessionTime.value || props.todos.length > 0 || showWorkspaceBtn.value
+  showExpandSidebarBtn.value || showSessionTime.value || props.todos.length > 0 || subagentTasks.value.length > 0 || showWorkspaceBtn.value
 )
 const topbarFloating = computed(
-  () => !showSessionTime.value && props.todos.length === 0 && (showWorkspaceBtn.value || showExpandSidebarBtn.value)
+  () => !showSessionTime.value && props.todos.length === 0 && subagentTasks.value.length === 0 && (showWorkspaceBtn.value || showExpandSidebarBtn.value)
 )
 
 const emit = defineEmits(['sendMessage', 'stop', 'removeFile', 'createSession', 'approve', 'reject', 'edit', 'respond', 'retry', 'update:selectedModel', 'toggleSidebar', 'toggleWorkspace', 'clearExpert', 'selectExpert', 'expertPromptApplied', 'openPanel', 'openKnowledge', 'webSearchChange'])

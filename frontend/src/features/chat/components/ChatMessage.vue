@@ -618,6 +618,7 @@ function toolCardProps(block) {
     filePaths: block.file_paths || [],
     allowedDecisions: block.allowed_decisions || [],
     streaming: !!block.streaming,
+    subagentSteps: Array.isArray(block.subagent_steps) ? block.subagent_steps : [],
   }
 }
 

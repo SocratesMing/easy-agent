@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PRODUCERS = [
     "easy_agent/services/streaming/processor.py",
     "easy_agent/services/streaming/orchestrator.py",
+    "easy_agent/services/streaming/subagent_progress.py",
     "easy_agent/services/streaming/emitter.py",
     "easy_agent/api/chat.py",
     "easy_agent/api/expert.py",
