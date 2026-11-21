@@ -3,7 +3,7 @@
 canonical = 仓库根 ``skills/``；packaged = ``easy_agent/skills/``（单向生成副本）。
 本文件守护：
 
-* 运行时 9 个技能在两侧都存在，且全部受管文件逐字节一致（全量 sha256，不做抽样）；
+* 运行时 7 个技能在两侧都存在，且全部受管文件逐字节一致（全量 sha256，不做抽样）；
 * ``--check`` 确定性、漂移时 exit 1，``--write`` 只做 canonical → packaged；
 * ``--write`` 清理包内多余文件/技能，但 canonical 为空时拒绝破坏副本；
 * ``--manifest`` 哈希清单稳定、可复算，且忽略 ``__pycache__`` 等生成物。
@@ -28,11 +28,9 @@ SYNC_SCRIPT = ROOT / "scripts" / "skills" / "sync_skills.py"
 EXPECTED_SKILLS = (
     "document-to-action-items",
     "expert-creator",
-    "fpp-income-analysis",
     "mcp-builder",
     "microsoft-office",
     "pdf",
-    "precious-metals-analysis",
     "skill-creator",
     "xlsx",
 )
