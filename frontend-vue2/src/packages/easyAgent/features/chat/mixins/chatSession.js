@@ -1583,7 +1583,15 @@ export default {
           if (idx === -1) return;
           this.messages[idx].loading = false;
           this.messages[idx].error = e.message || "恢复执行失败";
-          if (e.status === 409) this.messages[idx].pending_approval = null;
+          if (e.status === 409) {
+            this.messages[idx].pending_approval = null;
+            this.messages[idx].blocks = (this.messages[idx].blocks || []).map(b => (
+              b && (b.pending_approval || b.approval_status === "pending")
+                ? { ...b, pending_approval: false, approval_status: "rejected" }
+                : b
+            ));
+            this.error = e.message || "审批已失效，请重新发送消息";
+          }
           setReactive(this.messages, idx, { ...this.messages[idx] });
         });
       } finally {

@@ -1512,7 +1512,6 @@ export default {
   opacity: 1;
   visibility: visible;
   transition: width 0.26s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease, visibility 0s linear 0s;
-  will-change: width, opacity;
 }
 
 .sidebar-shell.is-resizing {
@@ -1527,8 +1526,8 @@ export default {
 }
 
 .sidebar-shell-inner {
-  transform: translateX(0);
-  transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+  margin-left: 0;
+  transition: margin-left 0.26s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .sidebar-shell.is-resizing .sidebar-shell-inner {
@@ -1536,7 +1535,7 @@ export default {
 }
 
 .sidebar-shell.is-collapsed .sidebar-shell-inner {
-  transform: translateX(-14px);
+  margin-left: -14px;
 }
 
 .expand-sidebar-btn {

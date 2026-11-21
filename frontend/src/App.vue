@@ -1924,7 +1924,15 @@ async function handleToolApproval(decision, target) {
       if (idx === -1) return
       messages.value[idx].loading = false
       messages.value[idx].error = e.message || '恢复执行失败'
-      if (e.status === 409) messages.value[idx].pending_approval = null
+      if (e.status === 409) {
+        messages.value[idx].pending_approval = null
+        messages.value[idx].blocks = (messages.value[idx].blocks || []).map(b => (
+          b && (b.pending_approval || b.approval_status === 'pending')
+            ? { ...b, pending_approval: false, approval_status: 'rejected' }
+            : b
+        ))
+        error.value = e.message || '审批已失效，请重新发送消息'
+      }
       messages.value[idx] = { ...messages.value[idx] }
     })
   } finally {
@@ -2082,7 +2090,6 @@ onMounted(async () => {
   opacity: 1;
   visibility: visible;
   transition: width 0.26s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease, visibility 0s linear 0s;
-  will-change: width, opacity;
 }
 
 .sidebar-shell.is-collapsed {
@@ -2096,12 +2103,12 @@ onMounted(async () => {
 .sidebar-shell-inner {
   width: 280px;
   min-width: 280px;
-  transform: translateX(0);
-  transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+  margin-left: 0;
+  transition: margin-left 0.26s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .sidebar-shell.is-collapsed .sidebar-shell-inner {
-  transform: translateX(-14px);
+  margin-left: -14px;
 }
 
 .expand-sidebar-btn {

@@ -1011,6 +1011,22 @@ def _recover_resume_expert_id(repo: ChatRepository, session_id: str, turn_id: st
     return ""
 
 
+async def _close_stale_approval(repo: ChatRepository, session_id: str, sid: str) -> None:
+    """审批已失效时，关闭数据库与回放缓冲中的挂起审批状态，避免前端刷新后仍一直提示审批。"""
+    try:
+        closed = await asyncio.to_thread(
+            session_thread.abandon_pending_approval, repo, session_id
+        )
+        stream_events = getattr(repo, "stream_events", None)
+        clear = getattr(stream_events, "clear_stream_events", None)
+        if callable(clear):
+            await asyncio.to_thread(clear, session_id)
+        if closed:
+            logger.info(f"[{sid}] 🧹 已自动关闭失效的待审批状态")
+    except Exception as exc:  # noqa: BLE001 - 清理失败不掩盖原本的 409 冲突提示
+        logger.warning(f"[{sid}] 关闭失效审批状态失败（忽略）: {exc}")
+
+
 async def _validate_resume_state(
     *,
     agent: Any,
@@ -1031,12 +1047,14 @@ async def _validate_resume_state(
         )
     except StaleApprovalError as exc:
         logger.warning(f"[{sid}] 拒绝已失效的审批 | thread={thread_id} | {exc}")
+        await _close_stale_approval(repo, session_id, sid)
         raise ConflictError(str(exc)) from exc
 
     try:
         await validate_resume_decisions(agent, resume_thread, decisions)
     except StaleApprovalError as exc:
         logger.warning(f"[{sid}] 拒绝已失效的审批 | thread={thread_id} | {exc}")
+        await _close_stale_approval(repo, session_id, sid)
         raise ConflictError(str(exc)) from exc
     except HitlDecisionError as exc:
         logger.warning(f"[{sid}] 拒绝无效的审批决策 | thread={thread_id} | {exc}")
@@ -1159,6 +1177,7 @@ async def prepare_resume(
         )
     except StaleApprovalError as exc:
         logger.warning(f"[{sid}] 审批不在本实例 | thread={thread_id} | {exc}")
+        await _close_stale_approval(repo, session_id, sid)
         raise ConflictError(str(exc)) from exc
 
     expert_agent_id = agent_manager.get_session_expert(session_id)

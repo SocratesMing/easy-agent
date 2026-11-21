@@ -1,49 +1,32 @@
 <template>
-  <!-- 用 element-ui 的 el-dialog 承载，保留 show() 的 Promise 用法，调用方零改动 -->
-  <el-dialog
-    :visible.sync="visible"
-    :modal-append-to-body="modalAppendToBody"
-    :title="title"
-    width="380px"
-    :close-on-click-modal="true"
-    custom-class="ea-confirm-dialog"
-    @close="handleCancel"
+  <div
+    v-if="visible"
+    class="modal-overlay"
+    role="dialog"
+    aria-modal="true"
+    :aria-label="title"
+    @click="handleCancel"
+    @keydown.escape.stop="handleCancel"
   >
-    <div class="confirm-body">
-      <div class="confirm-icon" :class="type">
-        <svg v-if="type === 'warning'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
-          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-          <line x1="12" y1="9" x2="12" y2="13"></line>
-          <line x1="12" y1="17" x2="12.01" y2="17"></line>
-        </svg>
-        <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="12" y1="8" x2="12" y2="12"></line>
-          <line x1="12" y1="16" x2="12.01" y2="16"></line>
-        </svg>
+    <div class="modal-content" @click.stop>
+      <h3>{{ title }}</h3>
+      <p class="confirm-text">{{ message }}</p>
+      <div class="modal-actions">
+        <button type="button" class="cancel-btn" @click="handleCancel">{{ cancelText }}</button>
+        <button
+          type="button"
+          class="confirm-btn"
+          :class="{ danger: type === 'danger' }"
+          @click="handleConfirm"
+        >{{ confirmText }}</button>
       </div>
-      <p class="confirm-message">{{ message }}</p>
     </div>
-
-    <span slot="footer" class="confirm-actions">
-      <el-button size="small" @click="handleCancel">{{ cancelText }}</el-button>
-      <el-button
-        size="small"
-        :type="type === 'danger' ? 'danger' : 'warning'"
-        @click="handleConfirm"
-      >{{ confirmText }}</el-button>
-    </span>
-  </el-dialog>
+  </div>
 </template>
 
 <script>
-// Element UI 组件局部注册：不依赖、也不改写宿主的全局组件注册
-import ElButton from 'element-ui/lib/button'
-import ElDialog from 'element-ui/lib/dialog'
-
 export default {
   name: 'ConfirmDialog',
-  components: { ElButton, ElDialog },
   props: {
     modalAppendToBody: { type: Boolean, default: true },
     title: {
@@ -70,6 +53,12 @@ export default {
   data() {
     return {
       visible: false,
+    }
+  },
+  beforeDestroy() {
+    if (this._resolvePromise) {
+      this._resolvePromise(false)
+      this._resolvePromise = null
     }
   },
   methods: {
@@ -100,64 +89,85 @@ export default {
 </script>
 
 <style scoped>
-.confirm-body {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.confirm-icon {
-  flex-shrink: 0;
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
+  z-index: 9999;
 }
 
-.confirm-icon.warning {
-  background: #fef3cd;
-  color: #d4a700;
+.modal-content {
+  background: var(--bg-secondary, #ffffff);
+  padding: 24px;
+  border-radius: 12px;
+  width: 320px;
+  max-width: 90vw;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
 }
 
-.confirm-icon.danger {
-  background: #fee2e2;
-  color: #ef4444;
+.modal-content h3 {
+  margin: 0 0 16px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary, #1e293b);
 }
 
-.confirm-message {
-  margin: 0;
+.confirm-text {
+  margin: 0 0 4px 0;
   font-size: 14px;
-  color: var(--text-secondary);
   line-height: 1.6;
+  color: var(--text-secondary, #64748b);
+  word-break: break-word;
 }
 
-.confirm-actions {
+.modal-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  margin-top: 16px;
 }
 
-/* 宿主的 [type=button] reset 可能晚于 Element 主题，局部明确操作按钮配色。 */
-.confirm-actions .el-button--warning {
-  color: #fff;
-  background-color: #b45309;
-  border-color: #b45309;
+.cancel-btn {
+  padding: 8px 16px;
+  border: 1px solid var(--border-color, #e2e8f0);
+  background: var(--bg-secondary, #ffffff);
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--text-secondary, #64748b);
+  cursor: pointer;
+  transition: all 0.2s;
 }
-.confirm-actions .el-button--warning:hover,
-.confirm-actions .el-button--warning:focus {
-  background-color: #92400e;
-  border-color: #92400e;
+
+.cancel-btn:hover {
+  background: var(--bg-tertiary, #f1f5f9);
 }
-.confirm-actions .el-button--danger {
-  color: #fff;
-  background-color: #dc2626;
-  border-color: #dc2626;
+
+.confirm-btn {
+  padding: 8px 16px;
+  border: none;
+  background: #0ea5e9;
+  color: white;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
 }
-.confirm-actions .el-button--danger:hover,
-.confirm-actions .el-button--danger:focus {
-  background-color: #b91c1c;
-  border-color: #b91c1c;
+
+.confirm-btn:hover {
+  background: #0284c7;
+}
+
+.confirm-btn.danger {
+  background: #ef4444;
+}
+
+.confirm-btn.danger:hover {
+  background: #dc2626;
 }
 </style>

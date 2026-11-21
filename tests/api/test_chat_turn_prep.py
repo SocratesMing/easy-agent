@@ -771,3 +771,58 @@ async def test_session_authorization_still_precedes_agent_creation(db, monkeypat
         )
     assert "agent_kwargs" not in captured
     assert "stream_kwargs" not in captured
+
+
+async def test_prepare_resume_closes_stale_approval_on_conflict(db, monkeypatch):
+    """服务重启导致审批失效（StaleApprovalError -> 409）时，自动关闭 DB 中的待审批状态。"""
+    from easy_agent.models.api import ResumeRequest
+    from easy_agent.services.sessions.thread import StaleApprovalError
+
+    repo = ChatRepository(db)
+    session_id = _session(repo, username="alice")
+    repo.messages.add_message(
+        session_id,
+        {
+            "role": "assistant",
+            "content": "",
+            "pending_approval": {
+                "thread_id": f"{session_id}-m1",
+                "action_requests": [{"tool_name": "delete", "tool_call_id": "tc-1"}],
+            },
+            "blocks": [
+                {
+                    "type": "tool_call",
+                    "tool_name": "delete",
+                    "tool_call_id": "tc-1",
+                    "approval_status": "pending",
+                    "pending_approval": True,
+                }
+            ],
+        },
+    )
+    repo.stream_events.append_stream_events_batch(
+        session_id, ['data: {"type": "approval_required"}\n\n']
+    )
+
+    async def _fake_agent(*args, **kwargs):
+        return SimpleNamespace()
+
+    async def _raise_stale(*args, **kwargs):
+        raise StaleApprovalError("找不到这条审批的状态（可能在另一个实例上，或已过期），请重新发送消息")
+
+    monkeypatch.setattr(chat_turn, "get_or_create_agent_for_session", _fake_agent)
+    monkeypatch.setattr(chat_turn.session_thread, "resolve_resume_thread", _raise_stale)
+
+    req = ResumeRequest(
+        session_id=session_id,
+        thread_id=f"{session_id}-m1",
+        decisions=[{"type": "approve"}],
+    )
+    with pytest.raises(ConflictError, match="找不到这条审批的状态"):
+        await chat_turn.prepare_resume(request=req, repo=repo, username="alice")
+
+    last_msg = repo.get_session(session_id).messages[-1]
+    assert last_msg.get("pending_approval") is None
+    assert last_msg["blocks"][0]["approval_status"] == "rejected"
+    assert "pending_approval" not in last_msg["blocks"][0]
+    assert repo.stream_events.list_stream_events(session_id) == []
