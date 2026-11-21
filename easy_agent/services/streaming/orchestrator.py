@@ -18,7 +18,7 @@ import logging
 import time
 from contextlib import aclosing
 from dataclasses import dataclass
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Protocol
 
 import httpx
 from langgraph.types import Command
@@ -268,7 +268,7 @@ async def pump_stream(
     stream_input,
     stream_config,
     proc,
-    persister: IncrementalPersister,
+    persister: StreamPersister,
     db,
     session_id: str,
     sid: str,
@@ -818,15 +818,21 @@ def _continuation_event_allowed(event: dict, step_boundary: int | None) -> bool:
     return int(step or 0) > step_boundary
 
 
+class StreamPersister(Protocol):
+    """增量落库器：正常路径写库，拆段续写只在最终边界落库。"""
+
+    def due(self, proc) -> bool: ...
+
+    def maybe_persist(self, proc) -> bool: ...
+
+
 class _NoopPersister:
     """Split continuation is persisted at final/partial boundaries, never as merged blocks."""
 
-    @staticmethod
-    def due(proc) -> bool:
+    def due(self, proc) -> bool:
         return False
 
-    @staticmethod
-    def maybe_persist(proc) -> bool:
+    def maybe_persist(self, proc) -> bool:
         return False
 
 
@@ -846,7 +852,7 @@ class StreamRun:
     message_id: str
     emitter: SSEEmitter
     proc: StreamProcessor
-    persister: IncrementalPersister
+    persister: StreamPersister
     stream_config: dict
     start_time: float
     context_length: int | None
@@ -1488,11 +1494,13 @@ async def _resume_stream_impl(
             "reject": "拒绝",
             "respond": "提交确认",
         }
-        decision_desc = "、".join(
-            decision_labels.get((d or {}).get("type"), "拒绝")
-            if isinstance(d, dict) else str(d)
-            for d in decisions
-        )
+        def _decision_text(decision) -> str:
+            if not isinstance(decision, dict):
+                return str(decision)
+            kind = decision.get("type")
+            return decision_labels.get(kind, "拒绝") if isinstance(kind, str) else "拒绝"
+
+        decision_desc = "、".join(_decision_text(d) for d in decisions)
         # 人工审批结论逐条落日志：带工具名与参数，和 auto 模式的
         # 「用户已选择自动审批，跳过人工审批」形成对照——两者都含「审批」关键词，
         # 排查时按「用户已人工审批」/「用户已选择自动审批」即可区分是谁放行的。

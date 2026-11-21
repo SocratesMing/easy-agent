@@ -191,7 +191,7 @@ def _session_filter(username=None, archived=None, q=None):
     # INSTR performs literal substring matching on both SQLite and MySQL. Unlike
     # LIKE, %, _ and backslashes in user input need no wildcard escaping.
     clauses = ["title NOT LIKE ?"]
-    params = ["[定时任务]%"]
+    params: list[object] = ["[定时任务]%"]
     if username is not None:
         clauses.append("username = ?")
         params.append(username)

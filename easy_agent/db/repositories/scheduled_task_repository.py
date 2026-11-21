@@ -78,7 +78,7 @@ class ScheduledTaskRepository:
         sql += " ORDER BY created_at DESC"
         with self._db.get_connection() as conn:
             cursor = conn.cursor()
-            self._db._execute(cursor, sql, params)
+            self._db._execute(cursor, sql, tuple(params))
             rows = cursor.fetchall()
         return [ScheduledTaskModel(**dict(r)) for r in rows]
 
